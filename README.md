@@ -257,7 +257,7 @@ Available on demand:
   `comptime if` for declaration-position selection, and the §12.6
   every-branch type-check guarantee.
 
-- **Comptime folding (§12.1 phases 1+2+3+4+5+6+7 + §12.2 reflection phases 1+2)** — a tree-walking evaluator
+- **Comptime folding (§12.1 phases 1+2+3+4+5+6+7 + §12.2 reflection phases 1+2+3)** — a tree-walking evaluator
   for the pure subset of Vestra. **Phase 1** folds `const` initializers
   and `comptime { ... }` blocks at compile time: literals, references
   to earlier folded consts, unary + binary arithmetic and logic
@@ -293,20 +293,24 @@ Available on demand:
   expression's type to `[N]UInt8` from the read size. The folded
   vector flows through the existing codegen brace-init path and
   surfaces as `inline constexpr std::array<std::uint8_t, N> = {{…}}`
-  in the emitted header. **§12.2 reflection phase 2** promotes
-  `StructName.fields` from `[N]Str` to `[N]Field`. The resolver
-  synthesizes a `Field` struct decl (one member, `name: Str`) at
-  startup and registers it in the global scope so `T.fields[i].name`
-  type-checks through the ordinary field-lookup path. The folder
-  builds Field values from the StructDecl and serves `.name` /
-  `.length` accessors at fold time. The spec's reflective shape now
-  reads end-to-end as `for i in 0 ..< T.fields.length { … T.fields[i].name … }`.
-  Field is comptime-only — there's no runtime Field type in the
-  emitted C++ yet; the canonical pattern extracts the data the
-  runtime needs into a `[N]Str` (or similar primitive vector)
-  inside the same `comptime { … }` block. Later phases extend Field
-  with `type` / `offset` / attributes, then `derive(Eq, Hash, Clone, …)`
-  defaults ride on top.
+  in the emitted header. **§12.2 reflection** now covers three
+  phases. Phase 1 promoted `StructName.fields` to `[N]Field`; phase
+  2 added `Field.name`; **phase 3** adds `Field.type` — a comptime
+  `Type` value with its own `.name: Str`. The resolver synthesizes
+  both `Type` and `Field` StructDecls at startup (Type carries
+  `name: Str`, Field carries `name: Str, type: Type`) and the folder
+  emits Field values whose `elements` vector mirrors that declaration
+  order positionally, so adding a member to the Field decl is a
+  one-place change (the dispatch walks the decl by name to find the
+  matching index). Composite field types (vectors, optionals,
+  tuples) round-trip through a small in-folder `type_display_name`
+  printer, so `Box.fields[0].type.name` over `var bytes: [4]UInt8`
+  reads back as `"[4]UInt8"`. Both `Type` and `Field` remain
+  comptime-only — the canonical runtime pattern extracts what's
+  needed (names + type strings, etc.) into `[N]Str` tables inside
+  the same `comptime { … }` block. Later phases extend Field with
+  `offset` + attributes, and put `derive(Eq, Hash, Clone, …)`
+  reflective defaults on top of the .type machinery.
 - **Match expression lowering** — `match e { case .a: …  case .b(let x): …  case _: … }`
   lowers two ways depending on the scrutinee's enum shape: a bare
   enum becomes a `switch (e) { case Enum::a: return …; }` IIFE; a
@@ -363,19 +367,20 @@ What's **deliberately stubbed** today, in roughly the order I'd tackle them:
    as C++ templates that the host compiler monomorphizes. Phase 2:
    const generics, generic structs/enums, where-clauses, and bound
    enforcement.
-7. ~~**`comptime` interpreter**~~ — **phases 1+2+3+4+5+6+7+8+9 done**:
+7. ~~**`comptime` interpreter**~~ — **phases 1+2+3+4+5+6+7+8+9+10 done**:
    pure expression folding (phase 1), comptime function calls with
    recursion (phase 2), locals + loops in comptime bodies (phase 3),
    vectors as values (phase 4), a built-in math stdlib (phase 5),
    primitive-type-as-callable conversions (phase 6), `@embed` file
-   embedding (phase 7), §12.2 reflection phase 1 (phase 8 —
-   `StructName.fields` as `[N]Str`), and **§12.2 reflection phase 2**
-   (phase 9 — promote to `[N]Field` with `.name`, plus `.length` on
-   any vector). The spec's `for f in Self.fields { f.name }` shape
-   works one indirection layer down today: `for i in 0 ..< T.fields.length { T.fields[i].name }`.
-   Later phases extend `Field` with `type`/`offset`/attributes,
-   add `derive` defaults, declaration macros (`quote`/`$splice`),
-   and a content-hashed `@embed` manifest.
+   embedding (phase 7), §12.2 reflection phase 1 (phase 8), §12.2
+   reflection phase 2 (phase 9 — `[N]Field` with `.name`), and
+   **§12.2 reflection phase 3** (phase 10 — `Field.type` returns a
+   comptime `Type` value with `.name`). Composite field types
+   (`[4]UInt8`, `Int32?`, …) round-trip through a small folder-side
+   type-display printer. Later phases extend Field with
+   `offset`/attributes, add `derive(Eq, Hash, Clone, …)` defaults
+   riding on `.type`, declaration macros (`quote`/`$splice`), and a
+   content-hashed `@embed` manifest.
 8. ~~**String interpolation lowering**~~ (§4) — **phase 1 done**: the
    lexer splits `"a \(x) b"` into Begin/Part/(splice)/Part/End tokens
    (tracking splice paren depth on a stack so nested splices via inner

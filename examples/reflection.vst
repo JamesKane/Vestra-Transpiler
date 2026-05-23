@@ -4,24 +4,29 @@
 // §12.2 reflection demo: a struct's fields are first-class at comptime.
 //
 // `StructName.fields` returns a fixed-length `[N]Field`. A `Field`
-// today carries one member — `name: Str` — which is enough to
-// reproduce the §12.3 reflective-defaults shape from the spec:
+// today carries two members:
+//   name: Str   — the field's identifier
+//   type: Type  — a Type value with `.name: Str`
 //
-//   for f in Self.fields { ... use f.name ... }
+// That's enough to reproduce the §12.3 reflective-defaults shape from
+// the spec one indirection layer down (we don't have for-each over
+// vectors yet, so the loop iterates 0 ..< T.fields.length explicitly):
 //
-// The folder builds the Field values directly from the StructDecl in
-// scope; the resolver pins the vector type from the field count. We
-// also surface `.length` on vectors (a small ergonomic add that lets
-// the loop bound itself reflect the struct shape) and `.name` on
-// Field values.
+//   for i in 0 ..< Self.fields.length { ... Self.fields[i].name ... }
 //
-// Field stays comptime-only for now — there's no runtime Field type
-// in the emitted C++. The pattern shown below extracts just the
-// names into a runtime `[N]Str` table that codegen handles via the
-// existing folded-vector lowering.
+// The folder builds Field + Type values directly from the StructDecl
+// in scope; the resolver pins the vector type from the field count.
+// We also surface `.length` on vectors so the loop bound reflects the
+// struct's shape (add or remove a field and the loop arity must
+// match, or the compile fails).
 //
-// Later phases extend Field with `type`, `offset`, and attributes,
-// unlocking `derive(Eq, Hash, Clone, …)` reflective defaults.
+// Field + Type stay comptime-only for now — there's no runtime
+// Field/Type C++ shape yet. The pattern below extracts what the
+// runtime needs (here: names + type spellings) into runtime `[N]Str`
+// tables that codegen lowers via the existing folded-vector path.
+//
+// Later phases extend Field with `offset` + attributes, and unlock
+// `derive(Eq, Hash, Clone, …)` reflective defaults riding on .type.
 
 module examples.reflection
 
@@ -31,10 +36,10 @@ struct Point {
     var label: Str
 }
 
-// Reflective build: walk Point's fields at compile time and copy each
-// `.name` into a fixed-size `[3]Str`. The loop bound `Point.fields.length`
-// itself reflects the struct's shape, so adding/removing fields would
-// cause a compile-time arity mismatch instead of a silent drift.
+// Two reflective walks: one collecting field names, one collecting
+// each field's type-display-name. The loop bound itself reflects
+// Point's arity via `.length`.
+
 comptime func collectNames() -> [3]Str {
     var out: [3]Str = .zero
     for i in 0 ..< Point.fields.length {
@@ -43,8 +48,21 @@ comptime func collectNames() -> [3]Str {
     return out
 }
 
+comptime func collectTypeNames() -> [3]Str {
+    var out: [3]Str = .zero
+    for i in 0 ..< Point.fields.length {
+        out[i] = Point.fields[i].type.name
+    }
+    return out
+}
+
 const PointFields: [3]Str = comptime { collectNames() }
+const PointTypes:  [3]Str = comptime { collectTypeNames() }
 
 func name_at(_ i: Int32) -> Str {
     return PointFields[i]
+}
+
+func type_at(_ i: Int32) -> Str {
+    return PointTypes[i]
 }

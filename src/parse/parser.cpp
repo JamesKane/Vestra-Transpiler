@@ -1649,10 +1649,16 @@ ast::ExprPtr Parser::parse_postfix(ast::ExprPtr lhs) {
             auto m = std::make_unique<ast::MemberExpr>();
             m->range = lhs->range;
             m->base = std::move(lhs);
-            if (!check(TokenKind::Identifier)) {
-                emit_error(peek().range, "expected member name after '.'");
-            } else {
+            // Member names are usually identifiers, but Vestra reserves
+            // a few words (`type`, `embed`, …) that legitimately serve
+            // as field names — §12.2 reflection exposes `Field.type`,
+            // for instance. Accept those keywords here using their
+            // spelled lexeme so we don't force users to escape them.
+            if (check(TokenKind::Identifier) || check(TokenKind::KwType)
+                || check(TokenKind::KwEmbed)) {
                 m->member = std::string{advance().lexeme};
+            } else {
+                emit_error(peek().range, "expected member name after '.'");
             }
             m->range = merge(m->range, last_range());
             lhs = std::move(m);

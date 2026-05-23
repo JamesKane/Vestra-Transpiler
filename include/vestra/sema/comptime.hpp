@@ -29,7 +29,17 @@ namespace vestra::sema {
 // rendering pass knows the destination width.
 struct ComptimeValue {
     // NOLINTNEXTLINE(performance-enum-size)
-    enum class Kind : std::uint8_t { Int, UInt, Float, Bool, String, Vector, Field, Unit };
+    enum class Kind : std::uint8_t {
+        Int,
+        UInt,
+        Float,
+        Bool,
+        String,
+        Vector,
+        Field,
+        TypeRef,
+        Unit,
+    };
 
     Kind kind = Kind::Unit;
     TypeKind type = TypeKind::Unit;  // destination Vestra type. For a Vector
@@ -43,15 +53,23 @@ struct ComptimeValue {
     std::string s;        // valid when Kind::String — also the carrier for
                           // §12.6 enum-case identities (cfg.arch returns
                           // "arm64"; `.arm64` leading-dot folds to the
-                          // same; equality is string compare). Also valid
-                          // when Kind::Field — carries the field's name
-                          // (one slot suffices today; phase 3+ extends
-                          // Field with type/offset/attributes).
+                          // same; equality is string compare). Also the
+                          // name slot for Kind::Field and Kind::TypeRef
+                          // (each reflective value is a labeled struct
+                          // shape, named-field access dispatches by
+                          // the Field/Type built-in StructDecl).
 
     // Valid when Kind::Vector. `elements.size() == length` after
     // construction; we still carry `length` separately because some
     // construction paths (e.g. `.zero` with a `[N]T` annotation) want
     // the length pinned independently before elements are populated.
+    //
+    // Also reused for Kind::Field as a positional members vector,
+    // indexed in the same order as the synthetic Field StructDecl's
+    // fields ([0]=name, [1]=type, ...). MemberExpr dispatch walks the
+    // StructDecl to find the member's index and reads elements[idx].
+    // Field StructDecl details belong to the resolver; the folder
+    // looks the decl up by name via its global_scope_.
     std::vector<ComptimeValue> elements;
     std::int64_t length = 0;
 

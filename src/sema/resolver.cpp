@@ -149,34 +149,74 @@ void Resolver::register_builtin_math() {
     }
 }
 
-// §12.2 reflection phase 2: synthesize a `Field` struct so a member
-// access like `T.fields[i].name` type-checks through the resolver's
-// ordinary lookup_field path. Field is comptime-only — there's no
-// codegen story for a runtime Field-typed value yet, and the spec
-// reads reflection as a fold-time activity anyway. A later phase adds
-// `type`, `offset`, and the attribute list.
+// §12.2 reflection: synthesize the `Type` and `Field` structs so
+// `T.fields[i].name` and `T.fields[i].type.name` type-check through
+// the resolver's ordinary lookup_field path. Both are comptime-only —
+// there's no codegen story for a runtime Type/Field-typed value yet,
+// and the spec reads reflection as a fold-time activity. Later
+// phases extend Field with `offset` + the attribute list.
+//
+// Type carries `name: Str` (the type's display name). Field carries
+// `name: Str` then `type: Type`, in *that* declaration order — the
+// folder reads off the same indices when serving member access on a
+// folded Field value (elements[0]=name, elements[1]=type).
 void Resolver::register_builtin_reflection() {
-    auto str_type = std::make_unique<ast::NamedType>();
-    str_type->path = {"Str"};
+    // Build `Type` first so Field's `type: Type` field can resolve
+    // against the freshly-registered nominal.
+    {
+        auto str_type = std::make_unique<ast::NamedType>();
+        str_type->path = {"Str"};
 
-    auto decl = std::make_unique<ast::StructDecl>();
-    decl->name = "Field";
-    decl->visibility = ast::Visibility::Public;
-    ast::StructDecl::Field name_field;
-    name_field.name = "name";
-    name_field.kind = ast::StructDecl::Field::Kind::Let;
-    name_field.type = std::move(str_type);
-    decl->fields.push_back(std::move(name_field));
-    builtin_field_decl_ = std::move(decl);
+        auto decl = std::make_unique<ast::StructDecl>();
+        decl->name = "Type";
+        decl->visibility = ast::Visibility::Public;
+        ast::StructDecl::Field name_field;
+        name_field.name = "name";
+        name_field.kind = ast::StructDecl::Field::Kind::Let;
+        name_field.type = std::move(str_type);
+        decl->fields.push_back(std::move(name_field));
+        builtin_type_decl_ = std::move(decl);
 
-    Symbol s;
-    s.name = "Field";
-    s.kind = SymbolKind::Struct;
-    s.decl = builtin_field_decl_.get();
-    s.type = types_->make_nominal(TypeKind::Struct, builtin_field_decl_.get());
-    s.definition_range = {};
-    s.visibility = ast::Visibility::Public;
-    (void)scopes_.global().insert(std::move(s));
+        Symbol s;
+        s.name = "Type";
+        s.kind = SymbolKind::Struct;
+        s.decl = builtin_type_decl_.get();
+        s.type = types_->make_nominal(TypeKind::Struct, builtin_type_decl_.get());
+        s.definition_range = {};
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
+    }
+
+    {
+        auto str_type = std::make_unique<ast::NamedType>();
+        str_type->path = {"Str"};
+        auto type_type = std::make_unique<ast::NamedType>();
+        type_type->path = {"Type"};
+
+        auto decl = std::make_unique<ast::StructDecl>();
+        decl->name = "Field";
+        decl->visibility = ast::Visibility::Public;
+        ast::StructDecl::Field name_field;
+        name_field.name = "name";
+        name_field.kind = ast::StructDecl::Field::Kind::Let;
+        name_field.type = std::move(str_type);
+        decl->fields.push_back(std::move(name_field));
+        ast::StructDecl::Field type_field;
+        type_field.name = "type";
+        type_field.kind = ast::StructDecl::Field::Kind::Let;
+        type_field.type = std::move(type_type);
+        decl->fields.push_back(std::move(type_field));
+        builtin_field_decl_ = std::move(decl);
+
+        Symbol s;
+        s.name = "Field";
+        s.kind = SymbolKind::Struct;
+        s.decl = builtin_field_decl_.get();
+        s.type = types_->make_nominal(TypeKind::Struct, builtin_field_decl_.get());
+        s.definition_range = {};
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
+    }
 }
 
 void Resolver::error_at(diag::SourceRange r, std::string msg) {

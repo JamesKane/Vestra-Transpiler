@@ -173,10 +173,13 @@ private:
     ComptimeFolder folder_;
     ComptimeFolder::Env comptime_env_;
 
-    // §12.2 reflection phase 2: synthetic `Field` struct decl, owned by
-    // the resolver so its lifetime outlives every Symbol/TypePtr that
-    // references it. Built once in register_builtin_reflection() and
-    // never mutated thereafter.
+    // §12.2 reflection: synthetic `Type` + `Field` struct decls,
+    // owned by the resolver so their lifetimes outlive every Symbol /
+    // TypePtr that references them. Built once in
+    // register_builtin_reflection() and never mutated thereafter.
+    // Field declares fields in the order the folder expects them
+    // in its ComptimeValue::elements vector ([0]=name, [1]=type).
+    std::unique_ptr<ast::StructDecl> builtin_type_decl_;
     std::unique_ptr<ast::StructDecl> builtin_field_decl_;
 };
 

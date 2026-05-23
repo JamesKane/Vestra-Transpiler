@@ -173,6 +173,10 @@ std::string ComptimeValue::to_cpp_literal() const {
         // a placeholder zero that won't compile under most contexts
         // (which is the right outcome: Field shouldn't leak past fold).
         return "/* reflect::Field name=\"" + s + "\" */ 0";
+    case Kind::TypeRef:
+        // Same comptime-only story as Field — TypeRef has no runtime
+        // C++ shape today. Comment includes the type's display name.
+        return "/* reflect::Type name=\"" + s + "\" */ 0";
     case Kind::Unit:
         return "/* unit */ 0";
     }
@@ -256,6 +260,62 @@ ComptimeValue zero_of(TypeKind element_kind) {
     cv.i = 0;
     cv.type = element_kind;
     return cv;
+}
+
+// Display name for an ast::Type (used by §12.2 reflection so
+// `Field.type.name` returns a sensible string). Handles the shapes
+// reflection users hit in practice — NamedType for primitives and
+// nominals, VectorType / OptionalType / TupleType for composites.
+// Falls back to "?" on unrecognized shapes; future phases can grow
+// this into a proper type-printer.
+std::string type_display_name(const ast::Type& t) {
+    switch (t.kind) {
+    case ast::NodeKind::NamedType: {
+        const auto& n = static_cast<const ast::NamedType&>(t);
+        std::string out;
+        for (std::size_t i = 0; i < n.path.size(); ++i) {
+            if (i != 0) {
+                out += '.';
+            }
+            out += n.path[i];
+        }
+        return out;
+    }
+    case ast::NodeKind::VectorType: {
+        const auto& v = static_cast<const ast::VectorType&>(t);
+        std::string out = "[";
+        if (v.length != 0) {
+            out += std::to_string(v.length);
+        } else if (!v.length_ident.empty()) {
+            out += v.length_ident;
+        }
+        out += "]";
+        if (v.element) {
+            out += type_display_name(*v.element);
+        }
+        return out;
+    }
+    case ast::NodeKind::OptionalType: {
+        const auto& o = static_cast<const ast::OptionalType&>(t);
+        return (o.inner ? type_display_name(*o.inner) : std::string{"?"}) + "?";
+    }
+    case ast::NodeKind::TupleType: {
+        const auto& tt = static_cast<const ast::TupleType&>(t);
+        std::string out = "(";
+        for (std::size_t i = 0; i < tt.elements.size(); ++i) {
+            if (i != 0) {
+                out += ", ";
+            }
+            if (tt.elements[i]) {
+                out += type_display_name(*tt.elements[i]);
+            }
+        }
+        out += ")";
+        return out;
+    }
+    default:
+        return "?";
+    }
 }
 
 // Extract the element TypeKind from an `ast::VectorType` (e.g. `[8]Int32`
@@ -420,8 +480,10 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
                     if (sym->kind == SymbolKind::Struct && sym->decl != nullptr
                         && m.member == "fields") {
                         // §12.2 reflection: build a Vector of Field values,
-                        // one per non-embed StructDecl field. Each Field
-                        // carries `name` in its `s` slot.
+                        // one per non-embed StructDecl field. Each Field is
+                        // laid out positionally to match its builtin
+                        // StructDecl: elements[0]=name (String),
+                        // elements[1]=type (TypeRef).
                         const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
                         ComptimeValue v;
                         v.kind = ComptimeValue::Kind::Vector;
@@ -434,6 +496,12 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
                             field.kind = ComptimeValue::Kind::Field;
                             field.type = TypeKind::Struct;
                             field.s = f.name;
+                            field.elements.push_back(make_string(f.name));
+                            ComptimeValue type_ref;
+                            type_ref.kind = ComptimeValue::Kind::TypeRef;
+                            type_ref.type = TypeKind::Struct;
+                            type_ref.s = f.type ? type_display_name(*f.type) : "?";
+                            field.elements.push_back(std::move(type_ref));
                             v.elements.push_back(std::move(field));
                         }
                         v.length = static_cast<std::int64_t>(v.elements.size());
@@ -442,17 +510,30 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
                 }
             }
         }
-        // Field.name and Field.type accessors. The folder needs to thread
-        // through *expression-position* MemberExpr against a Field value.
-        // The base might be: (a) an IdentExpr bound to a local Field
-        // (`let f = T.fields[0]; f.name`), or (b) a sub-expression that
-        // itself folds to a Field (`T.fields[0].name`).
+        // Reflection member access on a folded Field or TypeRef value.
+        // The base might be: (a) an IdentExpr bound to a local Field /
+        // TypeRef (`let f = T.fields[0]; f.name`), or (b) a sub-
+        // expression that itself folds to one (`T.fields[0].type.name`).
+        // Field member dispatch walks the synthetic Field StructDecl in
+        // global scope by declaration order so adding a member to the
+        // Field decl + populating the matching `elements[i]` is a
+        // one-place change.
         if (auto base_val = fold_with(*m.base, env, frame, TypeKind::Unit, depth)) {
-            if (base_val->kind == ComptimeValue::Kind::Field) {
-                if (m.member == "name") {
-                    return make_string(base_val->s);
+            if (base_val->kind == ComptimeValue::Kind::Field && global_scope_ != nullptr) {
+                if (const auto* fsym = global_scope_->lookup("Field")) {
+                    if (fsym->kind == SymbolKind::Struct && fsym->decl != nullptr) {
+                        const auto& fd = static_cast<const ast::StructDecl&>(*fsym->decl);
+                        for (std::size_t i = 0; i < fd.fields.size(); ++i) {
+                            if (fd.fields[i].name == m.member && i < base_val->elements.size()) {
+                                return base_val->elements[i];
+                            }
+                        }
+                    }
                 }
                 return std::nullopt;
+            }
+            if (base_val->kind == ComptimeValue::Kind::TypeRef && m.member == "name") {
+                return make_string(base_val->s);
             }
             // §12.2 / vector ergonomics: `.length` on a folded vector
             // returns its element count. Useful for `for i in 0 ..< T.fields.length`.

@@ -923,6 +923,96 @@ TEST_CASE("phase 8: a Field value can be bound to a local then `.name`'d") {
     CHECK(v->s == "x");
 }
 
+// ---- §12.2 reflection phase 3: Field.type / Type.name -------------------
+
+TEST_CASE("phase 9: `T.fields[i].type.name` folds to the field's type spelling") {
+    auto v = resolver_fold("struct Point {\n"
+                           "    var x: Int32\n"
+                           "    var y: Int32\n"
+                           "    var label: Str\n"
+                           "}\n"
+                           "const T0: Str = comptime { Point.fields[0].type.name }\n",
+                           "T0");
+    REQUIRE(v);
+    CHECK(v->s == "Int32");
+}
+
+TEST_CASE("phase 9: T.fields[i].type returns a Type value with .name") {
+    // Walks .type then .name on each field so we exercise the
+    // Field→TypeRef→String dispatch chain end-to-end.
+    auto v = resolver_fold("struct Triple {\n"
+                           "    var n: Int32\n"
+                           "    var t: Str\n"
+                           "    var f: Float64\n"
+                           "}\n"
+                           "comptime func typeNames() -> [3]Str {\n"
+                           "    var out: [3]Str = .zero\n"
+                           "    for i in 0 ..< Triple.fields.length {\n"
+                           "        out[i] = Triple.fields[i].type.name\n"
+                           "    }\n"
+                           "    return out\n"
+                           "}\n"
+                           "const Names: [3]Str = comptime { typeNames() }\n",
+                           "Names");
+    REQUIRE(v);
+    REQUIRE(v->elements.size() == 3);
+    CHECK(v->elements[0].s == "Int32");
+    CHECK(v->elements[1].s == "Str");
+    CHECK(v->elements[2].s == "Float64");
+}
+
+TEST_CASE("phase 9: a let-bound Field carries .type into a second access") {
+    // Binding a Field to a local then walking `.type.name` exercises the
+    // two-step path: IdentExpr→Field→TypeRef→String.
+    auto v = resolver_fold("struct Point {\n"
+                           "    var x: Int32\n"
+                           "}\n"
+                           "comptime func grab() -> Str {\n"
+                           "    let f = Point.fields[0]\n"
+                           "    return f.type.name\n"
+                           "}\n"
+                           "const Got: Str = comptime { grab() }\n",
+                           "Got");
+    REQUIRE(v);
+    CHECK(v->s == "Int32");
+}
+
+TEST_CASE("phase 9: nominal struct types report their declared name") {
+    // A field whose type is another (user-defined) struct should still
+    // round-trip through .type.name; type_display_name joins the
+    // NamedType's path.
+    auto v = resolver_fold("struct Inner {\n"
+                           "    var k: Int32\n"
+                           "}\n"
+                           "struct Outer {\n"
+                           "    var i: Inner\n"
+                           "}\n"
+                           "const T: Str = comptime { Outer.fields[0].type.name }\n",
+                           "T");
+    REQUIRE(v);
+    CHECK(v->s == "Inner");
+}
+
+TEST_CASE("phase 9: composite (vector, optional) field types serialize sensibly") {
+    auto v = resolver_fold("struct Box {\n"
+                           "    var bytes: [4]UInt8\n"
+                           "    var hint: Int32?\n"
+                           "}\n"
+                           "comptime func names() -> [2]Str {\n"
+                           "    var out: [2]Str = .zero\n"
+                           "    for i in 0 ..< Box.fields.length {\n"
+                           "        out[i] = Box.fields[i].type.name\n"
+                           "    }\n"
+                           "    return out\n"
+                           "}\n"
+                           "const Names: [2]Str = comptime { names() }\n",
+                           "Names");
+    REQUIRE(v);
+    REQUIRE(v->elements.size() == 2);
+    CHECK(v->elements[0].s == "[4]UInt8");
+    CHECK(v->elements[1].s == "Int32?");
+}
+
 TEST_CASE("phase 2: recursion past the depth cap stops cleanly") {
     // factorial recurses linearly. MaxDepth is 64; we call with 200, which
     // would otherwise produce a 200-deep chain. The fold must bail rather
