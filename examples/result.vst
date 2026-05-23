@@ -43,3 +43,11 @@ func chain(_ a: Int32, _ b: Int32, _ c: Int32) throws(DivErr) -> Int32 {
     let x = try divide(a, b)
     return try divide(x, c)
 }
+
+// Mid-expression `try` propagation. The emitter's hoist pass pulls
+// each TryExpr out into its own statement-position let-binding so the
+// error path actually escapes — `(try divide(...)) + (try divide(...))`
+// is not a `.value()` panic.
+func sum_quotients(_ a: Int32, _ b: Int32, _ c: Int32, _ d: Int32) throws(DivErr) -> Int32 {
+    return (try divide(a, b)) + (try divide(c, d))
+}

@@ -70,6 +70,26 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // Mid-expression try: both divides succeed → sum.
+    auto s1 = sum_quotients(10, 2, 9, 3);
+    if (!s1.has_value() || *s1 != 8) {
+        std::println("sum_quotients(10, 2, 9, 3) wrong");
+        return EXIT_FAILURE;
+    }
+    // Mid-expression try: first divide errors → propagate, second
+    // doesn't run (so no spurious side-effect).
+    auto s2 = sum_quotients(10, 0, 9, 3);
+    if (s2.has_value() || s2.error() != DivErr::divByZero) {
+        std::println("sum_quotients(10, 0, ...) should propagate");
+        return EXIT_FAILURE;
+    }
+    // Mid-expression try: second divide errors → also propagates.
+    auto s3 = sum_quotients(10, 2, 9, 0);
+    if (s3.has_value() || s3.error() != DivErr::divByZero) {
+        std::println("sum_quotients(..., 9, 0) should propagate");
+        return EXIT_FAILURE;
+    }
+
     std::println("result OK");
     return EXIT_SUCCESS;
 }

@@ -278,9 +278,13 @@ TEST_CASE("return try propagates via the canonical 3-line escape") {
     auto out = emit("enum E { case bad }\n"
                     "func f() throws(E) -> Int32 { return 7 }\n"
                     "func g() throws(E) -> Int32 { return try f() }\n");
-    CHECK(out.source.find("auto __vstr_r = f();") != std::string::npos);
-    CHECK(out.source.find("return std::unexpected{__vstr_r.error()};") != std::string::npos);
-    CHECK(out.source.find("return *__vstr_r;") != std::string::npos);
+    // The hoist pass pre-emits the canonical 3-line escape with a
+    // generated `__vstr_tN` binding name, then the statement itself
+    // emits `return <name>;`.
+    CHECK(out.source.find("__vstr_t0_r = f();") != std::string::npos);
+    CHECK(out.source.find("return std::unexpected{__vstr_t0_r.error()};") != std::string::npos);
+    CHECK(out.source.find("auto __vstr_t0 = *__vstr_t0_r;") != std::string::npos);
+    CHECK(out.source.find("return __vstr_t0;") != std::string::npos);
 }
 
 TEST_CASE("try? lowers to a Result→Optional conversion IIFE") {
@@ -296,6 +300,43 @@ TEST_CASE("try! lowers to std::expected::value()") {
                     "func f() throws(E) -> Int32 { return 7 }\n"
                     "func g() -> Int32 { return try! f() }\n");
     CHECK(out.source.find("f().value()") != std::string::npos);
+}
+
+TEST_CASE("mid-expression try hoists to a stmt-position let-binding") {
+    // `try` in a binary-expression operand should NOT fall through to
+    // .value(); the hoist pass pre-emits the escape and the binary
+    // expression references the hoisted name.
+    auto out = emit("enum E { case bad }\n"
+                    "func f(_ x: Int32) throws(E) -> Int32 { return x }\n"
+                    "func g(_ a: Int32, _ b: Int32) throws(E) -> Int32 {\n"
+                    "    return (try f(a)) + (try f(b))\n"
+                    "}\n");
+    CHECK(out.source.find("auto __vstr_t0_r = f(a);") != std::string::npos);
+    CHECK(out.source.find("auto __vstr_t0 = *__vstr_t0_r;") != std::string::npos);
+    CHECK(out.source.find("auto __vstr_t1_r = f(b);") != std::string::npos);
+    CHECK(out.source.find("auto __vstr_t1 = *__vstr_t1_r;") != std::string::npos);
+    CHECK(out.source.find("(__vstr_t0) + (__vstr_t1)") != std::string::npos);
+    // No panic fallback.
+    CHECK(out.source.find("f(a).value()") == std::string::npos);
+    CHECK(out.source.find("f(b).value()") == std::string::npos);
+}
+
+TEST_CASE("try inside an if branch keeps the per-branch lowering (not hoisted)") {
+    // The hoist walk refuses to descend into IfExpr branches, so a try
+    // inside one stays handled by emit_stmt_expr's per-branch recursion.
+    auto out = emit("enum E { case bad }\n"
+                    "func f(_ x: Int32) throws(E) -> Int32 { return x }\n"
+                    "func g(_ a: Int32, _ b: Int32) throws(E) -> Int32 {\n"
+                    "    return if a > 0 { try f(a) } else { try f(b) }\n"
+                    "}\n");
+    // The hoist pass left both tries alone, so there should be NO
+    // top-of-function __vstr_t0 binding before the if.
+    CHECK(out.source.find("auto __vstr_t0 = ") == std::string::npos);
+    // Each branch carries its own canonical escape via the per-branch
+    // emit_stmt_expr fallback.
+    CHECK(
+        out.source.find("if (!__vstr_r.has_value()) { return std::unexpected{__vstr_r.error()}; }")
+        != std::string::npos);
 }
 
 TEST_CASE("throw inside an if branch lowers as a real return-of-unexpected") {

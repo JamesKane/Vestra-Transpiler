@@ -709,6 +709,172 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
     hdr << "};\n\n";
 }
 
+void CppEmitter::collect_try_hoists(const ast::Expr& e, std::vector<TryHoist>& out) {
+    switch (e.kind) {
+    case ast::NodeKind::TryExpr: {
+        const auto& tx = static_cast<const ast::TryExpr&>(e);
+        if (tx.form == ast::TryExpr::Form::Propagating) {
+            // Post-order: inner hoists go first so they're emitted before
+            // the outer one consumes their values.
+            collect_try_hoists(*tx.inner, out);
+            out.push_back({&tx, std::format("__vstr_t{}", hoist_counter_++)});
+        }
+        // try? / try! don't propagate, so they don't need a hoist.
+        break;
+    }
+    case ast::NodeKind::CallExpr: {
+        const auto& c = static_cast<const ast::CallExpr&>(e);
+        collect_try_hoists(*c.callee, out);
+        for (const auto& a : c.args) {
+            if (a.value) {
+                collect_try_hoists(*a.value, out);
+            }
+        }
+        break;
+    }
+    case ast::NodeKind::BinaryExpr: {
+        const auto& b = static_cast<const ast::BinaryExpr&>(e);
+        collect_try_hoists(*b.lhs, out);
+        // Skip RHS of short-circuit logicals — it might not evaluate.
+        if (b.op == ast::BinaryOp::And || b.op == ast::BinaryOp::Or) {
+            break;
+        }
+        collect_try_hoists(*b.rhs, out);
+        break;
+    }
+    case ast::NodeKind::UnaryExpr:
+        collect_try_hoists(*static_cast<const ast::UnaryExpr&>(e).operand, out);
+        break;
+    case ast::NodeKind::MemberExpr:
+        collect_try_hoists(*static_cast<const ast::MemberExpr&>(e).base, out);
+        break;
+    case ast::NodeKind::IndexExpr: {
+        const auto& ix = static_cast<const ast::IndexExpr&>(e);
+        collect_try_hoists(*ix.base, out);
+        for (const auto& idx : ix.indices) {
+            if (idx) {
+                collect_try_hoists(*idx, out);
+            }
+        }
+        break;
+    }
+    case ast::NodeKind::ParenExpr:
+        collect_try_hoists(*static_cast<const ast::ParenExpr&>(e).inner, out);
+        break;
+    case ast::NodeKind::AsExpr:
+        collect_try_hoists(*static_cast<const ast::AsExpr&>(e).value, out);
+        break;
+    case ast::NodeKind::IfExpr: {
+        const auto& i = static_cast<const ast::IfExpr&>(e);
+        // Walk the unconditionally-evaluated bits: the cond and the
+        // let-init. Skip then/else — they're conditional, so a hoist
+        // would change execution order.
+        if (i.cond) {
+            collect_try_hoists(*i.cond, out);
+        }
+        if (i.let_init) {
+            collect_try_hoists(*i.let_init, out);
+        }
+        break;
+    }
+    case ast::NodeKind::MatchExpr:
+        // Scrutinee is always evaluated; arm bodies aren't.
+        collect_try_hoists(*static_cast<const ast::MatchExpr&>(e).scrutinee, out);
+        break;
+    case ast::NodeKind::CopyExpr:
+        collect_try_hoists(*static_cast<const ast::CopyExpr&>(e).inner, out);
+        break;
+    case ast::NodeKind::VectorLitExpr: {
+        const auto& v = static_cast<const ast::VectorLitExpr&>(e);
+        for (const auto& el : v.elements) {
+            if (el) {
+                collect_try_hoists(*el, out);
+            }
+        }
+        break;
+    }
+    case ast::NodeKind::InterpStringExpr: {
+        const auto& is_ = static_cast<const ast::InterpStringExpr&>(e);
+        for (const auto& seg : is_.segments) {
+            if (seg.expr) {
+                collect_try_hoists(*seg.expr, out);
+            }
+        }
+        break;
+    }
+    // BlockExpr, ClosureExpr, AwaitExpr, SpawnExpr, ThrowExpr — leave
+    // alone. BlockExpr has its own statement scope (each inner stmt does
+    // its own hoist collection); ThrowExpr's inner is the error value,
+    // which doesn't carry try semantics here; the concurrency forms have
+    // their own escape semantics and aren't hoisted in v0.5.
+    default:
+        break;
+    }
+}
+
+void CppEmitter::collect_stmt_hoists(const ast::Stmt& s, std::vector<TryHoist>& out) {
+    switch (s.kind) {
+    case ast::NodeKind::LetStmt:
+        if (const auto& l = static_cast<const ast::LetStmt&>(s); l.value) {
+            collect_try_hoists(*l.value, out);
+        }
+        break;
+    case ast::NodeKind::VarStmt:
+        if (const auto& v = static_cast<const ast::VarStmt&>(s); v.value) {
+            collect_try_hoists(*v.value, out);
+        }
+        break;
+    case ast::NodeKind::ExprStmt:
+        collect_try_hoists(*static_cast<const ast::ExprStmt&>(s).expr, out);
+        break;
+    case ast::NodeKind::ReturnStmt:
+        if (const auto& r = static_cast<const ast::ReturnStmt&>(s); r.value) {
+            collect_try_hoists(*r.value, out);
+        }
+        break;
+    case ast::NodeKind::AssignStmt: {
+        const auto& a = static_cast<const ast::AssignStmt&>(s);
+        collect_try_hoists(*a.target, out);
+        collect_try_hoists(*a.value, out);
+        break;
+    }
+    case ast::NodeKind::WhileStmt:
+        collect_try_hoists(*static_cast<const ast::WhileStmt&>(s).cond, out);
+        break;
+    case ast::NodeKind::ForStmt:
+        if (const auto& fs = static_cast<const ast::ForStmt&>(s); fs.iter) {
+            collect_try_hoists(*fs.iter, out);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+void CppEmitter::emit_try_hoist(std::ostream& os, const TryHoist& h, int indent) {
+    const std::string r = h.name + "_r";
+    write_indent(os, indent);
+    os << "auto " << r << " = ";
+    emit_expr(os, *h.node->inner);
+    os << ";\n";
+    write_indent(os, indent);
+    os << "if (!" << r << ".has_value()) { return std::unexpected{" << r << ".error()}; }\n";
+    write_indent(os, indent);
+    os << "auto " << h.name << " = *" << r << ";\n";
+}
+
+const std::string* CppEmitter::lookup_try_hoist(const ast::TryExpr* node) const {
+    if (active_hoists_ == nullptr) {
+        return nullptr;
+    }
+    for (const auto& h : *active_hoists_) {
+        if (h.node == node) {
+            return &h.name;
+        }
+    }
+    return nullptr;
+}
+
 void CppEmitter::emit_block(std::ostream& os, const ast::BlockExpr& b, int indent) {
     os << "{\n";
     for (const auto& s : b.stmts) {
@@ -719,45 +885,46 @@ void CppEmitter::emit_block(std::ostream& os, const ast::BlockExpr& b, int inden
 }
 
 void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
+    // §9 try-hoisting: pull every TryExpr-Propagating in this statement's
+    // expressions out into a stmt-position let-binding, so propagation
+    // really escapes the enclosing throws(E) fn. The active_hoists_
+    // pointer lives only for the duration of this call — emit_expr looks
+    // it up to substitute the bound name when it later encounters the
+    // hoisted TryExpr.
+    std::vector<TryHoist> hoists;
+    collect_stmt_hoists(s, hoists);
+    for (const auto& h : hoists) {
+        emit_try_hoist(os, h, indent);
+    }
+    const auto* prev_hoists = active_hoists_;
+    active_hoists_ = &hoists;
     write_indent(os, indent);
     switch (s.kind) {
     case ast::NodeKind::LetStmt: {
         const auto& l = static_cast<const ast::LetStmt&>(s);
-        auto binding_name = [&]() -> std::string {
-            if (l.pattern && l.pattern->kind == ast::NodeKind::IdentPat) {
-                return static_cast<const ast::IdentPat&>(*l.pattern).name;
-            }
-            if (l.pattern && l.pattern->kind == ast::NodeKind::BindPat) {
-                return static_cast<const ast::BindPat&>(*l.pattern).name;
-            }
-            return "_bind";
-        };
-        // §9 `let NAME = try EXPR` is the statement-position form where
-        // propagation can really escape — same lowering as `return try
-        // EXPR` except the success value is bound instead of returned.
-        if (l.value && l.value->kind == ast::NodeKind::TryExpr) {
-            const auto& tx = static_cast<const ast::TryExpr&>(*l.value);
-            if (tx.form == ast::TryExpr::Form::Propagating) {
-                os << "auto __vstr_r_" << binding_name() << " = ";
-                emit_expr(os, *tx.inner);
-                os << "; if (!__vstr_r_" << binding_name()
-                   << ".has_value()) { return std::unexpected{__vstr_r_" << binding_name()
-                   << ".error()}; } auto " << binding_name() << " = *__vstr_r_" << binding_name()
-                   << ";\n";
-                break;
-            }
-        }
         // Vestra's `let` is "no reassignment" — but it does allow consumption
         // (move). C++'s `const` is stricter (no rebind AND no move-from), so
         // we use plain `auto` / `T` here. Sema rejects assignment to `let`
         // bindings, which is the part C++'s const was buying us.
+        //
+        // §9 `let NAME = try EXPR` no longer needs a special case: the
+        // try-hoisting pass above pre-emits the propagation escape, then
+        // emit_expr substitutes the hoisted name when it hits the
+        // TryExpr — so `auto NAME = __vstr_t0;` is correct.
         if (l.type) {
             emit_type(os, *l.type);
             os << " ";
         } else {
             os << "auto ";
         }
-        os << binding_name() << " = ";
+        if (l.pattern && l.pattern->kind == ast::NodeKind::IdentPat) {
+            os << static_cast<const ast::IdentPat&>(*l.pattern).name;
+        } else if (l.pattern && l.pattern->kind == ast::NodeKind::BindPat) {
+            os << static_cast<const ast::BindPat&>(*l.pattern).name;
+        } else {
+            os << "_bind";
+        }
+        os << " = ";
         if (l.value) {
             emit_expr(os, *l.value);
         }
@@ -885,6 +1052,7 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         os << "\n";
         break;
     }
+    active_hoists_ = prev_hoists;
 }
 
 void CppEmitter::emit_stmt_expr(std::ostream& os, const ast::Expr& expr, bool return_value) {
@@ -910,6 +1078,12 @@ void CppEmitter::emit_stmt_expr(std::ostream& os, const ast::Expr& expr, bool re
     case ast::NodeKind::TryExpr: {
         const auto& tx = static_cast<const ast::TryExpr&>(expr);
         if (tx.form == ast::TryExpr::Form::Propagating) {
+            // If hoisting registered a binding for this try, emit_expr
+            // would substitute the name; just use the regular return /
+            // void-cast path.
+            if (lookup_try_hoist(&tx) != nullptr) {
+                break;  // fall through to generic `<expr>;` / `return <expr>;`
+            }
             os << "{ auto __vstr_r = ";
             emit_expr(os, *tx.inner);
             os << "; if (!__vstr_r.has_value()) { return std::unexpected{__vstr_r.error()}; } ";
@@ -1065,19 +1239,26 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         break;
     }
     case ast::NodeKind::TryExpr: {
-        // §9 try forms. In v0.5 the lowering depends on context:
-        //   * try? e  — converts to Optional<T>, always (IIFE)
-        //   * try! e  — panics on error (.value()), always
-        //   * try e   — true propagation is handled at statement/return
-        //               position by emit_stmt below; in any other slot
-        //               this falls back to .value() (the bad_expected_
-        //               access panic), which makes it behave like try!.
-        //               A future pass should hoist arbitrary `try e` to a
-        //               statement-position let-binding so the propagation
-        //               escape always works.
+        // §9 try forms:
+        //   * try e   — propagating: the enclosing emit_stmt's hoist
+        //               pass has already pre-emitted a let-binding of
+        //               the unwrapped value; we output that name here.
+        //               If hoisting was skipped (e.g. this try sits
+        //               inside a conditional branch the walk refused
+        //               to descend into), fall back to .value() so the
+        //               code still compiles (panic on error).
+        //   * try? e  — converts to Optional<T> via an IIFE.
+        //   * try! e  — panics on error (.value()).
         const auto& tx = static_cast<const ast::TryExpr&>(e);
         switch (tx.form) {
         case ast::TryExpr::Form::Propagating:
+            if (const auto* name = lookup_try_hoist(&tx)) {
+                os << *name;
+                break;
+            }
+            emit_expr(os, *tx.inner);
+            os << ".value()";
+            break;
         case ast::TryExpr::Form::Forced:
             emit_expr(os, *tx.inner);
             os << ".value()";

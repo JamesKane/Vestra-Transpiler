@@ -11,6 +11,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace vestra::codegen {
 
@@ -73,6 +74,27 @@ private:
     // ThrowExpr, TryExpr::Propagating, IfExpr, BlockExpr, MatchExpr,
     // and falls back to plain `<expr>;` / `return <expr>;` otherwise.
     void emit_stmt_expr(std::ostream& os, const ast::Expr& expr, bool return_value);
+
+    // §9 mid-expression `try` hoisting. A `try EXPR` only escapes
+    // cleanly at a statement boundary (a real `return std::unexpected
+    // {...};`), so before emitting a statement we walk its expression
+    // tree, register every TryExpr-Propagating sub-node, and pre-emit
+    // each one as a let-binding of the unwrapped value. emit_expr
+    // substitutes the binding name when it later hits the registered
+    // TryExpr. The walk skips conditional contexts (IfExpr/MatchExpr
+    // branches, short-circuit && / ||) so a hoisted try never runs in a
+    // branch that the source program wouldn't have taken.
+    struct TryHoist {
+        const ast::TryExpr* node;
+        std::string name;
+    };
+    void collect_try_hoists(const ast::Expr& e, std::vector<TryHoist>& out);
+    void collect_stmt_hoists(const ast::Stmt& s, std::vector<TryHoist>& out);
+    void emit_try_hoist(std::ostream& os, const TryHoist& h, int indent);
+    const std::string* lookup_try_hoist(const ast::TryExpr* node) const;
+
+    const std::vector<TryHoist>* active_hoists_ = nullptr;
+    int hoist_counter_ = 0;
 
     void unsupported(std::ostream& os, std::string_view what, diag::SourceRange r);
 
