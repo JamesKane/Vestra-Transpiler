@@ -132,9 +132,12 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
         return 1;
     }
 
+    // The resolver's lifetime needs to outlive the emitter — the emitter
+    // reads back the side tables (Resolution) to lower constructs that
+    // depend on context, like leading-dot enum cases and match scrutinees.
+    sema::TypeArena arena;
+    sema::Resolver resolver(unit, arena, rep);
     if (!opts.skip_check) {
-        sema::TypeArena arena;
-        sema::Resolver resolver(unit, arena, rep);
         resolver.resolve();
         if (rep.has_errors()) {
             rep.render_to(err);
@@ -142,7 +145,7 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
         }
     }
 
-    codegen::CppEmitter emitter(rep);
+    codegen::CppEmitter emitter(rep, opts.skip_check ? nullptr : &resolver.resolution());
     auto basename = opts.input.stem().string();
     auto em = emitter.emit(unit, basename);
 

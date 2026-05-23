@@ -37,6 +37,9 @@ struct Symbol {
     const ast::Node* decl = nullptr;  // the AST node this symbol points at
     TypePtr type = nullptr;           // computed type, when known
     diag::SourceRange definition_range{};
+    // Visibility level recorded for top-level decls. For locals/params the
+    // value is meaningless and stays at the default.
+    ast::Visibility visibility = ast::Visibility::Internal;
 };
 
 // A lexical scope. The owner uses `enter()` / `leave()` (or the RAII

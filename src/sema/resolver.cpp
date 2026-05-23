@@ -115,6 +115,7 @@ void Resolver::collect_func(const ast::FuncDecl& f) {
     s.decl = &f;
     s.type = function_type_of(f);
     s.definition_range = f.range;
+    s.visibility = f.visibility;
     if (auto* prev = scopes_.global().insert(std::move(s))) {
         duplicate_definition(*prev, f.name, f.range);
     }
@@ -127,6 +128,7 @@ void Resolver::collect_struct(const ast::StructDecl& s_) {
     s.decl = &s_;
     s.type = types_->make_nominal(TypeKind::Struct, &s_);
     s.definition_range = s_.range;
+    s.visibility = s_.visibility;
     if (auto* prev = scopes_.global().insert(std::move(s))) {
         duplicate_definition(*prev, s_.name, s_.range);
     }
@@ -139,6 +141,7 @@ void Resolver::collect_enum(const ast::EnumDecl& e) {
     s.decl = &e;
     s.type = types_->make_nominal(TypeKind::Enum, &e);
     s.definition_range = e.range;
+    s.visibility = e.visibility;
     if (auto* prev = scopes_.global().insert(std::move(s))) {
         duplicate_definition(*prev, e.name, e.range);
     }
@@ -151,6 +154,7 @@ void Resolver::collect_protocol(const ast::ProtocolDecl& p) {
     s.decl = &p;
     s.type = types_->make_nominal(TypeKind::Protocol, &p);
     s.definition_range = p.range;
+    s.visibility = p.visibility;
     if (auto* prev = scopes_.global().insert(std::move(s))) {
         duplicate_definition(*prev, p.name, p.range);
     }
@@ -163,6 +167,7 @@ void Resolver::collect_opaque(const ast::OpaqueDecl& o) {
     s.decl = &o;
     s.type = types_->make_nominal(TypeKind::OpaqueType, &o);
     s.definition_range = o.range;
+    s.visibility = o.visibility;
     if (auto* prev = scopes_.global().insert(std::move(s))) {
         duplicate_definition(*prev, o.name, o.range);
     }
@@ -175,6 +180,7 @@ void Resolver::collect_const(const ast::ConstDecl& c) {
     s.decl = &c;
     s.type = c.type ? resolve_type(*c.type) : nullptr;
     s.definition_range = c.range;
+    s.visibility = c.visibility;
     if (auto* prev = scopes_.global().insert(std::move(s))) {
         duplicate_definition(*prev, c.name, c.range);
     }
@@ -187,6 +193,7 @@ void Resolver::collect_static(const ast::StaticDecl& s_) {
     s.decl = &s_;
     s.type = s_.type ? resolve_type(*s_.type) : nullptr;
     s.definition_range = s_.range;
+    s.visibility = s_.visibility;
     if (auto* prev = scopes_.global().insert(std::move(s))) {
         duplicate_definition(*prev, s_.name, s_.range);
     }
@@ -521,6 +528,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
             t = types_->error();
         } else {
             resolution_.set_symbol(&e, sym);
+            check_visibility(*sym, e.range);
             t = sym->type != nullptr ? sym->type : types_->error();
         }
         break;
@@ -535,7 +543,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         t = check_binary(static_cast<const ast::BinaryExpr&>(e), expected);
         break;
     case ast::NodeKind::CallExpr:
-        t = check_call(static_cast<const ast::CallExpr&>(e));
+        t = check_call(static_cast<const ast::CallExpr&>(e), expected);
         break;
     case ast::NodeKind::IfExpr:
         t = check_if(static_cast<const ast::IfExpr&>(e), expected);
@@ -569,15 +577,22 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         break;
     }
     case ast::NodeKind::MemberExpr:
-    case ast::NodeKind::IndexExpr:
+        t = check_member(static_cast<const ast::MemberExpr&>(e));
+        break;
+    case ast::NodeKind::LeadingDotExpr:
+        t = check_leading_dot(static_cast<const ast::LeadingDotExpr&>(e), expected);
+        break;
     case ast::NodeKind::MatchExpr:
+        t = check_match(static_cast<const ast::MatchExpr&>(e), expected);
+        break;
+
+    case ast::NodeKind::IndexExpr:
     case ast::NodeKind::SelectExpr:
     case ast::NodeKind::ClosureExpr:
     case ast::NodeKind::ComptimeExpr:
     case ast::NodeKind::QuoteExpr:
     case ast::NodeKind::StructLitExpr:
     case ast::NodeKind::VectorLitExpr:
-    case ast::NodeKind::LeadingDotExpr:
     case ast::NodeKind::PathExpr:
     case ast::NodeKind::SelfExpr:
     default:
@@ -733,11 +748,15 @@ TypePtr Resolver::check_binary(const ast::BinaryExpr& b, TypePtr expected) {
     return types_->error();
 }
 
-TypePtr Resolver::check_call(const ast::CallExpr& c) {
+TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
     // Resolve the callee first so we know each parameter's expected type
     // before we type its corresponding argument — this is what lets integer
     // literals adopt the parameter's type without an explicit conversion.
-    auto callee_type = check_expr(*c.callee);
+    //
+    // We pass `expected` through to the callee so a leading-dot enum case in
+    // call position (`.circle(radius: 1.0)`) can resolve against the expected
+    // enum type.
+    auto callee_type = check_expr(*c.callee, expected);
     if (callee_type == nullptr || callee_type->is_error()) {
         // Still type the arguments so their internal errors surface.
         for (const auto& a : c.args) {
@@ -745,6 +764,70 @@ TypePtr Resolver::check_call(const ast::CallExpr& c) {
         }
         return types_->error();
     }
+
+    // Struct construction: `Point(x: 10, y: 32)` parses as a CallExpr whose
+    // callee evaluates to the nominal Struct type. Dispatch by-label against
+    // the struct's fields rather than treating it as a function call.
+    if (callee_type->kind() == TypeKind::Struct && callee_type->nominal_decl() != nullptr) {
+        const auto& s_decl = static_cast<const ast::StructDecl&>(*callee_type->nominal_decl());
+        // Build a label → (field, resolved type) index once.
+        std::unordered_map<std::string, std::pair<const ast::StructDecl::Field*, TypePtr>> by_label;
+        for (const auto& f : s_decl.fields) {
+            if (f.kind == ast::StructDecl::Field::Kind::Embed) {
+                continue;  // embeds aren't constructible by label (yet)
+            }
+            by_label.emplace(f.name,
+                             std::make_pair(&f, f.type ? resolve_type(*f.type) : types_->error()));
+        }
+        std::vector<bool> seen(s_decl.fields.size(), false);
+        for (std::size_t i = 0; i < c.args.size(); ++i) {
+            const auto& arg = c.args[i];
+            if (arg.label.empty()) {
+                error_at(
+                    arg.value->range,
+                    std::format("struct constructor argument {} requires a field label", i + 1));
+                (void)check_expr(*arg.value);
+                continue;
+            }
+            auto it = by_label.find(arg.label);
+            if (it == by_label.end()) {
+                error_at(arg.value->range,
+                         std::format("'{}' has no field '{}'", s_decl.name, arg.label));
+                (void)check_expr(*arg.value);
+                continue;
+            }
+            auto field_type = it->second.second;
+            auto arg_type = check_expr(*arg.value, field_type);
+            if (!TypeArena::assignable(arg_type, field_type)) {
+                error_at(arg.value->range,
+                         std::format("field '{}' of type {} cannot accept value of type {}",
+                                     arg.label,
+                                     field_type ? field_type->describe() : "?",
+                                     arg_type ? arg_type->describe() : "?"));
+            }
+            // Track coverage for "missing field" diagnostics.
+            for (std::size_t k = 0; k < s_decl.fields.size(); ++k) {
+                if (&s_decl.fields[k] == it->second.first) {
+                    seen[k] = true;
+                    break;
+                }
+            }
+        }
+        // Missing fields are an error — Vestra has no implicit defaulting.
+        for (std::size_t k = 0; k < s_decl.fields.size(); ++k) {
+            if (s_decl.fields[k].kind == ast::StructDecl::Field::Kind::Embed) {
+                continue;
+            }
+            if (!seen[k]) {
+                error_at(c.range,
+                         std::format("struct '{}' constructor is missing field '{}'",
+                                     s_decl.name,
+                                     s_decl.fields[k].name));
+            }
+        }
+        return callee_type;
+    }
+
     if (callee_type->kind() != TypeKind::Function) {
         for (const auto& a : c.args) {
             (void)check_expr(*a.value);
@@ -876,6 +959,319 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
 
 TypePtr Resolver::resolve_type_opt(const ast::Type* t, TypePtr fallback) {
     return t == nullptr ? fallback : resolve_type(*t);
+}
+
+// ============================================================================
+// Member access, methods, enum cases, match
+// ============================================================================
+
+TypePtr Resolver::lookup_field(TypePtr struct_type,
+                               std::string_view name,
+                               const ast::StructDecl::Field** out_field) {
+    if (struct_type == nullptr || struct_type->kind() != TypeKind::Struct) {
+        return nullptr;
+    }
+    const auto* decl = struct_type->nominal_decl();
+    if (decl == nullptr || decl->kind != ast::NodeKind::Struct) {
+        return nullptr;
+    }
+    const auto& s = static_cast<const ast::StructDecl&>(*decl);
+
+    // Direct fields first (an embed shadowed by a direct field — unlikely
+    // but the §6 read is that names resolve outward, with the immediate
+    // owner winning).
+    for (const auto& f : s.fields) {
+        if (f.name == name && f.kind != ast::StructDecl::Field::Kind::Embed) {
+            if (out_field != nullptr) {
+                *out_field = &f;
+            }
+            return f.type ? resolve_type(*f.type) : types_->error();
+        }
+    }
+    // Then recurse through `embed` fields so `entity.position` resolves to
+    // `entity.transform.position` per §6.
+    for (const auto& f : s.fields) {
+        if (f.kind == ast::StructDecl::Field::Kind::Embed && f.type) {
+            auto embed_type = resolve_type(*f.type);
+            if (auto t = lookup_field(embed_type, name, out_field)) {
+                return t;
+            }
+        }
+    }
+    return nullptr;
+}
+
+TypePtr Resolver::lookup_method(TypePtr owner_type,
+                                std::string_view name,
+                                const ast::FuncDecl** out_method) {
+    if (owner_type == nullptr) {
+        return nullptr;
+    }
+    const auto* decl = owner_type->nominal_decl();
+    if (decl == nullptr) {
+        return nullptr;
+    }
+
+    auto search = [&](const std::vector<ast::DeclPtr>& methods) -> TypePtr {
+        for (const auto& m : methods) {
+            if (m->kind != ast::NodeKind::Func) {
+                continue;
+            }
+            const auto& f = static_cast<const ast::FuncDecl&>(*m);
+            if (f.name == name) {
+                if (out_method != nullptr) {
+                    *out_method = &f;
+                }
+                return function_type_of(f);
+            }
+        }
+        return nullptr;
+    };
+
+    switch (decl->kind) {
+    case ast::NodeKind::Struct:
+        if (auto t = search(static_cast<const ast::StructDecl&>(*decl).methods)) {
+            return t;
+        }
+        // Walk embeds: a method on the embedded struct surfaces too (§6).
+        for (const auto& f : static_cast<const ast::StructDecl&>(*decl).fields) {
+            if (f.kind == ast::StructDecl::Field::Kind::Embed && f.type) {
+                auto embed_type = resolve_type(*f.type);
+                if (auto t = lookup_method(embed_type, name, out_method)) {
+                    return t;
+                }
+            }
+        }
+        return nullptr;
+    case ast::NodeKind::Enum:
+        return search(static_cast<const ast::EnumDecl&>(*decl).methods);
+    default:
+        return nullptr;
+    }
+}
+
+const ast::EnumDecl::Case* Resolver::lookup_enum_case(const ast::EnumDecl& e,
+                                                      std::string_view name) {
+    for (const auto& c : e.cases) {
+        if (c.name == name) {
+            return &c;
+        }
+    }
+    return nullptr;
+}
+
+TypePtr Resolver::enum_case_constructor_type(TypePtr enum_type, const ast::EnumDecl::Case& c) {
+    if (c.payload.empty()) {
+        return enum_type;  // bare case is a value of the enum
+    }
+    std::vector<TypePtr> params;
+    params.reserve(c.payload.size());
+    for (const auto& p : c.payload) {
+        params.push_back(p.second ? resolve_type(*p.second) : types_->error());
+    }
+    return types_->make_function(std::move(params), enum_type);
+}
+
+TypePtr Resolver::check_member(const ast::MemberExpr& m) {
+    // If the base is an IdentExpr resolving to a Type symbol (Struct/Enum/...),
+    // member access is a static lookup (currently: enum case construction).
+    if (m.base->kind == ast::NodeKind::IdentExpr) {
+        const auto& ident = static_cast<const ast::IdentExpr&>(*m.base);
+        if (auto* sym = scopes_.current().lookup(ident.name)) {
+            if (sym->kind == SymbolKind::Enum && sym->decl != nullptr) {
+                resolution_.set_symbol(m.base.get(), sym);
+                check_visibility(*sym, m.base->range);
+                const auto& enum_decl = static_cast<const ast::EnumDecl&>(*sym->decl);
+                if (const auto* c = lookup_enum_case(enum_decl, m.member)) {
+                    auto t = enum_case_constructor_type(sym->type, *c);
+                    return t;
+                }
+                error_at(m.range,
+                         std::format("enum '{}' has no case '{}'", enum_decl.name, m.member));
+                return types_->error();
+            }
+        }
+    }
+
+    auto base_type = check_expr(*m.base);
+    if (base_type == nullptr || base_type->is_error()) {
+        return types_->error();
+    }
+
+    // Field on a struct.
+    if (auto field_type = lookup_field(base_type, m.member)) {
+        return field_type;
+    }
+    // Method on a struct/enum.
+    if (auto method_type = lookup_method(base_type, m.member)) {
+        return method_type;
+    }
+    error_at(m.range,
+             std::format("no field or method '{}' on type {}", m.member, base_type->describe()));
+    return types_->error();
+}
+
+TypePtr Resolver::check_leading_dot(const ast::LeadingDotExpr& d, TypePtr expected) {
+    // `.foo` only makes sense when there is a contextual type that can resolve
+    // the case. Today that's an enum; in the future Optional (`.none`/`.some`)
+    // would benefit too — both via the same hook.
+    if (expected == nullptr || expected->kind() != TypeKind::Enum
+        || expected->nominal_decl() == nullptr) {
+        error_at(d.range, std::format("'.{}' has no contextual type to resolve against", d.name));
+        return types_->error();
+    }
+    const auto& enum_decl = static_cast<const ast::EnumDecl&>(*expected->nominal_decl());
+    if (const auto* c = lookup_enum_case(enum_decl, d.name)) {
+        return enum_case_constructor_type(expected, *c);
+    }
+    error_at(d.range, std::format("enum '{}' has no case '{}'", enum_decl.name, d.name));
+    return types_->error();
+}
+
+TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
+    auto scrutinee_type = check_expr(*m.scrutinee);
+
+    // Track which enum cases got covered for the exhaustiveness check.
+    const ast::EnumDecl* scrutinee_enum = nullptr;
+    if (scrutinee_type != nullptr && scrutinee_type->kind() == TypeKind::Enum
+        && scrutinee_type->nominal_decl() != nullptr) {
+        scrutinee_enum = &static_cast<const ast::EnumDecl&>(*scrutinee_type->nominal_decl());
+    }
+    std::vector<bool> case_seen(scrutinee_enum ? scrutinee_enum->cases.size() : 0, false);
+    bool saw_default = false;
+
+    TypePtr result_type = nullptr;
+    for (const auto& arm : m.arms) {
+        ScopeStack::Guard g(scopes_);
+        if (arm.is_default) {
+            saw_default = true;
+        } else if (arm.pattern) {
+            check_pattern(*arm.pattern, scrutinee_type);
+            if (scrutinee_enum != nullptr && arm.pattern->kind == ast::NodeKind::EnumPat) {
+                const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
+                for (std::size_t i = 0; i < scrutinee_enum->cases.size(); ++i) {
+                    if (scrutinee_enum->cases[i].name == ep.case_name) {
+                        case_seen[i] = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (arm.guard) {
+            auto gt = check_expr(*arm.guard, types_->boolean());
+            if (gt != nullptr && gt->kind() != TypeKind::Bool && !gt->is_error()) {
+                error_at(arm.guard->range,
+                         std::format("match guard must be Bool, got {}", gt->describe()));
+            }
+        }
+        TypePtr arm_type = arm.body ? check_expr(*arm.body, expected) : types_->unit();
+        if (result_type == nullptr) {
+            result_type = arm_type;
+        } else if (arm_type != nullptr && !arm_type->is_never() && !result_type->is_never()
+                   && !TypeArena::equal(arm_type, result_type)) {
+            error_at(arm.body ? arm.body->range : m.range,
+                     std::format("match arms have different types: {} vs {}",
+                                 result_type->describe(),
+                                 arm_type->describe()));
+            result_type = types_->error();
+        }
+    }
+
+    // Exhaustiveness: when the scrutinee is an enum and there's no `default`,
+    // every case must be covered by at least one arm.
+    if (scrutinee_enum != nullptr && !saw_default) {
+        for (std::size_t i = 0; i < scrutinee_enum->cases.size(); ++i) {
+            if (!case_seen[i]) {
+                error_at(m.range,
+                         std::format("match is not exhaustive: case '{}' is not covered",
+                                     scrutinee_enum->cases[i].name));
+            }
+        }
+    }
+
+    return result_type != nullptr ? result_type : types_->unit();
+}
+
+void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
+    switch (p.kind) {
+    case ast::NodeKind::WildcardPat:
+    case ast::NodeKind::LiteralPat:
+        break;
+    case ast::NodeKind::IdentPat: {
+        // Plain identifier patterns match by name; in match-arm position we
+        // treat them as a binding to the scrutinee's type.
+        const auto& ip = static_cast<const ast::IdentPat&>(p);
+        Symbol sym;
+        sym.name = ip.name;
+        sym.kind = SymbolKind::Local;
+        sym.type = scrutinee;
+        sym.definition_range = p.range;
+        (void)scopes_.current().insert(std::move(sym));
+        break;
+    }
+    case ast::NodeKind::BindPat: {
+        const auto& bp = static_cast<const ast::BindPat&>(p);
+        Symbol sym;
+        sym.name = bp.name;
+        sym.kind = SymbolKind::Local;
+        sym.type = scrutinee;
+        sym.definition_range = p.range;
+        (void)scopes_.current().insert(std::move(sym));
+        break;
+    }
+    case ast::NodeKind::EnumPat: {
+        const auto& ep = static_cast<const ast::EnumPat&>(p);
+        if (scrutinee == nullptr || scrutinee->kind() != TypeKind::Enum
+            || scrutinee->nominal_decl() == nullptr) {
+            error_at(p.range,
+                     std::format("enum pattern '.{}' used against non-enum type {}",
+                                 ep.case_name,
+                                 scrutinee ? scrutinee->describe() : "?"));
+            return;
+        }
+        const auto& enum_decl = static_cast<const ast::EnumDecl&>(*scrutinee->nominal_decl());
+        const auto* c = lookup_enum_case(enum_decl, ep.case_name);
+        if (c == nullptr) {
+            error_at(p.range,
+                     std::format("enum '{}' has no case '{}'", enum_decl.name, ep.case_name));
+            return;
+        }
+        if (ep.children.size() != c->payload.size()) {
+            error_at(p.range,
+                     std::format("case '{}' has {} payload field(s), pattern binds {}",
+                                 c->name,
+                                 c->payload.size(),
+                                 ep.children.size()));
+            return;
+        }
+        for (std::size_t i = 0; i < ep.children.size(); ++i) {
+            TypePtr payload_type =
+                c->payload[i].second ? resolve_type(*c->payload[i].second) : types_->error();
+            check_pattern(*ep.children[i], payload_type);
+        }
+        break;
+    }
+    default:
+        // Tuple/struct/slice patterns: not yet typed against `scrutinee`.
+        break;
+    }
+}
+
+void Resolver::check_visibility(const Symbol& sym, diag::SourceRange use_range) {
+    // For v0.5 we only enforce `private`. Internal/package/public collapse to
+    // the same thing inside a single compilation unit. The simple rule: a
+    // `private` symbol is reachable only within its declaring scope chain —
+    // and right now every top-level decl lives in the global scope, so all a
+    // `private` decl can do is hide from… nobody. We still emit the check so
+    // the wiring is in place; tighten it once we have nested scopes that
+    // *aren't* the inside of a function body (e.g., struct member scopes).
+    if (sym.visibility != ast::Visibility::Private) {
+        return;
+    }
+    // Conservative: we don't yet model "the scope that owns sym", so we never
+    // reject. This branch is the hook for the eventual real check; tested by
+    // a TODO test in tests/sema/resolver_test.cpp.
+    (void)use_range;
 }
 
 }  // namespace vestra::sema

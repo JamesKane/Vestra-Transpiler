@@ -1,0 +1,30 @@
+module examples.shapes
+
+struct Point {
+    var x: Int32
+    var y: Int32
+}
+
+enum Color {
+    case red
+    case green
+    case blue
+}
+
+func channel(_ c: Color) -> Int32 {
+    return match c {
+        case .red:   1
+        case .green: 2
+        case .blue:  3
+    }
+}
+
+func sum_xy(_ p: Point) -> Int32 {
+    return p.x + p.y
+}
+
+func compute() -> Int32 {
+    let p = Point(x: 10, y: 32)
+    let total: Int32 = sum_xy(p) + channel(Color.green)
+    return total
+}

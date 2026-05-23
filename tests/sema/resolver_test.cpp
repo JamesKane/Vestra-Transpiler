@@ -165,3 +165,108 @@ TEST_CASE("unknown type in an annotation is reported") {
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("unknown type 'NoSuchType'") != std::string::npos);
 }
+
+// ---- Member access ----------------------------------------------------------
+
+TEST_CASE("struct field access types correctly") {
+    CHECK(check_errors("struct Point { var x: Int32; var y: Int32 }\n"
+                       "func sum(_ p: Point) -> Int32 { return p.x + p.y }\n")
+          == 0);
+}
+
+TEST_CASE("unknown field on a struct is reported") {
+    auto r = check_detail("struct Point { var x: Int32 }\n"
+                          "func bad(_ p: Point) -> Int32 { return p.zzz }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("no field or method 'zzz'") != std::string::npos);
+}
+
+TEST_CASE("embed flattens fields into the enclosing struct") {
+    CHECK(check_errors("struct Inner { var v: Int32 }\n"
+                       "struct Outer { embed inner: Inner; var w: Int32 }\n"
+                       "func sum(_ o: Outer) -> Int32 { return o.v + o.w }\n")
+          == 0);
+}
+
+// ---- Struct construction ----------------------------------------------------
+
+TEST_CASE("struct construction with labeled fields") {
+    CHECK(check_errors("struct Point { var x: Int32; var y: Int32 }\n"
+                       "func make() -> Point { return Point(x: 1, y: 2) }\n")
+          == 0);
+}
+
+TEST_CASE("struct construction missing a field is reported") {
+    auto r = check_detail("struct Point { var x: Int32; var y: Int32 }\n"
+                          "func bad() -> Point { return Point(x: 1) }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("missing field 'y'") != std::string::npos);
+}
+
+TEST_CASE("struct construction with the wrong field name is reported") {
+    auto r = check_detail("struct Point { var x: Int32; var y: Int32 }\n"
+                          "func bad() -> Point { return Point(x: 1, z: 2) }\n");
+    CHECK(r.error_count >= 1);
+}
+
+// ---- Enum case construction -------------------------------------------------
+
+TEST_CASE("enum case construction via Color.red") {
+    CHECK(check_errors("enum Color { case red; case green; case blue }\n"
+                       "func ok() -> Color { return Color.red }\n")
+          == 0);
+}
+
+TEST_CASE("leading-dot enum case resolves against expected type") {
+    CHECK(check_errors("enum Color { case red; case green; case blue }\n"
+                       "func ok() -> Color { return .green }\n")
+          == 0);
+}
+
+TEST_CASE("unknown enum case is reported") {
+    auto r = check_detail("enum Color { case red; case green }\n"
+                          "func bad() -> Color { return Color.purple }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("no case 'purple'") != std::string::npos);
+}
+
+TEST_CASE("leading-dot without expected enum is reported") {
+    auto r = check_detail("func bad() -> Int { return .red }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("no contextual type") != std::string::npos);
+}
+
+// ---- Match ------------------------------------------------------------------
+
+TEST_CASE("match over a bare enum is well-formed when exhaustive") {
+    CHECK(check_errors("enum Color { case red; case green; case blue }\n"
+                       "func channel(_ c: Color) -> Int32 {\n"
+                       "    return match c { case .red: 1 case .green: 2 case .blue: 3 }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("non-exhaustive match over an enum is reported") {
+    auto r = check_detail("enum Color { case red; case green; case blue }\n"
+                          "func bad(_ c: Color) -> Int32 {\n"
+                          "    return match c { case .red: 1 case .green: 2 }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("not exhaustive") != std::string::npos);
+}
+
+TEST_CASE("match with a default arm avoids the exhaustiveness check") {
+    CHECK(check_errors("enum Color { case red; case green; case blue }\n"
+                       "func ok(_ c: Color) -> Int32 {\n"
+                       "    return match c { case .red: 1 default: 0 }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("match arms with mismatched result types are reported") {
+    auto r = check_detail("enum Color { case red; case green }\n"
+                          "func bad(_ c: Color) -> Bool {\n"
+                          "    return match c { case .red: true case .green: 1 }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+}

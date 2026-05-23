@@ -45,10 +45,14 @@ Scope& ScopeStack::push() {
 }
 
 void ScopeStack::pop() {
-    assert(scopes_.size() > 1 && "cannot pop the global scope");
-    auto* gone = scopes_.back().get();
-    active_ = gone->parent();
-    scopes_.pop_back();
+    // We intentionally do NOT destroy the popped scope. Symbols inserted into
+    // a scope are referenced by pointer from the Resolution side table — and
+    // codegen, which runs after sema, follows those pointers. Keeping every
+    // scope alive for the ScopeStack's lifetime is the simplest way to make
+    // those pointers stable; the memory cost is bounded by the source's total
+    // nesting (small in practice).
+    assert(active_ != nullptr && active_->parent() != nullptr && "cannot pop the global scope");
+    active_ = active_->parent();
 }
 
 }  // namespace vestra::sema

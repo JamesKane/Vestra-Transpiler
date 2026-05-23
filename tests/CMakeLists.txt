@@ -54,3 +54,27 @@ add_test(
 set_tests_properties(e2e_hello_run PROPERTIES
     DEPENDS                e2e_hello_compile
     PASS_REGULAR_EXPRESSION "compute\\(\\) = 1774")
+
+# Shapes: exercises structs + member access + bare enum + match.
+set(e2e_shapes_input  ${CMAKE_SOURCE_DIR}/examples/shapes.vst)
+set(e2e_shapes_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_shapes.cpp)
+
+add_test(
+    NAME    e2e_shapes_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_shapes_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_shapes_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++23 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_shapes_driver} ${e2e_workdir}/shapes.cpp
+            -o ${e2e_workdir}/shapes_app)
+set_tests_properties(e2e_shapes_compile PROPERTIES DEPENDS e2e_shapes_transpile)
+
+add_test(
+    NAME    e2e_shapes_run
+    COMMAND ${e2e_workdir}/shapes_app)
+set_tests_properties(e2e_shapes_run PROPERTIES
+    DEPENDS                e2e_shapes_compile
+    PASS_REGULAR_EXPRESSION "compute\\(\\) = 44")

@@ -156,16 +156,27 @@ Available on demand:
   scope chain over the global namespace + function/block scopes; reports
   undefined names, duplicate definitions, type mismatches, wrong arg counts,
   bad operator operands. Bidirectional checking lets integer/float literals
-  adopt annotated types (`let x: Int32 = 42` works). `vestra check` runs sema
-  alone; `vestra build` refuses to emit C++ if sema reports errors
-  (override with `--skip-check`).
+  adopt annotated types (`let x: Int32 = 42` works). Member access types
+  struct fields (with `embed` flattening per §6); struct construction
+  (`Point(x: 1, y: 2)`) checks labels + missing fields; enum case
+  construction (`Color.red` and leading-dot `.red` against expected type);
+  match arm typing with exhaustiveness checking for enum scrutinees;
+  visibility plumbing in place (private/internal/package/public on every
+  Symbol). `vestra check` runs sema alone; `vestra build` refuses to emit
+  C++ if sema reports errors (override with `--skip-check`).
 - **C++ emitter** — funcs (parameter modes → const&/&/&&), primitives →
-  `<cstdint>` aliases, modules → nested namespaces, structs → structs, bare enums
-  → `enum class`, payloaded enums → `std::variant` wrappers, let/var, while, for,
-  binary/unary ops, calls.
-- **End-to-end** — `vestra build examples/hello.vst` parses, checks, and
-  produces `.hpp/.cpp` that compiles and runs (verified by the `e2e_hello_*`
-  CTest cases).
+  `<cstdint>` aliases, modules → nested namespaces, structs → structs +
+  designated-initializer construction, bare enums → `enum class`, payloaded
+  enums → `std::variant` wrappers, let/var, while, for, binary/unary ops,
+  calls, member access, `Enum::case` lowering for both `Color.red` and
+  leading-dot `.red`, and `match` over bare enums as a `switch` inside an
+  IIFE. The emitter consumes the resolver's side table when available, so
+  context-sensitive lowering (struct vs function call, enum case spelling,
+  match scrutinee type) is correct.
+- **End-to-end** — `vestra build examples/hello.vst` and
+  `vestra build examples/shapes.vst` both parse, check, and produce
+  `.hpp/.cpp` that compiles and runs (verified by the `e2e_hello_*` and
+  `e2e_shapes_*` CTest cases).
 
 ## Roadmap
 
@@ -173,10 +184,12 @@ What's **deliberately stubbed** today, in roughly the order I'd tackle them:
 
 1. ~~**Name resolution + scope tracking**~~ — **done** in v0.5
    (`include/vestra/sema/`).
-2. ~~**Type checking**~~ — **partially done** in v0.5: arg/return/operator
-   typing with bidirectional inference for literals. Still missing: member
-   access typing on structs, enum case construction, generic instantiation,
-   match exhaustiveness, visibility enforcement, definite-assignment proper.
+2. ~~**Type checking**~~ — **mostly done** as of this iteration: arg/return/
+   operator typing with bidirectional inference, member access (including
+   `embed`), struct construction, enum case construction, match
+   exhaustiveness. Still missing: generic instantiation, full visibility
+   enforcement (the hook is in place; needs richer "owning scope" tracking),
+   protocol conformance verification.
 3. **Ownership / move tracking** (§5, §19.2) — the affine/linear discipline,
    `copy` vs. implicit copy, use-after-move diagnostics.
 4. **Law of Exclusivity** checker (§5, §19.3) — overlap analysis on `inout`

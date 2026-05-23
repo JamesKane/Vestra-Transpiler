@@ -2,6 +2,7 @@
 
 #include "vestra/ast/nodes.hpp"
 #include "vestra/diag/diagnostic.hpp"
+#include "vestra/sema/resolver.hpp"
 
 #include <iosfwd>
 #include <string>
@@ -24,7 +25,13 @@ struct EmittedUnit {
 // the gap is visible in both the build and the compiler log.
 class CppEmitter {
 public:
-    explicit CppEmitter(diag::DiagnosticReporter& reporter) : reporter_(&reporter) {}
+    // `resolution` is optional — when null, the emitter falls back to its
+    // resolver-free behaviour (and so e.g. enum case access via `Color.red`
+    // is emitted naively). When supplied, enum cases, member access, and
+    // match scrutinees lower correctly.
+    explicit CppEmitter(diag::DiagnosticReporter& reporter,
+                        const sema::Resolution* resolution = nullptr)
+        : reporter_(&reporter), resolution_(resolution) {}
 
     [[nodiscard]] EmittedUnit emit(const ast::CompilationUnit& unit,
                                    std::string_view output_basename);
@@ -38,6 +45,7 @@ private:
     void emit_block(std::ostream& os, const ast::BlockExpr& b, int indent);
     void emit_stmt(std::ostream& os, const ast::Stmt& s, int indent);
     void emit_expr(std::ostream& os, const ast::Expr& e);
+    void emit_match(std::ostream& os, const ast::MatchExpr& m);
     void emit_type(std::ostream& os, const ast::Type& t);
 
     void unsupported(std::ostream& os, std::string_view what, diag::SourceRange r);
@@ -46,6 +54,7 @@ private:
     static const char* unop_text(ast::UnaryOp op);
 
     diag::DiagnosticReporter* reporter_;
+    const sema::Resolution* resolution_ = nullptr;
 };
 
 }  // namespace vestra::codegen

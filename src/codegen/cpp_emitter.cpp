@@ -555,6 +555,27 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     }
     case ast::NodeKind::CallExpr: {
         const auto& c = static_cast<const ast::CallExpr&>(e);
+        // Struct construction: if sema typed the call expression as a struct
+        // nominal, emit a C++ designated-initializer instead of a function call.
+        if (resolution_ != nullptr) {
+            auto t = resolution_->type_of(&e);
+            if (t != nullptr && t->kind() == sema::TypeKind::Struct
+                && t->nominal_decl() != nullptr) {
+                const auto& s_decl = static_cast<const ast::StructDecl&>(*t->nominal_decl());
+                os << s_decl.name << "{";
+                for (std::size_t i = 0; i < c.args.size(); ++i) {
+                    if (i != 0) {
+                        os << ", ";
+                    }
+                    if (!c.args[i].label.empty()) {
+                        os << "." << c.args[i].label << " = ";
+                    }
+                    emit_expr(os, *c.args[i].value);
+                }
+                os << "}";
+                break;
+            }
+        }
         emit_expr(os, *c.callee);
         os << "(";
         for (std::size_t i = 0; i < c.args.size(); ++i) {
@@ -568,10 +589,39 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     }
     case ast::NodeKind::MemberExpr: {
         const auto& m = static_cast<const ast::MemberExpr&>(e);
+        // If the base is an identifier the resolver bound to an Enum decl,
+        // this is a static enum case access (`Color.red`) — emit `Color::red`.
+        if (resolution_ != nullptr && m.base->kind == ast::NodeKind::IdentExpr) {
+            const auto* base_sym = resolution_->symbol_of(m.base.get());
+            if (base_sym != nullptr && base_sym->kind == sema::SymbolKind::Enum
+                && base_sym->decl != nullptr) {
+                const auto& enum_decl = static_cast<const ast::EnumDecl&>(*base_sym->decl);
+                os << enum_decl.name << "::" << m.member;
+                break;
+            }
+        }
         emit_expr(os, *m.base);
         os << "." << m.member;
         break;
     }
+    case ast::NodeKind::LeadingDotExpr: {
+        const auto& d = static_cast<const ast::LeadingDotExpr&>(e);
+        // `.red` — resolved by the sema layer; its expression-type is the
+        // enum. We need the enum's name to emit `Enum::red`.
+        if (resolution_ != nullptr) {
+            auto t = resolution_->type_of(&e);
+            if (t != nullptr && t->kind() == sema::TypeKind::Enum && t->nominal_decl() != nullptr) {
+                const auto& enum_decl = static_cast<const ast::EnumDecl&>(*t->nominal_decl());
+                os << enum_decl.name << "::" << d.name;
+                break;
+            }
+        }
+        unsupported(os, "leading-dot expression without resolved context", e.range);
+        break;
+    }
+    case ast::NodeKind::MatchExpr:
+        emit_match(os, static_cast<const ast::MatchExpr&>(e));
+        break;
     case ast::NodeKind::IfExpr: {
         const auto& i = static_cast<const ast::IfExpr&>(e);
         // We can't always lower if-expressions; this works for a statement
@@ -677,6 +727,55 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
         os << "/*type*/auto";
         break;
     }
+}
+
+// ============================================================================
+// match — bare enums lower to a switch over the matching enum class.
+// ============================================================================
+
+void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
+    // We need sema's findings to know what the scrutinee is. Without them we
+    // can't tell which `Enum::case` to write per arm.
+    if (resolution_ == nullptr) {
+        unsupported(os, "match expression without resolved scrutinee", m.range);
+        return;
+    }
+    auto scrutinee_type = resolution_->type_of(m.scrutinee.get());
+    if (scrutinee_type == nullptr || scrutinee_type->kind() != sema::TypeKind::Enum
+        || scrutinee_type->nominal_decl() == nullptr) {
+        unsupported(os, "match over non-enum scrutinee", m.range);
+        return;
+    }
+    const auto& enum_decl = static_cast<const ast::EnumDecl&>(*scrutinee_type->nominal_decl());
+
+    // A payloaded enum lowers to std::visit — out of scope for now.
+    for (const auto& c : enum_decl.cases) {
+        if (!c.payload.empty()) {
+            unsupported(os, "match over payloaded enum", m.range);
+            return;
+        }
+    }
+
+    // Lower the whole expression as an IIFE returning a switch's value through
+    // a tail `return`.
+    os << "[&]{ switch (";
+    emit_expr(os, *m.scrutinee);
+    os << ") {\n";
+    for (const auto& arm : m.arms) {
+        if (arm.is_default) {
+            os << "        default: return ";
+        } else if (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::EnumPat) {
+            const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
+            os << "        case " << enum_decl.name << "::" << ep.case_name << ": return ";
+        } else {
+            unsupported(os, "match arm pattern", m.range);
+            os << ";\n";
+            continue;
+        }
+        emit_expr(os, *arm.body);
+        os << ";\n";
+    }
+    os << "    } }()";
 }
 
 }  // namespace vestra::codegen

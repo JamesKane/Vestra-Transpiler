@@ -69,13 +69,49 @@ private:
     TypePtr check_expr(const ast::Expr& e, TypePtr expected = nullptr);
     TypePtr check_binary(const ast::BinaryExpr& b, TypePtr expected);
     TypePtr check_unary(const ast::UnaryExpr& u, TypePtr expected);
-    TypePtr check_call(const ast::CallExpr& c);
+    TypePtr check_call(const ast::CallExpr& c, TypePtr expected = nullptr);
     TypePtr check_if(const ast::IfExpr& i, TypePtr expected);
+    TypePtr check_match(const ast::MatchExpr& m, TypePtr expected);
     TypePtr check_block_expr(const ast::BlockExpr& b, TypePtr expected);
+    TypePtr check_member(const ast::MemberExpr& m);
+    TypePtr check_leading_dot(const ast::LeadingDotExpr& d, TypePtr expected);
 
     // Resolve an `ast::Type` node into a `sema::TypePtr`.
     TypePtr resolve_type(const ast::Type& t);
     TypePtr resolve_type_opt(const ast::Type* t, TypePtr fallback);
+
+    // ---- struct / enum lookup helpers ------------------------------------
+
+    // Look up a field by name on the struct type. Walks `embed` fields
+    // recursively per §6 so embedded fields surface in the enclosing
+    // namespace. `out_field` is populated with the resolved AST field when
+    // the lookup succeeds. Returns nullptr if the field is not found.
+    [[nodiscard]] TypePtr lookup_field(TypePtr struct_type,
+                                       std::string_view name,
+                                       const ast::StructDecl::Field** out_field = nullptr);
+
+    // Look up a method by name on a struct/enum type. Returns the method's
+    // full function type. `out_method` is set to the resolved FuncDecl.
+    [[nodiscard]] TypePtr lookup_method(TypePtr owner_type,
+                                        std::string_view name,
+                                        const ast::FuncDecl** out_method = nullptr);
+
+    // Find an enum case by name on the given enum decl.
+    [[nodiscard]] const ast::EnumDecl::Case* lookup_enum_case(const ast::EnumDecl& e,
+                                                              std::string_view name);
+
+    // The constructor type for an enum case: the nominal enum for a bare
+    // case, or a function (T1, T2, ...) -> Enum for a payload case.
+    [[nodiscard]] TypePtr enum_case_constructor_type(TypePtr enum_type,
+                                                     const ast::EnumDecl::Case& c);
+
+    // Pattern-typing for match arms. `scrutinee` is the type the arm sees.
+    // Binds any `let`-pattern names into the current scope.
+    void check_pattern(const ast::Pattern& p, TypePtr scrutinee);
+
+    // Visibility check: report if `sym` is referenced from outside its
+    // declaring scope when its visibility forbids it.
+    void check_visibility(const Symbol& sym, diag::SourceRange use_range);
 
     // ---- helpers ---------------------------------------------------------
     void error_at(diag::SourceRange r, std::string msg);
