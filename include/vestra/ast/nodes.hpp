@@ -74,6 +74,7 @@ enum class NodeKind : std::uint16_t {
     BlockExpr,
     ComptimeExpr,
     EmbedExpr,
+    InterpStringExpr,
     QuoteExpr,
     TryExpr,
     AwaitExpr,
@@ -427,6 +428,21 @@ struct ComptimeExpr : Expr {
 struct EmbedExpr : Expr {
     std::string path;
     EmbedExpr() : Expr(NodeKind::EmbedExpr) {}
+};
+// `"hello \(name), age \(age + 1)"` — §4 string interpolation. The
+// lexer splits the source into alternating literal fragments and
+// splice expressions; this node carries them in source order. A
+// segment with `expr == nullptr` is a literal fragment whose
+// (still-raw, backslash-escapes-not-yet-processed) bytes live in
+// `literal`; a segment with `expr != nullptr` is a splice that
+// gets rendered via the `Display` protocol (§4) at runtime.
+struct InterpStringExpr : Expr {
+    struct Segment {
+        std::string literal;  // raw bytes, valid when expr == nullptr
+        ExprPtr expr;         // a splice, valid when literal.empty()
+    };
+    std::vector<Segment> segments;
+    InterpStringExpr() : Expr(NodeKind::InterpStringExpr) {}
 };
 struct QuoteExpr : Expr {
     ExprPtr inner;

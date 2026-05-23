@@ -1328,6 +1328,38 @@ ast::ExprPtr Parser::parse_primary() {
         s->range = merge(start, last_range());
         return s;
     }
+    case TokenKind::InterpStringBegin: {
+        // §4 interpolated string: lexer emitted
+        //   InterpStringBegin (InterpStringPart | LParen <expr> RParen)* InterpStringEnd
+        // Walk the sequence, alternating between literal fragments and
+        // splice expressions, until we see InterpStringEnd.
+        advance();  // consume InterpStringBegin
+        auto node = std::make_unique<ast::InterpStringExpr>();
+        while (!check(TokenKind::InterpStringEnd) && !at_end()) {
+            if (check(TokenKind::InterpStringPart)) {
+                auto frag = advance();
+                ast::InterpStringExpr::Segment seg;
+                seg.literal = std::string{frag.lexeme};
+                node->segments.push_back(std::move(seg));
+            } else if (check(TokenKind::LParen)) {
+                advance();  // '('
+                ast::InterpStringExpr::Segment seg;
+                seg.expr = parse_expr();
+                expect(TokenKind::RParen, "')' closing string interpolation splice");
+                node->segments.push_back(std::move(seg));
+            } else {
+                emit_error(peek().range,
+                           std::format("unexpected {} inside interpolated string literal",
+                                       lex::spelling(peek().kind)));
+                advance();
+            }
+        }
+        if (check(TokenKind::InterpStringEnd)) {
+            advance();
+        }
+        node->range = merge(start, last_range());
+        return node;
+    }
     case TokenKind::ByteStringLit: {
         auto s = std::make_unique<ast::ByteStringLit>();
         auto t = advance();

@@ -263,3 +263,29 @@ add_test(
 set_tests_properties(e2e_embed_run PROPERTIES
     DEPENDS                e2e_embed_compile
     PASS_REGULAR_EXPRESSION "checksum\\(\\) = 1128")
+
+# Interpolation: §4 `"text \(expr) text"` lowers to std::format. The
+# runtime compares the rendered strings byte-for-byte against expected
+# values and prints "interpolation OK" only on full match.
+set(e2e_interp_input  ${CMAKE_SOURCE_DIR}/examples/interpolation.vst)
+set(e2e_interp_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_interpolation.cpp)
+
+add_test(
+    NAME    e2e_interpolation_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interp_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interpolation_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_interp_driver} ${e2e_workdir}/interpolation.cpp
+            -o ${e2e_workdir}/interpolation_app)
+set_tests_properties(e2e_interpolation_compile PROPERTIES DEPENDS e2e_interpolation_transpile)
+
+add_test(
+    NAME    e2e_interpolation_run
+    COMMAND ${e2e_workdir}/interpolation_app)
+set_tests_properties(e2e_interpolation_run PROPERTIES
+    DEPENDS                e2e_interpolation_compile
+    PASS_REGULAR_EXPRESSION "interpolation OK")

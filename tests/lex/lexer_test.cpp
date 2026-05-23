@@ -105,3 +105,71 @@ TEST_CASE("newlines inside brackets do not terminate statements") {
     }
     CHECK(newline_count == 1);
 }
+
+// ---- §4 string interpolation ---------------------------------------------
+
+TEST_CASE("plain strings still lex as a single StringLit token") {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto toks = lex_text(sm, rep, "\"hello world\"");
+    REQUIRE(toks.size() >= 1);
+    CHECK(toks[0].kind == vestra::lex::TokenKind::StringLit);
+    CHECK_FALSE(rep.has_errors());
+}
+
+TEST_CASE("interpolated strings split into Begin/Part/(splice)/Part/End") {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto toks = lex_text(sm, rep, "\"a \\(x) b\"");
+    REQUIRE_FALSE(rep.has_errors());
+    // Begin, Part("a "), LParen, Identifier(x), RParen, Part(" b"), End, Eof
+    REQUIRE(toks.size() == 8);
+    CHECK(toks[0].kind == vestra::lex::TokenKind::InterpStringBegin);
+    CHECK(toks[1].kind == vestra::lex::TokenKind::InterpStringPart);
+    CHECK(toks[1].lexeme == "a ");
+    CHECK(toks[2].kind == vestra::lex::TokenKind::LParen);
+    CHECK(toks[3].kind == vestra::lex::TokenKind::Identifier);
+    CHECK(toks[3].lexeme == "x");
+    CHECK(toks[4].kind == vestra::lex::TokenKind::RParen);
+    CHECK(toks[5].kind == vestra::lex::TokenKind::InterpStringPart);
+    CHECK(toks[5].lexeme == " b");
+    CHECK(toks[6].kind == vestra::lex::TokenKind::InterpStringEnd);
+}
+
+TEST_CASE("splice with inner parens balances correctly") {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto toks = lex_text(sm, rep, "\"v=\\((a+b)*2)\"");
+    REQUIRE_FALSE(rep.has_errors());
+    // Begin, Part("v="), LParen [splice], LParen, a, Plus, b, RParen, Star,
+    // IntLit(2), RParen [closes splice], Part(""), End, Eof
+    bool saw_inner_balanced = false;
+    int interp_parts = 0;
+    int interp_begins = 0;
+    int interp_ends = 0;
+    for (const auto& t : toks) {
+        if (t.kind == vestra::lex::TokenKind::InterpStringBegin) {
+            ++interp_begins;
+        } else if (t.kind == vestra::lex::TokenKind::InterpStringEnd) {
+            ++interp_ends;
+        } else if (t.kind == vestra::lex::TokenKind::InterpStringPart) {
+            ++interp_parts;
+            if (t.lexeme == "v=") {
+                saw_inner_balanced = true;
+            }
+        }
+    }
+    CHECK(interp_begins == 1);
+    CHECK(interp_ends == 1);
+    CHECK(interp_parts == 2);  // "v=" plus trailing ""
+    CHECK(saw_inner_balanced);
+}
+
+TEST_CASE("byte strings do not interpret \\( as a splice") {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto toks = lex_text(sm, rep, "b\"raw \\(text)\"");
+    REQUIRE_FALSE(rep.has_errors());
+    REQUIRE(toks.size() >= 1);
+    CHECK(toks[0].kind == vestra::lex::TokenKind::ByteStringLit);
+}

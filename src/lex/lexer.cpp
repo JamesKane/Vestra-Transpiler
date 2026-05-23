@@ -295,10 +295,46 @@ void Lexer::scan_identifier(std::vector<Token>& out, std::size_t start) {
 }
 
 void Lexer::scan_string(std::vector<Token>& out, std::size_t start, bool is_byte) {
-    // Interpolation splitting (`"x = \(value)"` → fragment + splice + fragment)
-    // is a known gap: we currently lex the whole literal as one StringLit and
-    // the parser treats it as a runtime String per §4. Add interpolation
-    // tokens here when string-interpolation lowering lands.
+    // §4 interpolation: a `"…\(expr)…"` literal lexes as a sequence
+    //   InterpStringBegin
+    //   InterpStringPart "…" LParen <splice tokens> RParen
+    //   InterpStringPart "…"
+    //   InterpStringEnd
+    // The `)` closing a splice is detected in the main loop (see the
+    // splice_depths_ check in the `)` handler) which then calls
+    // scan_interp_continue() to pick up the next fragment.
+    //
+    // Byte strings (b"…") don't support interpolation per §17.1, so we
+    // fall through to the original single-token form for those.
+    if (!is_byte) {
+        auto saved = pos_;
+        bool has_splice = false;
+        while (!at_end()) {
+            char c = peek();
+            if (c == '"' || c == '\n') {
+                break;
+            }
+            if (c == '\\') {
+                if (peek(1) == '(') {
+                    has_splice = true;
+                    break;
+                }
+                advance();
+                if (!at_end()) {
+                    advance();
+                }
+                continue;
+            }
+            advance();
+        }
+        pos_ = saved;
+        if (has_splice) {
+            emit(out, TokenKind::InterpStringBegin, start);
+            scan_interp_continue(out);
+            return;
+        }
+    }
+
     while (!at_end()) {
         char c = peek();
         if (c == '"') {
@@ -322,6 +358,58 @@ void Lexer::scan_string(std::vector<Token>& out, std::size_t start, bool is_byte
     }
     error_at({loc_at(pos_), 0}, "unterminated string literal at end of file");
     emit(out, TokenKind::Error, start);
+}
+
+void Lexer::scan_interp_continue(std::vector<Token>& out) {
+    // We're positioned just past either the opening `"` of an interpolated
+    // string or the closing `)` of a splice. Walk forward collecting a
+    // literal fragment, then either close out on `"` (emit final part +
+    // InterpStringEnd) or split on `\(` (emit part + LParen, push splice
+    // depth, return so the main loop drives the splice body).
+    std::size_t frag_start = pos_;
+    auto emit_part = [&](std::size_t frag_end) {
+        Token t;
+        t.kind = TokenKind::InterpStringPart;
+        t.range = {loc_at(frag_start), frag_end - frag_start};
+        t.lexeme = src_.substr(frag_start, frag_end - frag_start);
+        out.push_back(t);
+    };
+    while (!at_end()) {
+        char c = peek();
+        if (c == '"') {
+            emit_part(pos_);
+            std::size_t end_start = pos_;
+            advance();
+            emit(out, TokenKind::InterpStringEnd, end_start);
+            return;
+        }
+        if (c == '\\' && peek(1) == '(') {
+            emit_part(pos_);
+            std::size_t marker_start = pos_;
+            advance();  // '\\'
+            advance();  // '('
+            ++bracket_depth_;
+            splice_depths_.push_back(bracket_depth_);
+            emit(out, TokenKind::LParen, marker_start);
+            return;  // main loop runs the splice; `)` handler resumes us
+        }
+        if (c == '\\') {
+            advance();
+            if (!at_end()) {
+                advance();
+            }
+            continue;
+        }
+        if (c == '\n') {
+            error_at({loc_at(pos_), 1}, "unterminated interpolated string literal");
+            emit(out, TokenKind::Error, frag_start);
+            return;
+        }
+        advance();
+    }
+    error_at({loc_at(frag_start), pos_ - frag_start},
+             "unterminated interpolated string literal at end of file");
+    emit(out, TokenKind::Error, frag_start);
 }
 
 void Lexer::scan_char(std::vector<Token>& out, std::size_t start) {
@@ -362,6 +450,13 @@ std::vector<Token> Lexer::tokenize() {
         case ')':
             --bracket_depth_;
             emit(out, TokenKind::RParen, start);
+            // §4: a `)` whose decrement drops bracket_depth_ below the
+            // top of splice_depths_ closes a string-interpolation splice;
+            // re-enter string-fragment mode for the next part.
+            if (!splice_depths_.empty() && bracket_depth_ < splice_depths_.back()) {
+                splice_depths_.pop_back();
+                scan_interp_continue(out);
+            }
             break;
         case '[':
             ++bracket_depth_;

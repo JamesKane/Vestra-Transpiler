@@ -168,7 +168,9 @@ Available on demand:
 
 - **Lexer** — all §17.1 keywords and operators; numeric literals with underscores,
   hex/oct/binary/exponent; strings with escapes; byte strings; char literals;
-  nested block comments; newline-as-terminator with continuation rules.
+  §4 interpolated strings split into Begin/Part/(splice)/Part/End tokens with
+  splice paren depth tracked on a stack; nested block comments;
+  newline-as-terminator with continuation rules.
 - **Parser** — modules, imports, funcs (with generics, params, effects clause,
   result), structs, enums, protocols, extensions, opaque types, const/static,
   derive; statements (let/var/return/break/continue/while/for/assignment),
@@ -344,8 +346,16 @@ What's **deliberately stubbed** today, in roughly the order I'd tackle them:
    `constexpr std::array<std::uint8_t, N>`). Later phases:
    reflection (Type/Field), `derive` defaults, declaration macros
    (`quote`/`$splice`), and a content-hashed `@embed` manifest.
-8. **String interpolation lowering** (§4) — produce `Display::display(into:)`
-   calls into a `String` sink; the lexer already has the splitting hooks.
+8. ~~**String interpolation lowering**~~ (§4) — **phase 1 done**: the
+   lexer splits `"a \(x) b"` into Begin/Part/(splice)/Part/End tokens
+   (tracking splice paren depth on a stack so nested splices via inner
+   interpolated strings work); the parser produces an
+   `InterpStringExpr` with alternating literal and splice segments;
+   the resolver types it as `String`; the emitter lowers it to
+   `std::format("a {} b", x)` with `{`/`}` literals doubled to
+   survive std::format. Later phases add explicit `Display` protocol
+   conformance + `derive(Display)` defaults and the `using Alloc`
+   capability check the §4 spec requires.
 9. **`async` / `spawn` / `select` / `parallel` lowering** (§11) — currently
    parsed as expressions but emitted as `unsupported` comments.
 10. **SIMD `[N]T` lowering** (§13) — map to `std::experimental::simd` or

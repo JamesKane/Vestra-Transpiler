@@ -30,6 +30,12 @@ std::string_view spelling(TokenKind k) noexcept {
         return "character literal";
     case TokenKind::Identifier:
         return "identifier";
+    case TokenKind::InterpStringBegin:
+        return "<interp string begin>";
+    case TokenKind::InterpStringPart:
+        return "interp string fragment";
+    case TokenKind::InterpStringEnd:
+        return "<interp string end>";
     // punctuation
     case TokenKind::LParen:
         return "(";

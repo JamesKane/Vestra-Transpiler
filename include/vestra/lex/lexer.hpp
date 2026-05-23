@@ -61,6 +61,10 @@ private:
     void scan_number(std::vector<Token>& out, std::size_t start);
     void scan_identifier(std::vector<Token>& out, std::size_t start);
     void scan_string(std::vector<Token>& out, std::size_t start, bool is_byte);
+    // §4 interpolated string continuation: re-enters string-fragment mode
+    // after a splice's closing `)`. Emits InterpStringPart/InterpStringEnd
+    // tokens and, if it hits another `\(`, returns to splice mode.
+    void scan_interp_continue(std::vector<Token>& out);
     void scan_char(std::vector<Token>& out, std::size_t start);
 
     void error_at(diag::SourceRange r, std::string msg);
@@ -74,6 +78,14 @@ private:
     int bracket_depth_ = 0;           // depth of any of ( [ {
     bool prev_was_operator_ = false;  // tracks whether the most-recent emitted token
                                       // ends with a binary operator (§3 continuation)
+
+    // §4 string-interpolation splice stack. Each entry is the
+    // bracket_depth_ value *at the moment* a splice `\(` opened. A `)`
+    // that would drop bracket_depth_ below the top of this stack closes
+    // the splice and re-enters string-fragment mode. A stack (not a
+    // single int) so nested splices via inner interpolated strings
+    // (`"a\("b\(x)c")d"`) work.
+    std::vector<int> splice_depths_;
 };
 
 }  // namespace vestra::lex

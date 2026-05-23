@@ -711,6 +711,23 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
     case ast::NodeKind::MatchExpr:
         t = check_match(static_cast<const ast::MatchExpr&>(e), expected);
         break;
+    case ast::NodeKind::InterpStringExpr: {
+        // §4: a `"…\(expr)…"` literal is a freshly allocated String. The
+        // current phase types it that way and just type-checks each
+        // splice; the `Display` protocol conformance check and the
+        // `using Alloc` capability requirement are tracked as
+        // follow-ons (a runtime `std::format("{}", ...)` lowering
+        // accepts any C++-formattable scalar today, so practical use
+        // works for the primitives).
+        const auto& is_ = static_cast<const ast::InterpStringExpr&>(e);
+        for (const auto& seg : is_.segments) {
+            if (seg.expr != nullptr) {
+                (void)check_expr(*seg.expr);
+            }
+        }
+        t = types_->primitive(TypeKind::String);
+        break;
+    }
     case ast::NodeKind::EmbedExpr: {
         // §12.1 `@embed("path")` types as `[N]UInt8` where N is the file's
         // size at compile time. We ask the folder to read the file now;

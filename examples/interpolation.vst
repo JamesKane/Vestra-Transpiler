@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §4 string interpolation: `"text \(expr) text"` lowers to a freshly
+// allocated `String` built by std::format. Each `\(...)` splice
+// becomes a `{}` placeholder plus a positional argument; literal
+// `{`/`}` characters get doubled so they survive std::format's
+// brace syntax. The whole literal is one expression that produces
+// a new String at runtime.
+
+module examples.interpolation
+
+func greet(_ name: Str, _ age: Int32) -> String {
+    return "hello \(name), age \(age + 1)"
+}
+
+// Splice composition: nested arithmetic + a literal `{`/`}` that
+// the lowering escapes so std::format treats them as text rather
+// than format specifiers.
+func describe(_ kind: Str, _ n: Int32) -> String {
+    return "kind={\(kind)}, n=\(n * 2)"
+}

@@ -25,10 +25,24 @@ enum class TokenKind : std::uint16_t {
     // ---- literals ----
     IntLit,
     FloatLit,
-    StringLit,      // "..."
+    StringLit,      // "..." (no interpolations)
     ByteStringLit,  // b"..."
     CharLit,        // '.'
     Identifier,
+
+    // ---- string interpolation (§4) ----
+    // An interpolated string `"a \(x) b"` lexes as the sequence
+    //   InterpStringBegin
+    //   InterpStringPart "a "
+    //   LParen Identifier x RParen     (regular tokens for the splice)
+    //   InterpStringPart " b"
+    //   InterpStringEnd
+    // The lexer tracks splice paren depth on a stack: a `)` whose
+    // depth would underflow the current splice closes the splice and
+    // returns the lexer to string-fragment mode.
+    InterpStringBegin,
+    InterpStringPart,
+    InterpStringEnd,
 
     // ---- punctuation ----
     LParen,
