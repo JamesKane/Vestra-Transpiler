@@ -158,7 +158,7 @@ add_test(
     COMMAND ${e2e_workdir}/comptime_app)
 set_tests_properties(e2e_comptime_run PROPERTIES
     DEPENDS                e2e_comptime_compile
-    PASS_REGULAR_EXPRESSION "compute\\(\\) = 6871")
+    PASS_REGULAR_EXPRESSION "compute\\(\\) = 6926")
 
 # Cfg / @when: same source compiles to a different program per host. The
 # regex only verifies "something numeric came out" — the per-host arms are

@@ -274,6 +274,14 @@ bool same_numeric_kind(const ComptimeValue& a, const ComptimeValue& b) {
 
 std::optional<ComptimeValue>
 ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint, int depth) const {
+    // Top-level entry: build a fresh empty Frame (no locals, no early
+    // return tripped yet) and delegate to fold_with.
+    Frame frame;
+    return fold_with(e, env, frame, hint, depth);
+}
+
+std::optional<ComptimeValue> ComptimeFolder::fold_with(
+    const ast::Expr& e, const Env& env, Frame& frame, TypeKind hint, int depth) const {
     if (depth > MaxDepth) {
         return std::nullopt;  // bail rather than blow the host C++ stack
     }
@@ -305,8 +313,12 @@ ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint, int dept
         if (ident.name == "cfg") {
             return make_string("__vestra_cfg__");
         }
-        // Look up another const by name. If env doesn't have it, we can't
-        // fold — the value might exist at runtime but isn't compile-time-known.
+        // Phase 3: locals shadow top-level consts. A loop's iteration
+        // variable, a let binding inside a comptime func body, and a var
+        // updated through assignment all live in frame.locals.
+        if (auto it = frame.locals.find(ident.name); it != frame.locals.end()) {
+            return it->second;
+        }
         auto it = env.find(ident.name);
         if (it == env.end()) {
             return std::nullopt;
@@ -335,46 +347,56 @@ ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint, int dept
     }
 
     case ast::NodeKind::ParenExpr:
-        return fold(*static_cast<const ast::ParenExpr&>(e).inner, env, hint, depth);
+        return fold_with(*static_cast<const ast::ParenExpr&>(e).inner, env, frame, hint, depth);
 
     case ast::NodeKind::ComptimeExpr:
-        return fold(*static_cast<const ast::ComptimeExpr&>(e).inner, env, hint, depth);
+        return fold_with(*static_cast<const ast::ComptimeExpr&>(e).inner, env, frame, hint, depth);
 
     case ast::NodeKind::BlockExpr: {
-        // Phase 1: only fold a block whose contents are a single trailing
-        // ExprStmt. Phase 2 also accepts a single trailing ReturnStmt with
-        // a value so a function body like `{ return n * factorial(n-1) }`
-        // collapses to its value. Anything more (let bindings, while loops,
-        // multiple statements) still bails — those need real interpreter
-        // state we don't model yet.
+        // Phase 3: walk every statement in order through fold_stmt, which
+        // mutates `frame` (binding let/var, updating assignments, iterating
+        // loops). Stop early on `return` (frame.returned will be set). The
+        // block's value is: frame.returned if set, else the trailing
+        // ExprStmt's evaluated value, else nullopt (a block of pure stmts
+        // has no value to use as an expression).
         const auto& b = static_cast<const ast::BlockExpr&>(e);
-        if (b.stmts.size() != 1) {
-            return std::nullopt;
-        }
-        const auto& s = *b.stmts[0];
-        if (s.kind == ast::NodeKind::ExprStmt) {
-            return fold(*static_cast<const ast::ExprStmt&>(s).expr, env, hint, depth);
-        }
-        if (s.kind == ast::NodeKind::ReturnStmt) {
-            const auto& r = static_cast<const ast::ReturnStmt&>(s);
-            if (!r.value) {
+        for (std::size_t i = 0; i < b.stmts.size(); ++i) {
+            const auto& s = *b.stmts[i];
+            const bool last = (i + 1 == b.stmts.size());
+            if (last && s.kind == ast::NodeKind::ExprStmt) {
+                // Trailing expression: its value is the block's value.
+                auto v =
+                    fold_with(*static_cast<const ast::ExprStmt&>(s).expr, env, frame, hint, depth);
+                if (frame.returned) {
+                    return frame.returned;
+                }
+                return v;
+            }
+            // Every other stmt (including any ReturnStmt — even a trailing
+            // one) routes through fold_stmt so frame.returned is set, which
+            // is what makes an early return from a nested block / loop
+            // propagate out to the enclosing function.
+            if (!fold_stmt(s, env, frame, depth)) {
                 return std::nullopt;
             }
-            return fold(*r.value, env, hint, depth);
+            if (frame.returned) {
+                return frame.returned;
+            }
         }
+        // Block ended without yielding a value.
         return std::nullopt;
     }
 
     case ast::NodeKind::CallExpr: {
         // §12.4 / §12.1 phase 2: a call to a `comptime func` evaluates at
         // fold time. We bind each argument value to the parameter's name
-        // in a fresh environment, then fold the body.
+        // in a fresh frame, then fold the body. The callee gets a clean
+        // locals slate — phase 3 doesn't expose the caller's bindings
+        // (no closures).
         if (global_scope_ == nullptr) {
             return std::nullopt;
         }
         const auto& c = static_cast<const ast::CallExpr&>(e);
-        // Phase 2 only resolves bare-identifier callees. Method calls and
-        // higher-order forms wait for phase 3.
         if (c.callee->kind != ast::NodeKind::IdentExpr) {
             return std::nullopt;
         }
@@ -390,26 +412,23 @@ ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint, int dept
         if (c.args.size() != fn.params.size()) {
             return std::nullopt;
         }
-        // Each argument folds against the caller's env. The result becomes
-        // the parameter binding the body sees. Phase 2 doesn't propagate
-        // the param's declared Vestra type as a hint — that would require
-        // resolving the param's ast::Type from inside the folder, which
-        // currently belongs to the resolver. Hint stays Unit; the literals
-        // adopt the caller's bidirectional context only.
-        Env call_env;
+        // Args are folded against the caller's frame (they're expressions
+        // in the caller's scope). Results become the callee's parameter
+        // bindings in a fresh frame.
+        Frame call_frame;
         for (std::size_t i = 0; i < c.args.size(); ++i) {
-            auto v = fold(*c.args[i].value, env, TypeKind::Unit, depth + 1);
+            auto v = fold_with(*c.args[i].value, env, frame, TypeKind::Unit, depth + 1);
             if (!v) {
                 return std::nullopt;
             }
-            call_env[fn.params[i].name] = *v;
+            call_frame.locals[fn.params[i].name] = *v;
         }
-        return fold(*fn.body, call_env, hint, depth + 1);
+        return fold_with(*fn.body, env, call_frame, hint, depth + 1);
     }
 
     case ast::NodeKind::UnaryExpr: {
         const auto& u = static_cast<const ast::UnaryExpr&>(e);
-        auto op = fold(*u.operand, env, hint, depth);
+        auto op = fold_with(*u.operand, env, frame, hint, depth);
         if (!op) {
             return std::nullopt;
         }
@@ -445,7 +464,7 @@ ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint, int dept
         // Short-circuit logicals first so we don't evaluate the unreachable
         // side. Both sides must still fold to bool.
         if (bin.op == ast::BinaryOp::And || bin.op == ast::BinaryOp::Or) {
-            auto l = fold(*bin.lhs, env, TypeKind::Bool, depth);
+            auto l = fold_with(*bin.lhs, env, frame, TypeKind::Bool, depth);
             if (!l || l->kind != ComptimeValue::Kind::Bool) {
                 return std::nullopt;
             }
@@ -455,21 +474,21 @@ ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint, int dept
             if (bin.op == ast::BinaryOp::Or && l->b) {
                 return make_bool(true);
             }
-            auto r = fold(*bin.rhs, env, TypeKind::Bool, depth);
+            auto r = fold_with(*bin.rhs, env, frame, TypeKind::Bool, depth);
             if (!r || r->kind != ComptimeValue::Kind::Bool) {
                 return std::nullopt;
             }
             return make_bool(r->b);
         }
 
-        auto lhs = fold(*bin.lhs, env, hint, depth);
+        auto lhs = fold_with(*bin.lhs, env, frame, hint, depth);
         if (!lhs) {
             return std::nullopt;
         }
         // For the rhs, push the lhs's resolved Vestra type as the hint so
         // integer literals on the right adopt the same type (matches how
         // sema's bidirectional check works in check_binary).
-        auto rhs = fold(*bin.rhs, env, lhs->type, depth);
+        auto rhs = fold_with(*bin.rhs, env, frame, lhs->type, depth);
         if (!rhs) {
             return std::nullopt;
         }
@@ -637,18 +656,24 @@ ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint, int dept
 
     case ast::NodeKind::IfExpr: {
         const auto& i = static_cast<const ast::IfExpr&>(e);
-        auto c = fold(*i.cond, env, TypeKind::Bool, depth);
+        auto c = fold_with(*i.cond, env, frame, TypeKind::Bool, depth);
         if (!c || c->kind != ComptimeValue::Kind::Bool) {
             return std::nullopt;
         }
         // Fold only the chosen branch — matching §19.9 (if evaluates only
         // the selected branch). The unchosen branch isn't even examined.
         if (c->b) {
-            return fold(*i.then_branch, env, hint, depth);
+            return fold_with(*i.then_branch, env, frame, hint, depth);
         }
         if (i.else_branch) {
-            return fold(*i.else_branch, env, hint, depth);
+            return fold_with(*i.else_branch, env, frame, hint, depth);
         }
+        // No `else` and the condition was false. As an expression this is
+        // Unit. Returning Unit here (instead of nullopt) lets the stmt-
+        // position form `if c { return … }` succeed as "no value, no
+        // effects" when c is false — otherwise the enclosing block would
+        // think the fold bailed and stop walking.
+        return ComptimeValue{};
         // If with no else and a false condition is Unit; phase 1 can't fold
         // that into anything useful at the use site.
         return std::nullopt;
@@ -658,6 +683,290 @@ ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint, int dept
         // Everything else — calls, struct lit, member access, vector lit,
         // match, await, etc. — is not foldable in phase 1.
         return std::nullopt;
+    }
+}
+
+// ============================================================================
+// Statement-level fold (§12.1 phase 3)
+// ============================================================================
+
+namespace {
+
+// Extract a let/var statement's binding name + initializer + (optional)
+// declared type. Phase 3 only handles ident-bound let/var (no destructuring).
+// Returns true on a recognised shape; false otherwise.
+bool extract_binding(const ast::Stmt& s, std::string& out_name, const ast::Expr*& out_value) {
+    if (s.kind == ast::NodeKind::LetStmt) {
+        const auto& l = static_cast<const ast::LetStmt&>(s);
+        if (l.pattern && l.pattern->kind == ast::NodeKind::IdentPat) {
+            out_name = static_cast<const ast::IdentPat&>(*l.pattern).name;
+            out_value = l.value.get();
+            return true;
+        }
+        if (l.pattern && l.pattern->kind == ast::NodeKind::BindPat) {
+            out_name = static_cast<const ast::BindPat&>(*l.pattern).name;
+            out_value = l.value.get();
+            return true;
+        }
+    } else if (s.kind == ast::NodeKind::VarStmt) {
+        const auto& v = static_cast<const ast::VarStmt&>(s);
+        if (v.pattern && v.pattern->kind == ast::NodeKind::IdentPat) {
+            out_name = static_cast<const ast::IdentPat&>(*v.pattern).name;
+            out_value = v.value.get();
+            return true;
+        }
+        if (v.pattern && v.pattern->kind == ast::NodeKind::BindPat) {
+            out_name = static_cast<const ast::BindPat&>(*v.pattern).name;
+            out_value = v.value.get();
+            return true;
+        }
+    }
+    return false;
+}
+
+// Apply a compound assignment (`+=`, `-=`, etc.) to a current value. Returns
+// nullopt if op isn't supported on the value's kind.
+std::optional<ComptimeValue>
+apply_compound(ast::AssignOp op, const ComptimeValue& cur, const ComptimeValue& rhs) {
+    auto on_int = [&](auto f) -> std::optional<ComptimeValue> {
+        if (cur.kind != ComptimeValue::Kind::Int || rhs.kind != ComptimeValue::Kind::Int) {
+            return std::nullopt;
+        }
+        ComptimeValue out = cur;
+        out.i = f(cur.i, rhs.i);
+        return out;
+    };
+    auto on_float = [&](auto f) -> std::optional<ComptimeValue> {
+        if (cur.kind != ComptimeValue::Kind::Float || rhs.kind != ComptimeValue::Kind::Float) {
+            return std::nullopt;
+        }
+        ComptimeValue out = cur;
+        out.f = f(cur.f, rhs.f);
+        return out;
+    };
+    switch (op) {
+    case ast::AssignOp::AddAssign:
+        if (auto v = on_int([](auto a, auto b) { return a + b; })) {
+            return v;
+        }
+        return on_float([](auto a, auto b) { return a + b; });
+    case ast::AssignOp::SubAssign:
+        if (auto v = on_int([](auto a, auto b) { return a - b; })) {
+            return v;
+        }
+        return on_float([](auto a, auto b) { return a - b; });
+    case ast::AssignOp::MulAssign:
+        if (auto v = on_int([](auto a, auto b) { return a * b; })) {
+            return v;
+        }
+        return on_float([](auto a, auto b) { return a * b; });
+    case ast::AssignOp::DivAssign:
+        if (cur.kind == ComptimeValue::Kind::Int) {
+            if (rhs.i == 0) {
+                return std::nullopt;
+            }
+            return on_int([](auto a, auto b) { return a / b; });
+        }
+        return on_float([](auto a, auto b) { return a / b; });
+    case ast::AssignOp::ModAssign:
+        if (cur.kind == ComptimeValue::Kind::Int && rhs.i != 0) {
+            return on_int([](auto a, auto b) { return a % b; });
+        }
+        return std::nullopt;
+    case ast::AssignOp::BitAndAssign:
+        return on_int([](auto a, auto b) { return a & b; });
+    case ast::AssignOp::BitOrAssign:
+        return on_int([](auto a, auto b) { return a | b; });
+    case ast::AssignOp::BitXorAssign:
+        return on_int([](auto a, auto b) { return a ^ b; });
+    case ast::AssignOp::ShlAssign:
+        return on_int([](auto a, auto b) { return a << b; });
+    case ast::AssignOp::ShrAssign:
+        return on_int([](auto a, auto b) { return a >> b; });
+    case ast::AssignOp::Assign:
+        return rhs;
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
+bool ComptimeFolder::fold_stmt(const ast::Stmt& s, const Env& env, Frame& frame, int depth) const {
+    if (frame.returned) {
+        return true;  // a prior statement already short-circuited
+    }
+    switch (s.kind) {
+    case ast::NodeKind::LetStmt:
+    case ast::NodeKind::VarStmt: {
+        std::string name;
+        const ast::Expr* init = nullptr;
+        if (!extract_binding(s, name, init) || init == nullptr) {
+            return false;
+        }
+        auto v = fold_with(*init, env, frame, TypeKind::Unit, depth);
+        if (!v) {
+            return false;
+        }
+        frame.locals[name] = *v;
+        return true;
+    }
+    case ast::NodeKind::ExprStmt: {
+        // Evaluate for any embedded loop/recursion side effects; discard
+        // the value (this isn't the block's trailing expression — the
+        // BlockExpr handler dispatches the trailing case directly).
+        auto v = fold_with(
+            *static_cast<const ast::ExprStmt&>(s).expr, env, frame, TypeKind::Unit, depth);
+        return v.has_value();
+    }
+    case ast::NodeKind::ReturnStmt: {
+        const auto& r = static_cast<const ast::ReturnStmt&>(s);
+        if (!r.value) {
+            frame.returned = ComptimeValue{};  // Unit return
+            return true;
+        }
+        auto v = fold_with(*r.value, env, frame, TypeKind::Unit, depth);
+        if (!v) {
+            return false;
+        }
+        frame.returned = *v;
+        return true;
+    }
+    case ast::NodeKind::AssignStmt: {
+        const auto& a = static_cast<const ast::AssignStmt&>(s);
+        // Phase 3: only ident targets (no member/index assignment yet).
+        if (a.target->kind != ast::NodeKind::IdentExpr) {
+            return false;
+        }
+        auto name = static_cast<const ast::IdentExpr&>(*a.target).name;
+        auto rhs = fold_with(*a.value, env, frame, TypeKind::Unit, depth);
+        if (!rhs) {
+            return false;
+        }
+        if (a.op == ast::AssignOp::Assign) {
+            frame.locals[name] = *rhs;
+            return true;
+        }
+        // Compound op: need the current value to combine against.
+        auto it = frame.locals.find(name);
+        if (it == frame.locals.end()) {
+            return false;  // assigning to an unbound name is not foldable
+        }
+        auto combined = apply_compound(a.op, it->second, *rhs);
+        if (!combined) {
+            return false;
+        }
+        it->second = *combined;
+        return true;
+    }
+    case ast::NodeKind::ForStmt: {
+        // Only `for ident in start ..< end` (RangeLt) and `for ident in
+        // start .. end` (Range) are foldable. Anything else (iterator
+        // protocol, vector iteration, etc.) waits for a later phase.
+        const auto& f = static_cast<const ast::ForStmt&>(s);
+        if (!f.iter || f.iter->kind != ast::NodeKind::BinaryExpr) {
+            return false;
+        }
+        const auto& binop = static_cast<const ast::BinaryExpr&>(*f.iter);
+        if (binop.op != ast::BinaryOp::Range && binop.op != ast::BinaryOp::RangeLt) {
+            return false;
+        }
+        auto lo = fold_with(*binop.lhs, env, frame, TypeKind::Int, depth);
+        auto hi = fold_with(*binop.rhs, env, frame, TypeKind::Int, depth);
+        if (!lo || !hi || lo->kind != ComptimeValue::Kind::Int
+            || hi->kind != ComptimeValue::Kind::Int) {
+            return false;
+        }
+        std::int64_t start = lo->i;
+        // `..` is inclusive; `..<` is exclusive.
+        std::int64_t end = binop.op == ast::BinaryOp::Range ? hi->i + 1 : hi->i;
+
+        // Determine the loop variable name. IdentPat / BindPat bind into
+        // the body's scope; WildcardPat ("for _ in 0..<n") runs the body
+        // without binding anything; anything else (destructuring) is not
+        // foldable in phase 3.
+        std::string var_name;  // empty when the pattern is a wildcard
+        if (f.pattern && f.pattern->kind == ast::NodeKind::IdentPat) {
+            var_name = static_cast<const ast::IdentPat&>(*f.pattern).name;
+        } else if (f.pattern && f.pattern->kind == ast::NodeKind::BindPat) {
+            var_name = static_cast<const ast::BindPat&>(*f.pattern).name;
+        } else if (!f.pattern || f.pattern->kind != ast::NodeKind::WildcardPat) {
+            return false;
+        }
+
+        // Save any prior binding of the loop variable so we restore after
+        // the loop (the loop variable shouldn't leak out). For a wildcard
+        // pattern there's no name to save or restore.
+        bool had_prior = false;
+        ComptimeValue prior{};
+        if (!var_name.empty()) {
+            if (auto it = frame.locals.find(var_name); it != frame.locals.end()) {
+                had_prior = true;
+                prior = it->second;
+            }
+        }
+
+        std::int64_t iters = 0;
+        for (std::int64_t i = start; i < end; ++i) {
+            if (++iters > MaxLoopIterations) {
+                return false;
+            }
+            if (!var_name.empty()) {
+                ComptimeValue iv;
+                iv.kind = ComptimeValue::Kind::Int;
+                iv.i = i;
+                iv.type = TypeKind::Int;
+                frame.locals[var_name] = iv;
+            }
+            if (f.body) {
+                auto v = fold_with(*f.body, env, frame, TypeKind::Unit, depth);
+                (void)v;  // body's value is discarded; what we care about is
+                          // assignments and frame.returned
+                if (frame.returned) {
+                    break;
+                }
+            }
+        }
+
+        if (!var_name.empty()) {
+            if (had_prior) {
+                frame.locals[var_name] = prior;
+            } else {
+                frame.locals.erase(var_name);
+            }
+        }
+        return true;
+    }
+    case ast::NodeKind::WhileStmt: {
+        const auto& w = static_cast<const ast::WhileStmt&>(s);
+        std::int64_t iters = 0;
+        while (true) {
+            if (++iters > MaxLoopIterations) {
+                return false;
+            }
+            auto c = fold_with(*w.cond, env, frame, TypeKind::Bool, depth);
+            if (!c || c->kind != ComptimeValue::Kind::Bool) {
+                return false;
+            }
+            if (!c->b) {
+                break;
+            }
+            if (w.body) {
+                auto v = fold_with(*w.body, env, frame, TypeKind::Unit, depth);
+                (void)v;
+                if (frame.returned) {
+                    break;
+                }
+            }
+        }
+        return true;
+    }
+    case ast::NodeKind::BreakStmt:
+    case ast::NodeKind::ContinueStmt:
+        // Phase 3 doesn't model break/continue control flow inside loops;
+        // a body using either bails the fold cleanly instead of misexecuting.
+        return false;
+    default:
+        return false;
     }
 }
 

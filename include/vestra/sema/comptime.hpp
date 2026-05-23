@@ -95,6 +95,11 @@ public:
     // the compiler.
     static constexpr int MaxDepth = 64;
 
+    // Per-loop iteration cap. Picked to comfortably handle the §12.1
+    // sin_table case (256 iterations) and a generous margin for hand-
+    // written tables, while still catching runaway loops fast.
+    static constexpr int MaxLoopIterations = 1'000'000;
+
     // `global_scope` is consulted when the folder encounters a call: it
     // looks the callee up by name, checks for a comptime func, and
     // recursively folds its body. Pass nullptr in unit-test contexts that
@@ -110,6 +115,24 @@ public:
     fold(const ast::Expr& e, const Env& env, TypeKind hint = TypeKind::Unit, int depth = 0) const;
 
 private:
+    // Per-call mutable state. A new Frame is built at the entry of every
+    // comptime function call (so callees can't see the caller's locals)
+    // and at the entry of every top-level fold (so unit tests that pass
+    // only an Env get a fresh empty frame).
+    struct Frame {
+        Env locals;
+        std::optional<ComptimeValue> returned;  // set by a ReturnStmt;
+                                                // BlockExpr stops on this
+    };
+
+    // Recursive fold. The public fold() constructs a Frame and calls this.
+    [[nodiscard]] std::optional<ComptimeValue>
+    fold_with(const ast::Expr& e, const Env& env, Frame& frame, TypeKind hint, int depth) const;
+
+    // Statement-level fold. Returns true when the statement walked without
+    // a bail; false on any unfoldable shape. Effects accumulate in frame.
+    [[nodiscard]] bool fold_stmt(const ast::Stmt& s, const Env& env, Frame& frame, int depth) const;
+
     const Scope* global_scope_ = nullptr;
 };
 

@@ -255,7 +255,7 @@ Available on demand:
   `comptime if` for declaration-position selection, and the §12.6
   every-branch type-check guarantee.
 
-- **Comptime folding (§12.1 phases 1+2)** — a tree-walking evaluator
+- **Comptime folding (§12.1 phases 1+2+3)** — a tree-walking evaluator
   for the pure subset of Vestra. **Phase 1** folds `const` initializers
   and `comptime { ... }` blocks at compile time: literals, references
   to earlier folded consts, unary + binary arithmetic and logic
@@ -316,13 +316,14 @@ What's **deliberately stubbed** today, in roughly the order I'd tackle them:
    as C++ templates that the host compiler monomorphizes. Phase 2:
    const generics, generic structs/enums, where-clauses, and bound
    enforcement.
-7. ~~**`comptime` interpreter**~~ — **phases 1+2 done**: pure
-   expression folding (phase 1) plus comptime function calls with
-   recursion (phase 2: `comptime func factorial(...)` is evaluated
-   at fold time and the call site becomes a literal in the
-   generated C++). Phase 3 lifts locals + loops; later phases add
-   `@embed`, reflection (Type/Field), `derive` defaults,
-   declaration macros (`quote`/`$splice`), and `cfg`/`@when`.
+7. ~~**`comptime` interpreter**~~ — **phases 1+2+3 done**: pure
+   expression folding (phase 1), comptime function calls with
+   recursion (phase 2), and locals + loops in comptime bodies
+   (phase 3 — `var x = 0; for i in 0..<n { x += i }; return x` works
+   inside a `comptime func`). Later phases add `@embed`, vector
+   locals + index assignment (unlocks the §12.1 sin_table example),
+   reflection (Type/Field), `derive` defaults, and declaration
+   macros (`quote`/`$splice`).
 8. **String interpolation lowering** (§4) — produce `Display::display(into:)`
    calls into a `String` sink; the lexer already has the splitting hooks.
 9. **`async` / `spawn` / `select` / `parallel` lowering** (§11) — currently

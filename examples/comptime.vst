@@ -25,9 +25,22 @@ comptime func factorial(_ n: Int) -> Int {
 
 const Fact6: Int32 = comptime { factorial(6) }  // 720
 
+// §12.1 phase 3: locals + loops. `sum_first_n` builds the result with
+// a `var` accumulator and a `for ... ..<` loop — the folder runs the
+// loop at compile time and the const ends up as a literal in the C++.
+comptime func sum_first_n(_ n: Int) -> Int {
+    var total = 0
+    for i in 1 ..< n + 1 {
+        total += i
+    }
+    return total
+}
+
+const Sum10: Int32 = comptime { sum_first_n(10) }  // 55 = 1+2+...+10
+
 func compute() -> Int32 {
     // Each reference here also folds (an IdentExpr resolving to a folded
     // const). The body itself isn't folded — it has parameters and a
     // call shape — but the operands do reach C++ as literals.
-    return Page + HalfPage + Pick + Fact6
+    return Page + HalfPage + Pick + Fact6 + Sum10
 }

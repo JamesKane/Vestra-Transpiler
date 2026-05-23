@@ -340,6 +340,136 @@ TEST_CASE("§12.6: @when with a non-foldable predicate is treated as live") {
     CHECK_FALSE(res.resolution().is_gated_out(unit.decls[1].get()));
 }
 
+// ---- §12.1 phase 3: locals + loops in comptime bodies ---------------------
+
+TEST_CASE("phase 3: var local + for-range loop accumulator") {
+    auto v = resolver_fold("comptime func sum_to(_ n: Int) -> Int {\n"
+                           "    var total = 0\n"
+                           "    for i in 0 ..< n {\n"
+                           "        total = total + i\n"
+                           "    }\n"
+                           "    return total\n"
+                           "}\n"
+                           "const Sum100: Int = comptime { sum_to(100) }\n",
+                           "Sum100");
+    REQUIRE(v);
+    CHECK(v->i == 4950);  // 0 + 1 + ... + 99
+}
+
+TEST_CASE("phase 3: compound assignment +=") {
+    auto v = resolver_fold("comptime func sum_to(_ n: Int) -> Int {\n"
+                           "    var total = 0\n"
+                           "    for i in 1 ..< n {\n"
+                           "        total += i\n"
+                           "    }\n"
+                           "    return total\n"
+                           "}\n"
+                           "const Sum11: Int = comptime { sum_to(11) }\n",
+                           "Sum11");
+    REQUIRE(v);
+    CHECK(v->i == 55);  // 1 + 2 + ... + 10
+}
+
+TEST_CASE("phase 3: iterative factorial via for-loop") {
+    auto v = resolver_fold("comptime func fact(_ n: Int) -> Int {\n"
+                           "    var r = 1\n"
+                           "    for i in 2 ..< n + 1 {\n"
+                           "        r = r * i\n"
+                           "    }\n"
+                           "    return r\n"
+                           "}\n"
+                           "const Fact10: Int = comptime { fact(10) }\n",
+                           "Fact10");
+    REQUIRE(v);
+    CHECK(v->i == 3628800);
+}
+
+TEST_CASE("phase 3: iterative fibonacci with two vars") {
+    auto v = resolver_fold("comptime func fib(_ n: Int) -> Int {\n"
+                           "    var a = 0\n"
+                           "    var b = 1\n"
+                           "    for _ in 0 ..< n {\n"
+                           "        let next = a + b\n"
+                           "        a = b\n"
+                           "        b = next\n"
+                           "    }\n"
+                           "    return a\n"
+                           "}\n"
+                           "const Fib10: Int = comptime { fib(10) }\n",
+                           "Fib10");
+    REQUIRE(v);
+    CHECK(v->i == 55);  // 0,1,1,2,3,5,8,13,21,34,55 → fib(10) = 55
+}
+
+TEST_CASE("phase 3: inclusive range `..` vs exclusive `..<`") {
+    auto inc = resolver_fold("comptime func sum_inc(_ n: Int) -> Int {\n"
+                             "    var t = 0\n"
+                             "    for i in 0 .. n { t += i }\n"
+                             "    return t\n"
+                             "}\n"
+                             "const S: Int = comptime { sum_inc(3) }\n",
+                             "S");
+    REQUIRE(inc);
+    CHECK(inc->i == 6);  // 0 + 1 + 2 + 3
+
+    auto exc = resolver_fold("comptime func sum_exc(_ n: Int) -> Int {\n"
+                             "    var t = 0\n"
+                             "    for i in 0 ..< n { t += i }\n"
+                             "    return t\n"
+                             "}\n"
+                             "const S: Int = comptime { sum_exc(3) }\n",
+                             "S");
+    REQUIRE(exc);
+    CHECK(exc->i == 3);  // 0 + 1 + 2
+}
+
+TEST_CASE("phase 3: while loop folds with iteration cap") {
+    // count_down(5): var n = 5; while n > 0 { n -= 1 }; return n → 0
+    auto v = resolver_fold("comptime func count_down(_ start: Int) -> Int {\n"
+                           "    var n = start\n"
+                           "    while n > 0 {\n"
+                           "        n -= 1\n"
+                           "    }\n"
+                           "    return n\n"
+                           "}\n"
+                           "const End: Int = comptime { count_down(5) }\n",
+                           "End");
+    REQUIRE(v);
+    CHECK(v->i == 0);
+}
+
+TEST_CASE("phase 3: early return from inside a for-loop wins") {
+    // total grows 0,0,1,3,6,10,15. First iteration where the check
+    // `total >= 15` is true returns total. After +=0,1,2,3,4,5 the total
+    // is 15; the next iteration's check fires and returns 15.
+    auto v = resolver_fold("comptime func first_ge(_ n: Int) -> Int {\n"
+                           "    var total = 0\n"
+                           "    for i in 0 ..< 100 {\n"
+                           "        if total >= n { return total }\n"
+                           "        total = total + i\n"
+                           "    }\n"
+                           "    return total\n"
+                           "}\n"
+                           "const F: Int = comptime { first_ge(15) }\n",
+                           "F");
+    REQUIRE(v);
+    CHECK(v->i == 15);
+}
+
+TEST_CASE("phase 3: per-loop iteration cap prevents runaways") {
+    // A while(true) without a return must bail rather than spin forever.
+    auto v = resolver_fold("comptime func loop() -> Int {\n"
+                           "    var n = 0\n"
+                           "    while true {\n"
+                           "        n += 1\n"
+                           "    }\n"
+                           "    return n\n"
+                           "}\n"
+                           "const N: Int = comptime { loop() }\n",
+                           "N");
+    CHECK_FALSE(v.has_value());
+}
+
 TEST_CASE("phase 2: recursion past the depth cap stops cleanly") {
     // factorial recurses linearly. MaxDepth is 64; we call with 200, which
     // would otherwise produce a 200-deep chain. The fold must bail rather

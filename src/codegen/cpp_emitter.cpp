@@ -199,9 +199,21 @@ const char* CppEmitter::unop_text(ast::UnaryOp op) {
 
 void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl& d) {
     switch (d.kind) {
-    case ast::NodeKind::Func:
-        emit_func(hdr, src, static_cast<const ast::FuncDecl&>(d));
+    case ast::NodeKind::Func: {
+        const auto& f = static_cast<const ast::FuncDecl&>(d);
+        // §12.4 / §12.1: `comptime func`s are evaluated by the folder at
+        // compile time only. They have no runtime form to emit (and their
+        // bodies often use language constructs — Range, comptime stdlib
+        // calls — that don't have a runtime lowering yet). Callers that
+        // reach a comptime func via fold get the literal substituted; any
+        // hypothetical runtime call sites would be the resolver's job to
+        // reject.
+        if (f.is_comptime) {
+            break;
+        }
+        emit_func(hdr, src, f);
         break;
+    }
     case ast::NodeKind::Struct:
         emit_struct(hdr, static_cast<const ast::StructDecl&>(d));
         break;
