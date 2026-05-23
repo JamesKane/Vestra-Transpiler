@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §12.3 derive(Debug) demo: structural rendering without writing it.
+//
+// `derive(Debug) for T` emits a `std::formatter<T>` specialization
+// that renders the value structurally — `Point{x: 1, y: 2}`,
+// `Color.green`, `Shape::circle{radius: 1.5}`. That makes the type
+// drop straight into `std::format("{}", v)`, `std::println("{}", v)`,
+// and the §4 string-interpolation lowering (`"point = \(p)"`) without
+// any per-type plumbing.
+//
+// The specialization is emitted at global scope (after the user's
+// namespace closes — std::formatter must be specialized in `::std`).
+// Three shapes cover the AST cases: struct, bare `enum class`, and
+// payloaded variant-enum.
+
+module examples.derive_debug
+
+struct Point {
+    var x: Int32
+    var y: Int32
+}
+
+derive(Debug) for Point
+
+enum Color {
+    case red
+    case green
+    case blue
+}
+
+derive(Debug) for Color
+
+enum Shape {
+    case circle(radius: Float64)
+    case rect(width: Float64, height: Float64)
+    case point
+}
+
+derive(Debug) for Shape
+
+func make_point(_ x: Int32, _ y: Int32) -> Point {
+    return Point(x: x, y: y)
+}
+
+func make_circle(_ r: Float64) -> Shape {
+    return Shape.circle(radius: r)
+}

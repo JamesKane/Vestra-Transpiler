@@ -50,6 +50,15 @@ private:
     // specialization after the user's namespace closes. `qual_prefix`
     // is the `Q::` part (or empty if the unit has no module decl).
     void emit_hash_spec(std::ostream& os, const ast::StructDecl& s, std::string_view qual_prefix);
+    // §12.3 derive(Debug): emit a `template <> struct std::formatter<Q::T>`
+    // specialization at global scope so `std::format("{}", v)` /
+    // `std::println("{}", v)` render the value structurally. Three
+    // shapes — struct, bare enum class, sum-type-variant enum.
+    void emit_debug_spec_struct(std::ostream& os,
+                                const ast::StructDecl& s,
+                                std::string_view qual_prefix);
+    void
+    emit_debug_spec_enum(std::ostream& os, const ast::EnumDecl& e, std::string_view qual_prefix);
 
     void emit_block(std::ostream& os, const ast::BlockExpr& b, int indent);
     void emit_stmt(std::ostream& os, const ast::Stmt& s, int indent);

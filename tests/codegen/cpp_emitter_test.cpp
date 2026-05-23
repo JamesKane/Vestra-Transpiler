@@ -193,3 +193,39 @@ TEST_CASE("a struct without derive(Hash) gets no std::hash spec") {
     SemaEmitFixture f("struct Bare { var n: Int32 }\n");
     CHECK(f.out.header.find("std::hash") == std::string::npos);
 }
+
+TEST_CASE("derive(Debug) for a struct emits a std::formatter spec") {
+    SemaEmitFixture f("struct Point {\n"
+                      "    var x: Int32\n"
+                      "    var y: Int32\n"
+                      "}\n"
+                      "derive(Debug) for Point\n");
+    CHECK(f.out.header.find("struct std::formatter<Point>") != std::string::npos);
+    CHECK(f.out.header.find("\"Point{{x: {}, y: {}}}\"") != std::string::npos);
+}
+
+TEST_CASE("derive(Debug) for a bare enum emits a switch-based formatter") {
+    SemaEmitFixture f("enum Color { case red\n    case green\n    case blue\n}\n"
+                      "derive(Debug) for Color\n");
+    CHECK(f.out.header.find("struct std::formatter<Color>") != std::string::npos);
+    CHECK(f.out.header.find("case Color::red: return std::format_to(__ctx.out(), \"Color.red\")")
+          != std::string::npos);
+}
+
+TEST_CASE("derive(Debug) for a payloaded enum uses std::visit + constexpr-if") {
+    SemaEmitFixture f("enum Shape {\n"
+                      "    case circle(radius: Float64)\n"
+                      "    case point\n"
+                      "}\n"
+                      "derive(Debug) for Shape\n");
+    CHECK(f.out.header.find("struct std::formatter<Shape>") != std::string::npos);
+    CHECK(f.out.header.find("std::visit") != std::string::npos);
+    CHECK(f.out.header.find("std::is_same_v<__T, Shape::circle_t>") != std::string::npos);
+    CHECK(f.out.header.find("\"Shape::circle{{radius: {}}}\"") != std::string::npos);
+    CHECK(f.out.header.find("\"Shape::point\"") != std::string::npos);
+}
+
+TEST_CASE("a struct without derive(Debug) gets no formatter spec") {
+    SemaEmitFixture f("struct Bare { var n: Int32 }\n");
+    CHECK(f.out.header.find("std::formatter") == std::string::npos);
+}

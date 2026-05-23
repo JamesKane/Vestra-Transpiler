@@ -393,3 +393,30 @@ add_test(
 set_tests_properties(e2e_derive_hash_run PROPERTIES
     DEPENDS                e2e_derive_hash_compile
     PASS_REGULAR_EXPRESSION "derive\\(Hash\\) OK")
+
+# derive(Debug): std::formatter<T> specialization renders the value
+# structurally for std::format / std::println / string interpolation.
+# Exercises all three shapes (struct, bare enum, payloaded enum) and
+# byte-checks the rendered strings.
+set(e2e_dbg_input  ${CMAKE_SOURCE_DIR}/examples/derive_debug.vst)
+set(e2e_dbg_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_derive_debug.cpp)
+
+add_test(
+    NAME    e2e_derive_debug_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_dbg_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_derive_debug_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_dbg_driver} ${e2e_workdir}/derive_debug.cpp
+            -o ${e2e_workdir}/derive_debug_app)
+set_tests_properties(e2e_derive_debug_compile PROPERTIES DEPENDS e2e_derive_debug_transpile)
+
+add_test(
+    NAME    e2e_derive_debug_run
+    COMMAND ${e2e_workdir}/derive_debug_app)
+set_tests_properties(e2e_derive_debug_run PROPERTIES
+    DEPENDS                e2e_derive_debug_compile
+    PASS_REGULAR_EXPRESSION "derive\\(Debug\\) OK")

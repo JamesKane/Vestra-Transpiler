@@ -195,6 +195,27 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
         emit_hash_spec(hdr, sd, qual_prefix);
     }
 
+    // §12.3 derive(Debug): same global-scope placement as derive(Hash).
+    // Three lowerings (struct, bare enum, sum-type enum); the helper
+    // picks the right shape per decl kind.
+    for (const auto& d : unit.decls) {
+        if (d->kind == ast::NodeKind::Struct) {
+            const auto& sd = static_cast<const ast::StructDecl&>(*d);
+            auto it = derives_by_target_.find(sd.name);
+            if (it != derives_by_target_.end() && it->second.contains("Debug")) {
+                hdr << "\n";
+                emit_debug_spec_struct(hdr, sd, qual_prefix);
+            }
+        } else if (d->kind == ast::NodeKind::Enum) {
+            const auto& ed = static_cast<const ast::EnumDecl&>(*d);
+            auto it = derives_by_target_.find(ed.name);
+            if (it != derives_by_target_.end() && it->second.contains("Debug")) {
+                hdr << "\n";
+                emit_debug_spec_enum(hdr, ed, qual_prefix);
+            }
+        }
+    }
+
     return {hdr.str(), src.str()};
 }
 
@@ -491,6 +512,108 @@ void CppEmitter::emit_hash_spec(std::ostream& os,
         os << ">{}(v." << f.name << ") + 0x9e3779b9 + (__h << 6) + (__h >> 2);\n";
     }
     os << "        return __h;\n";
+    os << "    }\n";
+    os << "};\n";
+}
+
+void CppEmitter::emit_debug_spec_struct(std::ostream& os,
+                                        const ast::StructDecl& s,
+                                        std::string_view qual_prefix) {
+    // Renders as `Name{field1: <v.field1>, field2: <v.field2>, …}`.
+    // Each `{}` in the std::format string is a placeholder; literal
+    // braces in the output must be doubled (`{{` / `}}`) to survive
+    // std::format's brace syntax.
+    os << "template <>\n";
+    os << "struct std::formatter<" << qual_prefix << s.name << "> {\n";
+    os << "    constexpr auto parse(auto& __ctx) { return __ctx.begin(); }\n";
+    os << "    auto format(const " << qual_prefix << s.name << "& v, auto& __ctx) const {\n";
+    os << "        return std::format_to(__ctx.out(), \"" << s.name << "{{";
+    bool first = true;
+    for (const auto& f : s.fields) {
+        if (f.kind == ast::StructDecl::Field::Kind::Embed || f.type == nullptr) {
+            continue;
+        }
+        if (!first) {
+            os << ", ";
+        }
+        os << f.name << ": {}";
+        first = false;
+    }
+    os << "}}\"";
+    for (const auto& f : s.fields) {
+        if (f.kind == ast::StructDecl::Field::Kind::Embed || f.type == nullptr) {
+            continue;
+        }
+        os << ", v." << f.name;
+    }
+    os << ");\n";
+    os << "    }\n";
+    os << "};\n";
+}
+
+void CppEmitter::emit_debug_spec_enum(std::ostream& os,
+                                      const ast::EnumDecl& e,
+                                      std::string_view qual_prefix) {
+    os << "template <>\n";
+    os << "struct std::formatter<" << qual_prefix << e.name << "> {\n";
+    os << "    constexpr auto parse(auto& __ctx) { return __ctx.begin(); }\n";
+    if (!enum_is_sum_type(e)) {
+        // Bare enum class: render `EnumName.caseName` via a switch.
+        os << "    auto format(" << qual_prefix << e.name << " v, auto& __ctx) const {\n";
+        os << "        switch (v) {\n";
+        for (const auto& c : e.cases) {
+            os << "            case " << qual_prefix << e.name << "::" << c.name
+               << ": return std::format_to(__ctx.out(), \"" << e.name << "." << c.name << "\");\n";
+        }
+        os << "        }\n";
+        os << "        return std::format_to(__ctx.out(), \"?\");\n";
+        os << "    }\n";
+        os << "};\n";
+        return;
+    }
+    // Sum-type enum: std::visit + constexpr-if chain, mirroring
+    // emit_match. Each alternative renders as `EnumName::caseName{…}`
+    // for payloaded cases, or just `EnumName::caseName` for bare.
+    os << "    auto format(const " << qual_prefix << e.name << "& v, auto& __ctx) const {\n";
+    os << "        return std::visit([&](auto&& __alt) {\n";
+    os << "            using __T = std::decay_t<decltype(__alt)>;\n";
+    bool first = true;
+    for (const auto& c : e.cases) {
+        if (first) {
+            write_indent(os, 3);
+            os << "if";
+        } else {
+            os << " else if";  // chained — previous arm ended with bare "}"
+        }
+        os << " constexpr (std::is_same_v<__T, " << qual_prefix << e.name << "::" << c.name
+           << "_t>) {\n";
+        write_indent(os, 4);
+        if (c.payload.empty()) {
+            os << "return std::format_to(__ctx.out(), \"" << e.name << "::" << c.name << "\");\n";
+        } else {
+            os << "return std::format_to(__ctx.out(), \"" << e.name << "::" << c.name << "{{";
+            for (std::size_t i = 0; i < c.payload.size(); ++i) {
+                if (i != 0) {
+                    os << ", ";
+                }
+                std::string fname =
+                    c.payload[i].first.empty() ? std::format("_{}", i) : c.payload[i].first;
+                os << fname << ": {}";
+            }
+            os << "}}\"";
+            for (std::size_t i = 0; i < c.payload.size(); ++i) {
+                std::string fname =
+                    c.payload[i].first.empty() ? std::format("_{}", i) : c.payload[i].first;
+                os << ", __alt." << fname;
+            }
+            os << ");\n";
+        }
+        write_indent(os, 3);
+        os << "}";
+        first = false;
+    }
+    os << " else { std::unreachable(); }\n";
+    os << "        }, v.value);\n";
     os << "    }\n";
     os << "};\n";
 }
