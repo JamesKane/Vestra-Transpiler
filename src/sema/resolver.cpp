@@ -4,6 +4,7 @@
 #include "vestra/sema/scope.hpp"
 #include "vestra/sema/types.hpp"
 
+#include <array>
 #include <cstdlib>
 #include <format>
 #include <memory>
@@ -45,9 +46,40 @@ Resolver::Resolver(const ast::CompilationUnit& unit,
     : unit_(&unit), types_(&types), reporter_(&reporter) {}
 
 void Resolver::resolve() {
+    register_builtin_capabilities();
     collect_top_level();
     for (const auto& d : unit_->decls) {
         check_decl(*d);
+    }
+}
+
+// The standard `using` capabilities from §8 — they aren't user-declarable
+// types yet (no real stdlib), but a function that writes `using Alloc` must
+// not get an "unknown type" error for what is a load-bearing language
+// primitive. We register each as a nominal Protocol-kind symbol with a
+// placeholder type; the capability checker matches them by name.
+void Resolver::register_builtin_capabilities() {
+    static constexpr std::array<std::string_view, 10> Names = {
+        "Alloc",
+        "Log",
+        "Async",
+        "Net",
+        "Clock",
+        "Rand",
+        "Mmio",
+        "Asm",
+        "RawMemory",
+        "Extern",
+    };
+    for (auto name : Names) {
+        Symbol s;
+        s.name = std::string{name};
+        s.kind = SymbolKind::Protocol;
+        s.decl = nullptr;
+        s.type = types_->make_nominal(TypeKind::Protocol, nullptr);
+        s.definition_range = {};
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
     }
 }
 

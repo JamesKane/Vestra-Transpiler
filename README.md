@@ -106,9 +106,12 @@ The transpiler is a classic layered front end with a single codegen pass:
 │                  │  Symbol; bidirectional checking lets literals adapt.
 │                  │  Then ownership/move tracking flags use-after-move
 │                  │  on sink calls and `return` (phase 1 of §5/§19.2),
-│                  │  and the Law of Exclusivity (§5.4 / §19.3) checks
-│                  │  every call: overlapping &-borrows of a single
-│                  │  place are rejected when any one is `inout`.
+│                  │  the Law of Exclusivity (§5.4 / §19.3) checks
+│                  │  every call (overlapping &-borrows of a single
+│                  │  place are rejected when any one is `inout`), and
+│                  │  capability resolution (§8 / §19.7) verifies every
+│                  │  `using` row is satisfied by either the caller's
+│                  │  own row or an enclosing `with` block.
 └──────────────────┘
     │
     ▼
@@ -197,6 +200,19 @@ Available on demand:
   Sink arguments are consumes (handled by ownership), not borrows.
   Phase 2 needs cross-statement liveness, partition primitives (clause
   4), and index-based subviews.
+- **Capability resolution (phase 1)** — §8's `using` rows are
+  propagated and verified. Every function call requires the caller to
+  have each of the callee's `using` capabilities in scope, either by
+  declaring the same row or via an enclosing `with X = value { ... }`
+  block. `async func` adds an implicit `Async`; `await` and `spawn`
+  both require `Async` in scope. The canonical capabilities (Alloc,
+  Log, Async, Net, Clock, Rand, Mmio, Asm, RawMemory, Extern) are
+  registered as built-in symbols so `using Alloc` resolves cleanly
+  without a real standard library. Phase 2 needs: type-checking the
+  value bound in `with`, row polymorphism over a generic capability
+  variable, capability narrowing (`Mmio.narrowed(to:)`), and gating
+  unsafe operations (Ptr.load → RawMemory, asm → Asm, etc.) once
+  those primitives exist.
 - **End-to-end** — `vestra build` parses, sema-checks (including
   ownership), and produces `.hpp/.cpp` that compiles and runs for
   `examples/hello.vst`, `examples/shapes.vst`, and
@@ -227,8 +243,11 @@ What's **deliberately stubbed** today, in roughly the order I'd tackle them:
    independent. Phase 2 needs cross-statement borrow liveness,
    recognition of `chunks(n)` / `split(at:)` partitions as disjoint,
    and index-based subview disambiguation.
-5. **Capability resolution** (§8, §19.7) — `using` rows resolved to enclosing
-   `with` bindings; unsafe capability discharge auditing (`vestra audit`).
+5. ~~**Capability resolution**~~ — **phase 1 done**: every `using` row
+   is checked, `with` blocks satisfy them, async/await/spawn require
+   `Async`. Phase 2 needs row polymorphism, narrowing, the audit-trail
+   `// Safety:` mechanism, and gating actual unsafe ops when we have
+   them.
 6. **Generics monomorphization** (§7) — currently generic decls parse but don't
    specialize; `Matrix[R, C, T]` and friends can't be emitted yet.
 7. **`comptime` interpreter** (§12) — the engine of reflection, `derive`, and

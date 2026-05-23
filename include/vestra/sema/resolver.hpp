@@ -47,6 +47,7 @@ public:
 
 private:
     // ---- pass 1: collect top-level decls ---------------------------------
+    void register_builtin_capabilities();
     void collect_top_level();
     void collect_func(const ast::FuncDecl& f);
     void collect_struct(const ast::StructDecl& s);

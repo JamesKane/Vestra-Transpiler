@@ -1150,6 +1150,23 @@ ast::StmtPtr Parser::parse_statement() {
         f->range = merge(start, last_range());
         return f;
     }
+    case TokenKind::KwWith: {
+        // §17.4: `with` w-bind (',' w-bind)* block
+        // w-bind: type ('=' expr)?  — the '=' is omitted for marker caps.
+        advance();
+        auto w = std::make_unique<ast::WithStmt>();
+        do {
+            ast::WithBinding b;
+            b.cap_type = parse_type();
+            if (match(TokenKind::Assign)) {
+                b.value = parse_expr();
+            }
+            w->bindings.push_back(std::move(b));
+        } while (match(TokenKind::Comma));
+        w->body = parse_block_expr();
+        w->range = merge(start, last_range());
+        return w;
+    }
     default:
         break;
     }

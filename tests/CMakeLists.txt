@@ -8,6 +8,7 @@ set(test_sources
     sema/resolver_test.cpp
     sema/ownership_test.cpp
     sema/exclusivity_test.cpp
+    sema/capability_test.cpp
     codegen/cpp_emitter_test.cpp)
 
 add_executable(vestra_tests

@@ -51,6 +51,7 @@ set(vestra_sources
     src/sema/resolver.cpp
     src/sema/ownership.cpp
     src/sema/exclusivity.cpp
+    src/sema/capability.cpp
     src/codegen/cpp_emitter.cpp
     src/driver/driver.cpp)
 

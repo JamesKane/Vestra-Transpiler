@@ -7,6 +7,7 @@
 #include "vestra/lex/lexer.hpp"
 #include "vestra/lex/token.hpp"
 #include "vestra/parse/parser.hpp"
+#include "vestra/sema/capability.hpp"
 #include "vestra/sema/exclusivity.hpp"
 #include "vestra/sema/ownership.hpp"
 #include "vestra/sema/resolver.hpp"
@@ -149,6 +150,8 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
         ownership.check();
         sema::ExclusivityChecker exclusivity(unit, resolver.resolution(), rep);
         exclusivity.check();
+        sema::CapabilityChecker capability(unit, resolver.resolution(), rep);
+        capability.check();
         if (rep.has_errors()) {
             rep.render_to(err);
             return 1;
@@ -204,6 +207,8 @@ int run_check(const std::filesystem::path& input, std::ostream& out, std::ostrea
             ownership.check();
             sema::ExclusivityChecker exclusivity(unit, resolver.resolution(), rep);
             exclusivity.check();
+            sema::CapabilityChecker capability(unit, resolver.resolution(), rep);
+            capability.check();
         }
     }
     if (rep.has_errors()) {
