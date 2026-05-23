@@ -173,3 +173,17 @@ TEST_CASE("byte strings do not interpret \\( as a splice") {
     REQUIRE(toks.size() >= 1);
     CHECK(toks[0].kind == vestra::lex::TokenKind::ByteStringLit);
 }
+
+// ---- §9 Optional ----------------------------------------------------------
+
+TEST_CASE("nil is its own keyword, not an identifier") {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto toks = lex_text(sm, rep, "nil nilly");
+    REQUIRE_FALSE(rep.has_errors());
+    REQUIRE(toks.size() >= 2);
+    CHECK(toks[0].kind == vestra::lex::TokenKind::KwNil);
+    // `nilly` is an identifier — `nil` is a prefix, not the whole word.
+    CHECK(toks[1].kind == vestra::lex::TokenKind::Identifier);
+    CHECK(toks[1].lexeme == "nilly");
+}

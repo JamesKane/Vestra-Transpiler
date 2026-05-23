@@ -160,6 +160,7 @@ enum class TokenKind : std::uint16_t {
     KwDerive,
     KwTrue,
     KwFalse,
+    KwNil,
     KwSelfLower,
     KwSelfUpper,  // self, Self
     KwPrivate,

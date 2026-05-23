@@ -229,3 +229,34 @@ TEST_CASE("a struct without derive(Debug) gets no formatter spec") {
     SemaEmitFixture f("struct Bare { var n: Int32 }\n");
     CHECK(f.out.header.find("std::formatter") == std::string::npos);
 }
+
+// ---- §9 Optional ----------------------------------------------------------
+
+TEST_CASE("nil lowers to std::nullopt") {
+    auto out = emit("func mk() -> Int32? { return nil }\n");
+    CHECK(out.header.find("std::optional<std::int32_t> mk(") != std::string::npos);
+    CHECK(out.source.find("return std::nullopt;") != std::string::npos);
+}
+
+TEST_CASE("?? lowers to std::optional::value_or") {
+    auto out = emit("func use(_ o: Int32?) -> Int32 { return o ?? 0 }\n");
+    CHECK(out.source.find("(o).value_or(0)") != std::string::npos);
+}
+
+TEST_CASE("postfix ! lowers to std::optional::value()") {
+    auto out = emit("func use(_ o: Int32?) -> Int32 { return o! }\n");
+    CHECK(out.source.find("o.value()") != std::string::npos);
+}
+
+TEST_CASE("if let lowers to a C++23 if-with-initializer over std::optional") {
+    SemaEmitFixture f("func use(_ o: Int32?) -> Int32 {\n"
+                      "    return if let v = o { v } else { 0 }\n"
+                      "}\n");
+    CHECK(f.out.source.find("if (auto __vstr_opt = o; __vstr_opt.has_value())")
+          != std::string::npos);
+    CHECK(f.out.source.find("auto&& v = *__vstr_opt") != std::string::npos);
+    // The branch bodies are inner block-expressions, so they each go
+    // through the IIFE form — we just check the leaf returns survive.
+    CHECK(f.out.source.find("return v;") != std::string::npos);
+    CHECK(f.out.source.find("return 0;") != std::string::npos);
+}

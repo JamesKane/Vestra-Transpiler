@@ -809,6 +809,11 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
                 return make_uint(~op->u, op->type);
             }
             return std::nullopt;
+        case ast::UnaryOp::Unwrap:
+            // §9 force-unwrap is a runtime operation (panics on `.none`);
+            // the folder doesn't model Optional values, so bail rather
+            // than guess.
+            return std::nullopt;
         }
         return std::nullopt;
     }
@@ -1011,6 +1016,11 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
 
     case ast::NodeKind::IfExpr: {
         const auto& i = static_cast<const ast::IfExpr&>(e);
+        if (!i.cond) {
+            // §9 `if let` — the folder doesn't model Optional values,
+            // so bail rather than guess which branch fires.
+            return std::nullopt;
+        }
         auto c = fold_with(*i.cond, env, frame, TypeKind::Bool, depth);
         if (!c || c->kind != ComptimeValue::Kind::Bool) {
             return std::nullopt;

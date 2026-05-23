@@ -148,7 +148,11 @@ void ExclusivityChecker::check_expr(const ast::Expr& e) {
     }
     case ast::NodeKind::IfExpr: {
         const auto& i = static_cast<const ast::IfExpr&>(e);
-        check_expr(*i.cond);
+        if (i.cond) {
+            check_expr(*i.cond);
+        } else if (i.let_init) {
+            check_expr(*i.let_init);
+        }
         if (i.then_branch) {
             check_expr(*i.then_branch);
         }

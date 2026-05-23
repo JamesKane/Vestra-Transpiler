@@ -328,6 +328,22 @@ bool TypeArena::assignable(TypePtr from, TypePtr to) noexcept {
     if (from->is_never()) {
         return true;
     }  // diverging fits anywhere
+    // §9 Optional ergonomics. Two implicit conversions:
+    //   1. `T → Optional<T>` — passing a value where an optional is
+    //      expected wraps in `.some(...)`. std::optional's converting
+    //      ctor makes this a no-op in C++.
+    //   2. `Optional<Never> → Optional<T>` — the resolver hands out
+    //      `Optional<Never>` for an unconstrained `nil` literal, and
+    //      that needs to fit any `Optional<T>` slot.
+    if (to->kind() == TypeKind::Optional) {
+        if (from->kind() == TypeKind::Optional && from->inner() != nullptr
+            && from->inner()->is_never()) {
+            return true;
+        }
+        if (from->kind() != TypeKind::Optional && assignable(from, to->inner())) {
+            return true;
+        }
+    }
     return equal(from, to);
 }
 

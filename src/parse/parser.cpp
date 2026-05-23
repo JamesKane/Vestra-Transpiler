@@ -1385,6 +1385,12 @@ ast::ExprPtr Parser::parse_primary() {
         b->range = merge(start, last_range());
         return b;
     }
+    case TokenKind::KwNil: {
+        advance();
+        auto n = std::make_unique<ast::NilLit>();
+        n->range = merge(start, last_range());
+        return n;
+    }
     case TokenKind::KwSelfLower: {
         advance();
         auto s = std::make_unique<ast::SelfExpr>();
@@ -1497,7 +1503,21 @@ ast::ExprPtr Parser::parse_primary() {
     case TokenKind::KwIf: {
         advance();
         auto i = std::make_unique<ast::IfExpr>();
-        i->cond = parse_expr();
+        // §9 `if let NAME = INIT { ... }` — when the next token is `let`,
+        // parse a single-name binding and the optional initializer. Anything
+        // more elaborate (pattern destructuring, `var let`, multiple
+        // bindings) is left for a later phase.
+        if (match(TokenKind::KwLet)) {
+            if (!check(TokenKind::Identifier)) {
+                emit_error(peek().range, "expected identifier after 'if let'");
+            } else {
+                i->let_name = std::string{advance().lexeme};
+            }
+            expect(TokenKind::Assign, "'=' after 'if let NAME'");
+            i->let_init = parse_expr();
+        } else {
+            i->cond = parse_expr();
+        }
         i->then_branch = parse_block_expr();
         if (match(TokenKind::KwElse)) {
             if (check(TokenKind::KwIf)) {
@@ -1677,10 +1697,11 @@ ast::ExprPtr Parser::parse_postfix(ast::ExprPtr lhs) {
             ix->range = merge(ix->range, last_range());
             lhs = std::move(ix);
         } else if (check(TokenKind::Bang)) {
-            // Force-unwrap is a postfix `!` on optional values (§9).
+            // §9 force-unwrap is postfix `!` on an Optional<T> value; it
+            // returns the wrapped T and panics if the operand is `.none`.
             advance();
             auto u = std::make_unique<ast::UnaryExpr>();
-            u->op = ast::UnaryOp::Not;  // we reuse Not until we add a dedicated Unwrap op
+            u->op = ast::UnaryOp::Unwrap;
             u->range = lhs->range;
             u->operand = std::move(lhs);
             u->range = merge(u->range, last_range());

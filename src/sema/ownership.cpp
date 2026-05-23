@@ -202,7 +202,15 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
         break;
     case ast::NodeKind::IfExpr: {
         const auto& i = static_cast<const ast::IfExpr&>(e);
-        check_expr(*i.cond);
+        if (i.cond) {
+            check_expr(*i.cond);
+        } else if (i.let_init) {
+            // §9 `if let NAME = INIT { ... }` — the init expression is the
+            // only thing checked here; the let-bound name is fresh inside
+            // the then-branch and doesn't participate in ownership flow
+            // until/unless it's used there.
+            check_expr(*i.let_init);
+        }
         // Phase 1 is conservative: we walk both branches in sequence rather
         // than merging branch states. This may over-reject (a binding moved
         // only in one branch is considered moved after the if), but it never

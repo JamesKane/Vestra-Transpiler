@@ -255,6 +255,8 @@ std::string_view spelling(TokenKind k) noexcept {
         return "true";
     case TokenKind::KwFalse:
         return "false";
+    case TokenKind::KwNil:
+        return "nil";
     case TokenKind::KwSelfLower:
         return "self";
     case TokenKind::KwSelfUpper:
@@ -328,6 +330,7 @@ TokenKind keyword_or_identifier(std::string_view lexeme) noexcept {
         {"derive", TokenKind::KwDerive},
         {"true", TokenKind::KwTrue},
         {"false", TokenKind::KwFalse},
+        {"nil", TokenKind::KwNil},
         {"self", TokenKind::KwSelfLower},
         {"Self", TokenKind::KwSelfUpper},
         {"private", TokenKind::KwPrivate},

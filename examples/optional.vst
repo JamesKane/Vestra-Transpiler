@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §9 Optional demo: `T?` is absence, and the only form of absence.
+// This file exercises the four ergonomics the spec calls out:
+//   * `nil`               — the absence literal
+//   * `??`                — nil-coalescing (default value on `.none`)
+//   * `if let NAME = ...` — conditional binding of the wrapped value
+//   * `!`                 — force-unwrap (panics on `.none`)
+// Plus the implicit T → T? wrap when a value is returned where an
+// optional is expected (the "implicit some").
+
+module examples.optional
+
+// Returns the absence literal directly.
+func empty() -> Int32? {
+    return nil
+}
+
+// Returns a wrapped value via the implicit T → T? conversion.
+func filled(_ x: Int32) -> Int32? {
+    return x
+}
+
+// `??` provides a default when the optional is `.none`. Should yield
+// the wrapped value when present, the rhs when not.
+func coalesce(_ o: Int32?, _ d: Int32) -> Int32 {
+    return o ?? d
+}
+
+// `if let` binds the unwrapped value in the then-branch only.
+func double_or_zero(_ o: Int32?) -> Int32 {
+    return if let v = o { v + v } else { 0 }
+}
+
+// Force-unwrap. Safe here because the caller guarantees `.some`.
+func forced(_ o: Int32?) -> Int32 {
+    return o!
+}

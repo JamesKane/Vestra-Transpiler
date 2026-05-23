@@ -109,6 +109,7 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "#include <cstdint>\n";
     hdr << "#include <format>\n";      // §4 interpolated strings lower to std::format
     hdr << "#include <functional>\n";  // §12.3 derive(Hash) std::hash specializations
+    hdr << "#include <optional>\n";    // §9 T? / nil / if let / ?? / !
     hdr << "#include <string>\n";
     hdr << "#include <string_view>\n";
     hdr << "#include <type_traits>\n";  // match-over-payloaded-enum constexpr-if
@@ -284,6 +285,9 @@ const char* CppEmitter::unop_text(ast::UnaryOp op) {
         return "!";
     case ast::UnaryOp::BitNot:
         return "~";
+    case ast::UnaryOp::Unwrap:
+        // Handled specially in emit_expr — never reaches the prefix path.
+        return "";
     }
     return "?";
 }
@@ -765,11 +769,20 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         // lets the surrounding function's return type pin both branches.
         if (r.value && r.value->kind == ast::NodeKind::IfExpr) {
             const auto& i = static_cast<const ast::IfExpr&>(*r.value);
-            os << "if (";
-            emit_expr(os, *i.cond);
-            os << ") { return ";
-            emit_expr(os, *i.then_branch);
-            os << "; }";
+            if (!i.let_name.empty()) {
+                os << "if (auto __vstr_opt = ";
+                emit_expr(os, *i.let_init);
+                os << "; __vstr_opt.has_value()) { auto&& " << i.let_name
+                   << " = *__vstr_opt; return ";
+                emit_expr(os, *i.then_branch);
+                os << "; }";
+            } else {
+                os << "if (";
+                emit_expr(os, *i.cond);
+                os << ") { return ";
+                emit_expr(os, *i.then_branch);
+                os << "; }";
+            }
             if (i.else_branch) {
                 os << " else { return ";
                 emit_expr(os, *i.else_branch);
@@ -937,6 +950,11 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     case ast::NodeKind::BoolLit:
         os << (static_cast<const ast::BoolLit&>(e).value ? "true" : "false");
         break;
+    case ast::NodeKind::NilLit:
+        // §9 nil → std::nullopt; the surrounding std::optional<T> slot
+        // narrows it via the implicit converting ctor.
+        os << "std::nullopt";
+        break;
     case ast::NodeKind::IdentExpr:
         os << static_cast<const ast::IdentExpr&>(e).name;
         break;
@@ -950,12 +968,32 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         break;
     case ast::NodeKind::UnaryExpr: {
         const auto& u = static_cast<const ast::UnaryExpr&>(e);
+        if (u.op == ast::UnaryOp::Unwrap) {
+            // §9 force-unwrap: `opt!` → `opt.value()`. std::optional's
+            // value() throws std::bad_optional_access on `.none`, which
+            // serves the spec's "panics" contract.
+            emit_expr(os, *u.operand);
+            os << ".value()";
+            break;
+        }
         os << unop_text(u.op);
         emit_expr(os, *u.operand);
         break;
     }
     case ast::NodeKind::BinaryExpr: {
         const auto& b = static_cast<const ast::BinaryExpr&>(e);
+        if (b.op == ast::BinaryOp::Coalesce) {
+            // §9 nil-coalescing: `a ?? b` → `(a).value_or(b)`. value_or
+            // eagerly evaluates b (vs the ternary form which short-
+            // circuits); for the literal/identifier defaults that are
+            // the common case this is fine and reads cleanly.
+            os << "(";
+            emit_expr(os, *b.lhs);
+            os << ").value_or(";
+            emit_expr(os, *b.rhs);
+            os << ")";
+            break;
+        }
         emit_expr(os, *b.lhs);
         os << " " << binop_text(b.op) << " ";
         emit_expr(os, *b.rhs);
@@ -1120,6 +1158,25 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // We can't always lower if-expressions; this works for a statement
         // context but produces invalid code when used in expression position.
         // A future pass should hoist into a temporary + statement.
+        if (!i.let_name.empty()) {
+            // §9 `if let NAME = INIT { THEN } else { ELSE }` lowers to a
+            // C++23 if-with-initializer over the std::optional, binding
+            // the unwrapped value as a reference for THEN.
+            os << "([&]{ if (auto __vstr_opt = ";
+            emit_expr(os, *i.let_init);
+            os << "; __vstr_opt.has_value()) { auto&& " << i.let_name << " = *__vstr_opt; return ";
+            emit_expr(os, *i.then_branch);
+            os << "; } else { return ";
+            if (i.else_branch) {
+                emit_expr(os, *i.else_branch);
+            } else {
+                os << "decltype(";
+                emit_expr(os, *i.then_branch);
+                os << "){}";
+            }
+            os << "; } }())";
+            break;
+        }
         os << "([&]{ if (";
         emit_expr(os, *i.cond);
         os << ") { return ";

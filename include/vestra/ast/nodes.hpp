@@ -57,6 +57,7 @@ enum class NodeKind : std::uint16_t {
     ByteStringLit,
     CharLit,
     BoolLit,
+    NilLit,
     IdentExpr,
     PathExpr,
     SelfExpr,
@@ -100,7 +101,11 @@ enum class Visibility { Private, Internal, Package, Public };
 // Unary operators usable in §17.7's prefix position. `Copy` is `copy expr`,
 // but a separate UnaryOp::Copy keeps the AST flat (no special `CopyExpr` is
 // strictly required, though we keep it for readability of consumers).
-enum class UnaryOp { Neg, Not, BitNot };
+// `Unwrap` is the postfix `!` on an optional value (§9 force-unwrap, panics
+// on `.none`). Distinct from `Not` because the operand type / lowering are
+// completely different — Not requires Bool and emits `!x`; Unwrap requires
+// Optional<T>, returns T, and emits `x.value()`.
+enum class UnaryOp { Neg, Not, BitNot, Unwrap };
 
 // Binary operators, ordered by precedence high→low to match §17.7.
 enum class BinaryOp {
@@ -309,6 +314,11 @@ struct BoolLit : Expr {
     bool value = false;
     BoolLit() : Expr(NodeKind::BoolLit) {}
 };
+// `nil` — §9 absence literal. Carries no payload; its type is whatever
+// Optional<T> the context expects (and the resolver pins it there).
+struct NilLit : Expr {
+    NilLit() : Expr(NodeKind::NilLit) {}
+};
 struct SelfExpr : Expr {
     SelfExpr() : Expr(NodeKind::SelfExpr) {}
 };
@@ -373,6 +383,13 @@ struct AsExpr : Expr {
 };
 
 struct IfExpr : Expr {
+    // §9 `if let NAME = INIT { … }`: when `let_name` is non-empty, the
+    // condition is implicit (`init` must produce an `Optional<T>`; if it
+    // holds a value, the unwrapped `T` is bound to `let_name` in
+    // `then_branch`'s scope and the branch runs; otherwise `else_branch`
+    // runs). In that mode `cond` is null.
+    std::string let_name;
+    ExprPtr let_init;
     ExprPtr cond;
     ExprPtr then_branch;
     ExprPtr else_branch;  // optional; null when no `else`

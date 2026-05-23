@@ -700,15 +700,40 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         // Integer literals adopt the expected type when it is an integer; this
         // is the bidirectional bit that lets `let x: Int32 = 42` typecheck
         // without an explicit conversion. Without context, default to Int.
-        t = (expected != nullptr && expected->is_integer()) ? expected
-                                                            : types_->primitive(TypeKind::Int);
+        // §9 ergonomic: peel one Optional layer so `let x: Int32? = 42`
+        // also adopts Int32 instead of falling back to the Int default.
+        {
+            TypePtr int_hint = expected;
+            if (int_hint != nullptr && int_hint->kind() == TypeKind::Optional) {
+                int_hint = int_hint->inner();
+            }
+            t = (int_hint != nullptr && int_hint->is_integer()) ? int_hint
+                                                                : types_->primitive(TypeKind::Int);
+        }
         break;
-    case ast::NodeKind::FloatLit:
-        t = (expected != nullptr && expected->is_float()) ? expected
-                                                          : types_->primitive(TypeKind::Float64);
+    case ast::NodeKind::FloatLit: {
+        TypePtr float_hint = expected;
+        if (float_hint != nullptr && float_hint->kind() == TypeKind::Optional) {
+            float_hint = float_hint->inner();
+        }
+        t = (float_hint != nullptr && float_hint->is_float())
+                ? float_hint
+                : types_->primitive(TypeKind::Float64);
         break;
+    }
     case ast::NodeKind::BoolLit:
         t = types_->boolean();
+        break;
+    case ast::NodeKind::NilLit:
+        // `nil` is the §9 absence literal. Its type is the expected
+        // Optional<T> when that's known; otherwise we fall back to
+        // Optional<Never>, which TypeArena::assignable treats as
+        // compatible with every Optional<T> so e.g. `let x: Int32? = nil`
+        // still typechecks even though `nil` was checked before the let-
+        // initializer ran.
+        t = (expected != nullptr && expected->kind() == TypeKind::Optional)
+                ? expected
+                : types_->make_optional(types_->never());
         break;
     case ast::NodeKind::StringLit:
         t = types_->primitive(TypeKind::StrConst);
@@ -861,11 +886,48 @@ TypePtr Resolver::check_unary(const ast::UnaryExpr& u, TypePtr expected) {
             return types_->error();
         }
         return operand;
+    case ast::UnaryOp::Unwrap:
+        // §9 postfix `!` panics on `.none` and yields the wrapped T.
+        if (operand->kind() != TypeKind::Optional) {
+            error_at(u.range,
+                     std::format("postfix '!' requires an Optional, got {}", operand->describe()));
+            return types_->error();
+        }
+        return operand->inner();
     }
     return types_->error();
 }
 
 TypePtr Resolver::check_binary(const ast::BinaryExpr& b, TypePtr expected) {
+    // §9 `lhs ?? rhs` — the result type is T, so the surrounding `expected`
+    // (when present) is T. Propagate T as the lhs's expected-Optional<T>
+    // and as the rhs's expected-T so literal defaulting picks the right
+    // primitive on both sides.
+    if (b.op == ast::BinaryOp::Coalesce) {
+        TypePtr lhs_expected = expected != nullptr ? types_->make_optional(expected) : nullptr;
+        auto lhs = check_expr(*b.lhs, lhs_expected);
+        TypePtr rhs_expected =
+            (lhs != nullptr && lhs->kind() == TypeKind::Optional) ? lhs->inner() : expected;
+        auto rhs = check_expr(*b.rhs, rhs_expected);
+        if (lhs == nullptr || rhs == nullptr || lhs->is_error() || rhs->is_error()) {
+            return types_->error();
+        }
+        if (lhs->kind() != TypeKind::Optional) {
+            error_at(
+                b.lhs->range,
+                std::format("'?\\?' requires an Optional left operand, got {}", lhs->describe()));
+            return types_->error();
+        }
+        if (!TypeArena::assignable(rhs, lhs->inner())) {
+            error_at(b.rhs->range,
+                     std::format("'?\\?' right operand of type {} does not match Optional<{}>",
+                                 rhs->describe(),
+                                 lhs->inner() ? lhs->inner()->describe() : "?"));
+            return types_->error();
+        }
+        return lhs->inner();
+    }
+
     // For arithmetic/bitwise/comparison, both operands ought to share a
     // single numeric type. Propagate `expected` to the lhs first; then use
     // the lhs's concrete type as the expected type for the rhs (so a literal
@@ -1185,12 +1247,38 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
 }
 
 TypePtr Resolver::check_if(const ast::IfExpr& i, TypePtr expected) {
-    auto cond_type = check_expr(*i.cond, types_->boolean());
-    if (cond_type != nullptr && cond_type->kind() != TypeKind::Bool && !cond_type->is_error()) {
-        error_at(i.cond->range,
-                 std::format("if condition must be Bool, got {}", cond_type->describe()));
+    TypePtr then_type;
+    if (!i.let_name.empty()) {
+        // §9 `if let NAME = INIT { ... }` — INIT must be Optional<T>; the
+        // then-branch is checked in a scope where NAME is bound to T.
+        auto init_type = check_expr(*i.let_init);
+        TypePtr bound;
+        if (init_type == nullptr || init_type->is_error()) {
+            bound = types_->error();
+        } else if (init_type->kind() != TypeKind::Optional) {
+            error_at(i.let_init->range,
+                     std::format("'if let' requires an Optional initializer, got {}",
+                                 init_type->describe()));
+            bound = types_->error();
+        } else {
+            bound = init_type->inner();
+        }
+        ScopeStack::Guard g(scopes_);
+        Symbol sym;
+        sym.name = i.let_name;
+        sym.kind = SymbolKind::Local;
+        sym.type = bound;
+        sym.definition_range = i.range;
+        (void)scopes_.current().insert(std::move(sym));
+        then_type = check_expr(*i.then_branch, expected);
+    } else {
+        auto cond_type = check_expr(*i.cond, types_->boolean());
+        if (cond_type != nullptr && cond_type->kind() != TypeKind::Bool && !cond_type->is_error()) {
+            error_at(i.cond->range,
+                     std::format("if condition must be Bool, got {}", cond_type->describe()));
+        }
+        then_type = check_expr(*i.then_branch, expected);
     }
-    auto then_type = check_expr(*i.then_branch, expected);
     if (!i.else_branch) {
         return types_->unit();
     }

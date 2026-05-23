@@ -273,3 +273,48 @@ TEST_CASE("match arms with mismatched result types are reported") {
                           "}\n");
     CHECK(r.error_count >= 1);
 }
+
+// ---- §9 Optional ----------------------------------------------------------
+
+TEST_CASE("nil is assignable to any Optional<T> slot") {
+    CHECK(check_errors("func mk() -> Int32? { return nil }\n") == 0);
+}
+
+TEST_CASE("a T value is assignable to a T? slot (implicit some)") {
+    CHECK(check_errors("func mk() -> Int32? { return 7 }\n") == 0);
+}
+
+TEST_CASE("?? requires an Optional left operand") {
+    auto r = check_detail("func bad(_ x: Int32) -> Int32 { return x ?? 0 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Optional") != std::string::npos);
+}
+
+TEST_CASE("?? yields the wrapped T type") {
+    CHECK(check_errors("func use(_ o: Int32?) -> Int32 { return o ?? 0 }\n") == 0);
+}
+
+TEST_CASE("postfix ! requires an Optional operand") {
+    auto r = check_detail("func bad(_ x: Int32) -> Int32 { return x! }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Optional") != std::string::npos);
+}
+
+TEST_CASE("postfix ! unwraps to the Optional's inner T") {
+    CHECK(check_errors("func use(_ o: Int32?) -> Int32 { return o! }\n") == 0);
+}
+
+TEST_CASE("if let binds the unwrapped T in the then-branch") {
+    CHECK(check_errors("func use(_ o: Int32?) -> Int32 {\n"
+                       "    return if let v = o { v } else { 0 }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("if let on a non-Optional initializer is reported") {
+    auto r = check_detail("func bad(_ x: Int32) -> Int32 {\n"
+                          "    return if let v = x { v } else { 0 }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Optional") != std::string::npos);
+}

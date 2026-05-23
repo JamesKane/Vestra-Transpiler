@@ -135,6 +135,8 @@ const char* Printer::unary_op_text(UnaryOp op) {
         return "!";
     case UnaryOp::BitNot:
         return "~";
+    case UnaryOp::Unwrap:
+        return "!";  // postfix in source; printer renders prefix, accepted
     }
     return "?";
 }
@@ -771,7 +773,14 @@ void Printer::print_expr(std::ostream& os, const Expr& e) {
     case NodeKind::IfExpr: {
         const auto& i = static_cast<const IfExpr&>(e);
         os << "if ";
-        print_expr(os, *i.cond);
+        if (!i.let_name.empty()) {
+            os << "let " << i.let_name << " = ";
+            if (i.let_init) {
+                print_expr(os, *i.let_init);
+            }
+        } else if (i.cond) {
+            print_expr(os, *i.cond);
+        }
         os << " ";
         print_expr(os, *i.then_branch);
         if (i.else_branch) {
