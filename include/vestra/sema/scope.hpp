@@ -15,7 +15,6 @@ namespace vestra::sema {
 
 // NOLINTNEXTLINE(performance-enum-size)
 enum class SymbolKind : std::uint8_t {
-    Module,
     Func,
     Struct,
     Enum,
@@ -27,8 +26,6 @@ enum class SymbolKind : std::uint8_t {
     Local,  // let / var
     Parameter,
     GenericParam,
-    Field,
-    Method,
 };
 
 struct Symbol {

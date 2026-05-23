@@ -46,7 +46,6 @@ enum class NodeKind : std::uint16_t {
     ForStmt,
     WhileStmt,
     WithStmt,
-    DoCatchStmt,
     AssignStmt,
     // ---- expressions ----
     IntLit,
@@ -77,7 +76,6 @@ enum class NodeKind : std::uint16_t {
     SpawnExpr,
     CopyExpr,
     ThrowExpr,
-    StructLitExpr,
     VectorLitExpr,
     ParenExpr,
     // ---- patterns ----
@@ -86,9 +84,6 @@ enum class NodeKind : std::uint16_t {
     BindPat,
     IdentPat,
     EnumPat,
-    StructPat,
-    TuplePat,
-    SlicePat,
 };
 
 // The four parameter modes from §5.
@@ -444,12 +439,6 @@ struct TryExpr : Expr {
     TryExpr() : Expr(NodeKind::TryExpr) {}
 };
 
-struct StructLitExpr : Expr {
-    TypePtr type;  // the struct's named type
-    std::vector<CallExpr::Arg> args;
-    StructLitExpr() : Expr(NodeKind::StructLitExpr) {}
-};
-
 struct VectorLitExpr : Expr {
     std::vector<ExprPtr> elements;
     VectorLitExpr() : Expr(NodeKind::VectorLitExpr) {}
@@ -521,16 +510,6 @@ struct WithStmt : Stmt {
     WithStmt() : Stmt(NodeKind::WithStmt) {}
 };
 
-struct DoCatchStmt : Stmt {
-    ExprPtr body;
-    struct Handler {
-        PatternPtr pattern;
-        ExprPtr body;
-    };
-    std::vector<Handler> handlers;
-    DoCatchStmt() : Stmt(NodeKind::DoCatchStmt) {}
-};
-
 struct AssignStmt : Stmt {
     AssignOp op;
     ExprPtr target;
@@ -560,23 +539,6 @@ struct EnumPat : Pattern {
     std::string case_name;
     std::vector<PatternPtr> children;
     EnumPat() : Pattern(NodeKind::EnumPat) {}
-};
-
-struct StructPat : Pattern {
-    TypePtr ty;
-    std::vector<std::pair<std::string, PatternPtr>> fields;
-    StructPat() : Pattern(NodeKind::StructPat) {}
-};
-
-struct TuplePat : Pattern {
-    std::vector<PatternPtr> elements;
-    TuplePat() : Pattern(NodeKind::TuplePat) {}
-};
-
-struct SlicePat : Pattern {
-    std::vector<PatternPtr> elements;
-    std::string rest_bind;  // empty when no `let X ...`
-    SlicePat() : Pattern(NodeKind::SlicePat) {}
 };
 
 // ------------------------------------------------------------------ decls
@@ -642,7 +604,6 @@ struct EnumDecl : Decl {
         diag::SourceRange range;
     };
     std::vector<Case> cases;
-    std::vector<StructDecl::Field> assoc_fields;  // §17.2 allows s-member after cases
     std::vector<DeclPtr> methods;
     EnumDecl() : Decl(NodeKind::Enum) {}
 };
@@ -709,15 +670,5 @@ struct CompilationUnit {
     std::vector<std::unique_ptr<ImportDecl>> imports;
     std::vector<DeclPtr> decls;
 };
-
-// Convenience helpers — owning constructors so callers don't have to repeat
-// `std::make_unique<...>()`. We keep them out of the structs to avoid bloating
-// the in-class boilerplate.
-template <class T, class... Args>
-[[nodiscard]] std::unique_ptr<T> make(diag::SourceRange r, Args&&... args) {
-    auto p = std::make_unique<T>(std::forward<Args>(args)...);
-    p->range = r;
-    return p;
-}
 
 }  // namespace vestra::ast

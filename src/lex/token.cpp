@@ -21,12 +21,6 @@ std::string_view spelling(TokenKind k) noexcept {
         return "float literal";
     case TokenKind::StringLit:
         return "string literal";
-    case TokenKind::StringStart:
-        return "string-literal-start";
-    case TokenKind::StringMid:
-        return "string-literal-mid";
-    case TokenKind::StringEnd:
-        return "string-literal-end";
     case TokenKind::ByteStringLit:
         return "byte string literal";
     case TokenKind::CharLit:
@@ -52,30 +46,22 @@ std::string_view spelling(TokenKind k) noexcept {
         return ";";
     case TokenKind::Colon:
         return ":";
-    case TokenKind::ColonColon:
-        return "::";
     case TokenKind::Dot:
         return ".";
     case TokenKind::DotDot:
         return "..";
     case TokenKind::DotDotLt:
         return "..<";
-    case TokenKind::Ellipsis:
-        return "...";
     case TokenKind::Arrow:
         return "->";
     case TokenKind::FatArrow:
         return "=>";
     case TokenKind::At:
         return "@";
-    case TokenKind::Dollar:
-        return "$";
     case TokenKind::Question:
         return "?";
     case TokenKind::Underscore:
         return "_";
-    case TokenKind::BackTick:
-        return "`";
     // operators
     case TokenKind::Plus:
         return "+";

@@ -292,10 +292,10 @@ void Lexer::scan_identifier(std::vector<Token>& out, std::size_t start) {
 }
 
 void Lexer::scan_string(std::vector<Token>& out, std::size_t start, bool is_byte) {
-    // We do NOT currently split interpolations into segments — this is a
-    // known gap (tracked by StringStart/StringMid/StringEnd existing in the
-    // token kinds). For now a string with `\(...)` is reported as a single
-    // StringLit and the parser treats it as a runtime String per §4.
+    // Interpolation splitting (`"x = \(value)"` → fragment + splice + fragment)
+    // is a known gap: we currently lex the whole literal as one StringLit and
+    // the parser treats it as a runtime String per §4. Add interpolation
+    // tokens here when string-interpolation lowering lands.
     while (!at_end()) {
         char c = peek();
         if (c == '"') {
@@ -385,29 +385,17 @@ std::vector<Token> Lexer::tokenize() {
         case '@':
             emit(out, TokenKind::At, start);
             break;
-        case '$':
-            emit(out, TokenKind::Dollar, start);
-            break;
         case '~':
             emit(out, TokenKind::Tilde, start);
             break;
-        case '`':
-            emit(out, TokenKind::BackTick, start);
-            break;
 
         case ':':
-            if (match(':')) {
-                emit(out, TokenKind::ColonColon, start);
-            } else {
-                emit(out, TokenKind::Colon, start);
-            }
+            emit(out, TokenKind::Colon, start);
             break;
 
         case '.':
             if (match('.')) {
-                if (match('.')) {
-                    emit(out, TokenKind::Ellipsis, start);
-                } else if (match('<')) {
+                if (match('<')) {
                     emit(out, TokenKind::DotDotLt, start);
                 } else {
                     emit(out, TokenKind::DotDot, start);

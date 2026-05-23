@@ -23,9 +23,6 @@ enum class TokenKind : std::uint16_t {
     IntLit,
     FloatLit,
     StringLit,      // "..."
-    StringStart,    // "...\(   — opens an interpolated string fragment
-    StringMid,      // )...\(   — middle fragment between two splices
-    StringEnd,      // )..."    — final fragment of an interpolated string
     ByteStringLit,  // b"..."
     CharLit,        // '.'
     Identifier,
@@ -40,18 +37,14 @@ enum class TokenKind : std::uint16_t {
     Comma,
     Semicolon,
     Colon,
-    ColonColon,
     Dot,
     DotDot,
     DotDotLt,    // ., .., ..<
-    Ellipsis,    // ...
     Arrow,       // ->
     FatArrow,    // =>
     At,          // @
-    Dollar,      // $   (only legal inside `quote`; lexer still produces it)
     Question,    // ?
     Underscore,  // _   (only meaningful as a parameter name / pattern)
-    BackTick,    // `   (reserved, unused for now)
 
     // ---- operators (single, then compound) ----
     Plus,

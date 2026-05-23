@@ -60,7 +60,6 @@ private:
     void check_decl(const ast::Decl& d);
     void check_func(const ast::FuncDecl& f);
 
-    void check_block(const ast::BlockExpr& b);
     void check_stmt(const ast::Stmt& s);
 
     // Compute and record an expression's type. `expected` is the type the
@@ -78,7 +77,6 @@ private:
 
     // Resolve an `ast::Type` node into a `sema::TypePtr`.
     TypePtr resolve_type(const ast::Type& t);
-    TypePtr resolve_type_opt(const ast::Type* t, TypePtr fallback);
 
     // ---- struct / enum lookup helpers ------------------------------------
 

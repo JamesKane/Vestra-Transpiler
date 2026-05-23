@@ -352,10 +352,6 @@ void Resolver::check_func(const ast::FuncDecl& f) {
     return_stack_.pop_back();
 }
 
-void Resolver::check_block(const ast::BlockExpr& b) {
-    (void)check_block_expr(b, nullptr);
-}
-
 TypePtr Resolver::check_block_expr(const ast::BlockExpr& b, TypePtr expected) {
     ScopeStack::Guard g(scopes_);
     TypePtr last = types_->unit();
@@ -419,7 +415,7 @@ void Resolver::check_stmt(const ast::Stmt& s) {
         if (!binding_name.empty()) {
             Symbol sym;
             sym.name = std::string{binding_name};
-            sym.kind = (s.kind == ast::NodeKind::LetStmt) ? SymbolKind::Local : SymbolKind::Local;
+            sym.kind = SymbolKind::Local;
             sym.type = annot_type != nullptr ? annot_type : value_type;
             sym.definition_range = binding_range;
             if (auto* prev = scopes_.current().insert(std::move(sym))) {
@@ -586,15 +582,6 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         t = check_match(static_cast<const ast::MatchExpr&>(e), expected);
         break;
 
-    case ast::NodeKind::IndexExpr:
-    case ast::NodeKind::SelectExpr:
-    case ast::NodeKind::ClosureExpr:
-    case ast::NodeKind::ComptimeExpr:
-    case ast::NodeKind::QuoteExpr:
-    case ast::NodeKind::StructLitExpr:
-    case ast::NodeKind::VectorLitExpr:
-    case ast::NodeKind::PathExpr:
-    case ast::NodeKind::SelfExpr:
     default:
         // Unimplemented: walk children to surface their errors, then assign
         // Error so downstream consumers don't cascade.
@@ -955,10 +942,6 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
     default:
         return types_->error();
     }
-}
-
-TypePtr Resolver::resolve_type_opt(const ast::Type* t, TypePtr fallback) {
-    return t == nullptr ? fallback : resolve_type(*t);
 }
 
 // ============================================================================
