@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §9 Optional chaining: `a?.b` peels one Optional layer before the
+// member lookup; if `a` is `.none`, the whole chain is `.none`. The
+// chain composes: `a?.b?.c?.d` short-circuits at the first `.none`.
+//
+// Vestra reuses the field's declared type to decide whether the chain
+// should *wrap* the result in Optional (member returns T → Optional<T>)
+// or *flatten* it (member already returns Optional<U> → stays
+// Optional<U>, never nests). In the lowering that's std::optional::
+// transform vs and_then.
+
+module examples.optchain
+
+struct Profile {
+    var name: Str
+    var age: Int32
+}
+
+struct User {
+    var profile: Profile?
+}
+
+// Chain ends on a plain Str → wraps once, yields Str?.
+func get_name(_ u: User?) -> Str? {
+    return u?.profile?.name
+}
+
+// Chain ends on Int32 → same shape, yields Int32?.
+func get_age(_ u: User?) -> Int32? {
+    return u?.profile?.age
+}
+
+// One-link chain on a directly-Optional field — exercises the
+// flattening (and_then) case in isolation.
+func get_profile(_ u: User?) -> Profile? {
+    return u?.profile
+}

@@ -302,6 +302,34 @@ TEST_CASE("try! lowers to std::expected::value()") {
     CHECK(out.source.find("f().value()") != std::string::npos);
 }
 
+// ---- §9 Optional chaining (`?.`) ------------------------------------------
+
+TEST_CASE("?. on a member returning T lowers to std::optional::transform") {
+    SemaEmitFixture f("struct S { var x: Int32 }\n"
+                      "func use(_ s: S?) -> Int32? { return s?.x }\n");
+    CHECK(f.out.source.find("s.transform([](auto&& __vstr_o) { return __vstr_o.x; })")
+          != std::string::npos);
+}
+
+TEST_CASE("?. on a member already returning Optional lowers to and_then (flatten)") {
+    SemaEmitFixture f("struct Profile { var name: Str }\n"
+                      "struct User { var profile: Profile? }\n"
+                      "func use(_ u: User?) -> Profile? { return u?.profile }\n");
+    CHECK(f.out.source.find("u.and_then([](auto&& __vstr_o) { return __vstr_o.profile; })")
+          != std::string::npos);
+}
+
+TEST_CASE("?. chains compose by stacking transform / and_then") {
+    SemaEmitFixture f("struct Profile { var name: Str }\n"
+                      "struct User { var profile: Profile? }\n"
+                      "func use(_ u: User?) -> Str? { return u?.profile?.name }\n");
+    // First link flattens (Profile?), second wraps (Str → Str?).
+    CHECK(f.out.source.find(".and_then([](auto&& __vstr_o) { return __vstr_o.profile; })")
+          != std::string::npos);
+    CHECK(f.out.source.find(".transform([](auto&& __vstr_o) { return __vstr_o.name; })")
+          != std::string::npos);
+}
+
 TEST_CASE("mid-expression try hoists to a stmt-position let-binding") {
     // `try` in a binary-expression operand should NOT fall through to
     // .value(); the hoist pass pre-emits the escape and the binary

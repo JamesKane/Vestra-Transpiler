@@ -1601,24 +1601,55 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
         return types_->error();
     }
 
+    // §9 optional chaining: `a?.b` requires `a : Optional<T>` and looks
+    // `b` up on `T`. The chain wraps the lookup result in Optional, and
+    // flattens an already-Optional member so `a?.b?.c` never yields
+    // Optional<Optional<U>>.
+    TypePtr lookup_base = base_type;
+    if (m.is_optional_chain) {
+        if (base_type->kind() != TypeKind::Optional) {
+            error_at(m.base->range,
+                     std::format("'?.' requires an Optional base, got {}", base_type->describe()));
+            return types_->error();
+        }
+        lookup_base = base_type->inner();
+        if (lookup_base == nullptr) {
+            return types_->error();
+        }
+    }
+
     // §12.2 vector ergonomics: `someVector.length` is its element count
     // as Int. Folds at comptime; not yet wired for runtime emission
     // (vectors today are emitted as `std::array<T, N>` whose .size() is
     // a constexpr — wiring runtime `.length` is a follow-on).
-    if (base_type->kind() == TypeKind::Vector && m.member == "length") {
-        return types_->primitive(TypeKind::Int);
+    auto finish = [&](TypePtr member_type) {
+        if (!m.is_optional_chain) {
+            return member_type;
+        }
+        if (member_type == nullptr || member_type->is_error()) {
+            return member_type;
+        }
+        // Flatten: a member already returning Optional<U> stays Optional<U>.
+        if (member_type->kind() == TypeKind::Optional) {
+            return member_type;
+        }
+        return types_->make_optional(member_type);
+    };
+
+    if (lookup_base->kind() == TypeKind::Vector && m.member == "length") {
+        return finish(types_->primitive(TypeKind::Int));
     }
 
     // Field on a struct.
-    if (auto field_type = lookup_field(base_type, m.member)) {
-        return field_type;
+    if (auto field_type = lookup_field(lookup_base, m.member)) {
+        return finish(field_type);
     }
     // Method on a struct/enum.
-    if (auto method_type = lookup_method(base_type, m.member)) {
-        return method_type;
+    if (auto method_type = lookup_method(lookup_base, m.member)) {
+        return finish(method_type);
     }
     error_at(m.range,
-             std::format("no field or method '{}' on type {}", m.member, base_type->describe()));
+             std::format("no field or method '{}' on type {}", m.member, lookup_base->describe()));
     return types_->error();
 }
 

@@ -1664,11 +1664,21 @@ ast::ExprPtr Parser::parse_postfix(ast::ExprPtr lhs) {
             expect(TokenKind::RParen, "')' to close call");
             c->range = merge(c->range, last_range());
             lhs = std::move(c);
-        } else if (check(TokenKind::Dot)) {
-            advance();
+        } else if (check(TokenKind::Dot)
+                   || (check(TokenKind::Question) && peek(1).kind == TokenKind::Dot)) {
+            // §9 `?.` is optional chaining; otherwise plain `.` member
+            // access. The lexer hands us `?` then `.` as separate
+            // tokens, so we peek one ahead to disambiguate from the
+            // postfix `?` of a type position (which can't appear here).
+            const bool is_chain = check(TokenKind::Question);
+            if (is_chain) {
+                advance();  // consume `?`
+            }
+            advance();  // consume `.`
             auto m = std::make_unique<ast::MemberExpr>();
             m->range = lhs->range;
             m->base = std::move(lhs);
+            m->is_optional_chain = is_chain;
             // Member names are usually identifiers, but Vestra reserves
             // a few words (`type`, `embed`, …) that legitimately serve
             // as field names — §12.2 reflection exposes `Field.type`,

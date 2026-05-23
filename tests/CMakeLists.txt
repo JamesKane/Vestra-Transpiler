@@ -422,6 +422,33 @@ set_tests_properties(e2e_optional_run PROPERTIES
     DEPENDS                e2e_optional_compile
     PASS_REGULAR_EXPRESSION "optional OK")
 
+# Optional chaining: §9 `a?.b?.c` short-circuits to nullopt on any
+# missing link. Each `?.` lowers to std::optional::transform (member
+# returns T) or and_then (member returns Optional<U>, flattens). The
+# runtime exercises every link's success/failure path.
+set(e2e_optchain_input  ${CMAKE_SOURCE_DIR}/examples/optchain.vst)
+set(e2e_optchain_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_optchain.cpp)
+
+add_test(
+    NAME    e2e_optchain_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_optchain_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_optchain_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_optchain_driver} ${e2e_workdir}/optchain.cpp
+            -o ${e2e_workdir}/optchain_app)
+set_tests_properties(e2e_optchain_compile PROPERTIES DEPENDS e2e_optchain_transpile)
+
+add_test(
+    NAME    e2e_optchain_run
+    COMMAND ${e2e_workdir}/optchain_app)
+set_tests_properties(e2e_optchain_run PROPERTIES
+    DEPENDS                e2e_optchain_compile
+    PASS_REGULAR_EXPRESSION "optchain OK")
+
 # Result / throws / try / throw: §9 error handling. throws(E) lowers to
 # std::expected<T, E>; try / try? / try! lower to propagation /
 # Optional-conversion / .value() respectively. The runtime exercises all

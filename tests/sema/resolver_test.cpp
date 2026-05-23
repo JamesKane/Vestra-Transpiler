@@ -365,6 +365,30 @@ TEST_CASE("throw outside a throws function is reported") {
     CHECK(r.first_message.find("throws") != std::string::npos);
 }
 
+// ---- §9 Optional chaining (`?.`) ------------------------------------------
+
+TEST_CASE("?. requires an Optional base") {
+    auto r = check_detail("struct S { var x: Int32 }\n"
+                          "func bad(_ s: S) -> Int32? { return s?.x }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Optional") != std::string::npos);
+}
+
+TEST_CASE("?. on an Optional struct wraps the field type") {
+    CHECK(check_errors("struct S { var x: Int32 }\n"
+                       "func use(_ s: S?) -> Int32? { return s?.x }\n")
+          == 0);
+}
+
+TEST_CASE("?. flattens an already-Optional field (no nested Optional)") {
+    // `u?.profile` is Optional<Profile> (not Optional<Optional<Profile>>);
+    // then `?.name` is Optional<Str>. Chain types as Str?.
+    CHECK(check_errors("struct Profile { var name: Str }\n"
+                       "struct User { var profile: Profile? }\n"
+                       "func get_name(_ u: User?) -> Str? { return u?.profile?.name }\n")
+          == 0);
+}
+
 TEST_CASE("throw inside a throws(E) fn requires the value type to match E") {
     auto r = check_detail("enum E { case bad }\n"
                           "func ok() throws(E) -> Int32 { throw E.bad }\n"

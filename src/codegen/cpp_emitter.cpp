@@ -1386,6 +1386,33 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     }
     case ast::NodeKind::MemberExpr: {
         const auto& m = static_cast<const ast::MemberExpr&>(e);
+        // §9 optional chaining: `a?.b` lowers to either
+        // std::optional::transform (member yields T) or and_then (member
+        // already yields Optional<U>, which we'd otherwise nest). The
+        // distinction is whether the field's AST type is OptionalType.
+        if (m.is_optional_chain) {
+            bool flatten = false;
+            if (resolution_ != nullptr) {
+                auto bt = resolution_->type_of(m.base.get());
+                if (bt != nullptr && bt->kind() == sema::TypeKind::Optional
+                    && bt->inner() != nullptr && bt->inner()->kind() == sema::TypeKind::Struct
+                    && bt->inner()->nominal_decl() != nullptr) {
+                    const auto& sd =
+                        static_cast<const ast::StructDecl&>(*bt->inner()->nominal_decl());
+                    for (const auto& f : sd.fields) {
+                        if (f.name == m.member && f.type != nullptr
+                            && f.type->kind == ast::NodeKind::OptionalType) {
+                            flatten = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            emit_expr(os, *m.base);
+            os << (flatten ? ".and_then" : ".transform");
+            os << "([](auto&& __vstr_o) { return __vstr_o." << m.member << "; })";
+            break;
+        }
         // If the base is an identifier the resolver bound to an Enum decl,
         // this is a static enum case access. Bare enums emit as
         // `Color::red`; payloaded enums lower as struct-of-variant so a

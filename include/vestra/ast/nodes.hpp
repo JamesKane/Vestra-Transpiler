@@ -352,6 +352,11 @@ struct CallExpr : Expr {
 struct MemberExpr : Expr {
     ExprPtr base;
     std::string member;
+    // §9 optional chaining: `a?.b` peels one Optional layer from `a`
+    // before looking up `b`, and wraps the lookup in Optional (.none
+    // short-circuits the whole chain). Distinct AST shape from `a.b`
+    // because the sema rules and lowering differ.
+    bool is_optional_chain = false;
     MemberExpr() : Expr(NodeKind::MemberExpr) {}
 };
 
