@@ -197,6 +197,12 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
     case ast::NodeKind::TryExpr:
         check_expr(*static_cast<const ast::TryExpr&>(e).inner);
         break;
+    case ast::NodeKind::DoCatchExpr: {
+        const auto& dc = static_cast<const ast::DoCatchExpr&>(e);
+        check_expr(*dc.do_body);
+        check_expr(*dc.catch_body);
+        break;
+    }
     case ast::NodeKind::AsExpr:
         check_expr(*static_cast<const ast::AsExpr&>(e).value);
         break;

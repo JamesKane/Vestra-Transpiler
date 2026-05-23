@@ -302,6 +302,24 @@ TEST_CASE("try! lowers to std::expected::value()") {
     CHECK(out.source.find("f().value()") != std::string::npos);
 }
 
+// ---- §9 do / catch inline error handling ---------------------------------
+
+TEST_CASE("do/catch lowers to nested IIFEs over std::expected") {
+    SemaEmitFixture f("enum E { case bad }\n"
+                      "func parse(_ x: Int32) throws(E) -> Int32 {\n"
+                      "    if x < 0 { throw E.bad }\n"
+                      "    return x\n"
+                      "}\n"
+                      "func safe(_ x: Int32) -> Int32 {\n"
+                      "    return do { try parse(x) } catch (e: E) { -1 }\n"
+                      "}\n");
+    // Inner lambda returns std::expected<T, E>; success T is the
+    // do-catch's result type, which is the resolver-inferred Int32.
+    CHECK(f.out.source.find("std::expected<std::int32_t, E>") != std::string::npos);
+    CHECK(f.out.source.find("if (__vstr_do.has_value())") != std::string::npos);
+    CHECK(f.out.source.find("[[maybe_unused]] auto e = __vstr_do.error();") != std::string::npos);
+}
+
 // ---- §9 Optional chaining (`?.`) ------------------------------------------
 
 TEST_CASE("?. on a member returning T lowers to std::optional::transform") {

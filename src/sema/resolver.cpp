@@ -857,6 +857,50 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         }
         break;
     }
+    case ast::NodeKind::DoCatchExpr: {
+        // §9 `do { body } catch (NAME: E) { handler }` — the body is
+        // checked under a synthetic throws(E) context so any `try`
+        // inside propagates as if the body were a throws(E) function;
+        // on error, the catch handler runs with NAME bound to E.
+        const auto& dc = static_cast<const ast::DoCatchExpr&>(e);
+        TypePtr error_type = dc.error_type ? resolve_type(*dc.error_type) : types_->error();
+        throws_stack_.push_back(error_type);
+        TypePtr body_type = check_expr(*dc.do_body, expected);
+        throws_stack_.pop_back();
+
+        ScopeStack::Guard g(scopes_);
+        Symbol sym;
+        sym.name = dc.error_name;
+        sym.kind = SymbolKind::Local;
+        sym.type = error_type;
+        sym.definition_range = dc.range;
+        (void)scopes_.current().insert(std::move(sym));
+        TypePtr catch_type = check_expr(*dc.catch_body, expected != nullptr ? expected : body_type);
+
+        if (body_type == nullptr || catch_type == nullptr || body_type->is_error()
+            || catch_type->is_error()) {
+            t = types_->error();
+            break;
+        }
+        if (body_type->is_never()) {
+            t = catch_type;
+            break;
+        }
+        if (catch_type->is_never()) {
+            t = body_type;
+            break;
+        }
+        if (!TypeArena::equal(body_type, catch_type)) {
+            error_at(e.range,
+                     std::format("do/catch arms have different types: {} vs {}",
+                                 body_type->describe(),
+                                 catch_type->describe()));
+            t = types_->error();
+            break;
+        }
+        t = body_type;
+        break;
+    }
     case ast::NodeKind::AsExpr: {
         const auto& a = static_cast<const ast::AsExpr&>(e);
         (void)check_expr(*a.value);

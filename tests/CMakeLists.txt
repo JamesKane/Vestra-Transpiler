@@ -422,6 +422,34 @@ set_tests_properties(e2e_optional_run PROPERTIES
     DEPENDS                e2e_optional_compile
     PASS_REGULAR_EXPRESSION "optional OK")
 
+# do / catch: §9 inline error handling. The do-block is checked under
+# the annotated catch's error type so any `try` inside propagates
+# locally; the catch arm binds the error value and recovers. Lowers to
+# nested IIFEs over std::expected. Runtime exercises success, error,
+# multi-try-body, and the bound-error dispatch.
+set(e2e_docatch_input  ${CMAKE_SOURCE_DIR}/examples/docatch.vst)
+set(e2e_docatch_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_docatch.cpp)
+
+add_test(
+    NAME    e2e_docatch_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_docatch_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_docatch_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_docatch_driver} ${e2e_workdir}/docatch.cpp
+            -o ${e2e_workdir}/docatch_app)
+set_tests_properties(e2e_docatch_compile PROPERTIES DEPENDS e2e_docatch_transpile)
+
+add_test(
+    NAME    e2e_docatch_run
+    COMMAND ${e2e_workdir}/docatch_app)
+set_tests_properties(e2e_docatch_run PROPERTIES
+    DEPENDS                e2e_docatch_compile
+    PASS_REGULAR_EXPRESSION "docatch OK")
+
 # Optional chaining: §9 `a?.b?.c` short-circuits to nullopt on any
 # missing link. Each `?.` lowers to std::optional::transform (member
 # returns T) or and_then (member returns Optional<U>, flattens). The

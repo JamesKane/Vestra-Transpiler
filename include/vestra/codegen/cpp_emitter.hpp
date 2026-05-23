@@ -66,6 +66,12 @@ private:
     void emit_expr(std::ostream& os, const ast::Expr& e);
     void emit_match(std::ostream& os, const ast::MatchExpr& m);
     void emit_type(std::ostream& os, const ast::Type& t);
+    // Emit the C++ spelling of a resolver-canonicalized type. Used in a
+    // handful of places where the AST type isn't reachable (e.g. the
+    // success-T slot of `std::expected<T, E>` for `do { ... } catch
+    // (...) { ... }` — T is the do-catch expression's inferred result
+    // type, not anything written in the source).
+    void emit_sema_type(std::ostream& os, sema::TypePtr t);
 
     // §9 stmt-position lowering for expressions whose runtime semantics
     // need a statement (a real `return`, an `if/else` chain, etc.). When

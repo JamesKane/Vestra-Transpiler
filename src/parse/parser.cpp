@@ -1557,6 +1557,27 @@ ast::ExprPtr Parser::parse_primary() {
         m->range = merge(start, last_range());
         return m;
     }
+    case TokenKind::KwDo: {
+        // §9 `do { body } catch (NAME: E) { handler }` — inline error
+        // handling. V0.5 requires the explicit `(NAME: E)` annotation so
+        // sema knows the error type without inferring from the body.
+        advance();
+        auto dc = std::make_unique<ast::DoCatchExpr>();
+        dc->do_body = parse_block_expr();
+        expect(TokenKind::KwCatch, "'catch' after 'do { ... }'");
+        expect(TokenKind::LParen, "'(' after 'catch'");
+        if (!check(TokenKind::Identifier)) {
+            emit_error(peek().range, "expected error binding name after 'catch ('");
+        } else {
+            dc->error_name = std::string{advance().lexeme};
+        }
+        expect(TokenKind::Colon, "':' after catch binding name");
+        dc->error_type = parse_type();
+        expect(TokenKind::RParen, "')' after catch binding annotation");
+        dc->catch_body = parse_block_expr();
+        dc->range = merge(start, last_range());
+        return dc;
+    }
     case TokenKind::KwComptime: {
         advance();
         auto c = std::make_unique<ast::ComptimeExpr>();

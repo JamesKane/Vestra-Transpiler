@@ -1268,6 +1268,56 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         os << "); std::unreachable(); }())";
         break;
     }
+    case ast::NodeKind::DoCatchExpr: {
+        // §9 `do { body } catch (NAME: E) { handler }` lowers to a
+        // pair of nested IIFEs: the inner one returns std::expected<T,
+        // E> so the body's `try` propagates via std::unexpected; the
+        // outer dispatches has_value to the body value or to the catch
+        // handler with NAME bound to E. The success type T comes from
+        // the resolver — it's the do-catch expression's own type.
+        const auto& dc = static_cast<const ast::DoCatchExpr&>(e);
+        sema::TypePtr result_type = resolution_ != nullptr ? resolution_->type_of(&e) : nullptr;
+        os << "([&]{ auto __vstr_do = [&]() -> std::expected<";
+        emit_sema_type(os, result_type);
+        os << ", ";
+        if (dc.error_type) {
+            emit_type(os, *dc.error_type);
+        }
+        os << "> { ";
+        // The inner lambda is a fresh statement scope, so any mid-
+        // expression `try` in the do-body needs its own hoist pass —
+        // the outer emit_stmt's hoist pass didn't descend into the
+        // do-catch. Without this, `do { (try f()) + (try g()) } …`
+        // would fall back to `.value()` panics. The do-body is almost
+        // always a BlockExpr whose trailing expression carries the
+        // result; collect_try_hoists itself doesn't descend into a
+        // BlockExpr (each inner stmt normally gets its own hoist scope
+        // via emit_stmt), so we hand-walk the trailing here.
+        std::vector<TryHoist> body_hoists;
+        if (dc.do_body->kind == ast::NodeKind::BlockExpr) {
+            const auto& b = static_cast<const ast::BlockExpr&>(*dc.do_body);
+            if (!b.stmts.empty() && b.stmts.back()->kind == ast::NodeKind::ExprStmt) {
+                const auto& trailing = static_cast<const ast::ExprStmt&>(*b.stmts.back());
+                if (trailing.expr) {
+                    collect_try_hoists(*trailing.expr, body_hoists);
+                }
+            }
+        } else {
+            collect_try_hoists(*dc.do_body, body_hoists);
+        }
+        for (const auto& h : body_hoists) {
+            emit_try_hoist(os, h, 0);
+        }
+        const auto* prev_hoists = active_hoists_;
+        active_hoists_ = &body_hoists;
+        emit_stmt_expr(os, *dc.do_body, /*return_value=*/true);
+        active_hoists_ = prev_hoists;
+        os << " }(); if (__vstr_do.has_value()) { return *__vstr_do; } [[maybe_unused]] auto "
+           << dc.error_name << " = __vstr_do.error(); return ";
+        emit_expr(os, *dc.catch_body);
+        os << "; }())";
+        break;
+    }
     case ast::NodeKind::BinaryExpr: {
         const auto& b = static_cast<const ast::BinaryExpr&>(e);
         if (b.op == ast::BinaryOp::Coalesce) {
@@ -1530,6 +1580,115 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     default:
         unsupported(os, "expression", e.range);
         break;
+    }
+}
+
+void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
+    using namespace sema;
+    if (t == nullptr) {
+        os << "/*?*/";
+        return;
+    }
+    switch (t->kind()) {
+    case TypeKind::Int8:
+        os << "std::int8_t";
+        return;
+    case TypeKind::Int16:
+        os << "std::int16_t";
+        return;
+    case TypeKind::Int32:
+        os << "std::int32_t";
+        return;
+    case TypeKind::Int64:
+        os << "std::int64_t";
+        return;
+    case TypeKind::Int:
+        os << "std::intptr_t";
+        return;
+    case TypeKind::UInt8:
+        os << "std::uint8_t";
+        return;
+    case TypeKind::UInt16:
+        os << "std::uint16_t";
+        return;
+    case TypeKind::UInt32:
+        os << "std::uint32_t";
+        return;
+    case TypeKind::UInt64:
+        os << "std::uint64_t";
+        return;
+    case TypeKind::UInt:
+        os << "std::uintptr_t";
+        return;
+    case TypeKind::Float32:
+        os << "float";
+        return;
+    case TypeKind::Float64:
+        os << "double";
+        return;
+    case TypeKind::Bool:
+        os << "bool";
+        return;
+    case TypeKind::Char:
+        os << "char32_t";
+        return;
+    case TypeKind::Unit:
+        os << "void";
+        return;
+    case TypeKind::String:
+        os << "std::string";
+        return;
+    case TypeKind::Str:
+    case TypeKind::StrConst:
+        os << "std::string_view";
+        return;
+    case TypeKind::Optional:
+        os << "std::optional<";
+        emit_sema_type(os, t->inner());
+        os << ">";
+        return;
+    case TypeKind::Result:
+        os << "std::expected<";
+        emit_sema_type(os, t->inner());
+        os << ", ";
+        emit_sema_type(os, t->result());
+        os << ">";
+        return;
+    case TypeKind::Vector:
+        os << "std::array<";
+        emit_sema_type(os, t->inner());
+        os << ", " << t->vector_length() << ">";
+        return;
+    case TypeKind::Struct:
+    case TypeKind::Enum:
+    case TypeKind::Protocol:
+    case TypeKind::OpaqueType:
+        if (const auto* decl = t->nominal_decl()) {
+            switch (decl->kind) {
+            case ast::NodeKind::Struct:
+                os << static_cast<const ast::StructDecl&>(*decl).name;
+                return;
+            case ast::NodeKind::Enum:
+                os << static_cast<const ast::EnumDecl&>(*decl).name;
+                return;
+            case ast::NodeKind::Protocol:
+                os << static_cast<const ast::ProtocolDecl&>(*decl).name;
+                return;
+            case ast::NodeKind::Opaque:
+                os << static_cast<const ast::OpaqueDecl&>(*decl).name;
+                return;
+            default:
+                break;
+            }
+        }
+        os << "/*nominal*/";
+        return;
+    case TypeKind::GenericParam:
+        os << t->generic_name();
+        return;
+    default:
+        os << "/*type*/";
+        return;
     }
 }
 

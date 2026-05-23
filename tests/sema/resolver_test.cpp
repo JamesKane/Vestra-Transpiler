@@ -365,6 +365,38 @@ TEST_CASE("throw outside a throws function is reported") {
     CHECK(r.first_message.find("throws") != std::string::npos);
 }
 
+// ---- §9 do / catch inline error handling ---------------------------------
+
+TEST_CASE("do/catch type-checks: catch binding has the annotated error type") {
+    CHECK(check_errors("enum E { case bad }\n"
+                       "func f() throws(E) -> Int32 { return 7 }\n"
+                       "func g() -> Int32 {\n"
+                       "    return do { try f() } catch (e: E) { -1 }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("do/catch arms with different types are reported") {
+    auto r = check_detail("enum E { case bad }\n"
+                          "func f() throws(E) -> Int32 { return 7 }\n"
+                          "func bad() -> Int32 {\n"
+                          "    return do { try f() } catch (e: E) { true }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("different types") != std::string::npos);
+}
+
+TEST_CASE("do-body's try uses the annotated error type as its throws context") {
+    // `f` throws E; the do-block's `catch (e: E)` matches, so `try f()`
+    // is OK even though the enclosing function does not throw.
+    CHECK(check_errors("enum E { case bad }\n"
+                       "func f() throws(E) -> Int32 { return 7 }\n"
+                       "func g() -> Int32 {\n"
+                       "    return do { try f() } catch (e: E) { 0 }\n"
+                       "}\n")
+          == 0);
+}
+
 // ---- §9 Optional chaining (`?.`) ------------------------------------------
 
 TEST_CASE("?. requires an Optional base") {

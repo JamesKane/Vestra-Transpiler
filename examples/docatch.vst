@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §9 `do { body } catch (NAME: E) { handler }` — inline error handling.
+// The do-block is checked under a synthetic throws(E) context so any
+// `try` inside propagates a `Result<T, E>` via std::unexpected; if any
+// link fails, control transfers to the catch arm with `NAME` bound to
+// the error value and `handler` produces the recovery value. Both arms
+// must have the same success type.
+//
+// V0.5 requires the explicit `(NAME: E)` annotation — bare `catch NAME`
+// (with the error type inferred from the body) is a follow-on.
+
+module examples.docatch
+
+enum ParseErr {
+    case negative
+    case overflow
+}
+
+func parse_int(_ s: Int32) throws(ParseErr) -> Int32 {
+    if s < 0 { throw ParseErr.negative }
+    return s
+}
+
+// Success path: do-body yields the parsed value.
+func safe_parse(_ x: Int32) -> Int32 {
+    return do {
+        try parse_int(x)
+    } catch (e: ParseErr) {
+        -1
+    }
+}
+
+// Multi-try body: a single catch covers every link.
+func sum_two(_ a: Int32, _ b: Int32) -> Int32 {
+    return do {
+        (try parse_int(a)) + (try parse_int(b))
+    } catch (e: ParseErr) {
+        0
+    }
+}
+
+// Catch handler that uses the bound error to vary the recovery.
+func tagged(_ x: Int32) -> Int32 {
+    return do {
+        try parse_int(x)
+    } catch (e: ParseErr) {
+        match e {
+            case .negative: -100
+            case .overflow: -200
+        }
+    }
+}

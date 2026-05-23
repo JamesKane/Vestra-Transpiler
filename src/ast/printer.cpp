@@ -820,6 +820,22 @@ void Printer::print_expr(std::ostream& os, const Expr& e) {
         print_expr(os, *t.inner);
         break;
     }
+    case NodeKind::DoCatchExpr: {
+        const auto& dc = static_cast<const DoCatchExpr&>(e);
+        os << "do ";
+        if (dc.do_body) {
+            print_expr(os, *dc.do_body);
+        }
+        os << " catch (" << dc.error_name << ": ";
+        if (dc.error_type) {
+            print_type(os, *dc.error_type);
+        }
+        os << ") ";
+        if (dc.catch_body) {
+            print_expr(os, *dc.catch_body);
+        }
+        break;
+    }
     case NodeKind::AsExpr: {
         const auto& a = static_cast<const AsExpr&>(e);
         print_expr(os, *a.value);

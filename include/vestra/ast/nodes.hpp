@@ -78,6 +78,7 @@ enum class NodeKind : std::uint16_t {
     InterpStringExpr,
     QuoteExpr,
     TryExpr,
+    DoCatchExpr,
     AwaitExpr,
     SpawnExpr,
     CopyExpr,
@@ -485,6 +486,22 @@ struct CopyExpr : Expr {
 struct ThrowExpr : Expr {
     ExprPtr inner;
     ThrowExpr() : Expr(NodeKind::ThrowExpr) {}
+};
+
+// §9 `do { body } catch (NAME: E) { handler }` — inline error handling.
+// The body is checked with `E` as its enclosing throws-context, so any
+// `try f()` inside propagates a Result<T, E> via std::unexpected. If the
+// body completes without error, the expression yields the body's value;
+// otherwise control transfers to the catch arm with NAME bound to E.
+// Both arms must produce values of the same success type T. V0.5
+// requires the explicit `(NAME: E)` annotation; bare `catch NAME` (with
+// inferred E from the body) is a follow-on.
+struct DoCatchExpr : Expr {
+    ExprPtr do_body;
+    std::string error_name;
+    TypePtr error_type;
+    ExprPtr catch_body;
+    DoCatchExpr() : Expr(NodeKind::DoCatchExpr) {}
 };
 
 struct TryExpr : Expr {
