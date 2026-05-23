@@ -62,6 +62,7 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "#include <cstdint>\n";
     hdr << "#include <string>\n";
     hdr << "#include <string_view>\n";
+    hdr << "#include <utility>\n";  // std::move at sink call sites
     hdr << "#include <variant>\n";
     hdr << "#include <vector>\n\n";
 
@@ -366,12 +367,15 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
     switch (s.kind) {
     case ast::NodeKind::LetStmt: {
         const auto& l = static_cast<const ast::LetStmt&>(s);
+        // Vestra's `let` is "no reassignment" — but it does allow consumption
+        // (move). C++'s `const` is stricter (no rebind AND no move-from), so
+        // we use plain `auto` / `T` here. Sema rejects assignment to `let`
+        // bindings, which is the part C++'s const was buying us.
         if (l.type) {
-            os << "const ";
             emit_type(os, *l.type);
             os << " ";
         } else {
-            os << "const auto ";
+            os << "auto ";
         }
         if (l.pattern && l.pattern->kind == ast::NodeKind::IdentPat) {
             os << static_cast<const ast::IdentPat&>(*l.pattern).name;
@@ -576,13 +580,34 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 break;
             }
         }
+        // Recover the callee's parameter modes so we can wrap sink arguments
+        // in std::move(). If the callee resolves to a Vestra func declaration,
+        // use its params; otherwise treat every param as `read` (the default).
+        const ast::FuncDecl* fn = nullptr;
+        if (resolution_ != nullptr) {
+            const auto* sym = resolution_->symbol_of(c.callee.get());
+            if (sym != nullptr && sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Func) {
+                fn = static_cast<const ast::FuncDecl*>(sym->decl);
+            }
+        }
         emit_expr(os, *c.callee);
         os << "(";
         for (std::size_t i = 0; i < c.args.size(); ++i) {
             if (i != 0) {
                 os << ", ";
             }
+            const bool is_sink = fn != nullptr && i < fn->params.size()
+                                 && fn->params[i].mode == ast::ParamMode::Sink;
+            // For a sink param, the value must arrive as an rvalue. The
+            // simplest correct lowering: always std::move at the call site.
+            // (`std::move(temporary)` is harmless — it just stays an rvalue.)
+            if (is_sink) {
+                os << "std::move(";
+            }
             emit_expr(os, *c.args[i].value);
+            if (is_sink) {
+                os << ")";
+            }
         }
         os << ")";
         break;

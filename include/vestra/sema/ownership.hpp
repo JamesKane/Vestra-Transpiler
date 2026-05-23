@@ -1,0 +1,90 @@
+#pragma once
+
+#include "vestra/ast/nodes.hpp"
+#include "vestra/diag/diagnostic.hpp"
+#include "vestra/diag/source_manager.hpp"
+#include "vestra/sema/resolver.hpp"
+#include "vestra/sema/scope.hpp"
+#include "vestra/sema/types.hpp"
+
+#include <cstdint>
+#include <unordered_map>
+
+namespace vestra::sema {
+
+// Ownership / move tracking — phase 1 of §5 and §19.2.
+//
+// What this pass enforces today:
+//   * Every non-trivial binding (Local or Parameter) has a state: Live or
+//     Consumed.
+//   * A binding is consumed by passing it to a `sink` parameter or by
+//     `return`ing it.
+//   * Using a consumed binding is rejected, with the original move site
+//     attached as a `note:` for the developer.
+//   * `copy x` reads x but does not consume it; the copy is the consumed
+//     value when the surrounding context demands ownership.
+//
+// What this pass deliberately does not (yet) do:
+//   * Flow-merge across `if` / `match` branches — analysis is linear.
+//   * Field-level tracking — moving `s.field` is approximated as moving `s`.
+//   * Linearity (`linear` keyword) — there is no must-consume check yet.
+//   * Mutability enforcement on `let` — that belongs in a separate check.
+//   * Trivial detection beyond the built-in numeric / Bool / Char primitives.
+class OwnershipChecker {
+public:
+    OwnershipChecker(const ast::CompilationUnit& unit,
+                     const Resolution& resolution,
+                     diag::DiagnosticReporter& reporter)
+        : unit_(&unit), resolution_(&resolution), reporter_(&reporter) {}
+
+    OwnershipChecker(const OwnershipChecker&) = delete;
+    OwnershipChecker& operator=(const OwnershipChecker&) = delete;
+
+    void check();
+
+private:
+    // NOLINTNEXTLINE(performance-enum-size)
+    enum class State : std::uint8_t { Live, Consumed };
+
+    struct BindingInfo {
+        State state = State::Live;
+        diag::SourceRange consume_site{};
+    };
+
+    void check_decl(const ast::Decl& d);
+    void check_func(const ast::FuncDecl& f);
+
+    void check_stmt(const ast::Stmt& s);
+    void check_expr(const ast::Expr& e);
+    void check_call(const ast::CallExpr& c);
+
+    // If `e` is a bare IdentExpr whose Symbol we're tracking, mark that
+    // binding Consumed at `site` (or report a double-consume).
+    void consume_place(const ast::Expr& e, diag::SourceRange site);
+
+    // The Symbol referenced by `e` if `e` is a bare IdentExpr/CopyExpr-stripped
+    // path that we track in this function; nullptr otherwise.
+    [[nodiscard]] const Symbol* place_symbol(const ast::Expr& e) const;
+
+    // Treat `e` as a use — if it references a tracked, consumed binding,
+    // report use-after-move with the original move site as a note.
+    void check_use(const ast::IdentExpr& ident);
+
+    // Is this type a candidate for ownership tracking? Trivial types are
+    // freely copied and never tracked.
+    [[nodiscard]] static bool is_trivial(TypePtr t) noexcept;
+
+    // Only Local / Parameter symbols are tracked. (Func/Const/Struct/... are
+    // not values that can be consumed.)
+    [[nodiscard]] static bool is_trackable_kind(SymbolKind k) noexcept;
+
+    const ast::CompilationUnit* unit_;
+    const Resolution* resolution_;
+    diag::DiagnosticReporter* reporter_;
+
+    // Per-function: state of every tracked binding encountered so far. Reset
+    // at the start of each function.
+    std::unordered_map<const Symbol*, BindingInfo> bindings_;
+};
+
+}  // namespace vestra::sema

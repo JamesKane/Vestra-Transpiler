@@ -1,0 +1,24 @@
+module examples.ownership
+
+struct Buf {
+    var n: Int32
+}
+
+func make_buf(_ n: Int32) -> Buf {
+    return Buf(n: n)
+}
+
+func consume(_ b: sink Buf) -> Int32 {
+    return b.n
+}
+
+func peek(_ b: Buf) -> Int32 {
+    return b.n
+}
+
+func compute() -> Int32 {
+    let b = make_buf(7)
+    let first = peek(b)
+    let second = peek(b)
+    return first + second + consume(b)
+}

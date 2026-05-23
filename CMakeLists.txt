@@ -49,6 +49,7 @@ set(vestra_sources
     src/sema/types.cpp
     src/sema/scope.cpp
     src/sema/resolver.cpp
+    src/sema/ownership.cpp
     src/codegen/cpp_emitter.cpp
     src/driver/driver.cpp)
 

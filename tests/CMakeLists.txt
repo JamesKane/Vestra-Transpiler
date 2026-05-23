@@ -6,6 +6,7 @@ set(test_sources
     parse/parser_test.cpp
     parse/printer_test.cpp
     sema/resolver_test.cpp
+    sema/ownership_test.cpp
     codegen/cpp_emitter_test.cpp)
 
 add_executable(vestra_tests
@@ -78,3 +79,28 @@ add_test(
 set_tests_properties(e2e_shapes_run PROPERTIES
     DEPENDS                e2e_shapes_compile
     PASS_REGULAR_EXPRESSION "compute\\(\\) = 44")
+
+# Ownership: a sink parameter takes ownership of a binding; the caller can
+# pre-borrow it (read) before transferring ownership at the end.
+set(e2e_ownership_input  ${CMAKE_SOURCE_DIR}/examples/ownership.vst)
+set(e2e_ownership_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_ownership.cpp)
+
+add_test(
+    NAME    e2e_ownership_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_ownership_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_ownership_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++23 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_ownership_driver} ${e2e_workdir}/ownership.cpp
+            -o ${e2e_workdir}/ownership_app)
+set_tests_properties(e2e_ownership_compile PROPERTIES DEPENDS e2e_ownership_transpile)
+
+add_test(
+    NAME    e2e_ownership_run
+    COMMAND ${e2e_workdir}/ownership_app)
+set_tests_properties(e2e_ownership_run PROPERTIES
+    DEPENDS                e2e_ownership_compile
+    PASS_REGULAR_EXPRESSION "compute\\(\\) = 21")

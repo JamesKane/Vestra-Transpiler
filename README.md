@@ -104,6 +104,8 @@ The transpiler is a classic layered front end with a single codegen pass:
 │  sema            │  bodies, resolving identifiers and computing types.
 │  → Resolution    │  Side tables map every Expr* to its TypePtr and bound
 │                  │  Symbol; bidirectional checking lets literals adapt.
+│                  │  Then ownership/move tracking flags use-after-move
+│                  │  on sink calls and `return` (phase 1 of §5/§19.2).
 └──────────────────┘
     │
     ▼
@@ -173,10 +175,22 @@ Available on demand:
   IIFE. The emitter consumes the resolver's side table when available, so
   context-sensitive lowering (struct vs function call, enum case spelling,
   match scrutinee type) is correct.
-- **End-to-end** — `vestra build examples/hello.vst` and
-  `vestra build examples/shapes.vst` both parse, check, and produce
-  `.hpp/.cpp` that compiles and runs (verified by the `e2e_hello_*` and
-  `e2e_shapes_*` CTest cases).
+- **Ownership / move tracking (phase 1)** — every non-trivial binding
+  (Local / Parameter) is flow-tracked through its function. Passing a
+  bare identifier to a `sink` parameter or `return`ing it consumes the
+  binding. Subsequent uses are rejected with a diagnostic that names
+  both the use and the original move site. `copy x` reads x without
+  consuming it (the copy becomes the consumed value). Reassigning a
+  consumed `var` revives it. Trivial primitives (numerics, Bool, Char,
+  Unit) are exempt and freely reusable. Phase 1 is intentionally linear
+  — it does not yet merge state across `if` / `match` branches.
+- **End-to-end** — `vestra build` parses, sema-checks (including
+  ownership), and produces `.hpp/.cpp` that compiles and runs for
+  `examples/hello.vst`, `examples/shapes.vst`, and
+  `examples/ownership.vst` (the `e2e_*_run` CTest cases verify each).
+  Sink-mode parameters lower to C++ `T&&` with `std::move(...)` at the
+  call site, and `let` bindings emit as `auto` (not `const auto`) so
+  ownership transfers are actually expressible.
 
 ## Roadmap
 
@@ -190,10 +204,13 @@ What's **deliberately stubbed** today, in roughly the order I'd tackle them:
    exhaustiveness. Still missing: generic instantiation, full visibility
    enforcement (the hook is in place; needs richer "owning scope" tracking),
    protocol conformance verification.
-3. **Ownership / move tracking** (§5, §19.2) — the affine/linear discipline,
-   `copy` vs. implicit copy, use-after-move diagnostics.
+3. ~~**Ownership / move tracking**~~ — **phase 1 done**: linear flow
+   analysis catches use-after-move on sink/return, `copy` salvages a
+   binding, var reassignment revives one. Phase 2 (branch-aware flow
+   merging, linear types, full Trivial detection for user structs)
+   remains.
 4. **Law of Exclusivity** checker (§5, §19.3) — overlap analysis on `inout`
-   accesses; trusted partitioners' provenance.
+   accesses; trusted partitioners' provenance. Builds on ownership.
 5. **Capability resolution** (§8, §19.7) — `using` rows resolved to enclosing
    `with` bindings; unsafe capability discharge auditing (`vestra audit`).
 6. **Generics monomorphization** (§7) — currently generic decls parse but don't
