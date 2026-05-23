@@ -3,6 +3,7 @@
 
 #include "vestra/codegen/cpp_emitter.hpp"
 
+#include <algorithm>
 #include <format>
 #include <ostream>
 #include <sstream>
@@ -118,15 +119,19 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "#include <variant>\n";
     hdr << "#include <vector>\n\n";
 
+    auto write_module_path = [&](std::ostream& os) {
+        for (std::size_t i = 0; i < unit.module->path.size(); ++i) {
+            if (i != 0) {
+                os << "::";
+            }
+            os << unit.module->path[i];
+        }
+    };
+
     if (unit.module) {
         // Vestra module path → C++ nested namespace.
         hdr << "namespace ";
-        for (std::size_t i = 0; i < unit.module->path.size(); ++i) {
-            if (i != 0) {
-                hdr << "::";
-            }
-            hdr << unit.module->path[i];
-        }
+        write_module_path(hdr);
         hdr << " {\n\n";
     }
 
@@ -135,12 +140,7 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
 
     if (unit.module) {
         src << "namespace ";
-        for (std::size_t i = 0; i < unit.module->path.size(); ++i) {
-            if (i != 0) {
-                src << "::";
-            }
-            src << unit.module->path[i];
-        }
+        write_module_path(src);
         src << " {\n\n";
     }
 
@@ -155,20 +155,10 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
 
     if (unit.module) {
         hdr << "\n}  // namespace ";
-        for (std::size_t i = 0; i < unit.module->path.size(); ++i) {
-            if (i != 0) {
-                hdr << "::";
-            }
-            hdr << unit.module->path[i];
-        }
+        write_module_path(hdr);
         hdr << "\n";
         src << "\n}  // namespace ";
-        for (std::size_t i = 0; i < unit.module->path.size(); ++i) {
-            if (i != 0) {
-                src << "::";
-            }
-            src << unit.module->path[i];
-        }
+        write_module_path(src);
         src << "\n";
     }
 
@@ -179,8 +169,8 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     // now — payloaded-enum Hash needs an extra std::visit-driven body).
     std::string qual_prefix;
     if (unit.module) {
-        for (std::size_t i = 0; i < unit.module->path.size(); ++i) {
-            qual_prefix += unit.module->path[i];
+        for (const auto& seg : unit.module->path) {
+            qual_prefix += seg;
             qual_prefix += "::";
         }
     }
@@ -360,13 +350,10 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
     // host compiler then monomorphizes per instantiation, which is what
     // Vestra semantically requires anyway. Const generics ([const N: Int])
     // are deferred — phase 1 only handles type parameters.
-    bool has_type_generics = false;
-    for (const auto& g : f.generics) {
-        if (!g.is_const && !g.name.empty()) {
-            has_type_generics = true;
-            break;
-        }
-    }
+    const bool has_type_generics =
+        std::any_of(f.generics.begin(), f.generics.end(), [](const ast::GenericParam& g) {
+            return !g.is_const && !g.name.empty();
+        });
     auto emit_template_prefix = [&](std::ostream& os) {
         if (!has_type_generics) {
             return;
@@ -1138,12 +1125,9 @@ void CppEmitter::emit_stmt_expr(std::ostream& os, const ast::Expr& expr, bool re
     }
     if (return_value) {
         os << "return ";
-        emit_expr(os, expr);
-        os << ";\n";
-    } else {
-        emit_expr(os, expr);
-        os << ";\n";
     }
+    emit_expr(os, expr);
+    os << ";\n";
 }
 
 void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
@@ -1250,25 +1234,25 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         //   * try? e  — converts to Optional<T> via an IIFE.
         //   * try! e  — panics on error (.value()).
         const auto& tx = static_cast<const ast::TryExpr&>(e);
-        switch (tx.form) {
-        case ast::TryExpr::Form::Propagating:
-            if (const auto* name = lookup_try_hoist(&tx)) {
-                os << *name;
-                break;
-            }
-            emit_expr(os, *tx.inner);
-            os << ".value()";
-            break;
-        case ast::TryExpr::Form::Forced:
-            emit_expr(os, *tx.inner);
-            os << ".value()";
-            break;
-        case ast::TryExpr::Form::Optional:
+        if (tx.form == ast::TryExpr::Form::Optional) {
             os << "([&]{ auto __vstr_r = ";
             emit_expr(os, *tx.inner);
             os << "; return __vstr_r.has_value() ? std::optional{*__vstr_r} : std::nullopt; }())";
             break;
         }
+        // Propagating with a hoist registered → emit the hoisted name.
+        if (tx.form == ast::TryExpr::Form::Propagating) {
+            if (const auto* name = lookup_try_hoist(&tx)) {
+                os << *name;
+                break;
+            }
+        }
+        // try! always panics on error; an un-hoisted propagating try
+        // (inside a conditional branch the walk refused to descend into)
+        // falls through to the same .value() panic so the code still
+        // compiles.
+        emit_expr(os, *tx.inner);
+        os << ".value()";
         break;
     }
     case ast::NodeKind::ThrowExpr: {
