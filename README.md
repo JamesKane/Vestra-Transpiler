@@ -111,7 +111,11 @@ The transpiler is a classic layered front end with a single codegen pass:
 │                  │  place are rejected when any one is `inout`), and
 │                  │  capability resolution (§8 / §19.7) verifies every
 │                  │  `using` row is satisfied by either the caller's
-│                  │  own row or an enclosing `with` block.
+│                  │  own row or an enclosing `with` block, and
+│                  │  generics (§7) are type-checked with opaque T's
+│                  │  inside the body, inferred at call sites, and
+│                  │  emitted as C++ templates for the host compiler
+│                  │  to monomorphize.
 └──────────────────┘
     │
     ▼
@@ -213,6 +217,18 @@ Available on demand:
   variable, capability narrowing (`Mmio.narrowed(to:)`), and gating
   unsafe operations (Ptr.load → RawMemory, asm → Asm, etc.) once
   those primitives exist.
+- **Generics (phase 1)** — §7 monomorphization via C++ templates. The
+  generic body type-checks once with opaque `GenericParam`-kind type
+  placeholders for each `[T]`. At each call site, types are inferred
+  by unifying parameter types against argument types — including
+  `expected` propagation from the outer context, so
+  `let x: Int32 = identity(7)` correctly resolves T to Int32 instead
+  of letting the literal default to Int. Codegen emits each generic
+  function as a header-only C++ template (`template <class T> ...`),
+  and the host C++ compiler does the actual per-instantiation
+  monomorphization. Phase 2: const generics (`[const N: Int]`),
+  generic structs/enums, where-clause refinement, and protocol-bound
+  enforcement.
 - **End-to-end** — `vestra build` parses, sema-checks (including
   ownership), and produces `.hpp/.cpp` that compiles and runs for
   `examples/hello.vst`, `examples/shapes.vst`, and
@@ -248,8 +264,11 @@ What's **deliberately stubbed** today, in roughly the order I'd tackle them:
    `Async`. Phase 2 needs row polymorphism, narrowing, the audit-trail
    `// Safety:` mechanism, and gating actual unsafe ops when we have
    them.
-6. **Generics monomorphization** (§7) — currently generic decls parse but don't
-   specialize; `Matrix[R, C, T]` and friends can't be emitted yet.
+6. ~~**Generics monomorphization**~~ — **phase 1 done**: generic
+   functions type-check with opaque T's, infer at call sites, and emit
+   as C++ templates that the host compiler monomorphizes. Phase 2:
+   const generics, generic structs/enums, where-clauses, and bound
+   enforcement.
 7. **`comptime` interpreter** (§12) — the engine of reflection, `derive`, and
    declaration macros. Likely the largest single piece of work.
 8. **String interpolation lowering** (§4) — produce `Display::display(into:)`

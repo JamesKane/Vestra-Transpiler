@@ -143,6 +143,14 @@ public:
     // now this is just `equal(from, to) || either is Error/Never`.
     [[nodiscard]] static bool assignable(TypePtr from, TypePtr to) noexcept;
 
+    // Substitute generic-parameter occurrences in `t` with the supplied
+    // mapping. Walks Optional/Vector/Tuple/Function recursively; leaves
+    // primitives and nominals untouched. The result lives in this arena.
+    // If `t` contains no generic params (or they're all unmapped), returns
+    // `t` unchanged.
+    [[nodiscard]] TypePtr substitute(TypePtr t,
+                                     const std::unordered_map<std::string, TypePtr>& bindings);
+
 private:
     std::vector<std::unique_ptr<Type>> owned_;
     std::unordered_map<int, const Type*> primitives_;  // keyed by TypeKind value

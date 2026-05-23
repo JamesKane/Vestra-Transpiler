@@ -1,0 +1,23 @@
+module examples.generics
+
+// Identity over any type — instantiated below at Int32 and Float64.
+func identity[T](_ x: T) -> T {
+    return x
+}
+
+// Pick the larger of two values. C++ template instantiation requires T to
+// have `operator>` for each instantiation; Vestra side just treats T as
+// opaque in the body (phase-1 bounds are not enforced yet).
+func max_of[T](_ a: T, _ b: T) -> T {
+    return if a > b { a } else { b }
+}
+
+func compute() -> Int32 {
+    let i: Int32 = identity(7)
+    let m: Int32 = max_of(i, 35)
+    // Also instantiate identity at Float64 so the template's two
+    // monomorphizations both get generated and link.
+    let f: Float64 = identity(1.5)
+    let truncated: Int32 = max_of(0, 0)
+    return i + m + truncated + (if f > 0.0 { 0 } else { 1 })
+}

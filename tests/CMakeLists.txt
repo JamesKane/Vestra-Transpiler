@@ -9,6 +9,7 @@ set(test_sources
     sema/ownership_test.cpp
     sema/exclusivity_test.cpp
     sema/capability_test.cpp
+    sema/generics_test.cpp
     codegen/cpp_emitter_test.cpp)
 
 add_executable(vestra_tests
@@ -106,3 +107,27 @@ add_test(
 set_tests_properties(e2e_ownership_run PROPERTIES
     DEPENDS                e2e_ownership_compile
     PASS_REGULAR_EXPRESSION "compute\\(\\) = 21")
+
+# Generics: exercises template instantiation in the host C++ compiler.
+set(e2e_generics_input  ${CMAKE_SOURCE_DIR}/examples/generics.vst)
+set(e2e_generics_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_generics.cpp)
+
+add_test(
+    NAME    e2e_generics_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_generics_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_generics_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++23 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_generics_driver} ${e2e_workdir}/generics.cpp
+            -o ${e2e_workdir}/generics_app)
+set_tests_properties(e2e_generics_compile PROPERTIES DEPENDS e2e_generics_transpile)
+
+add_test(
+    NAME    e2e_generics_run
+    COMMAND ${e2e_workdir}/generics_app)
+set_tests_properties(e2e_generics_run PROPERTIES
+    DEPENDS                e2e_generics_compile
+    PASS_REGULAR_EXPRESSION "compute\\(\\) = 42")

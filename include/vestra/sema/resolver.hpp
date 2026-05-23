@@ -95,6 +95,14 @@ private:
                                         std::string_view name,
                                         const ast::FuncDecl** out_method = nullptr);
 
+    // Unify a generic parameter type against a concrete arg type, growing the
+    // bindings map. A clash (same generic implied to be two different types
+    // by different args) is reported at `site`.
+    void unify_generic(TypePtr ptype,
+                       TypePtr atype,
+                       std::unordered_map<std::string, TypePtr>& bindings,
+                       diag::SourceRange site);
+
     // Find an enum case by name on the given enum decl.
     [[nodiscard]] const ast::EnumDecl::Case* lookup_enum_case(const ast::EnumDecl& e,
                                                               std::string_view name);

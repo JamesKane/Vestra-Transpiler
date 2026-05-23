@@ -328,4 +328,51 @@ bool TypeArena::assignable(TypePtr from, TypePtr to) noexcept {
     return equal(from, to);
 }
 
+TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, TypePtr>& bindings) {
+    if (t == nullptr || bindings.empty()) {
+        return t;
+    }
+    switch (t->kind()) {
+    case TypeKind::GenericParam: {
+        auto it = bindings.find(std::string{t->generic_name()});
+        return it == bindings.end() ? t : it->second;
+    }
+    case TypeKind::Optional: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_optional(inner);
+    }
+    case TypeKind::Vector: {
+        auto elem = substitute(t->inner(), bindings);
+        return elem == t->inner() ? t : make_vector(t->vector_length(), elem);
+    }
+    case TypeKind::Tuple: {
+        std::vector<TypePtr> elems;
+        elems.reserve(t->parts().size());
+        bool changed = false;
+        for (auto* p : t->parts()) {
+            auto s = substitute(p, bindings);
+            changed = changed || s != p;
+            elems.push_back(s);
+        }
+        return changed ? make_tuple(std::move(elems)) : t;
+    }
+    case TypeKind::Function: {
+        std::vector<TypePtr> params;
+        params.reserve(t->parts().size());
+        bool changed = false;
+        for (auto* p : t->parts()) {
+            auto s = substitute(p, bindings);
+            changed = changed || s != p;
+            params.push_back(s);
+        }
+        auto result = substitute(t->result(), bindings);
+        changed = changed || result != t->result();
+        return changed ? make_function(std::move(params), result) : t;
+    }
+    default:
+        // Primitives, nominals, Never, Error — no generic params inside.
+        return t;
+    }
+}
+
 }  // namespace vestra::sema

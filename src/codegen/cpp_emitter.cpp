@@ -231,6 +231,36 @@ void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl
 }
 
 void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::FuncDecl& f) {
+    // §7 generics: a Vestra generic function lowers to a C++ template. The
+    // host compiler then monomorphizes per instantiation, which is what
+    // Vestra semantically requires anyway. Const generics ([const N: Int])
+    // are deferred — phase 1 only handles type parameters.
+    bool has_type_generics = false;
+    for (const auto& g : f.generics) {
+        if (!g.is_const && !g.name.empty()) {
+            has_type_generics = true;
+            break;
+        }
+    }
+    auto emit_template_prefix = [&](std::ostream& os) {
+        if (!has_type_generics) {
+            return;
+        }
+        os << "template <";
+        bool first = true;
+        for (const auto& g : f.generics) {
+            if (g.is_const || g.name.empty()) {
+                continue;
+            }
+            if (!first) {
+                os << ", ";
+            }
+            first = false;
+            os << "class " << g.name;
+        }
+        os << ">\n";
+    };
+
     auto emit_signature = [&](std::ostream& os) {
         if (f.result) {
             emit_type(os, *f.result);
@@ -271,6 +301,30 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         }
         os << ")";
     };
+
+    // Templates must be visible at every instantiation site, so a generic
+    // function lives entirely in the header. Non-generics keep the
+    // declaration/definition split.
+    if (has_type_generics) {
+        emit_template_prefix(hdr);
+        hdr << "[[nodiscard]] ";
+        emit_signature(hdr);
+        if (!f.body) {
+            hdr << ";\n";
+            return;
+        }
+        hdr << " {\n";
+        if (f.body->kind == ast::NodeKind::BlockExpr) {
+            const auto& blk = static_cast<const ast::BlockExpr&>(*f.body);
+            for (const auto& s : blk.stmts) {
+                emit_stmt(hdr, *s, 1);
+            }
+        } else {
+            unsupported(hdr, "non-block function body", f.body->range);
+        }
+        hdr << "}\n\n";
+        return;
+    }
 
     hdr << "[[nodiscard]] ";
     emit_signature(hdr);

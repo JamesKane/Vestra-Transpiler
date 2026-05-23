@@ -236,6 +236,24 @@ void Resolver::collect_static(const ast::StaticDecl& s_) {
 // ============================================================================
 
 TypePtr Resolver::function_type_of(const ast::FuncDecl& f) {
+    // §7 generics: the function's own type parameters need to resolve while
+    // we walk its signature. We push a temporary scope holding each generic
+    // param as an opaque GenericParam type, so `func max[T](a: T) -> T`
+    // resolves T to its placeholder rather than failing with "unknown type".
+    // The scope is popped at the end of this call.
+    ScopeStack::Guard g(scopes_);
+    for (const auto& gp : f.generics) {
+        if (gp.name.empty() || gp.is_const) {
+            continue;  // const generics aren't types; phase 1 ignores them
+        }
+        Symbol s;
+        s.name = gp.name;
+        s.kind = SymbolKind::GenericParam;
+        s.type = types_->make_generic_param(gp.name);
+        s.definition_range = gp.range;
+        (void)g.scope().insert(std::move(s));
+    }
+
     std::vector<TypePtr> params;
     params.reserve(f.params.size());
     for (const auto& p : f.params) {
@@ -856,6 +874,23 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         return types_->error();
     }
 
+    // Generic-aware call dispatch (§7): if the callee is a generic Vestra
+    // function, build a substitution map by unifying its declared parameter
+    // types against the argument types, then apply the substitution to each
+    // param (for arg checking) and to the return type (for the call's
+    // expression type).
+    //
+    // The non-generic path stays a strict structural match — the generic
+    // path is a strict superset, so we go through it for every call where
+    // we have a known callee FuncDecl. Calls into opaque function values
+    // fall through to the non-generic check below.
+    const ast::FuncDecl* fn = nullptr;
+    if (const auto* sym = resolution_.symbol_of(c.callee.get())) {
+        if (sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Func) {
+            fn = static_cast<const ast::FuncDecl*>(sym->decl);
+        }
+    }
+
     const auto& params = callee_type->parts();
     if (params.size() != c.args.size()) {
         for (const auto& a : c.args) {
@@ -865,17 +900,62 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                  std::format("call expects {} argument(s), got {}", params.size(), c.args.size()));
         return callee_type->result() != nullptr ? callee_type->result() : types_->error();
     }
+
+    // Seed bindings from the surrounding context: if the call's result type
+    // is a generic placeholder (or contains one) and we know the type the
+    // caller expects, bind from that. Lets `let x: Int32 = identity(7)` work
+    // even though the literal `7` alone would default to Int.
+    std::unordered_map<std::string, TypePtr> bindings;
+    if (expected != nullptr && callee_type->result() != nullptr) {
+        unify_generic(callee_type->result(), expected, bindings, c.range);
+    }
+
+    // Pass 1: collect bindings from concrete arg types. We don't enforce
+    // type matches yet — that happens after substitution. As we walk left
+    // to right, we substitute each parameter's expected type with the
+    // bindings discovered so far, so an integer literal on the right side
+    // of `max_of(int32_value, 35)` adopts Int32 (already inferred from the
+    // first argument) instead of defaulting to Int and then conflicting.
     for (std::size_t i = 0; i < params.size(); ++i) {
-        auto arg_type = check_expr(*c.args[i].value, params[i]);
-        if (!TypeArena::assignable(arg_type, params[i])) {
+        auto pty = types_->substitute(params[i], bindings);
+        auto arg_type = check_expr(*c.args[i].value, pty);
+        unify_generic(params[i], arg_type, bindings, c.args[i].value->range);
+    }
+
+    // Pass 2: enforce each (substituted_param, arg) pair. We re-check the
+    // arg with the substituted expected type so bidirectional literal
+    // adaptation can pick up the generic's inferred concrete type.
+    for (std::size_t i = 0; i < params.size(); ++i) {
+        auto pty = types_->substitute(params[i], bindings);
+        auto arg_type = check_expr(*c.args[i].value, pty);
+        if (!TypeArena::assignable(arg_type, pty)) {
             error_at(c.args[i].value->range,
                      std::format("argument {} of type {} does not match parameter type {}",
                                  i + 1,
                                  arg_type ? arg_type->describe() : "?",
-                                 params[i] ? params[i]->describe() : "?"));
+                                 pty ? pty->describe() : "?"));
         }
     }
-    return callee_type->result() != nullptr ? callee_type->result() : types_->unit();
+
+    // Verify every generic parameter ended up bound. An unbound generic at a
+    // call site means inference couldn't pin it down — usually because the
+    // generic only appears in the return position with no contextual type.
+    if (fn != nullptr) {
+        for (const auto& gp : fn->generics) {
+            if (gp.is_const || gp.name.empty()) {
+                continue;
+            }
+            if (!bindings.contains(gp.name)) {
+                error_at(c.range,
+                         std::format("cannot infer generic parameter '{}' for call to '{}'",
+                                     gp.name,
+                                     fn->name));
+            }
+        }
+    }
+
+    auto result = callee_type->result() != nullptr ? callee_type->result() : types_->unit();
+    return types_->substitute(result, bindings);
 }
 
 TypePtr Resolver::check_if(const ast::IfExpr& i, TypePtr expected) {
@@ -1287,6 +1367,50 @@ void Resolver::check_visibility(const Symbol& sym, diag::SourceRange use_range) 
     // reject. This branch is the hook for the eventual real check; tested by
     // a TODO test in tests/sema/resolver_test.cpp.
     (void)use_range;
+}
+
+// ============================================================================
+// Generic unification helper
+// ============================================================================
+
+void Resolver::unify_generic(TypePtr ptype,
+                             TypePtr atype,
+                             std::unordered_map<std::string, TypePtr>& bindings,
+                             diag::SourceRange site) {
+    if (ptype == nullptr || atype == nullptr) {
+        return;
+    }
+    if (ptype->kind() == TypeKind::GenericParam) {
+        auto name = std::string{ptype->generic_name()};
+        auto it = bindings.find(name);
+        if (it == bindings.end()) {
+            bindings.emplace(std::move(name), atype);
+        } else if (!TypeArena::equal(it->second, atype) && !atype->is_error()) {
+            error_at(site,
+                     std::format("conflicting bindings for generic '{}': {} vs {}",
+                                 ptype->generic_name(),
+                                 it->second ? it->second->describe() : "?",
+                                 atype->describe()));
+        }
+        return;
+    }
+    if (ptype->kind() == TypeKind::Optional && atype->kind() == TypeKind::Optional) {
+        unify_generic(ptype->inner(), atype->inner(), bindings, site);
+        return;
+    }
+    if (ptype->kind() == TypeKind::Vector && atype->kind() == TypeKind::Vector) {
+        unify_generic(ptype->inner(), atype->inner(), bindings, site);
+        return;
+    }
+    if (ptype->kind() == TypeKind::Tuple && atype->kind() == TypeKind::Tuple
+        && ptype->parts().size() == atype->parts().size()) {
+        for (std::size_t k = 0; k < ptype->parts().size(); ++k) {
+            unify_generic(ptype->parts()[k], atype->parts()[k], bindings, site);
+        }
+        return;
+    }
+    // Other kinds: structural rules elsewhere already verify the call, so no
+    // binding is contributed.
 }
 
 }  // namespace vestra::sema
