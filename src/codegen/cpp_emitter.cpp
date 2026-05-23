@@ -20,6 +20,19 @@ void write_indent(std::ostream& os, int indent) {
     }
 }
 
+// Any payload at all on any case means the enum lowers to a
+// `std::variant<case_t…>` wrapper, and every case construction needs
+// the `Enum{Enum::case_t{…}}` brace-shape. A bare enum lowers to plain
+// `enum class Enum { … }` and constructs as `Enum::case` directly.
+bool enum_is_sum_type(const ast::EnumDecl& e) noexcept {
+    for (const auto& c : e.cases) {
+        if (!c.payload.empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Map Vestra primitive names to C++ equivalents.
 const std::unordered_map<std::string, std::string>& primitive_map() {
     static const std::unordered_map<std::string, std::string> m = {
@@ -66,7 +79,8 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "#include <format>\n";  // §4 interpolated strings lower to std::format
     hdr << "#include <string>\n";
     hdr << "#include <string_view>\n";
-    hdr << "#include <utility>\n";  // std::move at sink call sites
+    hdr << "#include <type_traits>\n";  // match-over-payloaded-enum constexpr-if
+    hdr << "#include <utility>\n";      // std::move at sink call sites
     hdr << "#include <variant>\n";
     hdr << "#include <vector>\n\n";
 
@@ -701,6 +715,31 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     }
     case ast::NodeKind::CallExpr: {
         const auto& c = static_cast<const ast::CallExpr&>(e);
+        // Payloaded-enum case construction: `Shape.circle(radius: 1.0)` →
+        // `Shape{Shape::circle_t{1.0}}`. Bare cases on a payloaded enum
+        // come through the MemberExpr path above; here we handle the
+        // call form so the args slot into the right `case_t` aggregate.
+        if (resolution_ != nullptr && c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            if (mem.base->kind == ast::NodeKind::IdentExpr) {
+                if (const auto* sym = resolution_->symbol_of(mem.base.get())) {
+                    if (sym->kind == sema::SymbolKind::Enum && sym->decl != nullptr) {
+                        const auto& ed = static_cast<const ast::EnumDecl&>(*sym->decl);
+                        if (enum_is_sum_type(ed)) {
+                            os << ed.name << "{" << ed.name << "::" << mem.member << "_t{";
+                            for (std::size_t i = 0; i < c.args.size(); ++i) {
+                                if (i != 0) {
+                                    os << ", ";
+                                }
+                                emit_expr(os, *c.args[i].value);
+                            }
+                            os << "}}";
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         // §17.x conversion-call lowering: `Float64(i)` → `static_cast<double>(i)`.
         // Sema accepts a bare numeric-primitive ident in callee position and
         // produces a one-arg call typed at that primitive; here we map it to
@@ -774,13 +813,19 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     case ast::NodeKind::MemberExpr: {
         const auto& m = static_cast<const ast::MemberExpr&>(e);
         // If the base is an identifier the resolver bound to an Enum decl,
-        // this is a static enum case access (`Color.red`) — emit `Color::red`.
+        // this is a static enum case access. Bare enums emit as
+        // `Color::red`; payloaded enums lower as struct-of-variant so a
+        // bare-case access needs the `Shape{Shape::point_t{}}` wrap.
         if (resolution_ != nullptr && m.base->kind == ast::NodeKind::IdentExpr) {
             const auto* base_sym = resolution_->symbol_of(m.base.get());
             if (base_sym != nullptr && base_sym->kind == sema::SymbolKind::Enum
                 && base_sym->decl != nullptr) {
                 const auto& enum_decl = static_cast<const ast::EnumDecl&>(*base_sym->decl);
-                os << enum_decl.name << "::" << m.member;
+                if (enum_is_sum_type(enum_decl)) {
+                    os << enum_decl.name << "{" << enum_decl.name << "::" << m.member << "_t{}}";
+                } else {
+                    os << enum_decl.name << "::" << m.member;
+                }
                 break;
             }
         }
@@ -948,34 +993,143 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
     }
     const auto& enum_decl = static_cast<const ast::EnumDecl&>(*scrutinee_type->nominal_decl());
 
-    // A payloaded enum lowers to std::visit — out of scope for now.
+    // Two lowerings depending on whether any case carries a payload. A
+    // bare enum lowers to a plain `switch (e) { case … }` IIFE; a
+    // payloaded enum lowers to `std::visit(...)` with a constexpr-if
+    // chain dispatching on each alternative's type.
+    bool has_payload = false;
     for (const auto& c : enum_decl.cases) {
         if (!c.payload.empty()) {
-            unsupported(os, "match over payloaded enum", m.range);
-            return;
+            has_payload = true;
+            break;
         }
     }
 
-    // Lower the whole expression as an IIFE returning a switch's value through
-    // a tail `return`.
-    os << "[&]{ switch (";
-    emit_expr(os, *m.scrutinee);
-    os << ") {\n";
-    for (const auto& arm : m.arms) {
-        if (arm.is_default) {
-            os << "        default: return ";
-        } else if (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::EnumPat) {
-            const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
-            os << "        case " << enum_decl.name << "::" << ep.case_name << ": return ";
-        } else {
-            unsupported(os, "match arm pattern", m.range);
+    if (!has_payload) {
+        // Lower the whole expression as an IIFE returning a switch's value
+        // through a tail `return`. Wildcard patterns map to `default:`.
+        os << "[&]{ switch (";
+        emit_expr(os, *m.scrutinee);
+        os << ") {\n";
+        for (const auto& arm : m.arms) {
+            if (arm.is_default
+                || (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::WildcardPat)) {
+                os << "        default: return ";
+            } else if (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::EnumPat) {
+                const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
+                os << "        case " << enum_decl.name << "::" << ep.case_name << ": return ";
+            } else {
+                unsupported(os, "match arm pattern", m.range);
+                os << ";\n";
+                continue;
+            }
+            emit_expr(os, *arm.body);
             os << ";\n";
+        }
+        os << "    } }()";
+        return;
+    }
+
+    // Payloaded enum: lower to std::visit with constexpr-if dispatch.
+    //
+    //   std::visit([&](auto&& __vstr_alt) -> auto {
+    //       using __vstr_alt_t = std::decay_t<decltype(__vstr_alt)>;
+    //       if constexpr (std::is_same_v<__vstr_alt_t, Enum::case_t>) {
+    //           auto&& binding = __vstr_alt.field;   // per BindPat child
+    //           return <arm body>;
+    //       } else if constexpr (…) { … }
+    //       else { return <default body>; }                  // optional
+    //       else { std::unreachable(); }                     // safety net
+    //   }, scrutinee.value)
+    //
+    // Sema verifies exhaustiveness so the std::unreachable() arm only
+    // exists to satisfy C++'s "all paths must return" rule when there's
+    // no user-supplied default.
+    os << "std::visit([&](auto&& __vstr_alt) -> auto {\n";
+    os << "        using __vstr_alt_t = std::decay_t<decltype(__vstr_alt)>;\n";
+
+    bool first = true;
+    const ast::MatchArm* default_arm = nullptr;
+
+    for (const auto& arm : m.arms) {
+        if (arm.is_default
+            || (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::WildcardPat)) {
+            default_arm = &arm;
             continue;
         }
+        if (arm.pattern == nullptr || arm.pattern->kind != ast::NodeKind::EnumPat) {
+            unsupported(os, "match arm pattern over payloaded enum", m.range);
+            continue;
+        }
+        const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
+
+        // Locate the case decl so we can resolve positional vs labeled
+        // payload field names (parallels emit_enum's `_{i}` fallback).
+        const ast::EnumDecl::Case* case_decl = nullptr;
+        for (const auto& c : enum_decl.cases) {
+            if (c.name == ep.case_name) {
+                case_decl = &c;
+                break;
+            }
+        }
+        if (case_decl == nullptr) {
+            unsupported(os, "match arm references unknown enum case", arm.pattern->range);
+            continue;
+        }
+
+        if (first) {
+            write_indent(os, 2);
+            os << "if";
+        } else {
+            os << " else if";  // chained — previous arm ended with bare "}"
+        }
+        os << " constexpr (std::is_same_v<__vstr_alt_t, " << enum_decl.name << "::" << ep.case_name
+           << "_t>) {\n";
+
+        for (std::size_t i = 0; i < ep.children.size() && i < case_decl->payload.size(); ++i) {
+            const auto& child = *ep.children[i];
+            std::string field_name = case_decl->payload[i].first.empty()
+                                         ? std::format("_{}", i)
+                                         : case_decl->payload[i].first;
+            if (child.kind == ast::NodeKind::BindPat) {
+                write_indent(os, 3);
+                os << "auto&& " << static_cast<const ast::BindPat&>(child).name << " = __vstr_alt."
+                   << field_name << ";\n";
+            } else if (child.kind == ast::NodeKind::IdentPat) {
+                write_indent(os, 3);
+                os << "auto&& " << static_cast<const ast::IdentPat&>(child).name << " = __vstr_alt."
+                   << field_name << ";\n";
+            }
+            // Wildcard / nested patterns: nothing to bind. Sub-pattern
+            // matching is a follow-on.
+        }
+
+        write_indent(os, 3);
+        os << "return ";
         emit_expr(os, *arm.body);
         os << ";\n";
+        write_indent(os, 2);
+        os << "}";
+        first = false;
     }
-    os << "    } }()";
+
+    if (default_arm != nullptr) {
+        os << " else {\n";
+        write_indent(os, 3);
+        os << "return ";
+        emit_expr(os, *default_arm->body);
+        os << ";\n";
+        write_indent(os, 2);
+        os << "}";
+    } else {
+        // Sema's exhaustiveness check should have caught a real miss; this
+        // branch only exists to satisfy the C++ compiler's "no return"
+        // diagnostic on the lambda.
+        os << " else { std::unreachable(); }";
+    }
+    os << "\n    }, ";
+    emit_expr(os, *m.scrutinee);
+    os << ".value)";
 }
 
 }  // namespace vestra::codegen

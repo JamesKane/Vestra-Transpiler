@@ -315,3 +315,29 @@ add_test(
 set_tests_properties(e2e_reflection_run PROPERTIES
     DEPENDS                e2e_reflection_compile
     PASS_REGULAR_EXPRESSION "reflection OK")
+
+# Match: payloaded enum + std::visit-based match expression lowering.
+# Runtime side calls area() on each Shape variant individually and on
+# a sum-of-three; pass if both come out to the expected values.
+set(e2e_match_input  ${CMAKE_SOURCE_DIR}/examples/match.vst)
+set(e2e_match_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_match.cpp)
+
+add_test(
+    NAME    e2e_match_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_match_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_match_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_match_driver} ${e2e_workdir}/match.cpp
+            -o ${e2e_workdir}/match_app)
+set_tests_properties(e2e_match_compile PROPERTIES DEPENDS e2e_match_transpile)
+
+add_test(
+    NAME    e2e_match_run
+    COMMAND ${e2e_workdir}/match_app)
+set_tests_properties(e2e_match_run PROPERTIES
+    DEPENDS                e2e_match_compile
+    PASS_REGULAR_EXPRESSION "match OK")

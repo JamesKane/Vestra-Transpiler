@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// Match-expression lowering demo.
+//
+// `match` on a payloaded enum lowers to `std::visit(...)` over the
+// underlying `std::variant`, with a constexpr-if chain dispatching on
+// each alternative's type. Bindings inside an arm pattern (`let r`,
+// `let w`, `let h`) become `auto&&` aliases over the corresponding
+// payload field — labeled fields use the field's name, positional
+// fields use `_0`, `_1`, … in source order. The whole match is one
+// expression that returns the arm's value.
+//
+// Sema verifies arm-by-arm exhaustiveness for enum scrutinees so the
+// trailing `else { std::unreachable(); }` branch the emitter inserts
+// to satisfy C++'s "all paths must return" rule never actually fires
+// at runtime — it exists only to keep the compiler quiet when the
+// user hasn't written a `default` arm.
+
+module examples.matchdemo
+
+enum Shape {
+    case circle(radius: Float64)
+    case rect(width: Float64, height: Float64)
+    case point
+}
+
+func area(_ s: Shape) -> Float64 {
+    return match s {
+        case .circle(let r):       3.141592653589793 * r * r
+        case .rect(let w, let h):  w * h
+        case .point:               0.0
+    }
+}
+
+// Sum of areas of the three sample shapes: a unit circle (π),
+// a 3x4 rectangle (12), and a point (0). Total = 12 + π.
+func sample_total() -> Float64 {
+    let c: Shape = Shape.circle(radius: 1.0)
+    let r: Shape = Shape.rect(width: 3.0, height: 4.0)
+    let p: Shape = Shape.point
+    return area(c) + area(r) + area(p)
+}

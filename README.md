@@ -307,6 +307,22 @@ Available on demand:
   inside the same `comptime { … }` block. Later phases extend Field
   with `type` / `offset` / attributes, then `derive(Eq, Hash, Clone, …)`
   defaults ride on top.
+- **Match expression lowering** — `match e { case .a: …  case .b(let x): …  case _: … }`
+  lowers two ways depending on the scrutinee's enum shape: a bare
+  enum becomes a `switch (e) { case Enum::a: return …; }` IIFE; a
+  payloaded enum becomes `std::visit([&](auto&& alt) -> auto { if
+  constexpr (std::is_same_v<…, Shape::circle_t>) { auto&& r =
+  alt.radius; return …; } else if constexpr (…) { … } else {
+  std::unreachable(); } }, scrutinee.value)`. Payload bindings
+  (`let r`, `let w`, `let h`) become `auto&&` aliases over the
+  matching field name (or `_0`, `_1`, … for positional payloads).
+  Sum-type enum *construction* lowers the matching way:
+  `Shape.circle(radius: 1.0)` → `Shape{Shape::circle_t{1.0}}` and
+  `Shape.point` → `Shape{Shape::point_t{}}`, so both ends of the
+  enum surface compile cleanly. Sema's exhaustiveness check
+  (already in place) means the trailing `std::unreachable()` arm
+  is dead code; it exists only to keep the C++ compiler quiet when
+  the user hasn't written a `default`.
 - **End-to-end** — `vestra build` parses, sema-checks (including
   ownership), and produces `.hpp/.cpp` that compiles and runs for
   `examples/hello.vst`, `examples/shapes.vst`, and
