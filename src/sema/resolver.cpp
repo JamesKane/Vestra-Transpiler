@@ -864,6 +864,44 @@ TypePtr Resolver::check_binary(const ast::BinaryExpr& b, TypePtr expected) {
 }
 
 TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
+    // §17.x conversion-call syntax: `Float64(i)` / `Int32(x)` — a bare
+    // primitive numeric type name in callee position is an explicit
+    // conversion. We handle it before normal callee resolution so the
+    // type name doesn't trip "undefined name 'Float64'" against the
+    // value scope (where it intentionally isn't registered — primitives
+    // are types, not symbols). Requires exactly one positional numeric
+    // argument; the result type is the target primitive.
+    if (c.callee->kind == ast::NodeKind::IdentExpr) {
+        const auto& callee_ident = static_cast<const ast::IdentExpr&>(*c.callee);
+        auto kind = TypeArena::primitive_kind_by_name(callee_ident.name);
+        if (kind != TypeKind::Error) {
+            auto target = types_->primitive(kind);
+            if (target != nullptr && target->is_numeric()) {
+                if (c.args.size() != 1) {
+                    for (const auto& a : c.args) {
+                        (void)check_expr(*a.value);
+                    }
+                    error_at(c.range,
+                             std::format("conversion to {} takes exactly one argument",
+                                         target->describe()));
+                    return target;
+                }
+                if (!c.args[0].label.empty()) {
+                    error_at(c.args[0].value->range,
+                             "conversion call argument cannot have a label");
+                }
+                auto arg_type = check_expr(*c.args[0].value);
+                if (arg_type != nullptr && !arg_type->is_numeric() && !arg_type->is_error()) {
+                    error_at(c.args[0].value->range,
+                             std::format("cannot convert non-numeric {} to {}",
+                                         arg_type->describe(),
+                                         target->describe()));
+                }
+                return target;
+            }
+        }
+    }
+
     // Resolve the callee first so we know each parameter's expected type
     // before we type its corresponding argument — this is what lets integer
     // literals adopt the parameter's type without an explicit conversion.

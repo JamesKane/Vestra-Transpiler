@@ -666,6 +666,23 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     }
     case ast::NodeKind::CallExpr: {
         const auto& c = static_cast<const ast::CallExpr&>(e);
+        // §17.x conversion-call lowering: `Float64(i)` → `static_cast<double>(i)`.
+        // Sema accepts a bare numeric-primitive ident in callee position and
+        // produces a one-arg call typed at that primitive; here we map it to
+        // a C++ static_cast against the same primitive's C++ name from the
+        // shared primitive_map().
+        if (c.callee->kind == ast::NodeKind::IdentExpr && c.args.size() == 1) {
+            const auto& callee_ident = static_cast<const ast::IdentExpr&>(*c.callee);
+            const auto& m = primitive_map();
+            if (auto it = m.find(callee_ident.name);
+                it != m.end() && it->first != "Bool" && it->first != "Char" && it->first != "Unit"
+                && it->first != "String" && it->first != "Str" && it->first != "StrConst") {
+                os << "static_cast<" << it->second << ">(";
+                emit_expr(os, *c.args[0].value);
+                os << ")";
+                break;
+            }
+        }
         // Struct construction: if sema typed the call expression as a struct
         // nominal, emit a C++ designated-initializer instead of a function call.
         if (resolution_ != nullptr) {

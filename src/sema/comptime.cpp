@@ -457,6 +457,59 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
         }
         const auto& ident = static_cast<const ast::IdentExpr&>(*c.callee);
 
+        // Primitive-type-as-callable conversion (§17.x): `Float64(x)`,
+        // `Int32(y)` etc. fold to a re-typed ComptimeValue with the
+        // appropriate Int↔Float / width retag. The resolver already
+        // rejected wrong arity or non-numeric args; we only need the
+        // arithmetic.
+        if (auto target_kind = TypeArena::primitive_kind_by_name(ident.name);
+            target_kind != TypeKind::Error
+            && (is_integer_kind(target_kind) || is_float_kind(target_kind)) && c.args.size() == 1) {
+            auto av = fold_with(*c.args[0].value, env, frame, TypeKind::Unit, depth + 1);
+            if (!av) {
+                return std::nullopt;
+            }
+            if (is_float_kind(target_kind)) {
+                double f = 0.0;
+                switch (av->kind) {
+                case ComptimeValue::Kind::Int:
+                    f = static_cast<double>(av->i);
+                    break;
+                case ComptimeValue::Kind::UInt:
+                    f = static_cast<double>(av->u);
+                    break;
+                case ComptimeValue::Kind::Float:
+                    f = av->f;
+                    break;
+                default:
+                    return std::nullopt;
+                }
+                return make_float(f, target_kind);
+            }
+            // Integer target: signed or unsigned.
+            std::int64_t s = 0;
+            std::uint64_t u = 0;
+            switch (av->kind) {
+            case ComptimeValue::Kind::Int:
+                s = av->i;
+                u = static_cast<std::uint64_t>(av->i);
+                break;
+            case ComptimeValue::Kind::UInt:
+                s = static_cast<std::int64_t>(av->u);
+                u = av->u;
+                break;
+            case ComptimeValue::Kind::Float:
+                // C++ static_cast truncates toward zero; mirror that.
+                s = static_cast<std::int64_t>(av->f);
+                u = static_cast<std::uint64_t>(av->f);
+                break;
+            default:
+                return std::nullopt;
+            }
+            return is_unsigned_kind(target_kind) ? make_uint(u, target_kind)
+                                                 : make_int(s, target_kind);
+        }
+
         // §12.1 stdlib dispatch: `sin(x)` / `cos(x)` / etc. resolve to
         // a host-side std::sin/std::cos with the folded Float64 arg.
         // We fold each arg with a Float64 hint so a literal like `2.0`

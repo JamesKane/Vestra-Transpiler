@@ -647,6 +647,90 @@ TEST_CASE("phase 5: a vector of sin samples folds end-to-end") {
     CHECK(v->elements[3].f == doctest::Approx(-1.0));
 }
 
+// ---- §17.x phase 6: primitive-type-as-callable conversions ---------------
+
+TEST_CASE("phase 6: `Float64(42)` folds an Int to a Float64") {
+    auto v = resolver_fold("const X: Float64 = comptime { Float64(42) }\n", "X");
+    REQUIRE(v);
+    CHECK(v->kind == vestra::sema::ComptimeValue::Kind::Float);
+    CHECK(v->type == vestra::sema::TypeKind::Float64);
+    CHECK(v->f == doctest::Approx(42.0));
+}
+
+TEST_CASE("phase 6: `Int32(3.7)` truncates the float toward zero") {
+    auto v = resolver_fold("const X: Int32 = comptime { Int32(3.7) }\n", "X");
+    REQUIRE(v);
+    CHECK(v->kind == vestra::sema::ComptimeValue::Kind::Int);
+    CHECK(v->type == vestra::sema::TypeKind::Int32);
+    CHECK(v->i == 3);
+}
+
+TEST_CASE("phase 6: `Float32(pi)` retags a Float64 const to Float32") {
+    auto v = resolver_fold("const X: Float32 = comptime { Float32(pi) }\n", "X");
+    REQUIRE(v);
+    CHECK(v->kind == vestra::sema::ComptimeValue::Kind::Float);
+    CHECK(v->type == vestra::sema::TypeKind::Float32);
+    CHECK(v->f == doctest::Approx(3.141592653589793));
+}
+
+TEST_CASE("phase 6: `UInt8(255)` carries through unsigned narrowing") {
+    auto v = resolver_fold("const X: UInt8 = comptime { UInt8(255) }\n", "X");
+    REQUIRE(v);
+    CHECK(v->kind == vestra::sema::ComptimeValue::Kind::UInt);
+    CHECK(v->u == 255);
+}
+
+TEST_CASE("phase 6: conversion composes with arithmetic at fold time") {
+    // The spec-faithful sin_table shape: convert the loop index to a
+    // Float64 mid-expression. With the conversion handler in place this
+    // folds without the explicit theta accumulator the phase 5 demo used.
+    auto v = resolver_fold("comptime func samples() -> [4]Float64 {\n"
+                           "    var t: [4]Float64 = .zero\n"
+                           "    for i in 0 ..< 4 {\n"
+                           "        t[i] = sin(tau * Float64(i) / 4.0)\n"
+                           "    }\n"
+                           "    return t\n"
+                           "}\n"
+                           "const Samples: [4]Float64 = comptime { samples() }\n",
+                           "Samples");
+    REQUIRE(v);
+    REQUIRE(v->elements.size() == 4);
+    CHECK(v->elements[0].f == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(v->elements[1].f == doctest::Approx(1.0));
+    CHECK(v->elements[2].f == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(v->elements[3].f == doctest::Approx(-1.0));
+}
+
+TEST_CASE("phase 6: zero-arg conversion is rejected") {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto fid = sm.add_in_memory("<test>", "const X: Float64 = Float64()\n");
+    vestra::lex::Lexer lex(sm, fid, rep);
+    auto tokens = lex.tokenize();
+    vestra::parse::Parser p(tokens, rep);
+    auto unit = p.parse_unit();
+    REQUIRE_FALSE(rep.has_errors());
+    vestra::sema::TypeArena arena;
+    vestra::sema::Resolver res(unit, arena, rep);
+    res.resolve();
+    CHECK(rep.has_errors());
+}
+
+TEST_CASE("phase 6: non-numeric conversion arg is rejected") {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto fid = sm.add_in_memory("<test>", "const X: Float64 = Float64(true)\n");
+    vestra::lex::Lexer lex(sm, fid, rep);
+    auto tokens = lex.tokenize();
+    vestra::parse::Parser p(tokens, rep);
+    auto unit = p.parse_unit();
+    REQUIRE_FALSE(rep.has_errors());
+    vestra::sema::TypeArena arena;
+    vestra::sema::Resolver res(unit, arena, rep);
+    res.resolve();
+    CHECK(rep.has_errors());
+}
+
 TEST_CASE("phase 2: recursion past the depth cap stops cleanly") {
     // factorial recurses linearly. MaxDepth is 64; we call with 200, which
     // would otherwise produce a 200-deep chain. The fold must bail rather
