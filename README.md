@@ -105,7 +105,10 @@ The transpiler is a classic layered front end with a single codegen pass:
 │  → Resolution    │  Side tables map every Expr* to its TypePtr and bound
 │                  │  Symbol; bidirectional checking lets literals adapt.
 │                  │  Then ownership/move tracking flags use-after-move
-│                  │  on sink calls and `return` (phase 1 of §5/§19.2).
+│                  │  on sink calls and `return` (phase 1 of §5/§19.2),
+│                  │  and the Law of Exclusivity (§5.4 / §19.3) checks
+│                  │  every call: overlapping &-borrows of a single
+│                  │  place are rejected when any one is `inout`.
 └──────────────────┘
     │
     ▼
@@ -184,6 +187,16 @@ Available on demand:
   consumed `var` revives it. Trivial primitives (numerics, Bool, Char,
   Unit) are exempt and freely reusable. Phase 1 is intentionally linear
   — it does not yet merge state across `if` / `match` branches.
+- **Law of Exclusivity (phase 1)** — at every call, the live borrows
+  of each storage location must be either all `read` or exactly one
+  `inout` (§5.4, §19.3). A *Place* is a root binding plus a path of
+  field selectors; two places overlap iff they share a root and one
+  path is a prefix of the other. So `swap(&p.x, &p.y)` is fine
+  (clause 3 — disjoint fields), but `swap(&p, &p.x)` is a parent/child
+  overlap and gets rejected with the original borrow site as a note.
+  Sink arguments are consumes (handled by ownership), not borrows.
+  Phase 2 needs cross-statement liveness, partition primitives (clause
+  4), and index-based subviews.
 - **End-to-end** — `vestra build` parses, sema-checks (including
   ownership), and produces `.hpp/.cpp` that compiles and runs for
   `examples/hello.vst`, `examples/shapes.vst`, and
@@ -209,8 +222,11 @@ What's **deliberately stubbed** today, in roughly the order I'd tackle them:
    binding, var reassignment revives one. Phase 2 (branch-aware flow
    merging, linear types, full Trivial detection for user structs)
    remains.
-4. **Law of Exclusivity** checker (§5, §19.3) — overlap analysis on `inout`
-   accesses; trusted partitioners' provenance. Builds on ownership.
+4. ~~**Law of Exclusivity** checker~~ — **phase 1 done**: per-call
+   overlap analysis catches conflicting borrows; disjoint fields are
+   independent. Phase 2 needs cross-statement borrow liveness,
+   recognition of `chunks(n)` / `split(at:)` partitions as disjoint,
+   and index-based subview disambiguation.
 5. **Capability resolution** (§8, §19.7) — `using` rows resolved to enclosing
    `with` bindings; unsafe capability discharge auditing (`vestra audit`).
 6. **Generics monomorphization** (§7) — currently generic decls parse but don't
