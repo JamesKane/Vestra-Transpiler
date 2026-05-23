@@ -4,6 +4,7 @@
 #include "vestra/sema/resolver.hpp"
 
 #include "vestra/ast/nodes.hpp"
+#include "vestra/sema/builtins.hpp"
 #include "vestra/sema/scope.hpp"
 #include "vestra/sema/types.hpp"
 
@@ -63,6 +64,7 @@ Resolver::Resolver(const ast::CompilationUnit& unit,
 
 void Resolver::resolve() {
     register_builtin_capabilities();
+    register_builtin_math();
     collect_top_level();
     for (const auto& d : unit_->decls) {
         // §12.6: same gate as collect_top_level. Skipping here keeps the
@@ -98,6 +100,46 @@ void Resolver::register_builtin_capabilities() {
         s.kind = SymbolKind::Protocol;
         s.decl = nullptr;
         s.type = types_->make_nominal(TypeKind::Protocol, nullptr);
+        s.definition_range = {};
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
+    }
+}
+
+// §12.1 comptime stdlib. The folder dispatches each of these by name at
+// fold time (see builtins::call / builtins::value_of); here we only
+// register the symbols so the resolver can type-check a `sin(theta)` or
+// a `tau` reference without flagging an undeclared identifier. Phase 1
+// keeps every signature Float64-only; later phases revisit polymorphism.
+void Resolver::register_builtin_math() {
+    auto f64 = types_->primitive(TypeKind::Float64);
+
+    // Constants first — they're plain Const symbols, just typed Float64.
+    // We don't pre-populate comptime_env_ here: the folder consults
+    // builtins::lookup_const directly when an ident lookup misses, so
+    // the symbol's only role is satisfying the resolver.
+    for (const auto& c : builtins::constants()) {
+        Symbol s;
+        s.name = std::string{c.name};
+        s.kind = SymbolKind::Const;
+        s.decl = nullptr;
+        s.type = f64;
+        s.definition_range = {};
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
+    }
+
+    // Functions: each registers as a Func symbol whose type is the right
+    // (Float64, ...) -> Float64 signature. Calls into these go through
+    // the resolver's normal call-typing path because the function type
+    // is already correct.
+    for (const auto& f : builtins::functions()) {
+        std::vector<TypePtr> params(f.arity, f64);
+        Symbol s;
+        s.name = std::string{f.name};
+        s.kind = SymbolKind::Func;
+        s.decl = nullptr;
+        s.type = types_->make_function(std::move(params), f64);
         s.definition_range = {};
         s.visibility = ast::Visibility::Public;
         (void)scopes_.global().insert(std::move(s));

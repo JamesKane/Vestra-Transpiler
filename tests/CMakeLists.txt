@@ -209,3 +209,31 @@ add_test(
 set_tests_properties(e2e_vectors_run PROPERTIES
     DEPENDS                e2e_vectors_compile
     PASS_REGULAR_EXPRESSION "compute\\(\\) = 36")
+
+# Sin table: §12.1 comptime math stdlib + vectors. A 32-sample sine
+# cycle is built entirely at fold time (sin/tau dispatched to the
+# builtin layer), baked into the emitted C++ as a constexpr
+# std::array<double, 32>, then sum-checked at runtime against a
+# tight epsilon.
+set(e2e_sin_table_input  ${CMAKE_SOURCE_DIR}/examples/sin_table.vst)
+set(e2e_sin_table_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_sin_table.cpp)
+
+add_test(
+    NAME    e2e_sin_table_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_sin_table_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_sin_table_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_sin_table_driver} ${e2e_workdir}/sin_table.cpp
+            -o ${e2e_workdir}/sin_table_app)
+set_tests_properties(e2e_sin_table_compile PROPERTIES DEPENDS e2e_sin_table_transpile)
+
+add_test(
+    NAME    e2e_sin_table_run
+    COMMAND ${e2e_workdir}/sin_table_app)
+set_tests_properties(e2e_sin_table_run PROPERTIES
+    DEPENDS                e2e_sin_table_compile
+    PASS_REGULAR_EXPRESSION "sin_table OK")

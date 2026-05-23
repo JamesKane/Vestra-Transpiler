@@ -569,6 +569,84 @@ TEST_CASE("phase 4: folded vector emits a brace-init C++ literal") {
     CHECK(vec.to_cpp_literal() == "{{1, 2}}");
 }
 
+// ---- §12.1 phase 5: comptime stdlib (math) -------------------------------
+
+TEST_CASE("phase 5: `tau` resolves to 2*pi as a Float64 const") {
+    auto v = resolver_fold("const TwoPi: Float64 = comptime { tau }\n", "TwoPi");
+    REQUIRE(v);
+    CHECK(v->kind == vestra::sema::ComptimeValue::Kind::Float);
+    CHECK(v->type == vestra::sema::TypeKind::Float64);
+    CHECK(v->f == doctest::Approx(6.283185307179586));
+}
+
+TEST_CASE("phase 5: `pi` and `e` resolve to their canonical values") {
+    auto v_pi = resolver_fold("const Pi: Float64 = comptime { pi }\n", "Pi");
+    REQUIRE(v_pi);
+    CHECK(v_pi->f == doctest::Approx(3.141592653589793));
+    auto v_e = resolver_fold("const E: Float64 = comptime { e }\n", "E");
+    REQUIRE(v_e);
+    CHECK(v_e->f == doctest::Approx(2.718281828459045));
+}
+
+TEST_CASE("phase 5: `sin(0.0)` folds to 0") {
+    auto v = resolver_fold("const S: Float64 = comptime { sin(0.0) }\n", "S");
+    REQUIRE(v);
+    CHECK(v->f == doctest::Approx(0.0));
+}
+
+TEST_CASE("phase 5: `cos(pi)` folds to -1") {
+    auto v = resolver_fold("const C: Float64 = comptime { cos(pi) }\n", "C");
+    REQUIRE(v);
+    CHECK(v->f == doctest::Approx(-1.0));
+}
+
+TEST_CASE("phase 5: `sqrt(4.0)` folds to 2") {
+    auto v = resolver_fold("const R: Float64 = comptime { sqrt(4.0) }\n", "R");
+    REQUIRE(v);
+    CHECK(v->f == doctest::Approx(2.0));
+}
+
+TEST_CASE("phase 5: sqrt of a negative bails (caller falls back to runtime)") {
+    auto v = resolver_fold("const R: Float64 = comptime { sqrt(0.0 - 1.0) }\n", "R");
+    CHECK_FALSE(v.has_value());
+}
+
+TEST_CASE("phase 5: tau composes with arithmetic and a comptime func call") {
+    auto v = resolver_fold("comptime func double(_ x: Float64) -> Float64 { return x * 2.0 }\n"
+                           "const TwoTau: Float64 = comptime { double(tau) }\n",
+                           "TwoTau");
+    REQUIRE(v);
+    CHECK(v->f == doctest::Approx(2.0 * 6.283185307179586));
+}
+
+TEST_CASE("phase 5: a vector of sin samples folds end-to-end") {
+    // §12.1 sin_table shape: a comptime func walks a fixed stride and
+    // writes sin(theta) into successive slots, returning the whole
+    // vector. We use an explicit theta accumulator instead of the
+    // spec's `Float64(i)` cast (primitive-type-as-callable isn't a
+    // resolver feature yet) — the result table is identical.
+    auto v = resolver_fold("comptime func samples() -> [4]Float64 {\n"
+                           "    var t: [4]Float64 = .zero\n"
+                           "    var theta: Float64 = 0.0\n"
+                           "    let step: Float64 = tau / 4.0\n"
+                           "    for i in 0 ..< 4 {\n"
+                           "        t[i] = sin(theta)\n"
+                           "        theta = theta + step\n"
+                           "    }\n"
+                           "    return t\n"
+                           "}\n"
+                           "const Samples: [4]Float64 = comptime { samples() }\n",
+                           "Samples");
+    REQUIRE(v);
+    REQUIRE(v->kind == vestra::sema::ComptimeValue::Kind::Vector);
+    REQUIRE(v->elements.size() == 4);
+    // sin(0), sin(π/2), sin(π), sin(3π/2) = 0, 1, 0, -1
+    CHECK(v->elements[0].f == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(v->elements[1].f == doctest::Approx(1.0));
+    CHECK(v->elements[2].f == doctest::Approx(0.0).epsilon(1e-12));
+    CHECK(v->elements[3].f == doctest::Approx(-1.0));
+}
+
 TEST_CASE("phase 2: recursion past the depth cap stops cleanly") {
     // factorial recurses linearly. MaxDepth is 64; we call with 200, which
     // would otherwise produce a 200-deep chain. The fold must bail rather

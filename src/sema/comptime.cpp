@@ -4,6 +4,7 @@
 #include "vestra/sema/comptime.hpp"
 
 #include "vestra/ast/nodes.hpp"
+#include "vestra/sema/builtins.hpp"
 #include "vestra/sema/types.hpp"
 
 #include <charconv>
@@ -371,11 +372,16 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
         if (auto it = frame.locals.find(ident.name); it != frame.locals.end()) {
             return it->second;
         }
-        auto it = env.find(ident.name);
-        if (it == env.end()) {
-            return std::nullopt;
+        if (auto it = env.find(ident.name); it != env.end()) {
+            return it->second;
         }
-        return it->second;
+        // §12.1 stdlib: `tau` / `pi` / `e` resolve as built-in Float64
+        // constants. The resolver registered them as Const symbols so
+        // type-checking already succeeded; we just supply the value.
+        if (auto entry = builtins::lookup_const(ident.name)) {
+            return builtins::value_of(*entry);
+        }
+        return std::nullopt;
     }
 
     case ast::NodeKind::MemberExpr: {
@@ -445,14 +451,35 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
         // in a fresh frame, then fold the body. The callee gets a clean
         // locals slate — phase 3 doesn't expose the caller's bindings
         // (no closures).
-        if (global_scope_ == nullptr) {
-            return std::nullopt;
-        }
         const auto& c = static_cast<const ast::CallExpr&>(e);
         if (c.callee->kind != ast::NodeKind::IdentExpr) {
             return std::nullopt;
         }
         const auto& ident = static_cast<const ast::IdentExpr&>(*c.callee);
+
+        // §12.1 stdlib dispatch: `sin(x)` / `cos(x)` / etc. resolve to
+        // a host-side std::sin/std::cos with the folded Float64 arg.
+        // We fold each arg with a Float64 hint so a literal like `2.0`
+        // adopts Float64 rather than the default Float kind.
+        if (auto entry = builtins::lookup_func(ident.name)) {
+            if (c.args.size() != entry->arity) {
+                return std::nullopt;
+            }
+            std::vector<ComptimeValue> argv;
+            argv.reserve(c.args.size());
+            for (const auto& a : c.args) {
+                auto v = fold_with(*a.value, env, frame, TypeKind::Float64, depth + 1);
+                if (!v) {
+                    return std::nullopt;
+                }
+                argv.push_back(*std::move(v));
+            }
+            return builtins::call(*entry, argv);
+        }
+
+        if (global_scope_ == nullptr) {
+            return std::nullopt;
+        }
         const auto* sym = global_scope_->lookup(ident.name);
         if (sym == nullptr || sym->decl == nullptr || sym->decl->kind != ast::NodeKind::Func) {
             return std::nullopt;

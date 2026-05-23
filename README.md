@@ -255,7 +255,7 @@ Available on demand:
   `comptime if` for declaration-position selection, and the §12.6
   every-branch type-check guarantee.
 
-- **Comptime folding (§12.1 phases 1+2+3+4)** — a tree-walking evaluator
+- **Comptime folding (§12.1 phases 1+2+3+4+5)** — a tree-walking evaluator
   for the pure subset of Vestra. **Phase 1** folds `const` initializers
   and `comptime { ... }` blocks at compile time: literals, references
   to earlier folded consts, unary + binary arithmetic and logic
@@ -271,11 +271,16 @@ Available on demand:
   reaches the generated header as `inline constexpr ... Fact10 = 3628800;`.
   Calls into non-`comptime` funcs, struct construction, member access,
   and side-effecting forms remain unfoldable — codegen falls back to
-  the source expression. Later phases lift: locals + loops in comptime
-  bodies (the §12.1 `sin_table` example), `@embed`, reflection
-  (`Type`/`Field`), `derive` reflective defaults, declaration macros
-  (`quote`/`$splice`), and the `cfg`/`@when` conditional-compilation
-  plumbing.
+  the source expression. **Phase 5** adds a small comptime stdlib:
+  `sin`, `cos`, `tan`, `sqrt` (each `(Float64) -> Float64`) plus
+  the constants `tau`, `pi`, `e`. The resolver registers these as
+  built-in Float64 symbols so they type-check at every call site; the
+  folder dispatches each call to the host's `<cmath>`. The §12.1
+  `sin_table` example is now a one-file build:
+  `examples/sin_table.vst` folds a 32-sample sine cycle entirely at
+  compile time and emits it as `inline constexpr std::array<double, 32>`.
+  Later phases lift: `@embed`, reflection (`Type`/`Field`), `derive`
+  reflective defaults, and declaration macros (`quote`/`$splice`).
 - **End-to-end** — `vestra build` parses, sema-checks (including
   ownership), and produces `.hpp/.cpp` that compiles and runs for
   `examples/hello.vst`, `examples/shapes.vst`, and
@@ -316,15 +321,16 @@ What's **deliberately stubbed** today, in roughly the order I'd tackle them:
    as C++ templates that the host compiler monomorphizes. Phase 2:
    const generics, generic structs/enums, where-clauses, and bound
    enforcement.
-7. ~~**`comptime` interpreter**~~ — **phases 1+2+3+4 done**: pure
+7. ~~**`comptime` interpreter**~~ — **phases 1+2+3+4+5 done**: pure
    expression folding (phase 1), comptime function calls with
    recursion (phase 2), locals + loops in comptime bodies (phase 3),
-   and vectors as values (phase 4 — `var t: [N]T = .zero`, `t[i]`
-   reads, `t[i] = ...` writes, returning a vector to a const that
-   then becomes a `std::array` literal in the emitted C++). The
-   §12.1 sin_table example still needs a comptime stdlib (`sin`,
-   `tau`); other later phases: `@embed`, reflection (Type/Field),
-   `derive` defaults, and declaration macros (`quote`/`$splice`).
+   vectors as values (phase 4), and a built-in math stdlib (phase 5 —
+   `sin`/`cos`/`tan`/`sqrt` plus `tau`/`pi`/`e`, all Float64). The
+   §12.1 `sin_table` example now folds end-to-end into a `constexpr
+   std::array<double, N>` in the emitted C++. Later phases:
+   primitive-type-as-callable for `Float64(i)`-style conversions,
+   `@embed`, reflection (Type/Field), `derive` defaults, and
+   declaration macros (`quote`/`$splice`).
 8. **String interpolation lowering** (§4) — produce `Display::display(into:)`
    calls into a `String` sink; the lexer already has the splitting hooks.
 9. **`async` / `spawn` / `select` / `parallel` lowering** (§11) — currently

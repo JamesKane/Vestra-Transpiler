@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §12.1 demo: a sin lookup table built at compile time.
+//
+// `sin_table` runs entirely at fold time: the folder walks the for loop
+// inside the comptime func, dispatches each `sin(theta)` to the
+// builtin math layer, and returns a Vector value. Codegen then emits
+// the table as an `inline constexpr std::array<double, N>` literal so
+// nothing actually runs at startup — the data is baked into the
+// binary's read-only section.
+//
+// We use an explicit theta accumulator instead of `Float64(i)` because
+// primitive-type-as-callable conversion isn't a resolver feature yet
+// (a near-term follow-on to this phase). The resulting table is
+// identical: 32 samples of one full sine cycle.
+
+module examples.sin_table
+
+comptime func sin_table() -> [32]Float64 {
+    var t: [32]Float64 = .zero
+    var theta: Float64 = 0.0
+    let step: Float64 = tau / 32.0
+    for i in 0 ..< 32 {
+        t[i] = sin(theta)
+        theta = theta + step
+    }
+    return t
+}
+
+const SinTable: [32]Float64 = comptime { sin_table() }
+
+func sample_at(_ i: Int32) -> Float64 {
+    return SinTable[i]
+}
+
+// A full sine cycle sums to zero in exact arithmetic; the
+// floating-point sum is bounded by a small epsilon driven by rounding.
+// The runtime side checks that |sum| stays inside a tight bound.
+func cycle_sum() -> Float64 {
+    var total: Float64 = 0.0
+    var i: Int32 = 0
+    while i < 32 {
+        total = total + sample_at(i)
+        i = i + 1
+    }
+    return total
+}
