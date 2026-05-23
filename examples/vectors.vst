@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+module examples.vectors
+
+// §12.1 phase 4: build a precomputed table at compile time. The folder
+// runs the loop, materialises the vector, and the generated header
+// carries the literal — no runtime loop, no runtime allocation.
+
+comptime func ramp() -> [8]Int32 {
+    var t: [8]Int32 = .zero
+    for i in 0 ..< 8 {
+        t[i] = i + 1
+    }
+    return t
+}
+
+const Ramp: [8]Int32 = comptime { ramp() }
+
+// Read an element through the const. The C++ side does this at runtime,
+// but Ramp itself is `inline constexpr std::array<int32_t, 8> = {{...}}`,
+// so the optimizer should fold the access too.
+func ramp_at(_ i: Int32) -> Int32 {
+    return Ramp[i]
+}
+
+// Sum the table the simple way — the generated function loops over the
+// constexpr array. We return the total so the e2e test has something to
+// assert on: 1+2+...+8 = 36.
+func compute() -> Int32 {
+    var total: Int32 = 0
+    var i: Int32 = 0
+    while i < 8 {
+        total = total + ramp_at(i)
+        i = i + 1
+    }
+    return total
+}

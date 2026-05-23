@@ -736,6 +736,22 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         os << "." << m.member;
         break;
     }
+    case ast::NodeKind::IndexExpr: {
+        // C++ subscript is the same shape as Vestra's: `base[i0, i1, ...]`.
+        // The Vestra-side type-check already verified the base is indexable
+        // (a vector / array / slice); we just pass through.
+        const auto& ix = static_cast<const ast::IndexExpr&>(e);
+        emit_expr(os, *ix.base);
+        os << "[";
+        for (std::size_t i = 0; i < ix.indices.size(); ++i) {
+            if (i != 0) {
+                os << ", ";
+            }
+            emit_expr(os, *ix.indices[i]);
+        }
+        os << "]";
+        break;
+    }
     case ast::NodeKind::LeadingDotExpr: {
         const auto& d = static_cast<const ast::LeadingDotExpr&>(e);
         // `.red` — resolved by the sema layer; its expression-type is the

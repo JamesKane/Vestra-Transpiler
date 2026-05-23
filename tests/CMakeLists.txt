@@ -185,3 +185,27 @@ add_test(
 set_tests_properties(e2e_cfg_run PROPERTIES
     DEPENDS                e2e_cfg_compile
     PASS_REGULAR_EXPRESSION "compute\\(\\) = [0-9]+")
+
+# Vectors: precomputed table built at fold time, read at runtime.
+set(e2e_vectors_input  ${CMAKE_SOURCE_DIR}/examples/vectors.vst)
+set(e2e_vectors_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_vectors.cpp)
+
+add_test(
+    NAME    e2e_vectors_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_vectors_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_vectors_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_vectors_driver} ${e2e_workdir}/vectors.cpp
+            -o ${e2e_workdir}/vectors_app)
+set_tests_properties(e2e_vectors_compile PROPERTIES DEPENDS e2e_vectors_transpile)
+
+add_test(
+    NAME    e2e_vectors_run
+    COMMAND ${e2e_workdir}/vectors_app)
+set_tests_properties(e2e_vectors_run PROPERTIES
+    DEPENDS                e2e_vectors_compile
+    PASS_REGULAR_EXPRESSION "compute\\(\\) = 36")

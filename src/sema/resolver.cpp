@@ -1243,9 +1243,15 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
 }
 
 TypePtr Resolver::check_leading_dot(const ast::LeadingDotExpr& d, TypePtr expected) {
-    // `.foo` only makes sense when there is a contextual type that can resolve
-    // the case. Today that's an enum; in the future Optional (`.none`/`.some`)
-    // would benefit too — both via the same hook.
+    // `.foo` only makes sense when there is a contextual type that can
+    // resolve the case. Today that's an enum case, an Optional, or — via
+    // §12.1 phase 4 — a vector `.zero` initializer. The folder treats
+    // `.zero` against a Vector as a zero-filled vector value; sema's job
+    // here is just to give the expression the right *type* so the
+    // surrounding let/var's annotation check succeeds.
+    if (expected != nullptr && expected->kind() == TypeKind::Vector && d.name == "zero") {
+        return expected;
+    }
     if (expected == nullptr || expected->kind() != TypeKind::Enum
         || expected->nominal_decl() == nullptr) {
         error_at(d.range, std::format("'.{}' has no contextual type to resolve against", d.name));

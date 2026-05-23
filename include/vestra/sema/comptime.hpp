@@ -13,6 +13,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <variant>
+#include <vector>
 
 namespace vestra::sema {
 
@@ -27,10 +28,12 @@ namespace vestra::sema {
 // rendering pass knows the destination width.
 struct ComptimeValue {
     // NOLINTNEXTLINE(performance-enum-size)
-    enum class Kind : std::uint8_t { Int, UInt, Float, Bool, String, Unit };
+    enum class Kind : std::uint8_t { Int, UInt, Float, Bool, String, Vector, Unit };
 
     Kind kind = Kind::Unit;
-    TypeKind type = TypeKind::Unit;  // destination Vestra type, when known
+    TypeKind type = TypeKind::Unit;  // destination Vestra type. For a Vector
+                                     // this is the *element* TypeKind; the
+                                     // length lives in `length` below.
 
     std::int64_t i = 0;   // valid when Kind::Int
     std::uint64_t u = 0;  // valid when Kind::UInt
@@ -41,9 +44,18 @@ struct ComptimeValue {
                           // "arm64"; `.arm64` leading-dot folds to the
                           // same; equality is string compare)
 
+    // Valid when Kind::Vector. `elements.size() == length` after
+    // construction; we still carry `length` separately because some
+    // construction paths (e.g. `.zero` with a `[N]T` annotation) want
+    // the length pinned independently before elements are populated.
+    std::vector<ComptimeValue> elements;
+    std::int64_t length = 0;
+
     // Render this value as a literal expression suitable to drop into C++
     // source. Picks an explicit-width form when `type` is set (e.g. `42`
-    // for Int32, `42ULL` for UInt64, `1.5f` for Float32).
+    // for Int32, `42ULL` for UInt64, `1.5f` for Float32). For vectors
+    // emits the brace-init pair `{{e0, e1, ..., eN-1}}` that slots into
+    // the surrounding const's `std::array<T, N>` type annotation.
     [[nodiscard]] std::string to_cpp_literal() const;
 };
 

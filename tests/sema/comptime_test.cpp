@@ -470,6 +470,105 @@ TEST_CASE("phase 3: per-loop iteration cap prevents runaways") {
     CHECK_FALSE(v.has_value());
 }
 
+// ---- §12.1 phase 4: vectors as values -------------------------------------
+
+TEST_CASE("phase 4: a vector literal folds to a Vector value") {
+    auto v = fold_expr("[1, 2, 3]");
+    REQUIRE(v);
+    CHECK(v->kind == vestra::sema::ComptimeValue::Kind::Vector);
+    REQUIRE(v->elements.size() == 3);
+    CHECK(v->elements[0].i == 1);
+    CHECK(v->elements[1].i == 2);
+    CHECK(v->elements[2].i == 3);
+}
+
+TEST_CASE("phase 4: `.zero` builds a zero-filled vector of the right shape") {
+    auto v = resolver_fold("comptime func z() -> [4]Int32 {\n"
+                           "    var t: [4]Int32 = .zero\n"
+                           "    return t\n"
+                           "}\n"
+                           "const Z: [4]Int32 = comptime { z() }\n",
+                           "Z");
+    REQUIRE(v);
+    REQUIRE(v->kind == vestra::sema::ComptimeValue::Kind::Vector);
+    REQUIRE(v->elements.size() == 4);
+    for (auto& el : v->elements) {
+        CHECK(el.i == 0);
+    }
+}
+
+TEST_CASE("phase 4: index read picks the i'th element") {
+    auto v = resolver_fold("comptime func pick() -> Int {\n"
+                           "    let t = [10, 20, 30, 40]\n"
+                           "    return t[2]\n"
+                           "}\n"
+                           "const Got: Int = comptime { pick() }\n",
+                           "Got");
+    REQUIRE(v);
+    CHECK(v->i == 30);
+}
+
+TEST_CASE("phase 4: index assignment + for-loop builds a ramp") {
+    auto v = resolver_fold("comptime func ramp() -> [8]Int32 {\n"
+                           "    var t: [8]Int32 = .zero\n"
+                           "    for i in 0 ..< 8 {\n"
+                           "        t[i] = i + 1\n"
+                           "    }\n"
+                           "    return t\n"
+                           "}\n"
+                           "const R: [8]Int32 = comptime { ramp() }\n",
+                           "R");
+    REQUIRE(v);
+    REQUIRE(v->kind == vestra::sema::ComptimeValue::Kind::Vector);
+    REQUIRE(v->elements.size() == 8);
+    for (std::size_t k = 0; k < 8; ++k) {
+        CHECK(v->elements[k].i == static_cast<std::int64_t>(k + 1));
+    }
+}
+
+TEST_CASE("phase 4: compound index assignment (+=) updates the slot") {
+    auto v = resolver_fold("comptime func plus_two() -> [3]Int32 {\n"
+                           "    var t: [3]Int32 = [10, 20, 30]\n"
+                           "    for i in 0 ..< 3 {\n"
+                           "        t[i] += 2\n"
+                           "    }\n"
+                           "    return t\n"
+                           "}\n"
+                           "const P: [3]Int32 = comptime { plus_two() }\n",
+                           "P");
+    REQUIRE(v);
+    REQUIRE(v->elements.size() == 3);
+    CHECK(v->elements[0].i == 12);
+    CHECK(v->elements[1].i == 22);
+    CHECK(v->elements[2].i == 32);
+}
+
+TEST_CASE("phase 4: out-of-bounds index read bails") {
+    auto v = resolver_fold("comptime func bad() -> Int {\n"
+                           "    let t = [1, 2, 3]\n"
+                           "    return t[5]\n"
+                           "}\n"
+                           "const B: Int = comptime { bad() }\n",
+                           "B");
+    CHECK_FALSE(v.has_value());
+}
+
+TEST_CASE("phase 4: folded vector emits a brace-init C++ literal") {
+    using vestra::sema::ComptimeValue;
+    ComptimeValue elem_a{};
+    elem_a.kind = ComptimeValue::Kind::Int;
+    elem_a.i = 1;
+    elem_a.type = vestra::sema::TypeKind::Int32;
+    ComptimeValue elem_b = elem_a;
+    elem_b.i = 2;
+    ComptimeValue vec{};
+    vec.kind = ComptimeValue::Kind::Vector;
+    vec.type = vestra::sema::TypeKind::Int32;
+    vec.length = 2;
+    vec.elements = {elem_a, elem_b};
+    CHECK(vec.to_cpp_literal() == "{{1, 2}}");
+}
+
 TEST_CASE("phase 2: recursion past the depth cap stops cleanly") {
     // factorial recurses linearly. MaxDepth is 64; we call with 200, which
     // would otherwise produce a 200-deep chain. The fold must bail rather

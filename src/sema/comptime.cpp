@@ -150,6 +150,21 @@ std::string ComptimeValue::to_cpp_literal() const {
         // ever returns one — which today it can't. For §12.6 the only use
         // is folding @when predicates, which never reach codegen.
         return "std::string_view(\"" + s + "\")";
+    case Kind::Vector: {
+        // The brace-pair `{{...}}` slots into the surrounding const's
+        // `std::array<T, N> = ...` shape (std::array is an aggregate
+        // wrapping a C array, so it takes a doubly-braced initializer).
+        std::string out;
+        out += "{{";
+        for (std::size_t k = 0; k < elements.size(); ++k) {
+            if (k != 0) {
+                out += ", ";
+            }
+            out += elements[k].to_cpp_literal();
+        }
+        out += "}}";
+        return out;
+    }
     case Kind::Unit:
         return "/* unit */ 0";
     }
@@ -206,6 +221,43 @@ ComptimeValue make_string(std::string v) {
     cv.s = std::move(v);
     cv.type = TypeKind::String;
     return cv;
+}
+
+// Default-constructed scalar value for the given element type. Used to
+// fill `var t: [N]T = .zero`.
+ComptimeValue zero_of(TypeKind element_kind) {
+    if (is_integer_kind(element_kind)) {
+        return is_unsigned_kind(element_kind) ? make_uint(0, element_kind)
+                                              : make_int(0, element_kind);
+    }
+    if (is_float_kind(element_kind)) {
+        return make_float(0.0, element_kind);
+    }
+    if (element_kind == TypeKind::Bool) {
+        return make_bool(false);
+    }
+    // Unknown element kind → just zero-init the value's bytes; the codegen
+    // path will emit `0` for the element, which is at worst a no-op for
+    // most C++ targets.
+    ComptimeValue cv;
+    cv.kind = ComptimeValue::Kind::Int;
+    cv.i = 0;
+    cv.type = element_kind;
+    return cv;
+}
+
+// Extract the element TypeKind from an `ast::VectorType` (e.g. `[8]Int32`
+// → TypeKind::Int32). Returns TypeKind::Error if the shape isn't one of
+// the primitives we recognize.
+TypeKind vector_element_kind(const ast::VectorType& vt) {
+    if (vt.element == nullptr || vt.element->kind != ast::NodeKind::NamedType) {
+        return TypeKind::Error;
+    }
+    const auto& nt = static_cast<const ast::NamedType&>(*vt.element);
+    if (nt.path.empty()) {
+        return TypeKind::Error;
+    }
+    return TypeArena::primitive_kind_by_name(nt.path.front());
 }
 
 // §12.6: the `cfg` value's fields. Phase 1 hardcodes them based on
@@ -424,6 +476,52 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
             call_frame.locals[fn.params[i].name] = *v;
         }
         return fold_with(*fn.body, env, call_frame, hint, depth + 1);
+    }
+
+    case ast::NodeKind::VectorLitExpr: {
+        // §12.1 phase 4: `[e0, e1, ...]` folds to a Vector value when each
+        // element folds. The element TypeKind is taken from the first
+        // element's resulting type (homogeneity is assumed; sema's job to
+        // verify across-the-board match).
+        const auto& v = static_cast<const ast::VectorLitExpr&>(e);
+        ComptimeValue cv;
+        cv.kind = ComptimeValue::Kind::Vector;
+        cv.length = static_cast<std::int64_t>(v.elements.size());
+        cv.elements.reserve(v.elements.size());
+        for (const auto& el : v.elements) {
+            // Each element folds with the surrounding `hint` if it's a
+            // recognised numeric kind. This lets `[0, 0, 0]` adopt e.g.
+            // Int32 when the context is a Vector<Int32>.
+            auto val = fold_with(*el, env, frame, hint, depth);
+            if (!val) {
+                return std::nullopt;
+            }
+            cv.elements.push_back(*val);
+        }
+        cv.type = cv.elements.empty() ? TypeKind::Unit : cv.elements.front().type;
+        return cv;
+    }
+
+    case ast::NodeKind::IndexExpr: {
+        // `vec[i]` — phase 4 only supports a single Int index into a
+        // Vector base. Anything more (multi-dim, non-vector indexable,
+        // slicing) waits for later phases.
+        const auto& ix = static_cast<const ast::IndexExpr&>(e);
+        auto base = fold_with(*ix.base, env, frame, TypeKind::Unit, depth);
+        if (!base || base->kind != ComptimeValue::Kind::Vector) {
+            return std::nullopt;
+        }
+        if (ix.indices.size() != 1) {
+            return std::nullopt;
+        }
+        auto idx = fold_with(*ix.indices.front(), env, frame, TypeKind::Int, depth);
+        if (!idx || idx->kind != ComptimeValue::Kind::Int) {
+            return std::nullopt;
+        }
+        if (idx->i < 0 || static_cast<std::size_t>(idx->i) >= base->elements.size()) {
+            return std::nullopt;  // out-of-bounds at fold time bails cleanly
+        }
+        return base->elements[static_cast<std::size_t>(idx->i)];
     }
 
     case ast::NodeKind::UnaryExpr: {
@@ -695,33 +793,53 @@ namespace {
 // Extract a let/var statement's binding name + initializer + (optional)
 // declared type. Phase 3 only handles ident-bound let/var (no destructuring).
 // Returns true on a recognised shape; false otherwise.
-bool extract_binding(const ast::Stmt& s, std::string& out_name, const ast::Expr*& out_value) {
+bool extract_binding(const ast::Stmt& s,
+                     std::string& out_name,
+                     const ast::Expr*& out_value,
+                     const ast::Type*& out_type) {
+    out_type = nullptr;
+    auto bind = [&](const ast::PatternPtr& pat, const ast::ExprPtr& val, const ast::TypePtr& typ) {
+        out_value = val.get();
+        out_type = typ.get();
+        if (pat && pat->kind == ast::NodeKind::IdentPat) {
+            out_name = static_cast<const ast::IdentPat&>(*pat).name;
+            return true;
+        }
+        if (pat && pat->kind == ast::NodeKind::BindPat) {
+            out_name = static_cast<const ast::BindPat&>(*pat).name;
+            return true;
+        }
+        return false;
+    };
     if (s.kind == ast::NodeKind::LetStmt) {
         const auto& l = static_cast<const ast::LetStmt&>(s);
-        if (l.pattern && l.pattern->kind == ast::NodeKind::IdentPat) {
-            out_name = static_cast<const ast::IdentPat&>(*l.pattern).name;
-            out_value = l.value.get();
-            return true;
-        }
-        if (l.pattern && l.pattern->kind == ast::NodeKind::BindPat) {
-            out_name = static_cast<const ast::BindPat&>(*l.pattern).name;
-            out_value = l.value.get();
-            return true;
-        }
-    } else if (s.kind == ast::NodeKind::VarStmt) {
+        return bind(l.pattern, l.value, l.type);
+    }
+    if (s.kind == ast::NodeKind::VarStmt) {
         const auto& v = static_cast<const ast::VarStmt&>(s);
-        if (v.pattern && v.pattern->kind == ast::NodeKind::IdentPat) {
-            out_name = static_cast<const ast::IdentPat&>(*v.pattern).name;
-            out_value = v.value.get();
-            return true;
-        }
-        if (v.pattern && v.pattern->kind == ast::NodeKind::BindPat) {
-            out_name = static_cast<const ast::BindPat&>(*v.pattern).name;
-            out_value = v.value.get();
-            return true;
-        }
+        return bind(v.pattern, v.value, v.type);
     }
     return false;
+}
+
+// Build a Vector value of the shape an `ast::VectorType` describes, with
+// every element set to its kind-default (0 / false / etc). Returns nullopt
+// when the shape isn't one we model (non-literal length, non-primitive
+// element, ...).
+std::optional<ComptimeValue> make_zero_vector(const ast::VectorType& vt) {
+    if (vt.length <= 0) {
+        return std::nullopt;  // const-generic lengths aren't foldable yet
+    }
+    auto elem_kind = vector_element_kind(vt);
+    if (elem_kind == TypeKind::Error) {
+        return std::nullopt;
+    }
+    ComptimeValue cv;
+    cv.kind = ComptimeValue::Kind::Vector;
+    cv.type = elem_kind;
+    cv.length = vt.length;
+    cv.elements.assign(static_cast<std::size_t>(vt.length), zero_of(elem_kind));
+    return cv;
 }
 
 // Apply a compound assignment (`+=`, `-=`, etc.) to a current value. Returns
@@ -800,10 +918,33 @@ bool ComptimeFolder::fold_stmt(const ast::Stmt& s, const Env& env, Frame& frame,
     case ast::NodeKind::VarStmt: {
         std::string name;
         const ast::Expr* init = nullptr;
-        if (!extract_binding(s, name, init) || init == nullptr) {
+        const ast::Type* decl_type = nullptr;
+        if (!extract_binding(s, name, init, decl_type) || init == nullptr) {
             return false;
         }
-        auto v = fold_with(*init, env, frame, TypeKind::Unit, depth);
+        // §12.1 phase 4: `var t: [N]T = .zero` synthesizes a zero-filled
+        // vector of the right shape. The declared type is the only place
+        // we can recover the element kind + length from, so we special-
+        // case this combination before falling through to the general
+        // fold path.
+        if (decl_type != nullptr && decl_type->kind == ast::NodeKind::VectorType
+            && init->kind == ast::NodeKind::LeadingDotExpr
+            && static_cast<const ast::LeadingDotExpr&>(*init).name == "zero") {
+            auto v = make_zero_vector(static_cast<const ast::VectorType&>(*decl_type));
+            if (!v) {
+                return false;
+            }
+            frame.locals[name] = std::move(*v);
+            return true;
+        }
+        // For vector literals declared with a vector type, push the element
+        // type through as a fold hint so `[0, 0, 0]` adopts the right
+        // primitive width.
+        TypeKind hint = TypeKind::Unit;
+        if (decl_type != nullptr && decl_type->kind == ast::NodeKind::VectorType) {
+            hint = vector_element_kind(static_cast<const ast::VectorType&>(*decl_type));
+        }
+        auto v = fold_with(*init, env, frame, hint, depth);
         if (!v) {
             return false;
         }
@@ -833,30 +974,75 @@ bool ComptimeFolder::fold_stmt(const ast::Stmt& s, const Env& env, Frame& frame,
     }
     case ast::NodeKind::AssignStmt: {
         const auto& a = static_cast<const ast::AssignStmt&>(s);
-        // Phase 3: only ident targets (no member/index assignment yet).
-        if (a.target->kind != ast::NodeKind::IdentExpr) {
-            return false;
-        }
-        auto name = static_cast<const ast::IdentExpr&>(*a.target).name;
-        auto rhs = fold_with(*a.value, env, frame, TypeKind::Unit, depth);
-        if (!rhs) {
-            return false;
-        }
-        if (a.op == ast::AssignOp::Assign) {
-            frame.locals[name] = *rhs;
+        // Phase 4: ident target (whole-binding update) and IndexExpr
+        // target whose base is an ident-bound vector (slot update).
+        // Anything else (member access, multi-index, base that's another
+        // computation) isn't foldable yet.
+        if (a.target->kind == ast::NodeKind::IdentExpr) {
+            auto name = static_cast<const ast::IdentExpr&>(*a.target).name;
+            // Hint the rhs with the current binding's element type when
+            // possible so an int literal `42` slots into an Int32 var
+            // without resetting its type.
+            TypeKind hint = TypeKind::Unit;
+            if (auto it = frame.locals.find(name); it != frame.locals.end()) {
+                hint = it->second.type;
+            }
+            auto rhs = fold_with(*a.value, env, frame, hint, depth);
+            if (!rhs) {
+                return false;
+            }
+            if (a.op == ast::AssignOp::Assign) {
+                frame.locals[name] = *rhs;
+                return true;
+            }
+            auto it = frame.locals.find(name);
+            if (it == frame.locals.end()) {
+                return false;
+            }
+            auto combined = apply_compound(a.op, it->second, *rhs);
+            if (!combined) {
+                return false;
+            }
+            it->second = *combined;
             return true;
         }
-        // Compound op: need the current value to combine against.
-        auto it = frame.locals.find(name);
-        if (it == frame.locals.end()) {
-            return false;  // assigning to an unbound name is not foldable
+        if (a.target->kind == ast::NodeKind::IndexExpr) {
+            const auto& ix = static_cast<const ast::IndexExpr&>(*a.target);
+            if (ix.base->kind != ast::NodeKind::IdentExpr || ix.indices.size() != 1) {
+                return false;
+            }
+            auto base_name = static_cast<const ast::IdentExpr&>(*ix.base).name;
+            auto vec_it = frame.locals.find(base_name);
+            if (vec_it == frame.locals.end()
+                || vec_it->second.kind != ComptimeValue::Kind::Vector) {
+                return false;
+            }
+            auto idx = fold_with(*ix.indices.front(), env, frame, TypeKind::Int, depth);
+            if (!idx || idx->kind != ComptimeValue::Kind::Int) {
+                return false;
+            }
+            if (idx->i < 0 || static_cast<std::size_t>(idx->i) >= vec_it->second.elements.size()) {
+                return false;  // out-of-bounds at fold time bails cleanly
+            }
+            // Hint the rhs with the vector's element type so an int
+            // literal slots into the declared element width.
+            auto rhs = fold_with(*a.value, env, frame, vec_it->second.type, depth);
+            if (!rhs) {
+                return false;
+            }
+            auto& slot = vec_it->second.elements[static_cast<std::size_t>(idx->i)];
+            if (a.op == ast::AssignOp::Assign) {
+                slot = *rhs;
+                return true;
+            }
+            auto combined = apply_compound(a.op, slot, *rhs);
+            if (!combined) {
+                return false;
+            }
+            slot = *combined;
+            return true;
         }
-        auto combined = apply_compound(a.op, it->second, *rhs);
-        if (!combined) {
-            return false;
-        }
-        it->second = *combined;
-        return true;
+        return false;
     }
     case ast::NodeKind::ForStmt: {
         // Only `for ident in start ..< end` (RangeLt) and `for ident in
