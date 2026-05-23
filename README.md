@@ -117,11 +117,15 @@ The transpiler is a classic layered front end with a single codegen pass:
 │                  │  generics (§7) are type-checked with opaque T's
 │                  │  inside the body, inferred at call sites, and
 │                  │  emitted as C++ templates for the host compiler
-│                  │  to monomorphize. Finally, the comptime folder
-│                  │  (§12.1 phase 1) evaluates pure constant
-│                  │  expressions and stashes the result in the
-│                  │  resolution side table so codegen can substitute
-│                  │  the folded literal in place of the source.
+│                  │  to monomorphize. The comptime folder (§12.1)
+│                  │  evaluates pure constant expressions and calls
+│                  │  to `comptime func` declarations, stashing the
+│                  │  result in the resolution side table so codegen
+│                  │  can substitute the folded literal. Conditional
+│                  │  compilation (§12.6) reuses that folder to
+│                  │  evaluate `@when(predicate)` attributes —
+│                  │  gated-out decls are invisible to every later
+│                  │  pass and never reach codegen.
 └──────────────────┘
     │
     ▼
@@ -236,6 +240,21 @@ Available on demand:
   monomorphization. Phase 2: const generics (`[const N: Int]`),
   generic structs/enums, where-clause refinement, and protocol-bound
   enforcement.
+- **Conditional compilation (§12.6 phase 1)** — `@when(predicate) decl`
+  is gated by the comptime folder. A built-in `cfg` value exposes
+  `cfg.os`, `cfg.arch`, `cfg.endian`, `cfg.pointerBits`, and
+  `cfg.profile`, populated from the host at compile time. Predicates
+  use any pure comptime expression: `@when(cfg.os == .macos)`,
+  `@when(cfg.pointerBits == 64 && cfg.endian == .little)`, etc.
+  When a predicate folds to `false` the decl is invisible to every
+  later sema pass and never reaches codegen — the generated C++
+  contains only the live arm, no `#ifdef` ladder. A predicate that
+  can't be folded (e.g. references a runtime function) is treated
+  as live, so a non-foldable @when never silently deletes code.
+  Phase 2: manifest-declared `cfg.has("simd")` and `cfg.option(...)`,
+  `comptime if` for declaration-position selection, and the §12.6
+  every-branch type-check guarantee.
+
 - **Comptime folding (§12.1 phases 1+2)** — a tree-walking evaluator
   for the pure subset of Vestra. **Phase 1** folds `const` initializers
   and `comptime { ... }` blocks at compile time: literals, references
@@ -310,8 +329,11 @@ What's **deliberately stubbed** today, in roughly the order I'd tackle them:
    parsed as expressions but emitted as `unsupported` comments.
 10. **SIMD `[N]T` lowering** (§13) — map to `std::experimental::simd` or
     target intrinsics where available; clean scalar fallback elsewhere.
-11. **Conditional compilation `cfg` / `@when`** (§12.6) — needs the
-    `comptime` interpreter so the predicate is evaluable at compile time.
+11. ~~**Conditional compilation `cfg` / `@when`**~~ — **phase 1 done**:
+    `cfg.{os,arch,endian,pointerBits,profile}` populated from the host,
+    `@when(predicate)` gates decls. Phase 2: manifest-declared
+    features/options, declaration-position `comptime if`, every-branch
+    type-check.
 
 Each of these adds one §-block of the spec at a time. The acceptance test for any
 of them is: "the relevant `examples/*.vst` file transpiles to C++ that compiles

@@ -159,3 +159,29 @@ add_test(
 set_tests_properties(e2e_comptime_run PROPERTIES
     DEPENDS                e2e_comptime_compile
     PASS_REGULAR_EXPRESSION "compute\\(\\) = 6871")
+
+# Cfg / @when: same source compiles to a different program per host. The
+# regex only verifies "something numeric came out" — the per-host arms are
+# checked by the unit tests in tests/sema/comptime_test.cpp.
+set(e2e_cfg_input  ${CMAKE_SOURCE_DIR}/examples/cfg.vst)
+set(e2e_cfg_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_cfg.cpp)
+
+add_test(
+    NAME    e2e_cfg_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_cfg_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_cfg_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_cfg_driver} ${e2e_workdir}/cfg.cpp
+            -o ${e2e_workdir}/cfg_app)
+set_tests_properties(e2e_cfg_compile PROPERTIES DEPENDS e2e_cfg_transpile)
+
+add_test(
+    NAME    e2e_cfg_run
+    COMMAND ${e2e_workdir}/cfg_app)
+set_tests_properties(e2e_cfg_run PROPERTIES
+    DEPENDS                e2e_cfg_compile
+    PASS_REGULAR_EXPRESSION "compute\\(\\) = [0-9]+")

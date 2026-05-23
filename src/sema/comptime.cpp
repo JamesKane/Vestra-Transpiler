@@ -145,6 +145,11 @@ std::string ComptimeValue::to_cpp_literal() const {
         return type == TypeKind::Float32 ? std::format("{}f", f) : std::format("{}", f);
     case Kind::Bool:
         return b ? "true" : "false";
+    case Kind::String:
+        // Strings only flow into runtime C++ when a non-cfg comptime call
+        // ever returns one — which today it can't. For §12.6 the only use
+        // is folding @when predicates, which never reach codegen.
+        return "std::string_view(\"" + s + "\")";
     case Kind::Unit:
         return "/* unit */ 0";
     }
@@ -195,6 +200,67 @@ ComptimeValue make_bool(bool v) {
     return cv;
 }
 
+ComptimeValue make_string(std::string v) {
+    ComptimeValue cv;
+    cv.kind = ComptimeValue::Kind::String;
+    cv.s = std::move(v);
+    cv.type = TypeKind::String;
+    return cv;
+}
+
+// §12.6: the `cfg` value's fields. Phase 1 hardcodes them based on
+// build-time host detection; later phases will let the build system
+// override via -D flags or a manifest.
+std::optional<ComptimeValue> cfg_field(std::string_view name) {
+#if defined(__APPLE__)
+    constexpr std::string_view OsName = "macos";
+#elif defined(__linux__)
+    constexpr std::string_view OsName = "linux";
+#elif defined(_WIN32)
+    constexpr std::string_view OsName = "windows";
+#else
+    constexpr std::string_view OsName = "freestanding";
+#endif
+#if defined(__aarch64__) || defined(__arm64__)
+    constexpr std::string_view ArchName = "arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+    constexpr std::string_view ArchName = "x86_64";
+#elif defined(__riscv) && (__riscv_xlen == 64)
+    constexpr std::string_view ArchName = "riscv64";
+#elif defined(__riscv) && (__riscv_xlen == 32)
+    constexpr std::string_view ArchName = "riscv32";
+#elif defined(__wasm32__)
+    constexpr std::string_view ArchName = "wasm32";
+#else
+    constexpr std::string_view ArchName = "unknown";
+#endif
+
+    if (name == "os") {
+        return make_string(std::string{OsName});
+    }
+    if (name == "arch") {
+        return make_string(std::string{ArchName});
+    }
+    if (name == "endian") {
+        return make_string("little");
+    }
+    if (name == "pointerBits") {
+        ComptimeValue cv;
+        cv.kind = ComptimeValue::Kind::Int;
+        cv.i = static_cast<std::int64_t>(sizeof(void*) * 8);
+        cv.type = TypeKind::Int;
+        return cv;
+    }
+    if (name == "profile") {
+#ifdef NDEBUG
+        return make_string("release");
+#else
+        return make_string("debug");
+#endif
+    }
+    return std::nullopt;
+}
+
 // Promote `a` and `b` to a common numeric kind for arithmetic / comparison.
 // Phase 1 only deals with same-kind operands; mixed-mode arithmetic isn't
 // supported (Vestra doesn't allow implicit conversions anyway).
@@ -232,13 +298,40 @@ ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint, int dept
         return make_bool(static_cast<const ast::BoolLit&>(e).value);
 
     case ast::NodeKind::IdentExpr: {
+        const auto& ident = static_cast<const ast::IdentExpr&>(e);
+        // §12.6: `cfg` is a built-in compile-time value. Returning a
+        // sentinel String lets MemberExpr below recognize it and route
+        // through cfg_field.
+        if (ident.name == "cfg") {
+            return make_string("__vestra_cfg__");
+        }
         // Look up another const by name. If env doesn't have it, we can't
         // fold — the value might exist at runtime but isn't compile-time-known.
-        auto it = env.find(static_cast<const ast::IdentExpr&>(e).name);
+        auto it = env.find(ident.name);
         if (it == env.end()) {
             return std::nullopt;
         }
         return it->second;
+    }
+
+    case ast::NodeKind::MemberExpr: {
+        // Only cfg member access is foldable in phase 1. Walking arbitrary
+        // struct field reads waits until we model struct *values* at fold
+        // time (we have struct *types* but no values yet).
+        const auto& m = static_cast<const ast::MemberExpr&>(e);
+        if (m.base->kind == ast::NodeKind::IdentExpr
+            && static_cast<const ast::IdentExpr&>(*m.base).name == "cfg") {
+            return cfg_field(m.member);
+        }
+        return std::nullopt;
+    }
+
+    case ast::NodeKind::LeadingDotExpr: {
+        // `.arm64` in a `cfg.arch == .arm64` predicate. The folder doesn't
+        // know which enum the case belongs to, so we encode the case name
+        // as a String and rely on the sibling cfg.X side of the comparison
+        // also being a String for the equality to be meaningful.
+        return make_string(static_cast<const ast::LeadingDotExpr&>(e).name);
     }
 
     case ast::NodeKind::ParenExpr:
@@ -406,6 +499,11 @@ ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint, int dept
             }
             if (lhs->kind == ComptimeValue::Kind::Bool) {
                 return make_bool(op(lhs->b, rhs->b));
+            }
+            if (lhs->kind == ComptimeValue::Kind::String) {
+                // String comparison covers §12.6 `cfg.arch == .arm64` —
+                // both sides fold to a String of the enum case name.
+                return make_bool(op(lhs->s, rhs->s));
             }
             return std::nullopt;
         };

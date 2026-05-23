@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace vestra::sema {
@@ -29,15 +30,21 @@ public:
     // evaluate at compile time get an entry here. Codegen uses it to emit
     // a literal in place of the source expression.
     [[nodiscard]] const ComptimeValue* folded_value(const ast::Expr* e) const;
+    // §12.6: was this decl skipped because an `@when(predicate)` on it
+    // folded to false? Codegen consults this to keep its emission in
+    // lockstep with sema.
+    [[nodiscard]] bool is_gated_out(const ast::Decl* d) const;
 
     void set_type(const ast::Expr* e, TypePtr t);
     void set_symbol(const ast::Expr* e, const Symbol* s);
     void set_folded_value(const ast::Expr* e, ComptimeValue v);
+    void mark_gated_out(const ast::Decl* d);
 
 private:
     std::unordered_map<const ast::Expr*, TypePtr> expr_types_;
     std::unordered_map<const ast::Expr*, const Symbol*> expr_symbols_;
     std::unordered_map<const ast::Expr*, ComptimeValue> folded_;
+    std::unordered_set<const ast::Decl*> gated_decls_;
 };
 
 // The resolver. Run `.resolve()` once; afterwards `resolution()` carries the
@@ -129,6 +136,12 @@ private:
     // Visibility check: report if `sym` is referenced from outside its
     // declaring scope when its visibility forbids it.
     void check_visibility(const Symbol& sym, diag::SourceRange use_range);
+
+    // §12.6: returns true if any `@when(predicate)` attribute on `decl`
+    // folds to Bool false. Gated-out decls are invisible to the rest of
+    // sema and never reach codegen. A non-foldable predicate is treated
+    // as live (we don't want a missing fold to silently delete code).
+    [[nodiscard]] bool gated_out(const ast::Decl& decl);
 
     // ---- helpers ---------------------------------------------------------
     void error_at(diag::SourceRange r, std::string msg);

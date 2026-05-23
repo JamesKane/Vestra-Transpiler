@@ -27,7 +27,7 @@ namespace vestra::sema {
 // rendering pass knows the destination width.
 struct ComptimeValue {
     // NOLINTNEXTLINE(performance-enum-size)
-    enum class Kind : std::uint8_t { Int, UInt, Float, Bool, Unit };
+    enum class Kind : std::uint8_t { Int, UInt, Float, Bool, String, Unit };
 
     Kind kind = Kind::Unit;
     TypeKind type = TypeKind::Unit;  // destination Vestra type, when known
@@ -36,6 +36,10 @@ struct ComptimeValue {
     std::uint64_t u = 0;  // valid when Kind::UInt
     double f = 0.0;       // valid when Kind::Float
     bool b = false;       // valid when Kind::Bool
+    std::string s;        // valid when Kind::String — also the carrier for
+                          // §12.6 enum-case identities (cfg.arch returns
+                          // "arm64"; `.arm64` leading-dot folds to the
+                          // same; equality is string compare)
 
     // Render this value as a literal expression suitable to drop into C++
     // source. Picks an explicit-width form when `type` is set (e.g. `42`

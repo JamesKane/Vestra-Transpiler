@@ -381,18 +381,14 @@ std::vector<ast::Attribute> Parser::parse_attributes() {
         }
         a.name = std::string{advance().lexeme};
         if (match(TokenKind::LParen)) {
-            // We don't yet parse attribute arguments structurally — collect raw text.
-            int depth = 1;
-            while (!at_end() && depth > 0) {
-                if (check(TokenKind::LParen)) {
-                    ++depth;
-                } else if (check(TokenKind::RParen)) {
-                    --depth;
-                    if (depth == 0) {
-                        break;
-                    }
-                }
-                a.arg_text.push_back(std::string{advance().lexeme});
+            // §12.6 wants attribute arguments to be ordinary comptime
+            // expressions (so `@when(cfg.arch == .arm64)` is a Vestra
+            // expression we can fold). Phase 1 supports a single expression
+            // argument — enough for @when, @bits, @repr, etc. Multi-arg
+            // attributes would extend Attribute to a vector and parse with
+            // a comma loop here.
+            if (!check(TokenKind::RParen)) {
+                a.predicate = parse_expr();
             }
             expect(TokenKind::RParen, "closing ')' of attribute arguments");
         }

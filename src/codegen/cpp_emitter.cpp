@@ -96,6 +96,11 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     }
 
     for (const auto& d : unit.decls) {
+        // §12.6: skip @when-gated-out decls. The Resolver populated the
+        // Resolution's gated set during its own pass.
+        if (resolution_ != nullptr && resolution_->is_gated_out(d.get())) {
+            continue;
+        }
         emit_decl(hdr, src, *d);
     }
 

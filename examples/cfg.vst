@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+module examples.platform
+
+// §12.6: each function gates on the host OS. Exactly one survives the
+// resolver's @when filter; the others never reach codegen. The emitted
+// C++ contains only the live arm — there is no #ifdef ladder in the
+// generated source, just the function for *this* build's target.
+
+@when(cfg.os == .macos)
+func host_id() -> Int32 {
+    return 1
+}
+
+@when(cfg.os == .linux)
+func host_id() -> Int32 {
+    return 2
+}
+
+@when(cfg.os == .windows)
+func host_id() -> Int32 {
+    return 3
+}
+
+@when(cfg.os == .freestanding)
+func host_id() -> Int32 {
+    return 4
+}
+
+// `cfg.pointerBits` is an integer — predicate operands can be arithmetic.
+@when(cfg.pointerBits == 64)
+func word_size() -> Int32 {
+    return 64
+}
+
+@when(cfg.pointerBits == 32)
+func word_size() -> Int32 {
+    return 32
+}
+
+func compute() -> Int32 {
+    return host_id() + word_size()
+}

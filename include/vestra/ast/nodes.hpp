@@ -190,7 +190,11 @@ using PatternPtr = std::unique_ptr<Pattern>;
 // flesh it out when we tackle macros.
 struct Attribute {
     std::string name;
-    std::vector<std::string> arg_text;
+    // Single-expression argument: `@when(cfg.arch == .arm64)` puts the
+    // comparison expression here; `@bits(4)` puts the integer literal.
+    // Attributes that take no args leave this null. Phase 1 of §12.6 only
+    // needs a single arg; multi-arg attributes can extend this to a vector.
+    ExprPtr predicate;
     diag::SourceRange range;
 };
 

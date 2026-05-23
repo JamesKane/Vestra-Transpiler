@@ -45,6 +45,12 @@ const ComptimeValue* Resolution::folded_value(const ast::Expr* e) const {
 void Resolution::set_folded_value(const ast::Expr* e, ComptimeValue v) {
     folded_[e] = v;
 }
+bool Resolution::is_gated_out(const ast::Decl* d) const {
+    return gated_decls_.contains(d);
+}
+void Resolution::mark_gated_out(const ast::Decl* d) {
+    gated_decls_.insert(d);
+}
 
 // ============================================================================
 // Resolver ctor + entry point
@@ -59,6 +65,11 @@ void Resolver::resolve() {
     register_builtin_capabilities();
     collect_top_level();
     for (const auto& d : unit_->decls) {
+        // §12.6: same gate as collect_top_level. Skipping here keeps the
+        // body-check pass aligned with the symbols actually registered.
+        if (gated_out(*d)) {
+            continue;
+        }
         check_decl(*d);
     }
 }
@@ -115,6 +126,12 @@ void Resolver::duplicate_definition(const Symbol& existing,
 
 void Resolver::collect_top_level() {
     for (const auto& d : unit_->decls) {
+        // §12.6: skip `@when`-gated-out decls before they enter any scope.
+        // Other passes (check_decl, codegen) will skip them the same way,
+        // so a gated-out decl is effectively absent from the program.
+        if (gated_out(*d)) {
+            continue;
+        }
         switch (d->kind) {
         case ast::NodeKind::Func:
             collect_func(static_cast<const ast::FuncDecl&>(*d));
@@ -1430,6 +1447,62 @@ void Resolver::unify_generic(TypePtr ptype,
     }
     // Other kinds: structural rules elsewhere already verify the call, so no
     // binding is contributed.
+}
+
+// ============================================================================
+// §12.6 @when gate
+// ============================================================================
+
+namespace {
+
+// Each Decl subtype has its own `attributes` vector. Return a span into the
+// right one, or nullptr if the kind doesn't carry attributes (Module,
+// Import, Const, Static, Opaque, Derive in our current AST shape).
+const std::vector<ast::Attribute>* decl_attributes(const ast::Decl& d) {
+    switch (d.kind) {
+    case ast::NodeKind::Func:
+        return &static_cast<const ast::FuncDecl&>(d).attributes;
+    case ast::NodeKind::Struct:
+        return &static_cast<const ast::StructDecl&>(d).attributes;
+    case ast::NodeKind::Enum:
+        return &static_cast<const ast::EnumDecl&>(d).attributes;
+    case ast::NodeKind::Protocol:
+        return &static_cast<const ast::ProtocolDecl&>(d).attributes;
+    case ast::NodeKind::Extension:
+        return &static_cast<const ast::ExtensionDecl&>(d).attributes;
+    default:
+        return nullptr;
+    }
+}
+
+}  // namespace
+
+bool Resolver::gated_out(const ast::Decl& decl) {
+    // Fast path: if we've already evaluated this decl's @when in an earlier
+    // pass and stashed the verdict, reuse it. Otherwise check each `when`
+    // attribute's predicate and remember the result.
+    if (resolution_.is_gated_out(&decl)) {
+        return true;
+    }
+    const auto* attrs = decl_attributes(decl);
+    if (attrs == nullptr) {
+        return false;
+    }
+    for (const auto& a : *attrs) {
+        if (a.name != "when" || !a.predicate) {
+            continue;
+        }
+        // The predicate is folded against the comptime env in its current
+        // state — for top-level decls this is normally empty (consts haven't
+        // been registered yet), so the predicate has to rely on cfg.* or
+        // pure literals. That matches the §12.6 model.
+        auto v = folder_.fold(*a.predicate, comptime_env_);
+        if (v && v->kind == ComptimeValue::Kind::Bool && !v->b) {
+            resolution_.mark_gated_out(&decl);
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace vestra::sema

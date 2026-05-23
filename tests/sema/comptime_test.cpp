@@ -245,6 +245,101 @@ TEST_CASE("phase 2: arg-count mismatch bails the fold rather than misfolding") {
     CHECK_FALSE(v.has_value());
 }
 
+// ---- §12.6: cfg + @when conditional compilation ---------------------------
+
+TEST_CASE("§12.6: cfg.os folds to a non-empty string") {
+    auto v = fold_expr("cfg.os");
+    REQUIRE(v);
+    CHECK(v->kind == vestra::sema::ComptimeValue::Kind::String);
+    CHECK(!v->s.empty());
+}
+
+TEST_CASE("§12.6: cfg.os == .<host> folds to true on this host") {
+    // Find the host's name via cfg.os, then verify cfg.os == .<that> is true.
+    auto host = fold_expr("cfg.os");
+    REQUIRE(host);
+    REQUIRE(host->kind == vestra::sema::ComptimeValue::Kind::String);
+
+    auto v = fold_expr("cfg.os == ." + host->s);
+    REQUIRE(v);
+    CHECK(v->kind == vestra::sema::ComptimeValue::Kind::Bool);
+    CHECK(v->b == true);
+}
+
+TEST_CASE("§12.6: cfg.os == .<not-host> folds to false") {
+    auto host = fold_expr("cfg.os");
+    REQUIRE(host);
+    std::string other = (host->s == "macos") ? "linux" : "macos";
+    auto v = fold_expr("cfg.os == ." + other);
+    REQUIRE(v);
+    CHECK(v->b == false);
+}
+
+TEST_CASE("§12.6: combined `&&` predicate folds") {
+    auto v = fold_expr("cfg.pointerBits == 64 && cfg.endian == .little");
+    REQUIRE(v);
+    CHECK(v->b == true);
+}
+
+TEST_CASE("§12.6: @when-false decl is gated out of the resolver") {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto fid = sm.add_in_memory("<test>",
+                                "@when(false)\n"
+                                "func gone() -> Int32 { return 0 }\n"
+                                "func live() -> Int32 { return 1 }\n");
+    vestra::lex::Lexer lex(sm, fid, rep);
+    auto tokens = lex.tokenize();
+    vestra::parse::Parser p(tokens, rep);
+    auto unit = p.parse_unit();
+    REQUIRE_FALSE(rep.has_errors());
+    vestra::sema::TypeArena arena;
+    vestra::sema::Resolver res(unit, arena, rep);
+    res.resolve();
+    REQUIRE_FALSE(rep.has_errors());
+    CHECK(res.resolution().is_gated_out(unit.decls[0].get()));
+    CHECK_FALSE(res.resolution().is_gated_out(unit.decls[1].get()));
+}
+
+TEST_CASE("§12.6: @when-true decl stays") {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto fid = sm.add_in_memory("<test>",
+                                "@when(true)\n"
+                                "func live() -> Int32 { return 1 }\n");
+    vestra::lex::Lexer lex(sm, fid, rep);
+    auto tokens = lex.tokenize();
+    vestra::parse::Parser p(tokens, rep);
+    auto unit = p.parse_unit();
+    REQUIRE_FALSE(rep.has_errors());
+    vestra::sema::TypeArena arena;
+    vestra::sema::Resolver res(unit, arena, rep);
+    res.resolve();
+    REQUIRE_FALSE(rep.has_errors());
+    CHECK_FALSE(res.resolution().is_gated_out(unit.decls[0].get()));
+}
+
+TEST_CASE("§12.6: @when with a non-foldable predicate is treated as live") {
+    // A predicate that can't be evaluated at fold time must not silently
+    // delete code. Here the predicate refers to a runtime function call.
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto fid = sm.add_in_memory("<test>",
+                                "func unknowable() -> Bool { return true }\n"
+                                "@when(unknowable())\n"
+                                "func still_here() -> Int32 { return 1 }\n");
+    vestra::lex::Lexer lex(sm, fid, rep);
+    auto tokens = lex.tokenize();
+    vestra::parse::Parser p(tokens, rep);
+    auto unit = p.parse_unit();
+    REQUIRE_FALSE(rep.has_errors());
+    vestra::sema::TypeArena arena;
+    vestra::sema::Resolver res(unit, arena, rep);
+    res.resolve();
+    REQUIRE_FALSE(rep.has_errors());
+    CHECK_FALSE(res.resolution().is_gated_out(unit.decls[1].get()));
+}
+
 TEST_CASE("phase 2: recursion past the depth cap stops cleanly") {
     // factorial recurses linearly. MaxDepth is 64; we call with 200, which
     // would otherwise produce a 200-deep chain. The fold must bail rather
