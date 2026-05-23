@@ -9,6 +9,8 @@
 
 #include <iosfwd>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace vestra::codegen {
 
@@ -58,6 +60,13 @@ private:
 
     diag::DiagnosticReporter* reporter_;
     const sema::Resolution* resolution_ = nullptr;
+
+    // §12.3 derive layer: a target-type-name → derived-protocol-name
+    // index built up front from every `derive(...) for T` top-level
+    // decl in the unit. The struct/enum emitters consult this so
+    // e.g. `derive(Eq) for Point` injects a defaulted `operator==`
+    // into Point's body. Reset each emit() call.
+    std::unordered_map<std::string, std::unordered_set<std::string>> derives_by_target_;
 };
 
 }  // namespace vestra::codegen

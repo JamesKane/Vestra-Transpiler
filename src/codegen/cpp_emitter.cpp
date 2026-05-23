@@ -66,6 +66,37 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     std::ostringstream hdr;
     std::ostringstream src;
 
+    // §12.3 derive index: collect every `derive(P1, P2, …) for T` at
+    // the top level into target-name → {protocol names}. emit_struct
+    // and emit_enum read this when injecting the reflective defaults.
+    // Each target/protocol path is reduced to its last segment (its
+    // simple name) which matches the scope's nominal lookup today.
+    derives_by_target_.clear();
+    for (const auto& d : unit.decls) {
+        if (d->kind != ast::NodeKind::Derive) {
+            continue;
+        }
+        const auto& dd = static_cast<const ast::DeriveDecl&>(*d);
+        if (dd.target == nullptr || dd.target->kind != ast::NodeKind::NamedType) {
+            continue;
+        }
+        const auto& tt = static_cast<const ast::NamedType&>(*dd.target);
+        if (tt.path.empty()) {
+            continue;
+        }
+        const auto& target_name = tt.path.back();
+        for (const auto& p : dd.protocols) {
+            if (p == nullptr || p->kind != ast::NodeKind::NamedType) {
+                continue;
+            }
+            const auto& pt = static_cast<const ast::NamedType&>(*p);
+            if (pt.path.empty()) {
+                continue;
+            }
+            derives_by_target_[target_name].insert(pt.path.back());
+        }
+    }
+
     auto guard = std::string{output_basename};
     for (auto& c : guard) {
         c = (std::isalnum(static_cast<unsigned char>(c)) != 0)
@@ -258,6 +289,13 @@ void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl
         hdr << " {};\n";
         break;
     }
+    case ast::NodeKind::Derive:
+        // §12.3: derive(...) is sugar for an empty extension that
+        // adopts the protocol's reflective default. The actual code
+        // gets emitted into the target struct/enum body via the
+        // derives_by_target_ index built in emit(); there's nothing
+        // to write at the DeriveDecl's own position.
+        break;
     default:
         unsupported(hdr, std::format("top-level decl kind {}", static_cast<int>(d.kind)), d.range);
         hdr << "\n";
@@ -391,6 +429,17 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
         }
         hdr << " " << f.name << "{};\n";
     }
+    // §12.3 derive(Eq): a defaulted operator== gives us field-by-field
+    // structural equality for free, with the C++ compiler doing the
+    // recursion through any nested derived-Eq members. Bigger derives
+    // (Hash, Clone) ride on the same index in later phases.
+    if (auto it = derives_by_target_.find(s.name); it != derives_by_target_.end()) {
+        if (it->second.contains("Eq")) {
+            write_indent(hdr, 1);
+            hdr << "[[nodiscard]] bool operator==(const " << s.name
+                << "&) const noexcept = default;\n";
+        }
+    }
     hdr << "};\n\n";
 }
 
@@ -411,9 +460,19 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
             hdr << c.name << ",\n";
         }
         hdr << "};\n\n";
+        // C++ `enum class` already has operator== built in, so
+        // derive(Eq) for a bare enum needs no extra code — but flag
+        // any other (unsupported-for-bare) derives as TODO.
         return;
     }
     // Sum type — emit a struct-of-variant. TODO: tighter sum-type lowering.
+    //
+    // Detect derive(Eq) up front: `std::variant::operator==` requires
+    // each alternative to be equality-comparable, so we need to add a
+    // defaulted operator== to every case_t too (cheap — it's all POD
+    // member compares).
+    const bool wants_eq =
+        derives_by_target_.contains(e.name) && derives_by_target_.at(e.name).contains("Eq");
     hdr << "struct " << e.name << " {\n";
     for (const auto& c : e.cases) {
         write_indent(hdr, 1);
@@ -428,6 +487,10 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
             hdr << " " << (c.payload[i].first.empty() ? std::format("_{}", i) : c.payload[i].first)
                 << "{}; ";
         }
+        if (wants_eq) {
+            hdr << "[[nodiscard]] bool operator==(const " << c.name
+                << "_t&) const noexcept = default; ";
+        }
         hdr << "};\n";
     }
     write_indent(hdr, 1);
@@ -439,6 +502,16 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
         hdr << e.cases[i].name << "_t";
     }
     hdr << "> value{};\n";
+    // §12.3 derive(Eq): sum-type wrappers need a defaulted operator==
+    // too; std::variant compares structurally provided every alternative
+    // is comparable, and the defaulted operator delegates accordingly.
+    if (auto it = derives_by_target_.find(e.name); it != derives_by_target_.end()) {
+        if (it->second.contains("Eq")) {
+            write_indent(hdr, 1);
+            hdr << "[[nodiscard]] bool operator==(const " << e.name
+                << "&) const noexcept = default;\n";
+        }
+    }
     hdr << "};\n\n";
 }
 

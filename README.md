@@ -311,6 +311,16 @@ Available on demand:
   the same `comptime { … }` block. Later phases extend Field with
   `offset` + attributes, and put `derive(Eq, Hash, Clone, …)`
   reflective defaults on top of the .type machinery.
+- **`derive(Eq)` (§12.3)** — `derive(Eq) for Point` (or `for Shape`)
+  injects a `[[nodiscard]] bool operator==(const T&) const noexcept = default;`
+  into the emitted struct/enum body, giving field-by-field structural
+  equality without writing it. The codegen builds a target → derived-
+  protocols index from every top-level `derive(...)` decl up front, so
+  it works whether the `derive` appears before or after the struct
+  itself. For payloaded enums the same flag also adds a defaulted
+  `operator==` to each `case_t` (std::variant's compare requires
+  every alternative to be equality-comparable). Hash/Clone ride on
+  the same index in later phases.
 - **Match expression lowering** — `match e { case .a: …  case .b(let x): …  case _: … }`
   lowers two ways depending on the scrutinee's enum shape: a bare
   enum becomes a `switch (e) { case Enum::a: return …; }` IIFE; a

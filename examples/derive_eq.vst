@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §12.3 derive(Eq) demo: structural equality without writing it.
+//
+// `derive(Eq) for T` is sugar for an empty extension that adopts the
+// `Eq` protocol's reflective default. The default compares two values
+// field-by-field — for a struct that means each declared field, for a
+// payloaded enum it means same active alternative *and* equal payload.
+//
+// In the emitted C++ this lowers to a defaulted `operator==`:
+//   [[nodiscard]] bool operator==(const T&) const noexcept = default;
+// The C++ compiler does the recursion for free, so nested derived-Eq
+// members compose without extra work.
+
+module examples.derive_eq
+
+struct Point {
+    var x: Int32
+    var y: Int32
+}
+
+derive(Eq) for Point
+
+enum Shape {
+    case circle(radius: Float64)
+    case rect(width: Float64, height: Float64)
+    case point
+}
+
+derive(Eq) for Shape
+
+// Two factory funcs we'll use to sanity-check the round-trip.
+func make_point(_ x: Int32, _ y: Int32) -> Point {
+    return Point(x: x, y: y)
+}
+
+func make_circle(_ r: Float64) -> Shape {
+    return Shape.circle(radius: r)
+}

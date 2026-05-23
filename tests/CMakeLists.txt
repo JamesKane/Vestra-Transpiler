@@ -341,3 +341,29 @@ add_test(
 set_tests_properties(e2e_match_run PROPERTIES
     DEPENDS                e2e_match_compile
     PASS_REGULAR_EXPRESSION "match OK")
+
+# derive(Eq): structural equality lowered to a defaulted operator==
+# for both a struct and a payloaded enum. Runtime side compares
+# matching / mismatching values and asserts the result.
+set(e2e_derive_input  ${CMAKE_SOURCE_DIR}/examples/derive_eq.vst)
+set(e2e_derive_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_derive_eq.cpp)
+
+add_test(
+    NAME    e2e_derive_eq_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_derive_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_derive_eq_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_derive_driver} ${e2e_workdir}/derive_eq.cpp
+            -o ${e2e_workdir}/derive_eq_app)
+set_tests_properties(e2e_derive_eq_compile PROPERTIES DEPENDS e2e_derive_eq_transpile)
+
+add_test(
+    NAME    e2e_derive_eq_run
+    COMMAND ${e2e_workdir}/derive_eq_app)
+set_tests_properties(e2e_derive_eq_run PROPERTIES
+    DEPENDS                e2e_derive_eq_compile
+    PASS_REGULAR_EXPRESSION "derive\\(Eq\\) OK")

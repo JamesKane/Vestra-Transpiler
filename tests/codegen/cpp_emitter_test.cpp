@@ -127,3 +127,45 @@ TEST_CASE("bare enums keep their `enum class Name::case` lowering") {
     CHECK(f.out.source.find("return Color::red;") != std::string::npos);
     CHECK(f.out.source.find("Color{Color::red_t") == std::string::npos);
 }
+
+TEST_CASE("derive(Eq) for a struct emits a defaulted operator==") {
+    SemaEmitFixture f("struct Point {\n"
+                      "    var x: Int32\n"
+                      "    var y: Int32\n"
+                      "}\n"
+                      "derive(Eq) for Point\n");
+    CHECK(f.out.header.find("struct Point {") != std::string::npos);
+    CHECK(f.out.header.find("bool operator==(const Point&) const noexcept = default;")
+          != std::string::npos);
+}
+
+TEST_CASE("derive(Eq) for a payloaded enum emits operator== on the wrapper") {
+    SemaEmitFixture f("enum Shape {\n"
+                      "    case circle(radius: Float64)\n"
+                      "    case point\n"
+                      "}\n"
+                      "derive(Eq) for Shape\n");
+    CHECK(f.out.header.find("std::variant<circle_t, point_t> value") != std::string::npos);
+    CHECK(f.out.header.find("bool operator==(const Shape&) const noexcept = default;")
+          != std::string::npos);
+}
+
+TEST_CASE("a struct without derive(Eq) gets no operator==") {
+    SemaEmitFixture f("struct Bare {\n"
+                      "    var x: Int32\n"
+                      "}\n");
+    CHECK(f.out.header.find("struct Bare {") != std::string::npos);
+    CHECK(f.out.header.find("operator==") == std::string::npos);
+}
+
+TEST_CASE("derive(Eq, Hash) routes only the implemented protocols (Eq today)") {
+    // Hash isn't wired yet; the codegen should pick the protocols it
+    // recognizes (Eq) and silently ignore the rest. Tightens to a
+    // diagnostic in a later phase.
+    SemaEmitFixture f("struct Q {\n"
+                      "    var n: Int32\n"
+                      "}\n"
+                      "derive(Eq, Hash) for Q\n");
+    CHECK(f.out.header.find("bool operator==(const Q&) const noexcept = default;")
+          != std::string::npos);
+}
