@@ -2,6 +2,7 @@
 
 #include "vestra/ast/nodes.hpp"
 #include "vestra/diag/diagnostic.hpp"
+#include "vestra/sema/comptime.hpp"
 #include "vestra/sema/scope.hpp"
 #include "vestra/sema/types.hpp"
 
@@ -21,13 +22,19 @@ class Resolution {
 public:
     [[nodiscard]] TypePtr type_of(const ast::Expr* e) const;
     [[nodiscard]] const Symbol* symbol_of(const ast::Expr* e) const;
+    // §12.1 fold result — only expressions the comptime folder could
+    // evaluate at compile time get an entry here. Codegen uses it to emit
+    // a literal in place of the source expression.
+    [[nodiscard]] const ComptimeValue* folded_value(const ast::Expr* e) const;
 
     void set_type(const ast::Expr* e, TypePtr t);
     void set_symbol(const ast::Expr* e, const Symbol* s);
+    void set_folded_value(const ast::Expr* e, ComptimeValue v);
 
 private:
     std::unordered_map<const ast::Expr*, TypePtr> expr_types_;
     std::unordered_map<const ast::Expr*, const Symbol*> expr_symbols_;
+    std::unordered_map<const ast::Expr*, ComptimeValue> folded_;
 };
 
 // The resolver. Run `.resolve()` once; afterwards `resolution()` carries the
@@ -137,6 +144,11 @@ private:
     // Stack of expected return types — pushed when entering a function body so
     // a nested return expression can be checked against it.
     std::vector<TypePtr> return_stack_;
+    // Comptime folder + the const environment it folds against. The env
+    // accumulates name→value pairs as we successfully fold each top-level
+    // const, so later consts can reference earlier ones.
+    ComptimeFolder folder_;
+    ComptimeFolder::Env comptime_env_;
 };
 
 }  // namespace vestra::sema

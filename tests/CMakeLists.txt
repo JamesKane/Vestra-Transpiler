@@ -10,6 +10,7 @@ set(test_sources
     sema/exclusivity_test.cpp
     sema/capability_test.cpp
     sema/generics_test.cpp
+    sema/comptime_test.cpp
     codegen/cpp_emitter_test.cpp)
 
 add_executable(vestra_tests
@@ -131,3 +132,27 @@ add_test(
 set_tests_properties(e2e_generics_run PROPERTIES
     DEPENDS                e2e_generics_compile
     PASS_REGULAR_EXPRESSION "compute\\(\\) = 42")
+
+# Comptime: each `const` initializer folds to a literal in the emitted C++.
+set(e2e_comptime_input  ${CMAKE_SOURCE_DIR}/examples/comptime.vst)
+set(e2e_comptime_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_comptime.cpp)
+
+add_test(
+    NAME    e2e_comptime_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_comptime_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_comptime_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++23 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_comptime_driver} ${e2e_workdir}/comptime.cpp
+            -o ${e2e_workdir}/comptime_app)
+set_tests_properties(e2e_comptime_compile PROPERTIES DEPENDS e2e_comptime_transpile)
+
+add_test(
+    NAME    e2e_comptime_run
+    COMMAND ${e2e_workdir}/comptime_app)
+set_tests_properties(e2e_comptime_run PROPERTIES
+    DEPENDS                e2e_comptime_compile
+    PASS_REGULAR_EXPRESSION "compute\\(\\) = 6151")

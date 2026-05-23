@@ -115,7 +115,11 @@ The transpiler is a classic layered front end with a single codegen pass:
 │                  │  generics (§7) are type-checked with opaque T's
 │                  │  inside the body, inferred at call sites, and
 │                  │  emitted as C++ templates for the host compiler
-│                  │  to monomorphize.
+│                  │  to monomorphize. Finally, the comptime folder
+│                  │  (§12.1 phase 1) evaluates pure constant
+│                  │  expressions and stashes the result in the
+│                  │  resolution side table so codegen can substitute
+│                  │  the folded literal in place of the source.
 └──────────────────┘
     │
     ▼
@@ -229,6 +233,22 @@ Available on demand:
   monomorphization. Phase 2: const generics (`[const N: Int]`),
   generic structs/enums, where-clause refinement, and protocol-bound
   enforcement.
+- **Comptime folding (§12.1 phase 1)** — a pure-expression evaluator
+  walks `const` initializers and `comptime { ... }` blocks at compile
+  time and produces a value the codegen then substitutes for the
+  source expression. Today's folder handles integer / float / bool
+  literals, references to earlier folded consts, unary + binary
+  arithmetic and logic (with short-circuiting `&&`/`||`),
+  comparisons, and `if`-expressions (only the chosen branch is
+  evaluated). Calls, struct construction, member access, and
+  side-effecting forms are deliberately not folded; the value is
+  simply absent from the side table and codegen falls back to
+  emitting the source expression. `const Page: Int32 = comptime { 1
+  << 12 }` ends up as `inline constexpr std::int32_t Page = 4096;`
+  in the generated C++. Phase 2 lifts toward a full §12 interpreter:
+  function calls in `comptime`, reflection (`Type`, `Field`),
+  `derive(Eq, Hash, …)`, declaration macros with `quote`, and the
+  conditional-compilation `cfg`/`@when` plumbing.
 - **End-to-end** — `vestra build` parses, sema-checks (including
   ownership), and produces `.hpp/.cpp` that compiles and runs for
   `examples/hello.vst`, `examples/shapes.vst`, and
@@ -269,8 +289,11 @@ What's **deliberately stubbed** today, in roughly the order I'd tackle them:
    as C++ templates that the host compiler monomorphizes. Phase 2:
    const generics, generic structs/enums, where-clauses, and bound
    enforcement.
-7. **`comptime` interpreter** (§12) — the engine of reflection, `derive`, and
-   declaration macros. Likely the largest single piece of work.
+7. ~~**`comptime` interpreter**~~ — **phase 1 done**: pure-expression
+   folder handles const initializers and `comptime { ... }` blocks
+   (literals, idents, unary/binary/comparison/logical, if). Phase 2
+   adds function calls in comptime, reflection (Type/Field), `derive`
+   defaults, declaration macros (`quote`/`$splice`), and `cfg`/`@when`.
 8. **String interpolation lowering** (§4) — produce `Display::display(into:)`
    calls into a `String` sink; the lexer already has the splitting hooks.
 9. **`async` / `spawn` / `select` / `parallel` lowering** (§11) — currently

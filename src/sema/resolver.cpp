@@ -35,6 +35,13 @@ void Resolution::set_type(const ast::Expr* e, TypePtr t) {
 void Resolution::set_symbol(const ast::Expr* e, const Symbol* s) {
     expr_symbols_[e] = s;
 }
+const ComptimeValue* Resolution::folded_value(const ast::Expr* e) const {
+    auto it = folded_.find(e);
+    return it == folded_.end() ? nullptr : &it->second;
+}
+void Resolution::set_folded_value(const ast::Expr* e, ComptimeValue v) {
+    folded_[e] = v;
+}
 
 // ============================================================================
 // Resolver ctor + entry point
@@ -283,6 +290,15 @@ void Resolver::check_decl(const ast::Decl& d) {
                          std::format("const value of type {} does not match annotation {}",
                                      value_type ? value_type->describe() : "?",
                                      annotated->describe()));
+            }
+            // §12.1 fold attempt: if the initializer is a pure constant
+            // expression, evaluate it now and record the result. The hint is
+            // the annotated TypeKind so an integer literal folds to the
+            // declared concrete width (e.g. const X: Int32 = 1 << 8 - 1).
+            TypeKind hint = annotated != nullptr ? annotated->kind() : TypeKind::Unit;
+            if (auto folded = folder_.fold(*c.value, comptime_env_, hint)) {
+                resolution_.set_folded_value(c.value.get(), *folded);
+                comptime_env_[c.name] = *folded;
             }
         }
         break;

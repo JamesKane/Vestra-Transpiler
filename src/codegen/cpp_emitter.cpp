@@ -571,6 +571,17 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
 }
 
 void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
+    // §12.1 folded literal short-circuit: when sema's comptime folder
+    // computed a constant value for this expression, emit that value
+    // directly. Skips the whole structure (e.g. `1 << 8 - 1` becomes
+    // `255` in the output) while still giving the C++ compiler an
+    // exact-width literal.
+    if (resolution_ != nullptr) {
+        if (const auto* v = resolution_->folded_value(&e)) {
+            os << v->to_cpp_literal();
+            return;
+        }
+    }
     switch (e.kind) {
     case ast::NodeKind::IntLit:
         os << static_cast<const ast::IntLit&>(e).text;

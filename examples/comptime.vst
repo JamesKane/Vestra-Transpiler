@@ -1,0 +1,21 @@
+module examples.consts
+
+// Each of these `const` initializers folds to a literal at compile time
+// — the generated C++ ends up with `inline constexpr ... = <number>;`
+// rather than the source expression.
+
+// Plain arithmetic.
+const Page: Int32 = comptime { 1 << 12 }      // 4096
+
+// Refer to earlier comptime constants.
+const HalfPage: Int32 = comptime { Page / 2 } // 2048
+
+// A pure if-expression at fold time picks one branch.
+const Pick: Int32 = if 4 * 100 > 300 { 7 } else { 0 }
+
+func compute() -> Int32 {
+    // Each reference here also folds (an IdentExpr resolving to a folded
+    // const). The body itself isn't folded — it has parameters and a
+    // call shape — but the operands do reach C++ as literals.
+    return Page + HalfPage + Pick
+}
