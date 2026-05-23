@@ -1,0 +1,38 @@
+# Build directories
+build/
+build-*/
+out/
+cmake-build-*/
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# Editor / IDE
+.vscode/
+.idea/
+.antigravitycli/
+*.swp
+*.swo
+*~
+
+# macOS Finder
+.DS_Store
+**/.DS_Store
+
+# clangd / ccls
+.cache/
+.ccls-cache/
+
+# Tooling output
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+
+# Generated transpiler output during tests
+tests/_generated/

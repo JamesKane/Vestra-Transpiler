@@ -1,0 +1,331 @@
+#include "vestra/sema/types.hpp"
+
+#include <cassert>
+#include <format>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+
+namespace vestra::sema {
+
+// ----- Type --------------------------------------------------------------
+
+bool Type::is_primitive() const noexcept {
+    switch (kind_) {
+    case TypeKind::Int8:
+    case TypeKind::Int16:
+    case TypeKind::Int32:
+    case TypeKind::Int64:
+    case TypeKind::Int:
+    case TypeKind::UInt8:
+    case TypeKind::UInt16:
+    case TypeKind::UInt32:
+    case TypeKind::UInt64:
+    case TypeKind::UInt:
+    case TypeKind::Float32:
+    case TypeKind::Float64:
+    case TypeKind::Bool:
+    case TypeKind::Char:
+    case TypeKind::Unit:
+    case TypeKind::String:
+    case TypeKind::Str:
+    case TypeKind::StrConst:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool Type::is_integer() const noexcept {
+    switch (kind_) {
+    case TypeKind::Int8:
+    case TypeKind::Int16:
+    case TypeKind::Int32:
+    case TypeKind::Int64:
+    case TypeKind::Int:
+    case TypeKind::UInt8:
+    case TypeKind::UInt16:
+    case TypeKind::UInt32:
+    case TypeKind::UInt64:
+    case TypeKind::UInt:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool Type::is_float() const noexcept {
+    return kind_ == TypeKind::Float32 || kind_ == TypeKind::Float64;
+}
+
+namespace {
+
+std::string_view primitive_spelling(TypeKind k) noexcept {
+    switch (k) {
+    case TypeKind::Int8:
+        return "Int8";
+    case TypeKind::Int16:
+        return "Int16";
+    case TypeKind::Int32:
+        return "Int32";
+    case TypeKind::Int64:
+        return "Int64";
+    case TypeKind::Int:
+        return "Int";
+    case TypeKind::UInt8:
+        return "UInt8";
+    case TypeKind::UInt16:
+        return "UInt16";
+    case TypeKind::UInt32:
+        return "UInt32";
+    case TypeKind::UInt64:
+        return "UInt64";
+    case TypeKind::UInt:
+        return "UInt";
+    case TypeKind::Float32:
+        return "Float32";
+    case TypeKind::Float64:
+        return "Float64";
+    case TypeKind::Bool:
+        return "Bool";
+    case TypeKind::Char:
+        return "Char";
+    case TypeKind::Unit:
+        return "Unit";
+    case TypeKind::String:
+        return "String";
+    case TypeKind::Str:
+        return "Str";
+    case TypeKind::StrConst:
+        return "StrConst";
+    case TypeKind::Never:
+        return "Never";
+    case TypeKind::Error:
+        return "<error>";
+    default:
+        return {};
+    }
+}
+
+}  // namespace
+
+std::string Type::describe() const {
+    if (is_primitive() || kind_ == TypeKind::Never || kind_ == TypeKind::Error) {
+        return std::string{primitive_spelling(kind_)};
+    }
+    switch (kind_) {
+    case TypeKind::Optional:
+        return inner_ ? inner_->describe() + "?" : "?";
+    case TypeKind::Vector: {
+        std::string elem = inner_ ? inner_->describe() : std::string{"?"};
+        return std::format("[{}]{}", length_, elem);
+    }
+    case TypeKind::Tuple: {
+        std::string s = "(";
+        for (std::size_t i = 0; i < parts_.size(); ++i) {
+            if (i != 0) {
+                s += ", ";
+            }
+            s += parts_[i] ? parts_[i]->describe() : "?";
+        }
+        s += ")";
+        return s;
+    }
+    case TypeKind::Function: {
+        std::string s = "(";
+        for (std::size_t i = 0; i < parts_.size(); ++i) {
+            if (i != 0) {
+                s += ", ";
+            }
+            s += parts_[i] ? parts_[i]->describe() : "?";
+        }
+        s += ") -> ";
+        s += result_ ? result_->describe() : "Unit";
+        return s;
+    }
+    case TypeKind::Struct:
+    case TypeKind::Enum:
+    case TypeKind::Protocol:
+    case TypeKind::OpaqueType:
+        if (decl_) {
+            // We can't include the decl's name here without ast.hpp dep — but
+            // we have it. Use a generic placeholder; callers with the decl in
+            // hand can print better.
+            switch (decl_->kind) {
+            case ast::NodeKind::Struct:
+                return static_cast<const ast::StructDecl&>(*decl_).name;
+            case ast::NodeKind::Enum:
+                return static_cast<const ast::EnumDecl&>(*decl_).name;
+            case ast::NodeKind::Protocol:
+                return static_cast<const ast::ProtocolDecl&>(*decl_).name;
+            case ast::NodeKind::Opaque:
+                return static_cast<const ast::OpaqueDecl&>(*decl_).name;
+            default:
+                break;
+            }
+        }
+        return "<nominal>";
+    case TypeKind::GenericParam:
+        return name_;
+    default:
+        return "<type>";
+    }
+}
+
+// ----- TypeArena ---------------------------------------------------------
+
+TypeArena::TypeArena() {
+    // Pre-intern every primitive so calls to primitive(...) are O(1) hash hits.
+    for (auto k : {TypeKind::Int8,   TypeKind::Int16,    TypeKind::Int32,   TypeKind::Int64,
+                   TypeKind::Int,    TypeKind::UInt8,    TypeKind::UInt16,  TypeKind::UInt32,
+                   TypeKind::UInt64, TypeKind::UInt,     TypeKind::Float32, TypeKind::Float64,
+                   TypeKind::Bool,   TypeKind::Char,     TypeKind::Unit,    TypeKind::String,
+                   TypeKind::Str,    TypeKind::StrConst, TypeKind::Never,   TypeKind::Error}) {
+        auto t = std::unique_ptr<Type>(new Type(k));
+        primitives_.emplace(static_cast<int>(k), t.get());
+        owned_.push_back(std::move(t));
+    }
+}
+
+TypePtr TypeArena::primitive(TypeKind k) const {
+    auto it = primitives_.find(static_cast<int>(k));
+    assert(it != primitives_.end() && "primitive(...) called with non-primitive kind");
+    return it->second;
+}
+
+TypePtr TypeArena::make_optional(TypePtr inner) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Optional));
+    t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_vector(std::int64_t length, TypePtr element) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Vector));
+    t->length_ = length;
+    t->inner_ = element;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_function(std::vector<TypePtr> params, TypePtr result) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Function));
+    t->parts_ = std::move(params);
+    t->result_ = result;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_tuple(std::vector<TypePtr> elements) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Tuple));
+    t->parts_ = std::move(elements);
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_nominal(TypeKind k, const ast::Decl* decl) {
+    auto t = std::unique_ptr<Type>(new Type(k));
+    t->decl_ = decl;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_generic_param(std::string name) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::GenericParam));
+    t->name_ = std::move(name);
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypeKind TypeArena::primitive_kind_by_name(std::string_view name) noexcept {
+    static const std::unordered_map<std::string_view, TypeKind> m = {
+        {"Int8", TypeKind::Int8},
+        {"Int16", TypeKind::Int16},
+        {"Int32", TypeKind::Int32},
+        {"Int64", TypeKind::Int64},
+        {"Int", TypeKind::Int},
+        {"UInt8", TypeKind::UInt8},
+        {"UInt16", TypeKind::UInt16},
+        {"UInt32", TypeKind::UInt32},
+        {"UInt64", TypeKind::UInt64},
+        {"UInt", TypeKind::UInt},
+        {"Float32", TypeKind::Float32},
+        {"Float64", TypeKind::Float64},
+        {"Bool", TypeKind::Bool},
+        {"Char", TypeKind::Char},
+        {"Unit", TypeKind::Unit},
+        {"String", TypeKind::String},
+        {"Str", TypeKind::Str},
+        {"StrConst", TypeKind::StrConst},
+    };
+    auto it = m.find(name);
+    return it == m.end() ? TypeKind::Error : it->second;
+}
+
+bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
+    if (a == b) {
+        return true;
+    }
+    if (a == nullptr || b == nullptr) {
+        return false;
+    }
+    if (a->kind() != b->kind()) {
+        return false;
+    }
+    switch (a->kind()) {
+    case TypeKind::Optional:
+        return equal(a->inner(), b->inner());
+    case TypeKind::Vector:
+        return a->vector_length() == b->vector_length() && equal(a->inner(), b->inner());
+    case TypeKind::Function:
+        if (!equal(a->result(), b->result())) {
+            return false;
+        }
+        [[fallthrough]];
+    case TypeKind::Tuple: {
+        const auto& pa = a->parts();
+        const auto& pb = b->parts();
+        if (pa.size() != pb.size()) {
+            return false;
+        }
+        for (std::size_t i = 0; i < pa.size(); ++i) {
+            if (!equal(pa[i], pb[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+    case TypeKind::Struct:
+    case TypeKind::Enum:
+    case TypeKind::Protocol:
+    case TypeKind::OpaqueType:
+        return a->nominal_decl() == b->nominal_decl();
+    case TypeKind::GenericParam:
+        return a->generic_name() == b->generic_name();
+    default:
+        return true;  // primitives compared equal by pointer at the top
+    }
+}
+
+bool TypeArena::assignable(TypePtr from, TypePtr to) noexcept {
+    if (from == nullptr || to == nullptr) {
+        return true;
+    }  // unresolved — don't pile on
+    if (from->is_error() || to->is_error()) {
+        return true;
+    }
+    if (from->is_never()) {
+        return true;
+    }  // diverging fits anywhere
+    return equal(from, to);
+}
+
+}  // namespace vestra::sema

@@ -1,0 +1,16 @@
+module examples.hello
+
+const Answer: Int32 = 42
+
+func square(_ x: Int32) -> Int32 {
+    return x * x
+}
+
+func compute() -> Int32 {
+    let a = square(Answer)
+    var total: Int32 = 0
+    while total < 10 {
+        total = total + 1
+    }
+    return a + total
+}
