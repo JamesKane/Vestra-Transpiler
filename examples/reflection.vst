@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §12.2 reflection demo: a struct's field names are a comptime value.
+//
+// `StructName.fields` returns a fixed-length `[N]Str` whose elements
+// are the struct's field names in declaration order. The folder
+// builds this directly from the StructDecl in scope; codegen lowers
+// the result as `inline constexpr std::array<std::string_view, N>`.
+//
+// This is the smallest useful slice of §12.2 reflection. Later phases
+// promote `T.fields` to `[N]Field`, where each Field carries the
+// name, type, offset, and attributes (`derive(Eq)` and friends ride
+// on top of that).
+
+module examples.reflection
+
+struct Point {
+    var x: Int32
+    var y: Int32
+    var label: Str
+}
+
+// Reflective build: enumerate Point's fields at compile time into a
+// fixed-size vector of names. The `.zero` initializer + indexed
+// assignment mirrors the §12.3 reflective default pattern from the
+// spec (`for f in Self.fields { ... }`), one indirection layer down.
+comptime func collectNames() -> [3]Str {
+    var out: [3]Str = .zero
+    for i in 0 ..< 3 {
+        out[i] = Point.fields[i]
+    }
+    return out
+}
+
+const PointFields: [3]Str = comptime { collectNames() }
+
+func name_at(_ i: Int32) -> Str {
+    return PointFields[i]
+}

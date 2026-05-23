@@ -1340,6 +1340,29 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
                          std::format("enum '{}' has no case '{}'", enum_decl.name, m.member));
                 return types_->error();
             }
+            // §12.2 phase 1 reflection: `StructName.fields` returns a
+            // `[N]Str` of the struct's field names (one per ordinary
+            // field; `embed` flattening per §6 is not yet expanded).
+            // Future phases promote this to `[N]Field`, where each
+            // Field carries name/type/offset/attributes — for now the
+            // names alone are enough to wire end-to-end.
+            if (sym->kind == SymbolKind::Struct && sym->decl != nullptr) {
+                resolution_.set_symbol(m.base.get(), sym);
+                check_visibility(*sym, m.base->range);
+                const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
+                if (m.member == "fields") {
+                    std::int64_t count = 0;
+                    for (const auto& f : sd.fields) {
+                        if (f.kind != ast::StructDecl::Field::Kind::Embed) {
+                            ++count;
+                        }
+                    }
+                    return types_->make_vector(count, types_->primitive(TypeKind::Str));
+                }
+                error_at(m.range,
+                         std::format("struct '{}' has no static member '{}'", sd.name, m.member));
+                return types_->error();
+            }
         }
     }
 

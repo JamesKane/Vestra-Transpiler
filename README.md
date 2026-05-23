@@ -257,7 +257,7 @@ Available on demand:
   `comptime if` for declaration-position selection, and the §12.6
   every-branch type-check guarantee.
 
-- **Comptime folding (§12.1 phases 1+2+3+4+5+6+7)** — a tree-walking evaluator
+- **Comptime folding (§12.1 phases 1+2+3+4+5+6+7 + §12.2 reflection phase 1)** — a tree-walking evaluator
   for the pure subset of Vestra. **Phase 1** folds `const` initializers
   and `comptime { ... }` blocks at compile time: literals, references
   to earlier folded consts, unary + binary arithmetic and logic
@@ -293,9 +293,16 @@ Available on demand:
   expression's type to `[N]UInt8` from the read size. The folded
   vector flows through the existing codegen brace-init path and
   surfaces as `inline constexpr std::array<std::uint8_t, N> = {{…}}`
-  in the emitted header. Later phases lift: reflection (`Type`/`Field`),
-  `derive` reflective defaults, and declaration macros
-  (`quote`/`$splice`).
+  in the emitted header. **§12.2 reflection phase 1** adds
+  `StructName.fields` — a comptime-only expression returning a
+  fixed-length `[N]Str` of the struct's field names (one entry per
+  ordinary field, `embed` skipped). It composes with index access
+  (`Point.fields[i]`) and with `.zero` + a comptime for-loop, so
+  the spec's reflective-defaults shape (`for f in Self.fields { … }`)
+  already works one indirection layer down. Later phases lift:
+  promote `T.fields` to `[N]Field` (each Field carrying
+  name/type/offset/attributes), `derive` defaults, and declaration
+  macros (`quote`/`$splice`).
 - **End-to-end** — `vestra build` parses, sema-checks (including
   ownership), and produces `.hpp/.cpp` that compiles and runs for
   `examples/hello.vst`, `examples/shapes.vst`, and
@@ -336,16 +343,18 @@ What's **deliberately stubbed** today, in roughly the order I'd tackle them:
    as C++ templates that the host compiler monomorphizes. Phase 2:
    const generics, generic structs/enums, where-clauses, and bound
    enforcement.
-7. ~~**`comptime` interpreter**~~ — **phases 1+2+3+4+5+6+7 done**:
+7. ~~**`comptime` interpreter**~~ — **phases 1+2+3+4+5+6+7+8 done**:
    pure expression folding (phase 1), comptime function calls with
    recursion (phase 2), locals + loops in comptime bodies (phase 3),
    vectors as values (phase 4), a built-in math stdlib (phase 5),
-   primitive-type-as-callable conversions (phase 6), and `@embed`
-   file embedding (phase 7 — `const Data: [N]UInt8 = @embed("p")`
-   reads `p` relative to the source file and bakes its bytes into a
-   `constexpr std::array<std::uint8_t, N>`). Later phases:
-   reflection (Type/Field), `derive` defaults, declaration macros
-   (`quote`/`$splice`), and a content-hashed `@embed` manifest.
+   primitive-type-as-callable conversions (phase 6), `@embed` file
+   embedding (phase 7), and **§12.2 reflection phase 1** (phase 8 —
+   `StructName.fields` folds to a `[N]Str` of field names; works
+   under index, inside comptime func calls, and composes with
+   `.zero`-initialized `[N]Str` plus a for-loop). Later phases:
+   promote `T.fields` to `[N]Field` (name/type/offset/attributes),
+   `derive` defaults, declaration macros (`quote`/`$splice`), and a
+   content-hashed `@embed` manifest.
 8. ~~**String interpolation lowering**~~ (§4) — **phase 1 done**: the
    lexer splits `"a \(x) b"` into Begin/Part/(splice)/Part/End tokens
    (tracking splice paren depth on a stack so nested splices via inner

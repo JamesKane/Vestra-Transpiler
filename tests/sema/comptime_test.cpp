@@ -808,6 +808,92 @@ TEST_CASE("phase 7: @embed types as [N]UInt8 matching the file size") {
     }
 }
 
+// ---- §12.2 phase 1: reflection (struct field names) ---------------------
+
+TEST_CASE("phase 8: `Point.fields[0]` folds to the first field name") {
+    auto v = resolver_fold("struct Point {\n"
+                           "    var x: Int32\n"
+                           "    var y: Int32\n"
+                           "}\n"
+                           "const F0: Str = comptime { Point.fields[0] }\n",
+                           "F0");
+    REQUIRE(v);
+    CHECK(v->kind == vestra::sema::ComptimeValue::Kind::String);
+    CHECK(v->s == "x");
+}
+
+TEST_CASE("phase 8: a comptime func can index into T.fields") {
+    auto v = resolver_fold("struct Point {\n"
+                           "    var x: Int32\n"
+                           "    var y: Int32\n"
+                           "    var label: Str\n"
+                           "}\n"
+                           "comptime func at(_ i: Int) -> Str {\n"
+                           "    return Point.fields[i]\n"
+                           "}\n"
+                           "const Last: Str = comptime { at(2) }\n",
+                           "Last");
+    REQUIRE(v);
+    CHECK(v->s == "label");
+}
+
+TEST_CASE("phase 8: `.zero` for [N]Str + loop builds a vector of field names") {
+    auto v = resolver_fold("struct Triple {\n"
+                           "    var a: Int32\n"
+                           "    var b: Int32\n"
+                           "    var c: Int32\n"
+                           "}\n"
+                           "comptime func names() -> [3]Str {\n"
+                           "    var out: [3]Str = .zero\n"
+                           "    for i in 0 ..< 3 {\n"
+                           "        out[i] = Triple.fields[i]\n"
+                           "    }\n"
+                           "    return out\n"
+                           "}\n"
+                           "const Names: [3]Str = comptime { names() }\n",
+                           "Names");
+    REQUIRE(v);
+    REQUIRE(v->kind == vestra::sema::ComptimeValue::Kind::Vector);
+    REQUIRE(v->elements.size() == 3);
+    CHECK(v->elements[0].s == "a");
+    CHECK(v->elements[1].s == "b");
+    CHECK(v->elements[2].s == "c");
+}
+
+TEST_CASE("phase 8: T.fields out-of-bounds index bails (no crash)") {
+    // The folder's IndexExpr bounds-checks; an out-of-range index
+    // returns nullopt rather than reading past the end. Codegen then
+    // falls back to runtime — which surfaces as the unfoldable
+    // `comptime { ... }` block being emitted verbatim and the C++
+    // compiler ultimately complaining if it survives.
+    auto v = resolver_fold("struct Point {\n"
+                           "    var x: Int32\n"
+                           "}\n"
+                           "comptime func bad() -> Str {\n"
+                           "    return Point.fields[99]\n"
+                           "}\n"
+                           "const Oops: Str = comptime { bad() }\n",
+                           "Oops");
+    CHECK_FALSE(v.has_value());
+}
+
+TEST_CASE("phase 8: `embed` fields don't appear in T.fields") {
+    // §6 embed flattens for *value* access; for reflection phase 1 we
+    // keep T.fields restricted to ordinary fields. An embed entry in
+    // the StructDecl is skipped over.
+    auto v = resolver_fold("struct Header {\n"
+                           "    var version: Int32\n"
+                           "}\n"
+                           "struct Frame {\n"
+                           "    embed h: Header\n"
+                           "    var payload: Int32\n"
+                           "}\n"
+                           "const First: Str = comptime { Frame.fields[0] }\n",
+                           "First");
+    REQUIRE(v);
+    CHECK(v->s == "payload");
+}
+
 TEST_CASE("phase 2: recursion past the depth cap stops cleanly") {
     // factorial recurses linearly. MaxDepth is 64; we call with 200, which
     // would otherwise produce a 200-deep chain. The fold must bail rather

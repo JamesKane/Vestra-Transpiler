@@ -289,3 +289,29 @@ add_test(
 set_tests_properties(e2e_interpolation_run PROPERTIES
     DEPENDS                e2e_interpolation_compile
     PASS_REGULAR_EXPRESSION "interpolation OK")
+
+# Reflection: §12.2 `StructName.fields` folds to a [N]Str vector of
+# field names. The runtime side reads name_at(i) for each i and
+# byte-compares; pass if all three names round-trip.
+set(e2e_refl_input  ${CMAKE_SOURCE_DIR}/examples/reflection.vst)
+set(e2e_refl_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_reflection.cpp)
+
+add_test(
+    NAME    e2e_reflection_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_refl_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_reflection_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_refl_driver} ${e2e_workdir}/reflection.cpp
+            -o ${e2e_workdir}/reflection_app)
+set_tests_properties(e2e_reflection_compile PROPERTIES DEPENDS e2e_reflection_transpile)
+
+add_test(
+    NAME    e2e_reflection_run
+    COMMAND ${e2e_workdir}/reflection_app)
+set_tests_properties(e2e_reflection_run PROPERTIES
+    DEPENDS                e2e_reflection_compile
+    PASS_REGULAR_EXPRESSION "reflection OK")

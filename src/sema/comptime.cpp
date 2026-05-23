@@ -237,6 +237,10 @@ ComptimeValue zero_of(TypeKind element_kind) {
     if (element_kind == TypeKind::Bool) {
         return make_bool(false);
     }
+    if (element_kind == TypeKind::String || element_kind == TypeKind::Str
+        || element_kind == TypeKind::StrConst) {
+        return make_string({});  // empty string for `.zero` of [N]Str etc.
+    }
     // Unknown element kind → just zero-init the value's bytes; the codegen
     // path will emit `0` for the element, which is at worst a no-op for
     // most C++ targets.
@@ -358,6 +362,13 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
     case ast::NodeKind::BoolLit:
         return make_bool(static_cast<const ast::BoolLit&>(e).value);
 
+    case ast::NodeKind::StringLit:
+        // String literals fold to their raw inner text. Escape processing
+        // stays the codegen's responsibility (it preserves backslashes
+        // when emitting `std::string_view("…")`); for fold-time we just
+        // need bytes to compose into vectors / reflection outputs.
+        return make_string(std::string{static_cast<const ast::StringLit&>(e).text});
+
     case ast::NodeKind::IdentExpr: {
         const auto& ident = static_cast<const ast::IdentExpr&>(e);
         // §12.6: `cfg` is a built-in compile-time value. Returning a
@@ -385,13 +396,37 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
     }
 
     case ast::NodeKind::MemberExpr: {
-        // Only cfg member access is foldable in phase 1. Walking arbitrary
-        // struct field reads waits until we model struct *values* at fold
-        // time (we have struct *types* but no values yet).
+        // Walking arbitrary struct field reads waits until we model struct
+        // *values* at fold time (we have struct *types* but no values
+        // yet). What we *do* fold:
+        //  - `cfg.X` (§12.6 build-time host detection)
+        //  - `StructName.fields` (§12.2 reflection phase 1) — vector of
+        //    field-name strings, sourced from the StructDecl in scope.
         const auto& m = static_cast<const ast::MemberExpr&>(e);
-        if (m.base->kind == ast::NodeKind::IdentExpr
-            && static_cast<const ast::IdentExpr&>(*m.base).name == "cfg") {
-            return cfg_field(m.member);
+        if (m.base->kind == ast::NodeKind::IdentExpr) {
+            const auto& bi = static_cast<const ast::IdentExpr&>(*m.base);
+            if (bi.name == "cfg") {
+                return cfg_field(m.member);
+            }
+            if (global_scope_ != nullptr) {
+                if (const auto* sym = global_scope_->lookup(bi.name)) {
+                    if (sym->kind == SymbolKind::Struct && sym->decl != nullptr
+                        && m.member == "fields") {
+                        const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
+                        ComptimeValue v;
+                        v.kind = ComptimeValue::Kind::Vector;
+                        v.type = TypeKind::Str;
+                        for (const auto& f : sd.fields) {
+                            if (f.kind == ast::StructDecl::Field::Kind::Embed) {
+                                continue;
+                            }
+                            v.elements.push_back(make_string(f.name));
+                        }
+                        v.length = static_cast<std::int64_t>(v.elements.size());
+                        return v;
+                    }
+                }
+            }
         }
         return std::nullopt;
     }
