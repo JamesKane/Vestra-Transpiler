@@ -13,9 +13,18 @@ const HalfPage: Int32 = comptime { Page / 2 } // 2048
 // A pure if-expression at fold time picks one branch.
 const Pick: Int32 = if 4 * 100 > 300 { 7 } else { 0 }
 
+// §12.1 phase 2: comptime functions. The folder calls `factorial`
+// recursively at compile time and pins the result as a literal in
+// the generated header.
+comptime func factorial(_ n: Int) -> Int {
+    return if n <= 1 { 1 } else { n * factorial(n - 1) }
+}
+
+const Fact6: Int32 = comptime { factorial(6) }  // 720
+
 func compute() -> Int32 {
     // Each reference here also folds (an IdentExpr resolving to a folded
     // const). The body itself isn't folded — it has parameters and a
     // call shape — but the operands do reach C++ as literals.
-    return Page + HalfPage + Pick
+    return Page + HalfPage + Pick + Fact6
 }

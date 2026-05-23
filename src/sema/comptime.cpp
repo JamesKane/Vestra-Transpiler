@@ -204,7 +204,10 @@ bool same_numeric_kind(const ComptimeValue& a, const ComptimeValue& b) {
 }  // namespace
 
 std::optional<ComptimeValue>
-ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint) const {
+ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint, int depth) const {
+    if (depth > MaxDepth) {
+        return std::nullopt;  // bail rather than blow the host C++ stack
+    }
     switch (e.kind) {
     case ast::NodeKind::IntLit: {
         const auto& lit = static_cast<const ast::IntLit&>(e);
@@ -236,25 +239,81 @@ ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint) const {
     }
 
     case ast::NodeKind::ParenExpr:
-        return fold(*static_cast<const ast::ParenExpr&>(e).inner, env, hint);
+        return fold(*static_cast<const ast::ParenExpr&>(e).inner, env, hint, depth);
 
     case ast::NodeKind::ComptimeExpr:
-        return fold(*static_cast<const ast::ComptimeExpr&>(e).inner, env, hint);
+        return fold(*static_cast<const ast::ComptimeExpr&>(e).inner, env, hint, depth);
 
     case ast::NodeKind::BlockExpr: {
         // Phase 1: only fold a block whose contents are a single trailing
-        // ExprStmt. Anything else implies statement-level effects we don't
-        // model (let bindings introducing names, while loops, etc.).
+        // ExprStmt. Phase 2 also accepts a single trailing ReturnStmt with
+        // a value so a function body like `{ return n * factorial(n-1) }`
+        // collapses to its value. Anything more (let bindings, while loops,
+        // multiple statements) still bails — those need real interpreter
+        // state we don't model yet.
         const auto& b = static_cast<const ast::BlockExpr&>(e);
-        if (b.stmts.size() != 1 || b.stmts[0]->kind != ast::NodeKind::ExprStmt) {
+        if (b.stmts.size() != 1) {
             return std::nullopt;
         }
-        return fold(*static_cast<const ast::ExprStmt&>(*b.stmts[0]).expr, env, hint);
+        const auto& s = *b.stmts[0];
+        if (s.kind == ast::NodeKind::ExprStmt) {
+            return fold(*static_cast<const ast::ExprStmt&>(s).expr, env, hint, depth);
+        }
+        if (s.kind == ast::NodeKind::ReturnStmt) {
+            const auto& r = static_cast<const ast::ReturnStmt&>(s);
+            if (!r.value) {
+                return std::nullopt;
+            }
+            return fold(*r.value, env, hint, depth);
+        }
+        return std::nullopt;
+    }
+
+    case ast::NodeKind::CallExpr: {
+        // §12.4 / §12.1 phase 2: a call to a `comptime func` evaluates at
+        // fold time. We bind each argument value to the parameter's name
+        // in a fresh environment, then fold the body.
+        if (global_scope_ == nullptr) {
+            return std::nullopt;
+        }
+        const auto& c = static_cast<const ast::CallExpr&>(e);
+        // Phase 2 only resolves bare-identifier callees. Method calls and
+        // higher-order forms wait for phase 3.
+        if (c.callee->kind != ast::NodeKind::IdentExpr) {
+            return std::nullopt;
+        }
+        const auto& ident = static_cast<const ast::IdentExpr&>(*c.callee);
+        const auto* sym = global_scope_->lookup(ident.name);
+        if (sym == nullptr || sym->decl == nullptr || sym->decl->kind != ast::NodeKind::Func) {
+            return std::nullopt;
+        }
+        const auto& fn = static_cast<const ast::FuncDecl&>(*sym->decl);
+        if (!fn.is_comptime || fn.body == nullptr) {
+            return std::nullopt;
+        }
+        if (c.args.size() != fn.params.size()) {
+            return std::nullopt;
+        }
+        // Each argument folds against the caller's env. The result becomes
+        // the parameter binding the body sees. Phase 2 doesn't propagate
+        // the param's declared Vestra type as a hint — that would require
+        // resolving the param's ast::Type from inside the folder, which
+        // currently belongs to the resolver. Hint stays Unit; the literals
+        // adopt the caller's bidirectional context only.
+        Env call_env;
+        for (std::size_t i = 0; i < c.args.size(); ++i) {
+            auto v = fold(*c.args[i].value, env, TypeKind::Unit, depth + 1);
+            if (!v) {
+                return std::nullopt;
+            }
+            call_env[fn.params[i].name] = *v;
+        }
+        return fold(*fn.body, call_env, hint, depth + 1);
     }
 
     case ast::NodeKind::UnaryExpr: {
         const auto& u = static_cast<const ast::UnaryExpr&>(e);
-        auto op = fold(*u.operand, env, hint);
+        auto op = fold(*u.operand, env, hint, depth);
         if (!op) {
             return std::nullopt;
         }
@@ -290,7 +349,7 @@ ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint) const {
         // Short-circuit logicals first so we don't evaluate the unreachable
         // side. Both sides must still fold to bool.
         if (bin.op == ast::BinaryOp::And || bin.op == ast::BinaryOp::Or) {
-            auto l = fold(*bin.lhs, env, TypeKind::Bool);
+            auto l = fold(*bin.lhs, env, TypeKind::Bool, depth);
             if (!l || l->kind != ComptimeValue::Kind::Bool) {
                 return std::nullopt;
             }
@@ -300,21 +359,21 @@ ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint) const {
             if (bin.op == ast::BinaryOp::Or && l->b) {
                 return make_bool(true);
             }
-            auto r = fold(*bin.rhs, env, TypeKind::Bool);
+            auto r = fold(*bin.rhs, env, TypeKind::Bool, depth);
             if (!r || r->kind != ComptimeValue::Kind::Bool) {
                 return std::nullopt;
             }
             return make_bool(r->b);
         }
 
-        auto lhs = fold(*bin.lhs, env, hint);
+        auto lhs = fold(*bin.lhs, env, hint, depth);
         if (!lhs) {
             return std::nullopt;
         }
         // For the rhs, push the lhs's resolved Vestra type as the hint so
         // integer literals on the right adopt the same type (matches how
         // sema's bidirectional check works in check_binary).
-        auto rhs = fold(*bin.rhs, env, lhs->type);
+        auto rhs = fold(*bin.rhs, env, lhs->type, depth);
         if (!rhs) {
             return std::nullopt;
         }
@@ -477,17 +536,17 @@ ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint) const {
 
     case ast::NodeKind::IfExpr: {
         const auto& i = static_cast<const ast::IfExpr&>(e);
-        auto c = fold(*i.cond, env, TypeKind::Bool);
+        auto c = fold(*i.cond, env, TypeKind::Bool, depth);
         if (!c || c->kind != ComptimeValue::Kind::Bool) {
             return std::nullopt;
         }
         // Fold only the chosen branch — matching §19.9 (if evaluates only
         // the selected branch). The unchosen branch isn't even examined.
         if (c->b) {
-            return fold(*i.then_branch, env, hint);
+            return fold(*i.then_branch, env, hint, depth);
         }
         if (i.else_branch) {
-            return fold(*i.else_branch, env, hint);
+            return fold(*i.else_branch, env, hint, depth);
         }
         // If with no else and a false condition is Unit; phase 1 can't fold
         // that into anything useful at the use site.

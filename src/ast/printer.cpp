@@ -261,6 +261,9 @@ void Printer::print_decl(std::ostream& os, const Decl& d, int indent) {
 void Printer::print_func(std::ostream& os, const FuncDecl& f, int indent) {
     indent_to(os, indent);
     os << visibility_kw(f.visibility);
+    if (f.is_comptime) {
+        os << "comptime ";
+    }
     if (f.is_async) {
         os << "async ";
     }

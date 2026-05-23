@@ -236,22 +236,27 @@ Available on demand:
   monomorphization. Phase 2: const generics (`[const N: Int]`),
   generic structs/enums, where-clause refinement, and protocol-bound
   enforcement.
-- **Comptime folding (§12.1 phase 1)** — a pure-expression evaluator
-  walks `const` initializers and `comptime { ... }` blocks at compile
-  time and produces a value the codegen then substitutes for the
-  source expression. Today's folder handles integer / float / bool
-  literals, references to earlier folded consts, unary + binary
-  arithmetic and logic (with short-circuiting `&&`/`||`),
-  comparisons, and `if`-expressions (only the chosen branch is
-  evaluated). Calls, struct construction, member access, and
-  side-effecting forms are deliberately not folded; the value is
-  simply absent from the side table and codegen falls back to
-  emitting the source expression. `const Page: Int32 = comptime { 1
-  << 12 }` ends up as `inline constexpr std::int32_t Page = 4096;`
-  in the generated C++. Phase 2 lifts toward a full §12 interpreter:
-  function calls in `comptime`, reflection (`Type`, `Field`),
-  `derive(Eq, Hash, …)`, declaration macros with `quote`, and the
-  conditional-compilation `cfg`/`@when` plumbing.
+- **Comptime folding (§12.1 phases 1+2)** — a tree-walking evaluator
+  for the pure subset of Vestra. **Phase 1** folds `const` initializers
+  and `comptime { ... }` blocks at compile time: literals, references
+  to earlier folded consts, unary + binary arithmetic and logic
+  (short-circuiting `&&`/`||`), comparisons, and `if`-expressions
+  (only the chosen branch is evaluated, per §19.9). **Phase 2** adds
+  calls to `comptime func` declarations: the folder looks the callee
+  up in the global scope, binds each argument to the corresponding
+  parameter, folds the body recursively (`return` in a single-stmt
+  body is treated as the block's value), and caps recursion at 64
+  frames. So
+  `comptime func factorial(_ n: Int) -> Int { return if n <= 1 { 1 } else { n * factorial(n - 1) } }`
+  combined with `const Fact10: Int = comptime { factorial(10) }`
+  reaches the generated header as `inline constexpr ... Fact10 = 3628800;`.
+  Calls into non-`comptime` funcs, struct construction, member access,
+  and side-effecting forms remain unfoldable — codegen falls back to
+  the source expression. Later phases lift: locals + loops in comptime
+  bodies (the §12.1 `sin_table` example), `@embed`, reflection
+  (`Type`/`Field`), `derive` reflective defaults, declaration macros
+  (`quote`/`$splice`), and the `cfg`/`@when` conditional-compilation
+  plumbing.
 - **End-to-end** — `vestra build` parses, sema-checks (including
   ownership), and produces `.hpp/.cpp` that compiles and runs for
   `examples/hello.vst`, `examples/shapes.vst`, and
@@ -292,11 +297,13 @@ What's **deliberately stubbed** today, in roughly the order I'd tackle them:
    as C++ templates that the host compiler monomorphizes. Phase 2:
    const generics, generic structs/enums, where-clauses, and bound
    enforcement.
-7. ~~**`comptime` interpreter**~~ — **phase 1 done**: pure-expression
-   folder handles const initializers and `comptime { ... }` blocks
-   (literals, idents, unary/binary/comparison/logical, if). Phase 2
-   adds function calls in comptime, reflection (Type/Field), `derive`
-   defaults, declaration macros (`quote`/`$splice`), and `cfg`/`@when`.
+7. ~~**`comptime` interpreter**~~ — **phases 1+2 done**: pure
+   expression folding (phase 1) plus comptime function calls with
+   recursion (phase 2: `comptime func factorial(...)` is evaluated
+   at fold time and the call site becomes a literal in the
+   generated C++). Phase 3 lifts locals + loops; later phases add
+   `@embed`, reflection (Type/Field), `derive` defaults,
+   declaration macros (`quote`/`$splice`), and `cfg`/`@when`.
 8. **String interpolation lowering** (§4) — produce `Display::display(into:)`
    calls into a `String` sink; the lexer already has the splitting hooks.
 9. **`async` / `spawn` / `select` / `parallel` lowering** (§11) — currently

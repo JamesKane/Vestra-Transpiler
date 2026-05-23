@@ -146,8 +146,10 @@ private:
     std::vector<TypePtr> return_stack_;
     // Comptime folder + the const environment it folds against. The env
     // accumulates name→value pairs as we successfully fold each top-level
-    // const, so later consts can reference earlier ones.
-    ComptimeFolder folder_;
+    // const, so later consts can reference earlier ones. The folder gets
+    // a pointer to the global scope so it can look comptime funcs up by
+    // name when it encounters a call expression (§12.1 phase 2).
+    ComptimeFolder folder_{&scopes_.global()};
     ComptimeFolder::Env comptime_env_;
 };
 

@@ -559,6 +559,11 @@ struct FuncDecl : Decl {
     std::vector<Attribute> attributes;
     Visibility visibility = Visibility::Internal;
     bool is_async = false;
+    // §12.4 / §12.3: `comptime func` runs at compile time. The comptime
+    // folder is allowed to call it from a const initializer; ordinary
+    // (non-comptime) callers may also call it (it then just behaves like
+    // a regular pure function as far as runtime semantics go).
+    bool is_comptime = false;
     // Method receivers from §17.2's recv-mode.
     enum class RecvMode { None, Inout, Sink };
     RecvMode recv_mode = RecvMode::None;

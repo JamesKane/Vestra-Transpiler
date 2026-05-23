@@ -46,7 +46,8 @@ private:
     std::unique_ptr<ast::FuncDecl> parse_func(std::vector<ast::Attribute> attrs,
                                               ast::Visibility vis,
                                               bool is_async,
-                                              ast::FuncDecl::RecvMode recv);
+                                              ast::FuncDecl::RecvMode recv,
+                                              bool is_comptime = false);
     std::unique_ptr<ast::StructDecl> parse_struct(std::vector<ast::Attribute> attrs,
                                                   ast::Visibility vis);
     std::unique_ptr<ast::EnumDecl> parse_enum(std::vector<ast::Attribute> attrs,

@@ -473,6 +473,28 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         break;
     case ast::NodeKind::ReturnStmt: {
         const auto& r = static_cast<const ast::ReturnStmt&>(s);
+        // Special-case `return if cond { a } else { b }`: emit a direct
+        // if/return pair rather than the IIFE-wrapped lambda we use for
+        // if-expressions in arbitrary positions. The IIFE form forces the
+        // compiler to deduce a single return type from both branches,
+        // which fails when one branch is a literal (int) and the other is
+        // a Vestra Int value (intptr_t). Lowering as two `return` paths
+        // lets the surrounding function's return type pin both branches.
+        if (r.value && r.value->kind == ast::NodeKind::IfExpr) {
+            const auto& i = static_cast<const ast::IfExpr&>(*r.value);
+            os << "if (";
+            emit_expr(os, *i.cond);
+            os << ") { return ";
+            emit_expr(os, *i.then_branch);
+            os << "; }";
+            if (i.else_branch) {
+                os << " else { return ";
+                emit_expr(os, *i.else_branch);
+                os << "; }";
+            }
+            os << "\n";
+            break;
+        }
         os << "return";
         if (r.value) {
             os << " ";

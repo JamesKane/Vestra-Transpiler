@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vestra/ast/nodes.hpp"
+#include "vestra/sema/scope.hpp"
 #include "vestra/sema/types.hpp"
 
 #include <cstdint>
@@ -81,13 +82,28 @@ public:
     // needed for this scoped fold).
     using Env = std::unordered_map<std::string, ComptimeValue>;
 
-    ComptimeFolder() = default;
+    // Recursion depth cap. Picked generously enough for hand-written code
+    // (factorial(64), an Ackermann-style derivation chain) but small
+    // enough that a runaway fold gives up fast instead of stack-overflowing
+    // the compiler.
+    static constexpr int MaxDepth = 64;
 
-    // Fold `e` against `env`. If `hint` is provided and the expression is
+    // `global_scope` is consulted when the folder encounters a call: it
+    // looks the callee up by name, checks for a comptime func, and
+    // recursively folds its body. Pass nullptr in unit-test contexts that
+    // only need pure-expression folding.
+    explicit ComptimeFolder(const Scope* global_scope = nullptr) : global_scope_(global_scope) {}
+
+    // Fold `e` against `env`. If `hint` is non-Unit and the expression is
     // an integer/float literal, the result's `type` field uses the hint
-    // instead of the literal default (Int/Float64).
+    // instead of the literal default. `depth` is the current recursion
+    // depth from any enclosing comptime function call; callers should
+    // normally leave it at 0.
     [[nodiscard]] std::optional<ComptimeValue>
-    fold(const ast::Expr& e, const Env& env, TypeKind hint = TypeKind::Unit) const;
+    fold(const ast::Expr& e, const Env& env, TypeKind hint = TypeKind::Unit, int depth = 0) const;
+
+private:
+    const Scope* global_scope_ = nullptr;
 };
 
 }  // namespace vestra::sema

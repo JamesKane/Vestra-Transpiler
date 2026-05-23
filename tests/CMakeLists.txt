@@ -155,4 +155,4 @@ add_test(
     COMMAND ${e2e_workdir}/comptime_app)
 set_tests_properties(e2e_comptime_run PROPERTIES
     DEPENDS                e2e_comptime_compile
-    PASS_REGULAR_EXPRESSION "compute\\(\\) = 6151")
+    PASS_REGULAR_EXPRESSION "compute\\(\\) = 6871")

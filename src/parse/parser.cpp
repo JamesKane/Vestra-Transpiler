@@ -529,6 +529,19 @@ ast::Effects Parser::parse_effects_opt() {
 ast::DeclPtr Parser::parse_decl(std::vector<ast::Attribute> attrs) {
     auto vis = parse_visibility();
 
+    // §12.4: `comptime func` runs at fold time. The modifier appears
+    // before `async`/recv-mode/`func`. We only consume it when it's
+    // unambiguously paired with one of those — otherwise `comptime` is
+    // an expression keyword (a comptime { ... } block) that some later
+    // production will handle.
+    bool is_comptime = false;
+    if (check(TokenKind::KwComptime)
+        && (peek(1).kind == TokenKind::KwFunc || peek(1).kind == TokenKind::KwAsync
+            || peek(1).kind == TokenKind::KwInout || peek(1).kind == TokenKind::KwSink)) {
+        advance();
+        is_comptime = true;
+    }
+
     // `async`/recv-mode before func.
     bool is_async = match(TokenKind::KwAsync);
     ast::FuncDecl::RecvMode recv = ast::FuncDecl::RecvMode::None;
@@ -541,7 +554,7 @@ ast::DeclPtr Parser::parse_decl(std::vector<ast::Attribute> attrs) {
     }
 
     if (check(TokenKind::KwFunc)) {
-        return parse_func(std::move(attrs), vis, is_async, recv);
+        return parse_func(std::move(attrs), vis, is_async, recv, is_comptime);
     }
     if (check(TokenKind::KwStruct)) {
         return parse_struct(std::move(attrs), vis);
@@ -576,13 +589,15 @@ ast::DeclPtr Parser::parse_decl(std::vector<ast::Attribute> attrs) {
 std::unique_ptr<ast::FuncDecl> Parser::parse_func(std::vector<ast::Attribute> attrs,
                                                   ast::Visibility vis,
                                                   bool is_async,
-                                                  ast::FuncDecl::RecvMode recv) {
+                                                  ast::FuncDecl::RecvMode recv,
+                                                  bool is_comptime) {
     auto start = peek().range;
     advance();  // 'func'
     auto f = std::make_unique<ast::FuncDecl>();
     f->attributes = std::move(attrs);
     f->visibility = vis;
     f->is_async = is_async;
+    f->is_comptime = is_comptime;
     f->recv_mode = recv;
 
     if (!check(TokenKind::Identifier)) {

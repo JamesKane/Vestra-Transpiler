@@ -194,3 +194,62 @@ TEST_CASE("folding a Bool comparison threads through to the side table") {
     CHECK(v->kind == vestra::sema::ComptimeValue::Kind::Bool);
     CHECK(v->b == true);
 }
+
+// ---- §12.1 phase 2: comptime function calls -------------------------------
+
+TEST_CASE("phase 2: a simple comptime function call folds") {
+    auto v = resolver_fold("comptime func double(_ x: Int) -> Int { return x * 2 }\n"
+                           "const Four: Int = comptime { double(2) }\n",
+                           "Four");
+    REQUIRE(v);
+    CHECK(v->i == 4);
+}
+
+TEST_CASE("phase 2: recursive comptime call folds (factorial)") {
+    auto v = resolver_fold("comptime func factorial(_ n: Int) -> Int {\n"
+                           "    return if n <= 1 { 1 } else { n * factorial(n - 1) }\n"
+                           "}\n"
+                           "const Fact10: Int = comptime { factorial(10) }\n",
+                           "Fact10");
+    REQUIRE(v);
+    CHECK(v->i == 3628800);
+}
+
+TEST_CASE("phase 2: comptime call composed with a binary op") {
+    auto v = resolver_fold("comptime func sq(_ n: Int) -> Int { return n * n }\n"
+                           "const SumOfSquares: Int = comptime { sq(3) + sq(4) }\n",
+                           "SumOfSquares");
+    REQUIRE(v);
+    CHECK(v->i == 25);  // 9 + 16
+}
+
+TEST_CASE("phase 2: a regular (non-comptime) func is not foldable") {
+    // `double` is missing the `comptime` modifier — the folder must refuse
+    // and leave the codegen to emit the runtime call.
+    auto v = resolver_fold("func double(_ x: Int) -> Int { return x * 2 }\n"
+                           "const Four: Int = double(2)\n",
+                           "Four");
+    CHECK_FALSE(v.has_value());
+}
+
+TEST_CASE("phase 2: arg-count mismatch bails the fold rather than misfolding") {
+    auto v = resolver_fold("comptime func add(_ a: Int, _ b: Int) -> Int { return a + b }\n"
+                           "const Bad: Int = comptime { add(1) }\n",
+                           "Bad");
+    // The check_call sema pass will have already flagged this as an arity
+    // error; the folder's job here is just not to corrupt anything in the
+    // process. Absence from the side table is the contract.
+    CHECK_FALSE(v.has_value());
+}
+
+TEST_CASE("phase 2: recursion past the depth cap stops cleanly") {
+    // factorial recurses linearly. MaxDepth is 64; we call with 200, which
+    // would otherwise produce a 200-deep chain. The fold must bail rather
+    // than blow up the host stack or loop forever.
+    auto v = resolver_fold("comptime func factorial(_ n: Int) -> Int {\n"
+                           "    return if n <= 1 { 1 } else { n * factorial(n - 1) }\n"
+                           "}\n"
+                           "const Big: Int = comptime { factorial(200) }\n",
+                           "Big");
+    CHECK_FALSE(v.has_value());
+}
