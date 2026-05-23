@@ -15,7 +15,7 @@ struct EmittedUnit {
     std::string source;  // .cpp — function bodies, statics
 };
 
-// Translate a parsed Vestra compilation unit to C++23.
+// Translate a parsed Vestra compilation unit to C++26.
 //
 // The emitter is intentionally simple: it walks the AST and writes
 // approximately what each construct would look like in idiomatic Modern C++.

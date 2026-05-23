@@ -184,13 +184,13 @@ TypeArena::TypeArena() {
                    TypeKind::Bool,   TypeKind::Char,     TypeKind::Unit,    TypeKind::String,
                    TypeKind::Str,    TypeKind::StrConst, TypeKind::Never,   TypeKind::Error}) {
         auto t = std::unique_ptr<Type>(new Type(k));
-        primitives_.emplace(static_cast<int>(k), t.get());
+        primitives_.emplace(k, t.get());
         owned_.push_back(std::move(t));
     }
 }
 
 TypePtr TypeArena::primitive(TypeKind k) const {
-    auto it = primitives_.find(static_cast<int>(k));
+    auto it = primitives_.find(k);
     assert(it != primitives_.end() && "primitive(...) called with non-primitive kind");
     return it->second;
 }

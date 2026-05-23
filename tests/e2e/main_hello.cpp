@@ -3,9 +3,9 @@
 
 #include "hello.hpp"
 
-#include <cstdio>
+#include <print>
 
 int main() {
-    std::printf("compute() = %d\n", examples::hello::compute());
+    std::println("compute() = {}", examples::hello::compute());
     return 0;
 }

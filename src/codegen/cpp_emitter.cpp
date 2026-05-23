@@ -17,7 +17,7 @@ void write_indent(std::ostream& os, int indent) {
     }
 }
 
-// Map Vestra primitive names to C++23 equivalents.
+// Map Vestra primitive names to C++ equivalents.
 const std::unordered_map<std::string, std::string>& primitive_map() {
     static const std::unordered_map<std::string, std::string> m = {
         {"Int8", "std::int8_t"},

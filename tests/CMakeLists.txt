@@ -22,7 +22,7 @@ target_link_libraries(vestra_tests
         vestra_core
         doctest::doctest)
 
-target_compile_features(vestra_tests PRIVATE cxx_std_23)
+target_compile_features(vestra_tests PRIVATE cxx_std_26)
 vestra_apply_warnings(vestra_tests)
 vestra_apply_sanitizers(vestra_tests)
 
@@ -47,7 +47,7 @@ add_test(
 add_test(
     NAME    e2e_hello_compile
     COMMAND ${CMAKE_CXX_COMPILER}
-            -std=c++23 -Wall -Wextra -O0
+            -std=c++26 -Wall -Wextra -O0
             -I${e2e_workdir}
             ${e2e_driver} ${e2e_workdir}/hello.cpp
             -o ${e2e_workdir}/hello_app)
@@ -71,7 +71,7 @@ add_test(
 add_test(
     NAME    e2e_shapes_compile
     COMMAND ${CMAKE_CXX_COMPILER}
-            -std=c++23 -Wall -Wextra -O0
+            -std=c++26 -Wall -Wextra -O0
             -I${e2e_workdir}
             ${e2e_shapes_driver} ${e2e_workdir}/shapes.cpp
             -o ${e2e_workdir}/shapes_app)
@@ -96,7 +96,7 @@ add_test(
 add_test(
     NAME    e2e_ownership_compile
     COMMAND ${CMAKE_CXX_COMPILER}
-            -std=c++23 -Wall -Wextra -O0
+            -std=c++26 -Wall -Wextra -O0
             -I${e2e_workdir}
             ${e2e_ownership_driver} ${e2e_workdir}/ownership.cpp
             -o ${e2e_workdir}/ownership_app)
@@ -120,7 +120,7 @@ add_test(
 add_test(
     NAME    e2e_generics_compile
     COMMAND ${CMAKE_CXX_COMPILER}
-            -std=c++23 -Wall -Wextra -O0
+            -std=c++26 -Wall -Wextra -O0
             -I${e2e_workdir}
             ${e2e_generics_driver} ${e2e_workdir}/generics.cpp
             -o ${e2e_workdir}/generics_app)
@@ -144,7 +144,7 @@ add_test(
 add_test(
     NAME    e2e_comptime_compile
     COMMAND ${CMAKE_CXX_COMPILER}
-            -std=c++23 -Wall -Wextra -O0
+            -std=c++26 -Wall -Wextra -O0
             -I${e2e_workdir}
             ${e2e_comptime_driver} ${e2e_workdir}/comptime.cpp
             -o ${e2e_workdir}/comptime_app)

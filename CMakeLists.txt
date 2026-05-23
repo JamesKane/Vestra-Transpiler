@@ -7,7 +7,7 @@ project(vestra
 
 # ---- Global toolchain settings ---------------------------------------------
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -60,7 +60,7 @@ add_library(vestra_core STATIC ${vestra_sources})
 target_include_directories(vestra_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>)
-target_compile_features(vestra_core PUBLIC cxx_std_23)
+target_compile_features(vestra_core PUBLIC cxx_std_26)
 vestra_apply_warnings(vestra_core)
 vestra_apply_sanitizers(vestra_core)
 

@@ -3,9 +3,9 @@
 
 #include "ownership.hpp"
 
-#include <cstdio>
+#include <print>
 
 int main() {
-    std::printf("compute() = %d\n", examples::ownership::compute());
+    std::println("compute() = {}", examples::ownership::compute());
     return 0;
 }

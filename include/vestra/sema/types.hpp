@@ -153,7 +153,9 @@ public:
 
 private:
     std::vector<std::unique_ptr<Type>> owned_;
-    std::unordered_map<int, const Type*> primitives_;  // keyed by TypeKind value
+    // Keyed by TypeKind directly — C++14 made std::hash valid for any
+    // enum class, so the static_cast<int> the map used to require is gone.
+    std::unordered_map<TypeKind, const Type*> primitives_;
 };
 
 }  // namespace vestra::sema

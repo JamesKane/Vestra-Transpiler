@@ -3,9 +3,9 @@
 
 #include "comptime.hpp"
 
-#include <cstdio>
+#include <print>
 
 int main() {
-    std::printf("compute() = %d\n", examples::consts::compute());
+    std::println("compute() = {}", examples::consts::compute());
     return 0;
 }

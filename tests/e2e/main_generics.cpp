@@ -3,9 +3,9 @@
 
 #include "generics.hpp"
 
-#include <cstdio>
+#include <print>
 
 int main() {
-    std::printf("compute() = %d\n", examples::generics::compute());
+    std::println("compute() = {}", examples::generics::compute());
     return 0;
 }

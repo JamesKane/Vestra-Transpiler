@@ -1,6 +1,6 @@
 # Vestra Transpiler
 
-A Vestra-to-C++23 transpiler, written in Modern C++23.
+A Vestra-to-C++26 transpiler, written in Modern C++26.
 
 Vestra is the systems language specified in [`VESTRA_DRAFT.md`](VESTRA_DRAFT.md). The
 spec is a draft (3.2) describing a Swift-ish language with no GC, ownership-by-mode,
@@ -40,16 +40,18 @@ A successful test run ends with:
 ## Requirements
 
 - **CMake ≥ 3.25** and **Ninja**
-- A **C++23** compiler — tested with Apple Clang 17 / LLVM Clang 17+ / GCC 13+.
-  We use `std::format`, `std::span`, designated initializers, and `[[nodiscard]]`
-  heavily; older toolchains will not build the project.
+- A **C++26** compiler — tested with Apple Clang 21 (Xcode 26) /
+  LLVM Clang 19+ / GCC 15+. We use `std::format`, `std::span`,
+  `std::println`, `std::expected`, designated initializers, and
+  `[[nodiscard]]` heavily; older toolchains will not build the
+  project.
 - (Optional) **clang-format**, **clang-tidy**, **ccache** — auto-detected by CMake.
 
 ## Project layout
 
 ```
 .
-├── CMakeLists.txt                 — top-level build (C++23, warnings, sanitizers)
+├── CMakeLists.txt                 — top-level build (C++26, warnings, sanitizers)
 ├── CMakePresets.json              — debug / release / asan / tsan / tidy presets
 ├── .clang-format / .clang-tidy    — style and lint configuration
 ├── cmake/
@@ -125,7 +127,8 @@ The transpiler is a classic layered front end with a single codegen pass:
     ▼
 ┌──────────────────┐  Walks the AST and emits C++23 — primitives map to
 │  codegen         │  <cstdint>, modules to nested namespaces, structs to
-│  → .hpp + .cpp   │  structs, enums to enum class or std::variant.
+│  → .hpp + .cpp   │  structs, enums to enum class or std::variant; emits
+│                  │  C++26 (templates, std::move at sink calls, etc).
 └──────────────────┘
     │
     ▼

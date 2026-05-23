@@ -3,9 +3,9 @@
 
 #include "shapes.hpp"
 
-#include <cstdio>
+#include <print>
 
 int main() {
-    std::printf("compute() = %d\n", examples::shapes::compute());
+    std::println("compute() = {}", examples::shapes::compute());
     return 0;
 }
