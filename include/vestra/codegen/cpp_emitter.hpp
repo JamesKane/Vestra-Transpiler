@@ -46,6 +46,10 @@ private:
     void emit_func(std::ostream& hdr, std::ostream& src, const ast::FuncDecl& f);
     void emit_struct(std::ostream& hdr, const ast::StructDecl& s);
     void emit_enum(std::ostream& hdr, const ast::EnumDecl& e);
+    // §12.3 derive(Hash): emit a `template <> struct std::hash<Q::T>`
+    // specialization after the user's namespace closes. `qual_prefix`
+    // is the `Q::` part (or empty if the unit has no module decl).
+    void emit_hash_spec(std::ostream& os, const ast::StructDecl& s, std::string_view qual_prefix);
 
     void emit_block(std::ostream& os, const ast::BlockExpr& b, int indent);
     void emit_stmt(std::ostream& os, const ast::Stmt& s, int indent);

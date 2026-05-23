@@ -158,14 +158,38 @@ TEST_CASE("a struct without derive(Eq) gets no operator==") {
     CHECK(f.out.header.find("operator==") == std::string::npos);
 }
 
-TEST_CASE("derive(Eq, Hash) routes only the implemented protocols (Eq today)") {
-    // Hash isn't wired yet; the codegen should pick the protocols it
-    // recognizes (Eq) and silently ignore the rest. Tightens to a
-    // diagnostic in a later phase.
-    SemaEmitFixture f("struct Q {\n"
+TEST_CASE("derive(Eq, Hash) emits both operator== and std::hash spec") {
+    SemaEmitFixture f("module example.hashed\n"
+                      "struct Q {\n"
                       "    var n: Int32\n"
+                      "    var m: Int32\n"
                       "}\n"
                       "derive(Eq, Hash) for Q\n");
+    // Eq stays inside the namespace as a defaulted operator==.
     CHECK(f.out.header.find("bool operator==(const Q&) const noexcept = default;")
           != std::string::npos);
+    // Hash is at global scope, fully-qualified, with the boost-combine
+    // body. Position-wise it lands after the namespace close.
+    const auto eq_pos = f.out.header.find("operator==(const Q&)");
+    const auto ns_close = f.out.header.find("}  // namespace example::hashed");
+    const auto hash_pos = f.out.header.find("struct std::hash<example::hashed::Q>");
+    REQUIRE(eq_pos != std::string::npos);
+    REQUIRE(ns_close != std::string::npos);
+    REQUIRE(hash_pos != std::string::npos);
+    CHECK(eq_pos < ns_close);
+    CHECK(ns_close < hash_pos);
+    CHECK(f.out.header.find("__h ^= std::hash<std::int32_t>{}(v.n)") != std::string::npos);
+    CHECK(f.out.header.find("__h ^= std::hash<std::int32_t>{}(v.m)") != std::string::npos);
+}
+
+TEST_CASE("derive(Hash) alone (no Eq) still emits std::hash spec") {
+    SemaEmitFixture f("struct K { var n: Int32 }\n"
+                      "derive(Hash) for K\n");
+    CHECK(f.out.header.find("struct std::hash<K>") != std::string::npos);
+    CHECK(f.out.header.find("operator==") == std::string::npos);
+}
+
+TEST_CASE("a struct without derive(Hash) gets no std::hash spec") {
+    SemaEmitFixture f("struct Bare { var n: Int32 }\n");
+    CHECK(f.out.header.find("std::hash") == std::string::npos);
 }

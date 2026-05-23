@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §12.3 derive(Hash) demo: structural hashing without writing it.
+//
+// `derive(Hash) for T` emits a `std::hash<T>` specialization that
+// boost-combines each field's std::hash. Combined with `derive(Eq)`
+// for the same type, T immediately becomes usable as a key in
+// std::unordered_map / std::unordered_set.
+//
+// The specialization is emitted at global scope (after the module's
+// namespace closes) because `std::hash` is in the `std` namespace and
+// the spec requires user specializations to be at namespace ::std.
+//
+// Hash and Eq compose: a derived-Eq nested member with derived-Hash
+// participates in both equality AND hashing without extra work.
+
+module examples.derive_hash
+
+struct Point {
+    var x: Int32
+    var y: Int32
+}
+
+derive(Eq, Hash) for Point
+
+func make_point(_ x: Int32, _ y: Int32) -> Point {
+    return Point(x: x, y: y)
+}

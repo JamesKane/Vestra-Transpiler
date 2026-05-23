@@ -367,3 +367,29 @@ add_test(
 set_tests_properties(e2e_derive_eq_run PROPERTIES
     DEPENDS                e2e_derive_eq_compile
     PASS_REGULAR_EXPRESSION "derive\\(Eq\\) OK")
+
+# derive(Hash): std::hash<T> specialization (with derive(Eq)) → Point
+# is usable as a std::unordered_map key. Runtime side bucket-places,
+# overwrites a key, looks up, and sanity-checks the hash distribution.
+set(e2e_hash_input  ${CMAKE_SOURCE_DIR}/examples/derive_hash.vst)
+set(e2e_hash_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_derive_hash.cpp)
+
+add_test(
+    NAME    e2e_derive_hash_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_hash_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_derive_hash_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_hash_driver} ${e2e_workdir}/derive_hash.cpp
+            -o ${e2e_workdir}/derive_hash_app)
+set_tests_properties(e2e_derive_hash_compile PROPERTIES DEPENDS e2e_derive_hash_transpile)
+
+add_test(
+    NAME    e2e_derive_hash_run
+    COMMAND ${e2e_workdir}/derive_hash_app)
+set_tests_properties(e2e_derive_hash_run PROPERTIES
+    DEPENDS                e2e_derive_hash_compile
+    PASS_REGULAR_EXPRESSION "derive\\(Hash\\) OK")

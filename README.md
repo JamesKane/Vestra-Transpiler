@@ -311,16 +311,22 @@ Available on demand:
   the same `comptime { … }` block. Later phases extend Field with
   `offset` + attributes, and put `derive(Eq, Hash, Clone, …)`
   reflective defaults on top of the .type machinery.
-- **`derive(Eq)` (§12.3)** — `derive(Eq) for Point` (or `for Shape`)
-  injects a `[[nodiscard]] bool operator==(const T&) const noexcept = default;`
-  into the emitted struct/enum body, giving field-by-field structural
-  equality without writing it. The codegen builds a target → derived-
-  protocols index from every top-level `derive(...)` decl up front, so
-  it works whether the `derive` appears before or after the struct
-  itself. For payloaded enums the same flag also adds a defaulted
-  `operator==` to each `case_t` (std::variant's compare requires
-  every alternative to be equality-comparable). Hash/Clone ride on
-  the same index in later phases.
+- **`derive(Eq, Hash)` (§12.3)** — `derive(Eq) for Point` (or
+  `for Shape`) injects a `[[nodiscard]] bool operator==(const T&) const noexcept = default;`
+  into the emitted struct/enum body for field-by-field structural
+  equality. `derive(Hash)` emits a `template <> struct std::hash<Q::T>`
+  specialization (at global scope, after the user's namespace
+  closes — `std::hash` lives in `::std`) with a boost-style
+  hash-combine over each field's `std::hash`. The codegen builds a
+  target → derived-protocols index from every top-level
+  `derive(...)` decl up front, so it works whether the `derive`
+  appears before or after the type itself. For payloaded enums the
+  Eq flag also adds a defaulted `operator==` to each `case_t`
+  (std::variant's compare requires every alternative to be
+  equality-comparable). `derive(Eq, Hash) for Point` makes `Point`
+  immediately usable as a `std::unordered_map` key. Clone/Debug
+  ride on the same index in later phases; payloaded-enum Hash
+  needs `std::visit`-driven hashing and is a follow-on.
 - **Match expression lowering** — `match e { case .a: …  case .b(let x): …  case _: … }`
   lowers two ways depending on the scrutinee's enum shape: a bare
   enum becomes a `switch (e) { case Enum::a: return …; }` IIFE; a
