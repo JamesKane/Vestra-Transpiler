@@ -142,7 +142,26 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
     // reads back the side tables (Resolution) to lower constructs that
     // depend on context, like leading-dot enum cases and match scrutinees.
     sema::TypeArena arena;
-    sema::Resolver resolver(unit, arena, rep);
+    // §12.1 `@embed`: the resolver/folder need a way to read files at
+    // fold time. The reader resolves a path relative to the source
+    // file's parent directory (a content-hashed manifest is the next
+    // step; for now any relative path the user spells reads from disk).
+    auto embed_base = opts.input.parent_path();
+    sema::ComptimeFolder::EmbedReader embed_reader =
+        [embed_base](std::string_view path) -> std::optional<std::vector<std::uint8_t>> {
+        std::filesystem::path p{path};
+        if (p.is_relative()) {
+            p = embed_base / p;
+        }
+        std::ifstream f(p, std::ios::binary);
+        if (!f) {
+            return std::nullopt;
+        }
+        std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                        std::istreambuf_iterator<char>());
+        return bytes;
+    };
+    sema::Resolver resolver(unit, arena, rep, std::move(embed_reader));
     if (!opts.skip_check) {
         resolver.resolve();
         if (rep.has_errors()) {

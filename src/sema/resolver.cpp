@@ -59,8 +59,10 @@ void Resolution::mark_gated_out(const ast::Decl* d) {
 
 Resolver::Resolver(const ast::CompilationUnit& unit,
                    TypeArena& types,
-                   diag::DiagnosticReporter& reporter)
-    : unit_(&unit), types_(&types), reporter_(&reporter) {}
+                   diag::DiagnosticReporter& reporter,
+                   ComptimeFolder::EmbedReader embed_reader)
+    : unit_(&unit), types_(&types), reporter_(&reporter),
+      folder_(&scopes_.global(), std::move(embed_reader)) {}
 
 void Resolver::resolve() {
     register_builtin_capabilities();
@@ -709,6 +711,26 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
     case ast::NodeKind::MatchExpr:
         t = check_match(static_cast<const ast::MatchExpr&>(e), expected);
         break;
+    case ast::NodeKind::EmbedExpr: {
+        // §12.1 `@embed("path")` types as `[N]UInt8` where N is the file's
+        // size at compile time. We ask the folder to read the file now;
+        // the byte-count from the folded vector pins the type's length,
+        // and stashing the folded value here also primes the side table
+        // so codegen emits the brace-init literal without re-reading.
+        const auto& ee = static_cast<const ast::EmbedExpr&>(e);
+        auto folded = folder_.fold(ee, comptime_env_);
+        if (!folded || folded->kind != ComptimeValue::Kind::Vector) {
+            error_at(ee.range,
+                     std::format("could not @embed file \"{}\" (path/manifest miss or no reader "
+                                 "configured)",
+                                 ee.path));
+            t = types_->error();
+            break;
+        }
+        resolution_.set_folded_value(&ee, *folded);
+        t = types_->make_vector(folded->length, types_->primitive(TypeKind::UInt8));
+        break;
+    }
 
     default:
         // Unimplemented: walk children to surface their errors, then assign

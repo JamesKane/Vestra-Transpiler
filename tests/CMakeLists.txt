@@ -237,3 +237,29 @@ add_test(
 set_tests_properties(e2e_sin_table_run PROPERTIES
     DEPENDS                e2e_sin_table_compile
     PASS_REGULAR_EXPRESSION "sin_table OK")
+
+# Embed: §12.1 @embed reads embed_data.txt at compile time and bakes its
+# 14 bytes into a constexpr std::array<std::uint8_t, 14> in the emitted
+# header. The runtime side sums them (= 1128) and reads byte 0/13.
+set(e2e_embed_input  ${CMAKE_SOURCE_DIR}/examples/embed.vst)
+set(e2e_embed_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_embed.cpp)
+
+add_test(
+    NAME    e2e_embed_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_embed_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_embed_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_embed_driver} ${e2e_workdir}/embed.cpp
+            -o ${e2e_workdir}/embed_app)
+set_tests_properties(e2e_embed_compile PROPERTIES DEPENDS e2e_embed_transpile)
+
+add_test(
+    NAME    e2e_embed_run
+    COMMAND ${e2e_workdir}/embed_app)
+set_tests_properties(e2e_embed_run PROPERTIES
+    DEPENDS                e2e_embed_compile
+    PASS_REGULAR_EXPRESSION "checksum\\(\\) = 1128")

@@ -1523,6 +1523,57 @@ ast::ExprPtr Parser::parse_primary() {
         q->range = merge(start, last_range());
         return q;
     }
+    case TokenKind::At: {
+        // `@embed("path")` and other intrinsic-call forms in expression
+        // position. Today only @embed is recognized — extending this to
+        // @bits / @align etc. is a switch on `intr_name` below.
+        advance();  // '@'
+        // Accept any identifier OR a reserved word as the intrinsic name —
+        // `embed` is the struct-embedding keyword (§6) but reuses the same
+        // letters here, and future intrinsics may collide similarly.
+        // Validation happens against the known-intrinsic list below.
+        if (!check(TokenKind::Identifier) && !check(TokenKind::KwEmbed)) {
+            emit_error(peek().range, "expected intrinsic name after '@'");
+            auto stub = std::make_unique<ast::IdentExpr>();
+            stub->name = "<error>";
+            stub->range = merge(start, last_range());
+            return stub;
+        }
+        auto intr_name = std::string{advance().lexeme};
+        if (intr_name == "embed") {
+            expect(TokenKind::LParen, "'(' after @embed");
+            auto e = std::make_unique<ast::EmbedExpr>();
+            if (check(TokenKind::StringLit)) {
+                auto t = advance();
+                if (t.lexeme.size() >= 2) {
+                    e->path = std::string{t.lexeme.substr(1, t.lexeme.size() - 2)};
+                }
+            } else {
+                emit_error(peek().range, "@embed requires a string literal path");
+            }
+            expect(TokenKind::RParen, "')' after @embed path");
+            e->range = merge(start, last_range());
+            return e;
+        }
+        emit_error(start, std::format("unknown intrinsic '@{}'", intr_name));
+        // Best-effort recover: skip an optional (...) so we don't trip the
+        // outer expression parser on the leftover paren.
+        if (match(TokenKind::LParen)) {
+            int depth = 1;
+            while (depth > 0 && !at_end()) {
+                if (check(TokenKind::LParen)) {
+                    ++depth;
+                } else if (check(TokenKind::RParen)) {
+                    --depth;
+                }
+                advance();
+            }
+        }
+        auto stub = std::make_unique<ast::IdentExpr>();
+        stub->name = "<error>";
+        stub->range = merge(start, last_range());
+        return stub;
+    }
     default:
         emit_error(peek().range,
                    std::format("expected expression, got {}", lex::spelling(peek().kind)));

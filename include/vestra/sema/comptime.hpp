@@ -8,6 +8,7 @@
 #include "vestra/sema/types.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -112,11 +113,21 @@ public:
     // written tables, while still catching runaway loops fast.
     static constexpr int MaxLoopIterations = 1'000'000;
 
+    // §12.1 `@embed("path")` callback. The folder calls this with the
+    // raw path string from the source; the implementation resolves it
+    // (against the source-file directory, eventually against a content-
+    // hashed manifest) and returns the bytes, or std::nullopt on any
+    // failure. Pass nullptr to disable @embed (calls fail to fold).
+    using EmbedReader =
+        std::function<std::optional<std::vector<std::uint8_t>>(std::string_view path)>;
+
     // `global_scope` is consulted when the folder encounters a call: it
     // looks the callee up by name, checks for a comptime func, and
     // recursively folds its body. Pass nullptr in unit-test contexts that
-    // only need pure-expression folding.
-    explicit ComptimeFolder(const Scope* global_scope = nullptr) : global_scope_(global_scope) {}
+    // only need pure-expression folding. `embed_reader` similarly: nullptr
+    // disables @embed.
+    explicit ComptimeFolder(const Scope* global_scope = nullptr, EmbedReader embed_reader = {})
+        : global_scope_(global_scope), embed_reader_(std::move(embed_reader)) {}
 
     // Fold `e` against `env`. If `hint` is non-Unit and the expression is
     // an integer/float literal, the result's `type` field uses the hint
@@ -146,6 +157,7 @@ private:
     [[nodiscard]] bool fold_stmt(const ast::Stmt& s, const Env& env, Frame& frame, int depth) const;
 
     const Scope* global_scope_ = nullptr;
+    EmbedReader embed_reader_;
 };
 
 }  // namespace vestra::sema

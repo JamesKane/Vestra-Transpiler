@@ -410,6 +410,35 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
     case ast::NodeKind::ComptimeExpr:
         return fold_with(*static_cast<const ast::ComptimeExpr&>(e).inner, env, frame, hint, depth);
 
+    case ast::NodeKind::EmbedExpr: {
+        // §12.1's documented exception to comptime purity: read the named
+        // file at fold time. The reader does path resolution + (eventually)
+        // manifest enforcement; we just consume bytes and wrap them as a
+        // Vector<UInt8> ComptimeValue. The folded length pins the [N]UInt8
+        // type the resolver assigns to this expression.
+        const auto& ee = static_cast<const ast::EmbedExpr&>(e);
+        if (!embed_reader_) {
+            return std::nullopt;
+        }
+        auto bytes = embed_reader_(ee.path);
+        if (!bytes) {
+            return std::nullopt;
+        }
+        ComptimeValue cv;
+        cv.kind = ComptimeValue::Kind::Vector;
+        cv.type = TypeKind::UInt8;
+        cv.length = static_cast<std::int64_t>(bytes->size());
+        cv.elements.reserve(bytes->size());
+        for (auto b : *bytes) {
+            ComptimeValue byte;
+            byte.kind = ComptimeValue::Kind::UInt;
+            byte.type = TypeKind::UInt8;
+            byte.u = b;
+            cv.elements.push_back(std::move(byte));
+        }
+        return cv;
+    }
+
     case ast::NodeKind::BlockExpr: {
         // Phase 3: walk every statement in order through fold_stmt, which
         // mutates `frame` (binding let/var, updating assignments, iterating

@@ -39,9 +39,13 @@ std::optional<vestra::sema::ComptimeValue> fold_expr(std::string expr_source) {
 
 // Pipeline-fold helper: lex + parse + run the resolver (which calls the
 // folder for each const initializer), then look up the named const's
-// folded value in the resolution side table.
-std::optional<vestra::sema::ComptimeValue> resolver_fold(std::string source,
-                                                         std::string const_name) {
+// folded value in the resolution side table. The optional EmbedReader
+// is forwarded to the resolver so @embed-using sources can fold against
+// canned in-memory bytes.
+std::optional<vestra::sema::ComptimeValue>
+resolver_fold(std::string source,
+              std::string const_name,
+              vestra::sema::ComptimeFolder::EmbedReader embed_reader = {}) {
     vestra::diag::SourceManager sm;
     vestra::diag::DiagnosticReporter rep(sm);
     auto fid = sm.add_in_memory("<test>", std::move(source));
@@ -52,7 +56,7 @@ std::optional<vestra::sema::ComptimeValue> resolver_fold(std::string source,
     REQUIRE_FALSE(rep.has_errors());
 
     vestra::sema::TypeArena arena;
-    vestra::sema::Resolver res(unit, arena, rep);
+    vestra::sema::Resolver res(unit, arena, rep, std::move(embed_reader));
     res.resolve();
     REQUIRE_FALSE(rep.has_errors());
 
@@ -729,6 +733,79 @@ TEST_CASE("phase 6: non-numeric conversion arg is rejected") {
     vestra::sema::Resolver res(unit, arena, rep);
     res.resolve();
     CHECK(rep.has_errors());
+}
+
+// ---- §12.1 phase 7: @embed ------------------------------------------------
+
+TEST_CASE("phase 7: @embed folds a file's bytes into a [N]UInt8 vector") {
+    auto reader = [](std::string_view path) -> std::optional<std::vector<std::uint8_t>> {
+        if (path == "greeting.bin") {
+            return std::vector<std::uint8_t>{'h', 'i', '!'};
+        }
+        return std::nullopt;
+    };
+    auto v = resolver_fold("const G: [3]UInt8 = @embed(\"greeting.bin\")\n", "G", reader);
+    REQUIRE(v);
+    REQUIRE(v->kind == vestra::sema::ComptimeValue::Kind::Vector);
+    REQUIRE(v->elements.size() == 3);
+    CHECK(v->elements[0].u == 'h');
+    CHECK(v->elements[1].u == 'i');
+    CHECK(v->elements[2].u == '!');
+}
+
+TEST_CASE("phase 7: a folded @embed emits a brace-init C++ literal") {
+    auto reader = [](std::string_view) -> std::optional<std::vector<std::uint8_t>> {
+        return std::vector<std::uint8_t>{0xDE, 0xAD};
+    };
+    auto v = resolver_fold("const G: [2]UInt8 = @embed(\"x\")\n", "G", reader);
+    REQUIRE(v);
+    CHECK(v->to_cpp_literal() == "{{222u, 173u}}");
+}
+
+TEST_CASE("phase 7: @embed without a reader reports a clear error") {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto fid = sm.add_in_memory("<test>", "const G: [3]UInt8 = @embed(\"missing.bin\")\n");
+    vestra::lex::Lexer lex(sm, fid, rep);
+    auto tokens = lex.tokenize();
+    vestra::parse::Parser p(tokens, rep);
+    auto unit = p.parse_unit();
+    REQUIRE_FALSE(rep.has_errors());
+    vestra::sema::TypeArena arena;
+    vestra::sema::Resolver res(unit, arena, rep);  // no reader configured
+    res.resolve();
+    CHECK(rep.has_errors());
+}
+
+TEST_CASE("phase 7: @embed of an unknown path reports an error") {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto fid = sm.add_in_memory("<test>", "const G: [3]UInt8 = @embed(\"missing.bin\")\n");
+    vestra::lex::Lexer lex(sm, fid, rep);
+    auto tokens = lex.tokenize();
+    vestra::parse::Parser p(tokens, rep);
+    auto unit = p.parse_unit();
+    REQUIRE_FALSE(rep.has_errors());
+    vestra::sema::TypeArena arena;
+    auto reader = [](std::string_view) -> std::optional<std::vector<std::uint8_t>> {
+        return std::nullopt;  // always misses
+    };
+    vestra::sema::Resolver res(unit, arena, rep, std::move(reader));
+    res.resolve();
+    CHECK(rep.has_errors());
+}
+
+TEST_CASE("phase 7: @embed types as [N]UInt8 matching the file size") {
+    auto reader = [](std::string_view) -> std::optional<std::vector<std::uint8_t>> {
+        return std::vector<std::uint8_t>(42, 0xAB);  // 42 bytes of 0xAB
+    };
+    auto v = resolver_fold("const G: [42]UInt8 = @embed(\"x\")\n", "G", reader);
+    REQUIRE(v);
+    REQUIRE(v->elements.size() == 42);
+    CHECK(v->length == 42);
+    for (const auto& e : v->elements) {
+        CHECK(e.u == 0xAB);
+    }
 }
 
 TEST_CASE("phase 2: recursion past the depth cap stops cleanly") {

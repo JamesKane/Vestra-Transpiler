@@ -73,6 +73,7 @@ enum class NodeKind : std::uint16_t {
     ClosureExpr,
     BlockExpr,
     ComptimeExpr,
+    EmbedExpr,
     QuoteExpr,
     TryExpr,
     AwaitExpr,
@@ -417,6 +418,15 @@ struct ClosureExpr : Expr {
 struct ComptimeExpr : Expr {
     ExprPtr inner;
     ComptimeExpr() : Expr(NodeKind::ComptimeExpr) {}
+};
+// `@embed("path")` — §12.1's sole non-pure comptime input. The folder
+// reads the named file at compile time and produces a `[N]UInt8` vector
+// constant whose bytes are exactly the file's contents. The path is the
+// raw string from the source; resolution against a base directory and
+// (eventually) a content-hashed manifest is the driver's responsibility.
+struct EmbedExpr : Expr {
+    std::string path;
+    EmbedExpr() : Expr(NodeKind::EmbedExpr) {}
 };
 struct QuoteExpr : Expr {
     ExprPtr inner;

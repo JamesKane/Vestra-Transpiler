@@ -255,7 +255,7 @@ Available on demand:
   `comptime if` for declaration-position selection, and the §12.6
   every-branch type-check guarantee.
 
-- **Comptime folding (§12.1 phases 1+2+3+4+5+6)** — a tree-walking evaluator
+- **Comptime folding (§12.1 phases 1+2+3+4+5+6+7)** — a tree-walking evaluator
   for the pure subset of Vestra. **Phase 1** folds `const` initializers
   and `comptime { ... }` blocks at compile time: literals, references
   to earlier folded consts, unary + binary arithmetic and logic
@@ -281,11 +281,19 @@ Available on demand:
   is an explicit cast. The resolver routes this past normal name
   lookup, the folder applies the right Int↔Float retag at fold time,
   and the emitter lowers it as `static_cast<T>(arg)` for runtime
-  paths. With phases 5+6 in place `examples/sin_table.vst` now matches
-  the §12.1 spec example one-to-one: a 32-sample sine cycle baked
-  into `inline constexpr std::array<double, 32>`. Later phases lift:
-  `@embed`, reflection (`Type`/`Field`), `derive` reflective defaults,
-  and declaration macros (`quote`/`$splice`).
+  paths. With phases 5+6 in place `examples/sin_table.vst` matches
+  the §12.1 spec example one-to-one. **Phase 7** adds `@embed("path")`
+  — the spec's only documented exception to fold-time purity. The
+  parser recognizes `@embed` as an intrinsic-call expression, the
+  driver wires up a path-resolving reader that opens files relative
+  to the source-file directory, the folder consumes the bytes and
+  produces a `Vector<UInt8>` value, and the resolver pins the
+  expression's type to `[N]UInt8` from the read size. The folded
+  vector flows through the existing codegen brace-init path and
+  surfaces as `inline constexpr std::array<std::uint8_t, N> = {{…}}`
+  in the emitted header. Later phases lift: reflection (`Type`/`Field`),
+  `derive` reflective defaults, and declaration macros
+  (`quote`/`$splice`).
 - **End-to-end** — `vestra build` parses, sema-checks (including
   ownership), and produces `.hpp/.cpp` that compiles and runs for
   `examples/hello.vst`, `examples/shapes.vst`, and
@@ -326,18 +334,16 @@ What's **deliberately stubbed** today, in roughly the order I'd tackle them:
    as C++ templates that the host compiler monomorphizes. Phase 2:
    const generics, generic structs/enums, where-clauses, and bound
    enforcement.
-7. ~~**`comptime` interpreter**~~ — **phases 1+2+3+4+5+6 done**: pure
-   expression folding (phase 1), comptime function calls with
+7. ~~**`comptime` interpreter**~~ — **phases 1+2+3+4+5+6+7 done**:
+   pure expression folding (phase 1), comptime function calls with
    recursion (phase 2), locals + loops in comptime bodies (phase 3),
-   vectors as values (phase 4), a built-in math stdlib (phase 5 —
-   `sin`/`cos`/`tan`/`sqrt` plus `tau`/`pi`/`e`, all Float64), and
-   primitive-type-as-callable conversions (phase 6 — `Float64(i)`,
-   `Int32(x)`, `UInt8(255)`, …). The §12.1 `sin_table` example now
-   matches the spec one-to-one: a 32-sample sine cycle folded at
-   compile time into `inline constexpr std::array<double, N>`, with
-   the loop body written `t[i] = sin(tau * Float64(i) / 32.0)`. Later
-   phases: `@embed`, reflection (Type/Field), `derive` defaults, and
-   declaration macros (`quote`/`$splice`).
+   vectors as values (phase 4), a built-in math stdlib (phase 5),
+   primitive-type-as-callable conversions (phase 6), and `@embed`
+   file embedding (phase 7 — `const Data: [N]UInt8 = @embed("p")`
+   reads `p` relative to the source file and bakes its bytes into a
+   `constexpr std::array<std::uint8_t, N>`). Later phases:
+   reflection (Type/Field), `derive` defaults, declaration macros
+   (`quote`/`$splice`), and a content-hashed `@embed` manifest.
 8. **String interpolation lowering** (§4) — produce `Display::display(into:)`
    calls into a `String` sink; the lexer already has the splitting hooks.
 9. **`async` / `spawn` / `select` / `parallel` lowering** (§11) — currently

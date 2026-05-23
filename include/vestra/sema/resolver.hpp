@@ -53,7 +53,8 @@ class Resolver {
 public:
     Resolver(const ast::CompilationUnit& unit,
              TypeArena& types,
-             diag::DiagnosticReporter& reporter);
+             diag::DiagnosticReporter& reporter,
+             ComptimeFolder::EmbedReader embed_reader = {});
 
     Resolver(const Resolver&) = delete;
     Resolver& operator=(const Resolver&) = delete;
@@ -165,8 +166,10 @@ private:
     // accumulates name→value pairs as we successfully fold each top-level
     // const, so later consts can reference earlier ones. The folder gets
     // a pointer to the global scope so it can look comptime funcs up by
-    // name when it encounters a call expression (§12.1 phase 2).
-    ComptimeFolder folder_{&scopes_.global()};
+    // name when it encounters a call expression (§12.1 phase 2). The
+    // EmbedReader (§12.1 phase 7) is supplied by the constructor and
+    // routed straight through.
+    ComptimeFolder folder_;
     ComptimeFolder::Env comptime_env_;
 };
 

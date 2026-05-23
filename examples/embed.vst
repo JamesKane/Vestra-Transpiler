@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §12.1 `@embed` demo: read a file at compile time, surface it as a
+// `[N]UInt8` const, and read bytes back at runtime.
+//
+// The folder reads `embed_data.txt` relative to this source file and
+// produces a Vector<UInt8> ComptimeValue; codegen emits it as
+// `inline constexpr std::array<std::uint8_t, 14> Greeting = {{...}}`.
+// Nothing runs at startup — the bytes live in the binary's read-only
+// section.
+
+module examples.embeds
+
+const Greeting: [14]UInt8 = @embed("embed_data.txt")
+
+func byte_at(_ i: Int32) -> UInt8 {
+    return Greeting[i]
+}
+
+// Sum every byte at runtime. The contents are
+// "Hello, embed!\n" (13 ASCII chars + 1 newline) so the sum is a
+// fixed known value the e2e runner can check exactly.
+func checksum() -> Int32 {
+    var total: Int32 = 0
+    var i: Int32 = 0
+    while i < 14 {
+        total = total + Int32(byte_at(i))
+        i = i + 1
+    }
+    return total
+}
