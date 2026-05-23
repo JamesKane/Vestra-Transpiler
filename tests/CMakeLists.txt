@@ -422,6 +422,34 @@ set_tests_properties(e2e_optional_run PROPERTIES
     DEPENDS                e2e_optional_compile
     PASS_REGULAR_EXPRESSION "optional OK")
 
+# Result / throws / try / throw: §9 error handling. throws(E) lowers to
+# std::expected<T, E>; try / try? / try! lower to propagation /
+# Optional-conversion / .value() respectively. The runtime exercises all
+# three forms across success and failure paths, including the
+# std::bad_expected_access panic from try! on an error.
+set(e2e_result_input  ${CMAKE_SOURCE_DIR}/examples/result.vst)
+set(e2e_result_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_result.cpp)
+
+add_test(
+    NAME    e2e_result_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_result_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_result_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_result_driver} ${e2e_workdir}/result.cpp
+            -o ${e2e_workdir}/result_app)
+set_tests_properties(e2e_result_compile PROPERTIES DEPENDS e2e_result_transpile)
+
+add_test(
+    NAME    e2e_result_run
+    COMMAND ${e2e_workdir}/result_app)
+set_tests_properties(e2e_result_run PROPERTIES
+    DEPENDS                e2e_result_compile
+    PASS_REGULAR_EXPRESSION "result OK")
+
 # derive(Debug): std::formatter<T> specialization renders the value
 # structurally for std::format / std::println / string interpolation.
 # Exercises all three shapes (struct, bare enum, payloaded enum) and

@@ -161,8 +161,15 @@ private:
     ScopeStack scopes_;
     Resolution resolution_;
     // Stack of expected return types — pushed when entering a function body so
-    // a nested return expression can be checked against it.
+    // a nested return expression can be checked against it. For a throws(E) →
+    // T function we push the *success* type T here; the parallel throws_stack_
+    // tracks E so `throw e` and `try f()` can reach it.
     std::vector<TypePtr> return_stack_;
+    // §9 Stack of enclosing-function error types. Nullptr means "does not
+    // throw" — `throw` is forbidden, propagating `try` is forbidden. A
+    // non-null E means `throw e` requires e assignable to E, and `try f()`
+    // requires f's error type assignable to E.
+    std::vector<TypePtr> throws_stack_;
     // Comptime folder + the const environment it folds against. The env
     // accumulates name→value pairs as we successfully fold each top-level
     // const, so later consts can reference earlier ones. The folder gets

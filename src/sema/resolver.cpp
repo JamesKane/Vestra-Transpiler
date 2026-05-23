@@ -402,6 +402,14 @@ TypePtr Resolver::function_type_of(const ast::FuncDecl& f) {
         params.push_back(p.type ? resolve_type(*p.type) : types_->error());
     }
     TypePtr result = f.result ? resolve_type(*f.result) : types_->unit();
+    // §9: a `throws(E)` clause widens the *external* result to Result<T, E>
+    // so callers see the fallible signature; the body itself still talks
+    // about T and E individually (handled in check_func via return_stack_
+    // and throws_stack_).
+    if (f.effects.throws_type) {
+        TypePtr err = resolve_type(*f.effects.throws_type);
+        result = types_->make_result(result, err);
+    }
     return types_->make_function(std::move(params), result);
 }
 
@@ -524,6 +532,10 @@ void Resolver::check_func(const ast::FuncDecl& f) {
 
     TypePtr expected_result = f.result ? resolve_type(*f.result) : types_->unit();
     return_stack_.push_back(expected_result);
+    // §9: separate stack tracks the enclosing throws(E). Push for every
+    // function body so the depth matches return_stack_; nullptr means
+    // "non-throwing", which is what check_throw / check_try look for.
+    throws_stack_.push_back(f.effects.throws_type ? resolve_type(*f.effects.throws_type) : nullptr);
 
     // The body is always a BlockExpr; pass the expected result as the context.
     TypePtr body_type = types_->unit();
@@ -551,6 +563,7 @@ void Resolver::check_func(const ast::FuncDecl& f) {
     }
 
     return_stack_.pop_back();
+    throws_stack_.pop_back();
 }
 
 TypePtr Resolver::check_block_expr(const ast::BlockExpr& b, TypePtr expected) {
@@ -782,13 +795,68 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
     case ast::NodeKind::SpawnExpr:
         t = check_expr(*static_cast<const ast::SpawnExpr&>(e).inner);
         break;
-    case ast::NodeKind::ThrowExpr:
-        (void)check_expr(*static_cast<const ast::ThrowExpr&>(e).inner);
+    case ast::NodeKind::ThrowExpr: {
+        // §9: `throw e` is only valid inside a throws(E) function; e must
+        // be assignable to E. The expression's static type is Never.
+        const auto& th = static_cast<const ast::ThrowExpr&>(e);
+        TypePtr enclosing_err = throws_stack_.empty() ? nullptr : throws_stack_.back();
+        auto inner_type = check_expr(*th.inner, enclosing_err);
+        if (enclosing_err == nullptr) {
+            error_at(e.range, "'throw' is only valid inside a function declared 'throws(E)'");
+        } else if (inner_type != nullptr && !TypeArena::assignable(inner_type, enclosing_err)) {
+            error_at(th.inner->range,
+                     std::format("'throw' value of type {} does not match the enclosing throws({})",
+                                 inner_type->describe(),
+                                 enclosing_err->describe()));
+        }
         t = types_->never();
         break;
-    case ast::NodeKind::TryExpr:
-        t = check_expr(*static_cast<const ast::TryExpr&>(e).inner);
+    }
+    case ast::NodeKind::TryExpr: {
+        // §9: `try e` / `try? e` / `try! e` all require `e` to evaluate to
+        // a Result<T, E> (i.e. a call to a throws function). The three
+        // forms then differ in how they consume the error:
+        //   * Propagating: returns the error from the enclosing function
+        //     (which must itself be throws-compatible with E); yields T.
+        //   * Optional:    converts to Optional<T>; yields Optional<T>.
+        //   * Forced:      panics on error; yields T.
+        const auto& tx = static_cast<const ast::TryExpr&>(e);
+        auto inner_type = check_expr(*tx.inner);
+        if (inner_type == nullptr || inner_type->is_error()) {
+            t = types_->error();
+            break;
+        }
+        if (inner_type->kind() != TypeKind::Result) {
+            error_at(tx.inner->range,
+                     std::format("'try' operand must produce a Result<T, E>, got {}",
+                                 inner_type->describe()));
+            t = types_->error();
+            break;
+        }
+        TypePtr ok = inner_type->inner();
+        TypePtr err = inner_type->result();
+        if (tx.form == ast::TryExpr::Form::Propagating) {
+            TypePtr enclosing_err = throws_stack_.empty() ? nullptr : throws_stack_.back();
+            if (enclosing_err == nullptr) {
+                error_at(
+                    e.range,
+                    "'try' propagation requires the enclosing function to declare 'throws(E)'");
+            } else if (!TypeArena::assignable(err, enclosing_err)) {
+                error_at(e.range,
+                         std::format(
+                             "propagated error of type {} does not match the enclosing throws({})",
+                             err ? err->describe() : "?",
+                             enclosing_err->describe()));
+            }
+            t = ok;
+        } else if (tx.form == ast::TryExpr::Form::Optional) {
+            t = types_->make_optional(ok);
+        } else {
+            // Forced: `try!` panics on error.
+            t = ok;
+        }
         break;
+    }
     case ast::NodeKind::AsExpr: {
         const auto& a = static_cast<const ast::AsExpr&>(e);
         (void)check_expr(*a.value);

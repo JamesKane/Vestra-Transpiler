@@ -318,3 +318,56 @@ TEST_CASE("if let on a non-Optional initializer is reported") {
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("Optional") != std::string::npos);
 }
+
+// ---- §9 Result / throws / try / throw -------------------------------------
+
+TEST_CASE("a throws(E) function's external return type is Result<T, E>") {
+    CHECK(check_errors("enum E { case bad }\n"
+                       "func f() throws(E) -> Int32 { return 7 }\n"
+                       "func use() -> Int32 { return try! f() }\n")
+          == 0);
+}
+
+TEST_CASE("try on a non-throwing call is reported") {
+    auto r = check_detail("func g() -> Int32 { return 7 }\n"
+                          "enum E { case bad }\n"
+                          "func use() throws(E) -> Int32 { return try g() }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Result") != std::string::npos);
+}
+
+TEST_CASE("try? converts a Result<T, E> to Optional<T>") {
+    CHECK(check_errors("enum E { case bad }\n"
+                       "func f() throws(E) -> Int32 { return 7 }\n"
+                       "func use() -> Int32? { return try? f() }\n")
+          == 0);
+}
+
+TEST_CASE("try! yields T") {
+    CHECK(check_errors("enum E { case bad }\n"
+                       "func f() throws(E) -> Int32 { return 7 }\n"
+                       "func use() -> Int32 { return try! f() }\n")
+          == 0);
+}
+
+TEST_CASE("try propagation requires the enclosing fn to also declare throws") {
+    auto r = check_detail("enum E { case bad }\n"
+                          "func f() throws(E) -> Int32 { return 7 }\n"
+                          "func use() -> Int32 { return try f() }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("throws") != std::string::npos);
+}
+
+TEST_CASE("throw outside a throws function is reported") {
+    auto r = check_detail("enum E { case bad }\n"
+                          "func bad() -> Int32 { throw E.bad }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("throws") != std::string::npos);
+}
+
+TEST_CASE("throw inside a throws(E) fn requires the value type to match E") {
+    auto r = check_detail("enum E { case bad }\n"
+                          "func ok() throws(E) -> Int32 { throw E.bad }\n"
+                          "func bad() throws(E) -> Int32 { throw 42 }\n");
+    CHECK(r.error_count >= 1);
+}

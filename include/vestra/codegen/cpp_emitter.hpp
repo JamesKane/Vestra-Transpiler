@@ -66,6 +66,14 @@ private:
     void emit_match(std::ostream& os, const ast::MatchExpr& m);
     void emit_type(std::ostream& os, const ast::Type& t);
 
+    // §9 stmt-position lowering for expressions whose runtime semantics
+    // need a statement (a real `return`, an `if/else` chain, etc.). When
+    // `return_value` is true the trailing expression of `expr` is the
+    // returned value; otherwise it's a discarded side-effect. Handles
+    // ThrowExpr, TryExpr::Propagating, IfExpr, BlockExpr, MatchExpr,
+    // and falls back to plain `<expr>;` / `return <expr>;` otherwise.
+    void emit_stmt_expr(std::ostream& os, const ast::Expr& expr, bool return_value);
+
     void unsupported(std::ostream& os, std::string_view what, diag::SourceRange r);
 
     static const char* binop_text(ast::BinaryOp op);

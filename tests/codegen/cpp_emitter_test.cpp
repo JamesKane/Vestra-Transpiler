@@ -255,8 +255,57 @@ TEST_CASE("if let lowers to a C++23 if-with-initializer over std::optional") {
     CHECK(f.out.source.find("if (auto __vstr_opt = o; __vstr_opt.has_value())")
           != std::string::npos);
     CHECK(f.out.source.find("auto&& v = *__vstr_opt") != std::string::npos);
-    // The branch bodies are inner block-expressions, so they each go
-    // through the IIFE form — we just check the leaf returns survive.
     CHECK(f.out.source.find("return v;") != std::string::npos);
     CHECK(f.out.source.find("return 0;") != std::string::npos);
+}
+
+// ---- §9 Result / throws / try / throw -------------------------------------
+
+TEST_CASE("a throws(E) function emits std::expected<T, E> as its return type") {
+    auto out = emit("enum E { case bad }\n"
+                    "func f() throws(E) -> Int32 { return 7 }\n");
+    CHECK(out.header.find("std::expected<std::int32_t, E> f(") != std::string::npos);
+    CHECK(out.header.find("#include <expected>") != std::string::npos);
+}
+
+TEST_CASE("throw at top of a throws fn lowers to return std::unexpected") {
+    SemaEmitFixture f("enum E { case bad }\n"
+                      "func bad() throws(E) -> Int32 { throw E.bad }\n");
+    CHECK(f.out.source.find("return std::unexpected{E::bad};") != std::string::npos);
+}
+
+TEST_CASE("return try propagates via the canonical 3-line escape") {
+    auto out = emit("enum E { case bad }\n"
+                    "func f() throws(E) -> Int32 { return 7 }\n"
+                    "func g() throws(E) -> Int32 { return try f() }\n");
+    CHECK(out.source.find("auto __vstr_r = f();") != std::string::npos);
+    CHECK(out.source.find("return std::unexpected{__vstr_r.error()};") != std::string::npos);
+    CHECK(out.source.find("return *__vstr_r;") != std::string::npos);
+}
+
+TEST_CASE("try? lowers to a Result→Optional conversion IIFE") {
+    auto out = emit("enum E { case bad }\n"
+                    "func f() throws(E) -> Int32 { return 7 }\n"
+                    "func g() -> Int32? { return try? f() }\n");
+    CHECK(out.source.find("__vstr_r.has_value() ? std::optional{*__vstr_r} : std::nullopt")
+          != std::string::npos);
+}
+
+TEST_CASE("try! lowers to std::expected::value()") {
+    auto out = emit("enum E { case bad }\n"
+                    "func f() throws(E) -> Int32 { return 7 }\n"
+                    "func g() -> Int32 { return try! f() }\n");
+    CHECK(out.source.find("f().value()") != std::string::npos);
+}
+
+TEST_CASE("throw inside an if branch lowers as a real return-of-unexpected") {
+    SemaEmitFixture f("enum E { case bad }\n"
+                      "func d(_ a: Int32, _ b: Int32) throws(E) -> Int32 {\n"
+                      "    if b == 0 { throw E.bad }\n"
+                      "    return a / b\n"
+                      "}\n");
+    // No `std::unreachable()` IIFE escape — the throw should sit in a
+    // direct `if (...) { return std::unexpected{...}; }` form.
+    CHECK(f.out.source.find("if (b == 0) { return std::unexpected{E::bad};") != std::string::npos);
+    CHECK(f.out.source.find("std::unreachable") == std::string::npos);
 }

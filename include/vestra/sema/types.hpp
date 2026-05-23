@@ -48,6 +48,7 @@ enum class TypeKind : std::uint16_t {
     Error,
     // structural
     Optional,
+    Result,
     Vector,
     Function,
     Tuple,
@@ -127,6 +128,10 @@ public:
     // Structural constructors. Each call yields a fresh Type — equality is by
     // structural compare via equal() below, not pointer compare.
     [[nodiscard]] TypePtr make_optional(TypePtr inner);
+    // §9 Result<T, E> — externally what a `throws(E) -> T` function returns.
+    // Stored as inner_=T (success), result_=E (error). The codegen lowers it
+    // to `std::expected<T, E>`.
+    [[nodiscard]] TypePtr make_result(TypePtr success, TypePtr error);
     [[nodiscard]] TypePtr make_vector(std::int64_t length, TypePtr element);
     [[nodiscard]] TypePtr make_function(std::vector<TypePtr> params, TypePtr result);
     [[nodiscard]] TypePtr make_tuple(std::vector<TypePtr> elements);

@@ -121,6 +121,11 @@ std::string Type::describe() const {
     switch (kind_) {
     case TypeKind::Optional:
         return inner_ ? inner_->describe() + "?" : "?";
+    case TypeKind::Result: {
+        std::string ok = inner_ ? inner_->describe() : "?";
+        std::string err = result_ ? result_->describe() : "?";
+        return std::format("Result<{}, {}>", ok, err);
+    }
     case TypeKind::Vector: {
         std::string elem = inner_ ? inner_->describe() : std::string{"?"};
         return std::format("[{}]{}", length_, elem);
@@ -206,6 +211,15 @@ TypePtr TypeArena::make_optional(TypePtr inner) {
     return p;
 }
 
+TypePtr TypeArena::make_result(TypePtr success, TypePtr error) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Result));
+    t->inner_ = success;
+    t->result_ = error;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
 TypePtr TypeArena::make_vector(std::int64_t length, TypePtr element) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::Vector));
     t->length_ = length;
@@ -286,6 +300,8 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     switch (a->kind()) {
     case TypeKind::Optional:
         return equal(a->inner(), b->inner());
+    case TypeKind::Result:
+        return equal(a->inner(), b->inner()) && equal(a->result(), b->result());
     case TypeKind::Vector:
         return a->vector_length() == b->vector_length() && equal(a->inner(), b->inner());
     case TypeKind::Function:
@@ -359,6 +375,11 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::Optional: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_optional(inner);
+    }
+    case TypeKind::Result: {
+        auto ok = substitute(t->inner(), bindings);
+        auto err = substitute(t->result(), bindings);
+        return (ok == t->inner() && err == t->result()) ? t : make_result(ok, err);
     }
     case TypeKind::Vector: {
         auto elem = substitute(t->inner(), bindings);

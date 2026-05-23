@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §9 Result / throws / try / throw — the error-handling sibling to
+// Optional. Three propagation operators consume a fallible call:
+//   * try e   — propagates the error from the enclosing throws fn
+//   * try? e  — converts the error to Optional (.none on error)
+//   * try! e  — panics on error
+// `throw e` ends the enclosing `throws(E)` fn with the error value.
+
+module examples.result
+
+enum DivErr {
+    case divByZero
+    case overflow
+}
+
+// The fallible primitive: returns Int32 on success, throws DivErr on
+// either of the two failure modes the divisor can trigger.
+func divide(_ a: Int32, _ b: Int32) throws(DivErr) -> Int32 {
+    if b == 0 {
+        throw DivErr.divByZero
+    }
+    return a / b
+}
+
+// `try?` form: convert to Optional, then `??` to default. Used when the
+// caller doesn't care which error fired, only "did it work?".
+func safe_div(_ a: Int32, _ b: Int32) -> Int32 {
+    return (try? divide(a, b)) ?? 0
+}
+
+// `try!` form: assert the divide can't fail at this call site. Wrong
+// caller is a runtime panic via std::bad_expected_access.
+func unwrap_div(_ a: Int32, _ b: Int32) -> Int32 {
+    return try! divide(a, b)
+}
+
+// Propagating `try`: the enclosing fn also declares throws(DivErr) so
+// the error flows on through. The lowering is the canonical
+// `if (!r) return std::unexpected{r.error()}; return *r;` pair.
+func chain(_ a: Int32, _ b: Int32, _ c: Int32) throws(DivErr) -> Int32 {
+    let x = try divide(a, b)
+    return try divide(x, c)
+}
