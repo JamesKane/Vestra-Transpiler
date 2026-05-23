@@ -333,3 +333,8 @@ and produces the right answer."
 | `build/debug/vestra build foo.vst --dump-tokens`     | Inspect the token stream           |
 | `build/debug/vestra build foo.vst --dump-ast`        | Inspect the parsed AST             |
 | `build/debug/vestra build foo.vst --skip-check`      | Bypass sema (debug aid only)       |
+
+## License
+
+BSD 2-Clause — see [LICENSE](LICENSE). Each source file carries a
+matching `SPDX-License-Identifier: BSD-2-Clause` header.

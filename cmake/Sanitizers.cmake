@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026 James Kane
+
 # Sanitizer integration. Enable per build with -DVESTRA_SANITIZE=address+ub.
 #
 # The setting is a '+'-separated list of: address, undefined, thread, leak.

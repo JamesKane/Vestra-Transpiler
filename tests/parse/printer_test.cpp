@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
 #include "vestra/ast/nodes.hpp"
 #include "vestra/ast/printer.hpp"
 #include "vestra/diag/diagnostic.hpp"

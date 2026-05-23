@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026 James Kane
+
 # Test target. Bundles all unit tests into one executable so we pay the
 # doctest registration overhead only once.
 

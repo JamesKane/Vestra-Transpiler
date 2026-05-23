@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026 James Kane
+
 # Third-party dependencies, fetched via FetchContent so contributors don't have
 # to install anything beyond a C++23 toolchain, CMake, and Ninja.
 

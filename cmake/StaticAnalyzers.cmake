@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026 James Kane
+
 # Optional static-analysis hooks. clang-tidy / clang-format integration is
 # additive: it activates if the tool is found on PATH, and is silent otherwise
 # so the build never breaks because a developer hasn't installed LLVM utilities.
