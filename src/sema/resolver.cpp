@@ -67,6 +67,7 @@ Resolver::Resolver(const ast::CompilationUnit& unit,
 void Resolver::resolve() {
     register_builtin_capabilities();
     register_builtin_math();
+    register_builtin_reflection();
     collect_top_level();
     for (const auto& d : unit_->decls) {
         // §12.6: same gate as collect_top_level. Skipping here keeps the
@@ -146,6 +147,36 @@ void Resolver::register_builtin_math() {
         s.visibility = ast::Visibility::Public;
         (void)scopes_.global().insert(std::move(s));
     }
+}
+
+// §12.2 reflection phase 2: synthesize a `Field` struct so a member
+// access like `T.fields[i].name` type-checks through the resolver's
+// ordinary lookup_field path. Field is comptime-only — there's no
+// codegen story for a runtime Field-typed value yet, and the spec
+// reads reflection as a fold-time activity anyway. A later phase adds
+// `type`, `offset`, and the attribute list.
+void Resolver::register_builtin_reflection() {
+    auto str_type = std::make_unique<ast::NamedType>();
+    str_type->path = {"Str"};
+
+    auto decl = std::make_unique<ast::StructDecl>();
+    decl->name = "Field";
+    decl->visibility = ast::Visibility::Public;
+    ast::StructDecl::Field name_field;
+    name_field.name = "name";
+    name_field.kind = ast::StructDecl::Field::Kind::Let;
+    name_field.type = std::move(str_type);
+    decl->fields.push_back(std::move(name_field));
+    builtin_field_decl_ = std::move(decl);
+
+    Symbol s;
+    s.name = "Field";
+    s.kind = SymbolKind::Struct;
+    s.decl = builtin_field_decl_.get();
+    s.type = types_->make_nominal(TypeKind::Struct, builtin_field_decl_.get());
+    s.definition_range = {};
+    s.visibility = ast::Visibility::Public;
+    (void)scopes_.global().insert(std::move(s));
 }
 
 void Resolver::error_at(diag::SourceRange r, std::string msg) {
@@ -1340,12 +1371,10 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
                          std::format("enum '{}' has no case '{}'", enum_decl.name, m.member));
                 return types_->error();
             }
-            // §12.2 phase 1 reflection: `StructName.fields` returns a
-            // `[N]Str` of the struct's field names (one per ordinary
-            // field; `embed` flattening per §6 is not yet expanded).
-            // Future phases promote this to `[N]Field`, where each
-            // Field carries name/type/offset/attributes — for now the
-            // names alone are enough to wire end-to-end.
+            // §12.2 reflection: `StructName.fields` returns a `[N]Field`
+            // — one entry per ordinary field (embed fields per §6 are
+            // not yet expanded). Field carries `name: Str` today;
+            // later phases add `type`, `offset`, and attributes.
             if (sym->kind == SymbolKind::Struct && sym->decl != nullptr) {
                 resolution_.set_symbol(m.base.get(), sym);
                 check_visibility(*sym, m.base->range);
@@ -1357,7 +1386,12 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
                             ++count;
                         }
                     }
-                    return types_->make_vector(count, types_->primitive(TypeKind::Str));
+                    // The Field nominal lives in global scope under that name.
+                    auto field_type =
+                        builtin_field_decl_ != nullptr
+                            ? types_->make_nominal(TypeKind::Struct, builtin_field_decl_.get())
+                            : types_->error();
+                    return types_->make_vector(count, field_type);
                 }
                 error_at(m.range,
                          std::format("struct '{}' has no static member '{}'", sd.name, m.member));
@@ -1369,6 +1403,14 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
     auto base_type = check_expr(*m.base);
     if (base_type == nullptr || base_type->is_error()) {
         return types_->error();
+    }
+
+    // §12.2 vector ergonomics: `someVector.length` is its element count
+    // as Int. Folds at comptime; not yet wired for runtime emission
+    // (vectors today are emitted as `std::array<T, N>` whose .size() is
+    // a constexpr — wiring runtime `.length` is a follow-on).
+    if (base_type->kind() == TypeKind::Vector && m.member == "length") {
+        return types_->primitive(TypeKind::Int);
     }
 
     // Field on a struct.

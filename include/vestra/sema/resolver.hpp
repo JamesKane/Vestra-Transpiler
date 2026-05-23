@@ -67,6 +67,7 @@ private:
     // ---- pass 1: collect top-level decls ---------------------------------
     void register_builtin_capabilities();
     void register_builtin_math();
+    void register_builtin_reflection();
     void collect_top_level();
     void collect_func(const ast::FuncDecl& f);
     void collect_struct(const ast::StructDecl& s);
@@ -171,6 +172,12 @@ private:
     // routed straight through.
     ComptimeFolder folder_;
     ComptimeFolder::Env comptime_env_;
+
+    // §12.2 reflection phase 2: synthetic `Field` struct decl, owned by
+    // the resolver so its lifetime outlives every Symbol/TypePtr that
+    // references it. Built once in register_builtin_reflection() and
+    // never mutated thereafter.
+    std::unique_ptr<ast::StructDecl> builtin_field_decl_;
 };
 
 }  // namespace vestra::sema

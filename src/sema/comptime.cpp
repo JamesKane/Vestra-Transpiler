@@ -166,6 +166,13 @@ std::string ComptimeValue::to_cpp_literal() const {
         out += "}}";
         return out;
     }
+    case Kind::Field:
+        // Reflection Field values are comptime-only — there's no runtime
+        // Field type in the emitted C++ today. Surface the name in a
+        // comment so a stray escape is at least debuggable, and emit
+        // a placeholder zero that won't compile under most contexts
+        // (which is the right outcome: Field shouldn't leak past fold).
+        return "/* reflect::Field name=\"" + s + "\" */ 0";
     case Kind::Unit:
         return "/* unit */ 0";
     }
@@ -412,20 +419,45 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
                 if (const auto* sym = global_scope_->lookup(bi.name)) {
                     if (sym->kind == SymbolKind::Struct && sym->decl != nullptr
                         && m.member == "fields") {
+                        // §12.2 reflection: build a Vector of Field values,
+                        // one per non-embed StructDecl field. Each Field
+                        // carries `name` in its `s` slot.
                         const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
                         ComptimeValue v;
                         v.kind = ComptimeValue::Kind::Vector;
-                        v.type = TypeKind::Str;
+                        v.type = TypeKind::Struct;  // element kind is Field (nominal struct)
                         for (const auto& f : sd.fields) {
                             if (f.kind == ast::StructDecl::Field::Kind::Embed) {
                                 continue;
                             }
-                            v.elements.push_back(make_string(f.name));
+                            ComptimeValue field;
+                            field.kind = ComptimeValue::Kind::Field;
+                            field.type = TypeKind::Struct;
+                            field.s = f.name;
+                            v.elements.push_back(std::move(field));
                         }
                         v.length = static_cast<std::int64_t>(v.elements.size());
                         return v;
                     }
                 }
+            }
+        }
+        // Field.name and Field.type accessors. The folder needs to thread
+        // through *expression-position* MemberExpr against a Field value.
+        // The base might be: (a) an IdentExpr bound to a local Field
+        // (`let f = T.fields[0]; f.name`), or (b) a sub-expression that
+        // itself folds to a Field (`T.fields[0].name`).
+        if (auto base_val = fold_with(*m.base, env, frame, TypeKind::Unit, depth)) {
+            if (base_val->kind == ComptimeValue::Kind::Field) {
+                if (m.member == "name") {
+                    return make_string(base_val->s);
+                }
+                return std::nullopt;
+            }
+            // §12.2 / vector ergonomics: `.length` on a folded vector
+            // returns its element count. Useful for `for i in 0 ..< T.fields.length`.
+            if (base_val->kind == ComptimeValue::Kind::Vector && m.member == "length") {
+                return make_int(base_val->length, TypeKind::Int);
             }
         }
         return std::nullopt;

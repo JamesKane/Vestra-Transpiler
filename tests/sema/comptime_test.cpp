@@ -808,28 +808,28 @@ TEST_CASE("phase 7: @embed types as [N]UInt8 matching the file size") {
     }
 }
 
-// ---- §12.2 phase 1: reflection (struct field names) ---------------------
+// ---- §12.2 reflection (struct fields → Field values) --------------------
 
-TEST_CASE("phase 8: `Point.fields[0]` folds to the first field name") {
+TEST_CASE("phase 8: `T.fields[i].name` folds to the i'th field name") {
     auto v = resolver_fold("struct Point {\n"
                            "    var x: Int32\n"
                            "    var y: Int32\n"
                            "}\n"
-                           "const F0: Str = comptime { Point.fields[0] }\n",
+                           "const F0: Str = comptime { Point.fields[0].name }\n",
                            "F0");
     REQUIRE(v);
     CHECK(v->kind == vestra::sema::ComptimeValue::Kind::String);
     CHECK(v->s == "x");
 }
 
-TEST_CASE("phase 8: a comptime func can index into T.fields") {
+TEST_CASE("phase 8: a comptime func can index into T.fields and read .name") {
     auto v = resolver_fold("struct Point {\n"
                            "    var x: Int32\n"
                            "    var y: Int32\n"
                            "    var label: Str\n"
                            "}\n"
                            "comptime func at(_ i: Int) -> Str {\n"
-                           "    return Point.fields[i]\n"
+                           "    return Point.fields[i].name\n"
                            "}\n"
                            "const Last: Str = comptime { at(2) }\n",
                            "Last");
@@ -837,7 +837,7 @@ TEST_CASE("phase 8: a comptime func can index into T.fields") {
     CHECK(v->s == "label");
 }
 
-TEST_CASE("phase 8: `.zero` for [N]Str + loop builds a vector of field names") {
+TEST_CASE("phase 8: `.zero` + `.fields.length` loop builds a name vector") {
     auto v = resolver_fold("struct Triple {\n"
                            "    var a: Int32\n"
                            "    var b: Int32\n"
@@ -845,8 +845,8 @@ TEST_CASE("phase 8: `.zero` for [N]Str + loop builds a vector of field names") {
                            "}\n"
                            "comptime func names() -> [3]Str {\n"
                            "    var out: [3]Str = .zero\n"
-                           "    for i in 0 ..< 3 {\n"
-                           "        out[i] = Triple.fields[i]\n"
+                           "    for i in 0 ..< Triple.fields.length {\n"
+                           "        out[i] = Triple.fields[i].name\n"
                            "    }\n"
                            "    return out\n"
                            "}\n"
@@ -870,7 +870,7 @@ TEST_CASE("phase 8: T.fields out-of-bounds index bails (no crash)") {
                            "    var x: Int32\n"
                            "}\n"
                            "comptime func bad() -> Str {\n"
-                           "    return Point.fields[99]\n"
+                           "    return Point.fields[99].name\n"
                            "}\n"
                            "const Oops: Str = comptime { bad() }\n",
                            "Oops");
@@ -878,9 +878,9 @@ TEST_CASE("phase 8: T.fields out-of-bounds index bails (no crash)") {
 }
 
 TEST_CASE("phase 8: `embed` fields don't appear in T.fields") {
-    // §6 embed flattens for *value* access; for reflection phase 1 we
-    // keep T.fields restricted to ordinary fields. An embed entry in
-    // the StructDecl is skipped over.
+    // §6 embed flattens for *value* access; for reflection phase 1+
+    // we keep T.fields restricted to ordinary fields. An embed entry
+    // in the StructDecl is skipped over.
     auto v = resolver_fold("struct Header {\n"
                            "    var version: Int32\n"
                            "}\n"
@@ -888,10 +888,39 @@ TEST_CASE("phase 8: `embed` fields don't appear in T.fields") {
                            "    embed h: Header\n"
                            "    var payload: Int32\n"
                            "}\n"
-                           "const First: Str = comptime { Frame.fields[0] }\n",
+                           "const First: Str = comptime { Frame.fields[0].name }\n",
                            "First");
     REQUIRE(v);
     CHECK(v->s == "payload");
+}
+
+TEST_CASE("phase 8: `T.fields.length` folds to the field count") {
+    auto v = resolver_fold("struct Q {\n"
+                           "    var a: Int32\n"
+                           "    var b: Int32\n"
+                           "    var c: Int32\n"
+                           "    var d: Int32\n"
+                           "}\n"
+                           "const N: Int = comptime { Q.fields.length }\n",
+                           "N");
+    REQUIRE(v);
+    CHECK(v->i == 4);
+}
+
+TEST_CASE("phase 8: a Field value can be bound to a local then `.name`'d") {
+    // Two-step access: bind one Field to a let, then read its name.
+    // Exercises the IdentExpr-resolves-to-Field path in the folder.
+    auto v = resolver_fold("struct Point {\n"
+                           "    var x: Int32\n"
+                           "}\n"
+                           "comptime func grab() -> Str {\n"
+                           "    let f = Point.fields[0]\n"
+                           "    return f.name\n"
+                           "}\n"
+                           "const Got: Str = comptime { grab() }\n",
+                           "Got");
+    REQUIRE(v);
+    CHECK(v->s == "x");
 }
 
 TEST_CASE("phase 2: recursion past the depth cap stops cleanly") {
