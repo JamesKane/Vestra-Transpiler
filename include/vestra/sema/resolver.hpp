@@ -34,17 +34,23 @@ public:
     // folded to false? Codegen consults this to keep its emission in
     // lockstep with sema.
     [[nodiscard]] bool is_gated_out(const ast::Decl* d) const;
+    // §9 bare `catch NAME` — sema infers the error type from the
+    // body's try-calls and stashes it here. Codegen reads this when
+    // the DoCatchExpr's AST error_type is null.
+    [[nodiscard]] TypePtr do_catch_error_type(const ast::DoCatchExpr* dc) const;
 
     void set_type(const ast::Expr* e, TypePtr t);
     void set_symbol(const ast::Expr* e, const Symbol* s);
     void set_folded_value(const ast::Expr* e, ComptimeValue v);
     void mark_gated_out(const ast::Decl* d);
+    void set_do_catch_error_type(const ast::DoCatchExpr* dc, TypePtr t);
 
 private:
     std::unordered_map<const ast::Expr*, TypePtr> expr_types_;
     std::unordered_map<const ast::Expr*, const Symbol*> expr_symbols_;
     std::unordered_map<const ast::Expr*, ComptimeValue> folded_;
     std::unordered_set<const ast::Decl*> gated_decls_;
+    std::unordered_map<const ast::DoCatchExpr*, TypePtr> do_catch_error_;
 };
 
 // The resolver. Run `.resolve()` once; afterwards `resolution()` carries the
@@ -183,6 +189,14 @@ private:
     // non-null E means `throw e` requires e assignable to E, and `try f()`
     // requires f's error type assignable to E.
     std::vector<TypePtr> throws_stack_;
+    // §9 bare `catch NAME`: when a do-block uses inferred-error-type
+    // form, sema pushes a TypePtr* onto this stack pointing at the
+    // do-catch's "discovered error" slot. A Propagating try inside
+    // the body writes its callee's error type there (first try sets;
+    // subsequent ones must match). Reset across function boundaries
+    // so a do-catch nested inside a function-inside-a-do-catch
+    // doesn't capture the outer one's inference.
+    std::vector<TypePtr*> do_catch_infer_stack_;
     // Comptime folder + the const environment it folds against. The env
     // accumulates name→value pairs as we successfully fold each top-level
     // const, so later consts can reference earlier ones. The folder gets

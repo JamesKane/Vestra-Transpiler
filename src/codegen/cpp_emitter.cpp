@@ -1445,8 +1445,14 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         os << "([&]{ auto __vstr_do = [&]() -> std::expected<";
         emit_sema_type(os, result_type);
         os << ", ";
+        // Annotated form (dc.error_type != null): emit the AST type
+        // directly. Bare form: sema inferred E and stashed it on
+        // Resolution::do_catch_error_type — render that via the
+        // canonical-type emitter.
         if (dc.error_type) {
             emit_type(os, *dc.error_type);
+        } else if (resolution_ != nullptr) {
+            emit_sema_type(os, resolution_->do_catch_error_type(&dc));
         }
         os << "> { ";
         // The inner lambda is a fresh statement scope, so any mid-

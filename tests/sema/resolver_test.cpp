@@ -479,6 +479,35 @@ TEST_CASE("do/catch arms with different types are reported") {
     CHECK(r.first_message.find("different types") != std::string::npos);
 }
 
+TEST_CASE("bare 'catch NAME' infers the error type from the body's try") {
+    CHECK(check_errors("enum E { case bad }\n"
+                       "func f() throws(E) -> Int32 { return 7 }\n"
+                       "func g() -> Int32 {\n"
+                       "    return do { try f() } catch e { -1 }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("bare 'catch NAME' with no try in the body is reported") {
+    auto r = check_detail("func g() -> Int32 {\n"
+                          "    return do { 7 } catch e { -1 }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("at least one") != std::string::npos);
+}
+
+TEST_CASE("bare 'catch NAME' with mismatched try error types is reported") {
+    auto r = check_detail("enum E1 { case bad }\n"
+                          "enum E2 { case bad }\n"
+                          "func f() throws(E1) -> Int32 { return 7 }\n"
+                          "func g() throws(E2) -> Int32 { return 7 }\n"
+                          "func bad() -> Int32 {\n"
+                          "    return do { (try f()) + (try g()) } catch e { 0 }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("mismatched") != std::string::npos);
+}
+
 TEST_CASE("do-body's try uses the annotated error type as its throws context") {
     // `f` throws E; the do-block's `catch (e: E)` matches, so `try f()`
     // is OK even though the enclosing function does not throw.

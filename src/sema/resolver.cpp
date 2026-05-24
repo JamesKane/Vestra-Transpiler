@@ -52,6 +52,15 @@ bool Resolution::is_gated_out(const ast::Decl* d) const {
 void Resolution::mark_gated_out(const ast::Decl* d) {
     gated_decls_.insert(d);
 }
+TypePtr Resolution::do_catch_error_type(const ast::DoCatchExpr* dc) const {
+    auto it = do_catch_error_.find(dc);
+    return it == do_catch_error_.end() ? nullptr : it->second;
+}
+void Resolution::set_do_catch_error_type(const ast::DoCatchExpr* dc, TypePtr t) {
+    if (t != nullptr) {
+        do_catch_error_[dc] = t;
+    }
+}
 
 // ============================================================================
 // Resolver ctor + entry point
@@ -536,6 +545,11 @@ void Resolver::check_func(const ast::FuncDecl& f) {
     // function body so the depth matches return_stack_; nullptr means
     // "non-throwing", which is what check_throw / check_try look for.
     throws_stack_.push_back(f.effects.throws_type ? resolve_type(*f.effects.throws_type) : nullptr);
+    // §9 bare-catch inference is lexically scoped to the current
+    // function — a do-catch nested inside this function must not
+    // capture a do-catch from the enclosing scope.
+    auto saved_infer = std::move(do_catch_infer_stack_);
+    do_catch_infer_stack_.clear();
 
     // The body is always a BlockExpr; pass the expected result as the context.
     TypePtr body_type = types_->unit();
@@ -564,6 +578,7 @@ void Resolver::check_func(const ast::FuncDecl& f) {
 
     return_stack_.pop_back();
     throws_stack_.pop_back();
+    do_catch_infer_stack_ = std::move(saved_infer);
 }
 
 TypePtr Resolver::check_block_expr(const ast::BlockExpr& b, TypePtr expected) {
@@ -866,17 +881,36 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         TypePtr ok = inner_type->inner();
         TypePtr err = inner_type->result();
         if (tx.form == ast::TryExpr::Form::Propagating) {
-            TypePtr enclosing_err = throws_stack_.empty() ? nullptr : throws_stack_.back();
-            if (enclosing_err == nullptr) {
-                error_at(
-                    e.range,
-                    "'try' propagation requires the enclosing function to declare 'throws(E)'");
-            } else if (!TypeArena::assignable(err, enclosing_err)) {
-                error_at(e.range,
-                         std::format(
-                             "propagated error of type {} does not match the enclosing throws({})",
-                             err ? err->describe() : "?",
-                             enclosing_err->describe()));
+            // §9: a Propagating try inside a bare `do { ... } catch
+            // NAME { ... }` writes its error type into the do-catch's
+            // inference slot. The slot takes precedence over the
+            // enclosing function's throws_stack_ — the do-catch is
+            // the closer error handler.
+            if (!do_catch_infer_stack_.empty()) {
+                TypePtr* slot = do_catch_infer_stack_.back();
+                if (*slot == nullptr) {
+                    *slot = err;
+                } else if (!TypeArena::equal(err, *slot)) {
+                    error_at(e.range,
+                             std::format("do-body tries with mismatched error types: {} vs {}; "
+                                         "use 'catch (NAME: E)' to pin the type explicitly",
+                                         (*slot)->describe(),
+                                         err ? err->describe() : "?"));
+                }
+            } else {
+                TypePtr enclosing_err = throws_stack_.empty() ? nullptr : throws_stack_.back();
+                if (enclosing_err == nullptr) {
+                    error_at(
+                        e.range,
+                        "'try' propagation requires the enclosing function to declare 'throws(E)'");
+                } else if (!TypeArena::assignable(err, enclosing_err)) {
+                    error_at(
+                        e.range,
+                        std::format(
+                            "propagated error of type {} does not match the enclosing throws({})",
+                            err ? err->describe() : "?",
+                            enclosing_err->describe()));
+                }
             }
             t = ok;
         } else if (tx.form == ast::TryExpr::Form::Optional) {
@@ -888,15 +922,40 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         break;
     }
     case ast::NodeKind::DoCatchExpr: {
-        // §9 `do { body } catch (NAME: E) { handler }` — the body is
-        // checked under a synthetic throws(E) context so any `try`
-        // inside propagates as if the body were a throws(E) function;
-        // on error, the catch handler runs with NAME bound to E.
+        // §9 `do { body } catch ... { handler }` — two binding shapes:
+        //   * Annotated: `catch (NAME: E)` — E is known up front; we
+        //     push it onto throws_stack_ and the body's tries check
+        //     against it normally.
+        //   * Bare: `catch NAME` — E is *inferred* from the body's
+        //     try-calls. We push a fresh inference slot onto
+        //     do_catch_infer_stack_; check_try writes the first
+        //     try's error type there and checks subsequent ones for
+        //     match. Throws_stack_ stays untouched in this mode
+        //     since check_try prefers the infer slot when present.
         const auto& dc = static_cast<const ast::DoCatchExpr&>(e);
-        TypePtr error_type = dc.error_type ? resolve_type(*dc.error_type) : types_->error();
-        throws_stack_.push_back(error_type);
+        TypePtr error_type = dc.error_type ? resolve_type(*dc.error_type) : nullptr;
+        TypePtr inferred = nullptr;
+        const bool inferring = (dc.error_type == nullptr);
+        if (inferring) {
+            do_catch_infer_stack_.push_back(&inferred);
+        } else {
+            throws_stack_.push_back(error_type);
+        }
         TypePtr body_type = check_expr(*dc.do_body, expected);
-        throws_stack_.pop_back();
+        if (inferring) {
+            do_catch_infer_stack_.pop_back();
+            if (inferred == nullptr) {
+                error_at(dc.range,
+                         "bare 'catch NAME' requires the do-body to contain at least one 'try'; "
+                         "either add a try-call or use 'catch (NAME: E)' to give the error type "
+                         "explicitly");
+                inferred = types_->error();
+            }
+            error_type = inferred;
+            resolution_.set_do_catch_error_type(&dc, error_type);
+        } else {
+            throws_stack_.pop_back();
+        }
 
         ScopeStack::Guard g(scopes_);
         Symbol sym;

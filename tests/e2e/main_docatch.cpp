@@ -46,6 +46,16 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // Bare `catch NAME` form — sema-inferred error type.
+    if (safe_parse_bare(7) != 7) {
+        std::println("safe_parse_bare(7) wrong");
+        return EXIT_FAILURE;
+    }
+    if (safe_parse_bare(-3) != -1) {
+        std::println("safe_parse_bare(-3) wrong");
+        return EXIT_FAILURE;
+    }
+
     std::println("docatch OK");
     return EXIT_SUCCESS;
 }

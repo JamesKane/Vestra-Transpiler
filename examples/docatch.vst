@@ -52,3 +52,13 @@ func tagged(_ x: Int32) -> Int32 {
         }
     }
 }
+
+// Bare `catch NAME` — sema infers the error type from the try-call;
+// the user doesn't have to repeat ParseErr in the annotation.
+func safe_parse_bare(_ x: Int32) -> Int32 {
+    return do {
+        try parse_int(x)
+    } catch e {
+        -1
+    }
+}

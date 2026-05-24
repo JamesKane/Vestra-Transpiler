@@ -1558,22 +1558,31 @@ ast::ExprPtr Parser::parse_primary() {
         return m;
     }
     case TokenKind::KwDo: {
-        // §9 `do { body } catch (NAME: E) { handler }` — inline error
-        // handling. V0.5 requires the explicit `(NAME: E)` annotation so
-        // sema knows the error type without inferring from the body.
+        // §9 `do { body } catch NAME { handler }` — inline error
+        // handling. Two binding shapes:
+        //   * `catch (NAME: E) { ... }` — explicit annotation; sema
+        //     uses E directly as the do-body's throws context.
+        //   * `catch NAME { ... }` — bare binding; sema infers E
+        //     from the body's TryExpr error types.
         advance();
         auto dc = std::make_unique<ast::DoCatchExpr>();
         dc->do_body = parse_block_expr();
         expect(TokenKind::KwCatch, "'catch' after 'do { ... }'");
-        expect(TokenKind::LParen, "'(' after 'catch'");
-        if (!check(TokenKind::Identifier)) {
-            emit_error(peek().range, "expected error binding name after 'catch ('");
-        } else {
+        if (match(TokenKind::LParen)) {
+            if (!check(TokenKind::Identifier)) {
+                emit_error(peek().range, "expected error binding name after 'catch ('");
+            } else {
+                dc->error_name = std::string{advance().lexeme};
+            }
+            expect(TokenKind::Colon, "':' after catch binding name");
+            dc->error_type = parse_type();
+            expect(TokenKind::RParen, "')' after catch binding annotation");
+        } else if (check(TokenKind::Identifier)) {
+            // Bare form: sema's inference pass fills in the type.
             dc->error_name = std::string{advance().lexeme};
+        } else {
+            emit_error(peek().range, "expected '(NAME: E)' or bare 'NAME' after 'catch'");
         }
-        expect(TokenKind::Colon, "':' after catch binding name");
-        dc->error_type = parse_type();
-        expect(TokenKind::RParen, "')' after catch binding annotation");
         dc->catch_body = parse_block_expr();
         dc->range = merge(start, last_range());
         return dc;
