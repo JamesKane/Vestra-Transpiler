@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §6 tuple types, literals, and destructuring patterns.
+//
+//   * Type:        `(T1, T2, ...)` — at least two elements.
+//   * Literal:     `(e1, e2, ...)` — same shape, expression position.
+//   * Destructure: `let (a, b) = pair` and the same in `var` / `for`.
+//
+// Tuples lower to C++ `std::tuple<…>`; literals to `std::tuple{…}`
+// (CTAD picks element types); destructuring to a structured binding
+// `auto [a, b] = expr;`.
+
+module examples.tuples
+
+// Returns multiple values without a struct.
+func div_mod(_ a: Int32, _ b: Int32) -> (Int32, Int32) {
+    return (a / b, a % b)
+}
+
+// Destructure into both bindings.
+func combine(_ a: Int32, _ b: Int32) -> Int32 {
+    let (q, r) = div_mod(a, b)
+    return q * 10 + r
+}
+
+// Wildcards inside a tuple pattern — discard the second element.
+func quotient(_ a: Int32, _ b: Int32) -> Int32 {
+    let (q, _) = div_mod(a, b)
+    return q
+}
+
+// v0.5 codegen note: nested tuple patterns (`let ((a, b), c) = ...`)
+// type-check in sema but only the outer element is bound to a real
+// name in C++ — sub-tuples would need an extra unpacking statement
+// the structured-binding form doesn't give us. Single-level patterns
+// cover the common case; the follow-on is to hoist sub-tuple
+// destructuring into sibling `auto [...] = ...;` statements.

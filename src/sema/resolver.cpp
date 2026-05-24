@@ -651,6 +651,19 @@ void Resolver::check_stmt(const ast::Stmt& s) {
                 duplicate_definition(*prev, binding_name, binding_range);
             }
         }
+        // §6 tuple destructuring: `let (a, b) = pair` binds each
+        // element of the tuple pattern to the corresponding tuple
+        // element's type. Arity / shape mismatches are reported.
+        const ast::Pattern* pat = nullptr;
+        if (s.kind == ast::NodeKind::LetStmt) {
+            pat = static_cast<const ast::LetStmt&>(s).pattern.get();
+        } else {
+            pat = static_cast<const ast::VarStmt&>(s).pattern.get();
+        }
+        if (pat != nullptr && pat->kind == ast::NodeKind::TuplePat) {
+            TypePtr bind_t = annot_type != nullptr ? annot_type : value_type;
+            bind_tuple_pattern(static_cast<const ast::TuplePat&>(*pat), bind_t);
+        }
         break;
     }
     case ast::NodeKind::ReturnStmt: {
@@ -733,6 +746,10 @@ void Resolver::check_stmt(const ast::Stmt& s) {
             sym.type = elem_type != nullptr ? elem_type : types_->error();
             sym.definition_range = f.pattern->range;
             (void)g.scope().insert(std::move(sym));
+        } else if (f.pattern && f.pattern->kind == ast::NodeKind::TuplePat) {
+            // §6 `for (a, b) in zip(xs, ys)` — destructure each
+            // element of the iterator into a tuple pattern.
+            bind_tuple_pattern(static_cast<const ast::TuplePat&>(*f.pattern), elem_type);
         }
         if (f.body) {
             check_expr(*f.body);
@@ -816,6 +833,25 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
     case ast::NodeKind::ParenExpr:
         t = check_expr(*static_cast<const ast::ParenExpr&>(e).inner, expected);
         break;
+    case ast::NodeKind::TupleLitExpr: {
+        // §6 `(e1, e2, …)` types as Tuple<typeof(e1), typeof(e2), …>.
+        // When the surrounding context expects a TupleType of matching
+        // arity, push each expected element down so a literal inside
+        // the tuple adopts the expected primitive width.
+        const auto& tl = static_cast<const ast::TupleLitExpr&>(e);
+        std::vector<TypePtr> parts;
+        parts.reserve(tl.elements.size());
+        const auto* expected_parts = (expected != nullptr && expected->kind() == TypeKind::Tuple
+                                      && expected->parts().size() == tl.elements.size())
+                                         ? &expected->parts()
+                                         : nullptr;
+        for (std::size_t i = 0; i < tl.elements.size(); ++i) {
+            TypePtr elem_hint = expected_parts != nullptr ? (*expected_parts)[i] : nullptr;
+            parts.push_back(check_expr(*tl.elements[i], elem_hint));
+        }
+        t = types_->make_tuple(std::move(parts));
+        break;
+    }
     case ast::NodeKind::UnaryExpr:
         t = check_unary(static_cast<const ast::UnaryExpr&>(e), expected);
         break;
@@ -1715,6 +1751,59 @@ bool Resolver::is_display_conformant(TypePtr t) const {
                || decl_derives(t->nominal_decl(), "Debug");
     default:
         return false;
+    }
+}
+
+void Resolver::bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type) {
+    if (value_type == nullptr || value_type->is_error()) {
+        return;  // suppress cascading errors
+    }
+    if (value_type->kind() != TypeKind::Tuple) {
+        error_at(
+            pat.range,
+            std::format("tuple pattern requires a tuple value, got {}", value_type->describe()));
+        return;
+    }
+    const auto& parts = value_type->parts();
+    if (parts.size() != pat.elements.size()) {
+        error_at(pat.range,
+                 std::format("tuple pattern has {} elements, value has {}",
+                             pat.elements.size(),
+                             parts.size()));
+        return;
+    }
+    for (std::size_t i = 0; i < pat.elements.size(); ++i) {
+        const auto& sub = pat.elements[i];
+        if (!sub) {
+            continue;
+        }
+        std::string_view name;
+        if (sub->kind == ast::NodeKind::IdentPat) {
+            name = static_cast<const ast::IdentPat&>(*sub).name;
+        } else if (sub->kind == ast::NodeKind::BindPat) {
+            name = static_cast<const ast::BindPat&>(*sub).name;
+        } else if (sub->kind == ast::NodeKind::WildcardPat) {
+            continue;
+        } else if (sub->kind == ast::NodeKind::TuplePat) {
+            bind_tuple_pattern(static_cast<const ast::TuplePat&>(*sub), parts[i]);
+            continue;
+        } else {
+            error_at(sub->range,
+                     "v0.5 only supports identifier / `_` / nested-tuple element "
+                     "patterns inside a tuple pattern");
+            continue;
+        }
+        if (name.empty()) {
+            continue;
+        }
+        Symbol sym;
+        sym.name = std::string{name};
+        sym.kind = SymbolKind::Local;
+        sym.type = parts[i];
+        sym.definition_range = sub->range;
+        if (auto* prev = scopes_.current().insert(std::move(sym))) {
+            duplicate_definition(*prev, sym.name, sub->range);
+        }
     }
 }
 

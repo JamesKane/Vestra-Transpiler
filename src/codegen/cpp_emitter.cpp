@@ -176,6 +176,7 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "#include <optional>\n";    // §9 T? / nil / if let / ?? / !
     hdr << "#include <string>\n";
     hdr << "#include <string_view>\n";
+    hdr << "#include <tuple>\n";        // §6 tuple types / literals
     hdr << "#include <type_traits>\n";  // match-over-payloaded-enum constexpr-if
     hdr << "#include <utility>\n";      // std::move at sink call sites
     hdr << "#include <variant>\n";
@@ -1001,6 +1002,15 @@ void CppEmitter::collect_try_hoists(const ast::Expr& e, std::vector<TryHoist>& o
         }
         break;
     }
+    case ast::NodeKind::TupleLitExpr: {
+        const auto& tup = static_cast<const ast::TupleLitExpr&>(e);
+        for (const auto& el : tup.elements) {
+            if (el) {
+                collect_try_hoists(*el, out);
+            }
+        }
+        break;
+    }
     case ast::NodeKind::InterpStringExpr: {
         const auto& is_ = static_cast<const ast::InterpStringExpr&>(e);
         for (const auto& seg : is_.segments) {
@@ -1110,6 +1120,34 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
     switch (s.kind) {
     case ast::NodeKind::LetStmt: {
         const auto& l = static_cast<const ast::LetStmt&>(s);
+        // §6 tuple destructuring: `let (a, b, ...) = expr` lowers to
+        // a C++17 structured binding. The annotation is dropped — the
+        // element types come from the tuple value's static type.
+        if (l.pattern && l.pattern->kind == ast::NodeKind::TuplePat) {
+            const auto& tp = static_cast<const ast::TuplePat&>(*l.pattern);
+            os << "auto [";
+            for (std::size_t i = 0; i < tp.elements.size(); ++i) {
+                if (i != 0) {
+                    os << ", ";
+                }
+                const auto& sub = tp.elements[i];
+                if (sub && sub->kind == ast::NodeKind::IdentPat) {
+                    os << static_cast<const ast::IdentPat&>(*sub).name;
+                } else if (sub && sub->kind == ast::NodeKind::BindPat) {
+                    os << static_cast<const ast::BindPat&>(*sub).name;
+                } else if (sub && sub->kind == ast::NodeKind::WildcardPat) {
+                    os << "_vstr_unused_" << i;  // C++ has no real `_` discard
+                } else {
+                    os << "_bind_" << i;
+                }
+            }
+            os << "] = ";
+            if (l.value) {
+                emit_expr(os, *l.value);
+            }
+            os << ";\n";
+            break;
+        }
         // Vestra's `let` is "no reassignment" — but it does allow consumption
         // (move). C++'s `const` is stricter (no rebind AND no move-from), so
         // we use plain `auto` / `T` here. Sema rejects assignment to `let`
@@ -1141,6 +1179,35 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
     }
     case ast::NodeKind::VarStmt: {
         const auto& v = static_cast<const ast::VarStmt&>(s);
+        if (v.pattern && v.pattern->kind == ast::NodeKind::TuplePat) {
+            // Same shape as the LetStmt path. `var` becomes a mutable
+            // structured binding via `auto [a, b] = ...;` (C++23's
+            // mutable [auto&] form would let us bind by ref; for v0.5
+            // we always take by-value to match Vestra's `var` move).
+            const auto& tp = static_cast<const ast::TuplePat&>(*v.pattern);
+            os << "auto [";
+            for (std::size_t i = 0; i < tp.elements.size(); ++i) {
+                if (i != 0) {
+                    os << ", ";
+                }
+                const auto& sub = tp.elements[i];
+                if (sub && sub->kind == ast::NodeKind::IdentPat) {
+                    os << static_cast<const ast::IdentPat&>(*sub).name;
+                } else if (sub && sub->kind == ast::NodeKind::BindPat) {
+                    os << static_cast<const ast::BindPat&>(*sub).name;
+                } else if (sub && sub->kind == ast::NodeKind::WildcardPat) {
+                    os << "_vstr_unused_" << i;
+                } else {
+                    os << "_bind_" << i;
+                }
+            }
+            os << "] = ";
+            if (v.value) {
+                emit_expr(os, *v.value);
+            }
+            os << ";\n";
+            break;
+        }
         if (v.type) {
             emit_type(os, *v.type);
             os << " ";
@@ -1462,6 +1529,23 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         emit_expr(os, *static_cast<const ast::ParenExpr&>(e).inner);
         os << ")";
         break;
+    case ast::NodeKind::TupleLitExpr: {
+        // §6 `(e1, e2, …)` → `std::tuple{e1, e2, …}`. CTAD picks the
+        // element types from the brace-init list, matching the sema
+        // TupleType the resolver gave the expression.
+        const auto& tup = static_cast<const ast::TupleLitExpr&>(e);
+        os << "std::tuple{";
+        for (std::size_t i = 0; i < tup.elements.size(); ++i) {
+            if (i != 0) {
+                os << ", ";
+            }
+            if (tup.elements[i]) {
+                emit_expr(os, *tup.elements[i]);
+            }
+        }
+        os << "}";
+        break;
+    }
     case ast::NodeKind::UnaryExpr: {
         const auto& u = static_cast<const ast::UnaryExpr&>(e);
         if (u.op == ast::UnaryOp::Unwrap) {
@@ -1987,6 +2071,16 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         emit_sema_type(os, t->inner());
         os << ", " << t->vector_length() << ">";
         return;
+    case TypeKind::Tuple:
+        os << "std::tuple<";
+        for (std::size_t i = 0; i < t->parts().size(); ++i) {
+            if (i != 0) {
+                os << ", ";
+            }
+            emit_sema_type(os, t->parts()[i]);
+        }
+        os << ">";
+        return;
     case TypeKind::Struct:
     case TypeKind::Enum:
     case TypeKind::Protocol:
@@ -2080,6 +2174,21 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
             os << "void";
         }
         os << ", " << v.length << ">";
+        break;
+    }
+    case ast::NodeKind::TupleType: {
+        // §6 tuple type → std::tuple<T1, T2, …>.
+        const auto& tup = static_cast<const ast::TupleType&>(t);
+        os << "std::tuple<";
+        for (std::size_t i = 0; i < tup.elements.size(); ++i) {
+            if (i != 0) {
+                os << ", ";
+            }
+            if (tup.elements[i]) {
+                emit_type(os, *tup.elements[i]);
+            }
+        }
+        os << ">";
         break;
     }
     default:

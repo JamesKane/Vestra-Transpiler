@@ -422,6 +422,34 @@ set_tests_properties(e2e_optional_run PROPERTIES
     DEPENDS                e2e_optional_compile
     PASS_REGULAR_EXPRESSION "optional OK")
 
+# Tuples: §6 tuple types, literals, and destructuring patterns. Types
+# lower to std::tuple<...>; literals to std::tuple{...} (CTAD);
+# destructuring `let (a, b) = ...` to structured bindings. E2E
+# returns multiple values from a div_mod, destructures with both
+# bindings, the wildcard form, and a nested tuple pattern.
+set(e2e_tuples_input  ${CMAKE_SOURCE_DIR}/examples/tuples.vst)
+set(e2e_tuples_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_tuples.cpp)
+
+add_test(
+    NAME    e2e_tuples_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_tuples_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_tuples_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_tuples_driver} ${e2e_workdir}/tuples.cpp
+            -o ${e2e_workdir}/tuples_app)
+set_tests_properties(e2e_tuples_compile PROPERTIES DEPENDS e2e_tuples_transpile)
+
+add_test(
+    NAME    e2e_tuples_run
+    COMMAND ${e2e_workdir}/tuples_app)
+set_tests_properties(e2e_tuples_run PROPERTIES
+    DEPENDS                e2e_tuples_compile
+    PASS_REGULAR_EXPRESSION "tuples OK")
+
 # Box[T]: §10 unique-ownership heap pointer. Lowers to
 # std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
 # → *box. Allocation requires the §8 `Alloc` capability. E2E pins

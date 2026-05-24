@@ -84,6 +84,7 @@ enum class NodeKind : std::uint16_t {
     CopyExpr,
     ThrowExpr,
     VectorLitExpr,
+    TupleLitExpr,
     ParenExpr,
     // ---- patterns ----
     WildcardPat,
@@ -91,6 +92,7 @@ enum class NodeKind : std::uint16_t {
     BindPat,
     IdentPat,
     EnumPat,
+    TuplePat,
 };
 
 // The four parameter modes from §5.
@@ -516,6 +518,14 @@ struct VectorLitExpr : Expr {
     VectorLitExpr() : Expr(NodeKind::VectorLitExpr) {}
 };
 
+// §6 `(e1, e2, …)` — a tuple literal expression. At least two
+// elements; a single `(e)` parses as ParenExpr to avoid confusion
+// with grouping. Lowers to `std::tuple<T1, T2, …>(e1, e2, …)`.
+struct TupleLitExpr : Expr {
+    std::vector<ExprPtr> elements;
+    TupleLitExpr() : Expr(NodeKind::TupleLitExpr) {}
+};
+
 struct ParenExpr : Expr {
     ExprPtr inner;
     ParenExpr() : Expr(NodeKind::ParenExpr) {}
@@ -611,6 +621,14 @@ struct EnumPat : Pattern {
     std::string case_name;
     std::vector<PatternPtr> children;
     EnumPat() : Pattern(NodeKind::EnumPat) {}
+};
+
+// §6 tuple destructuring: `let (a, b) = pair` parses as a TuplePat
+// whose elements are each their own sub-pattern. v0.5 requires at
+// least two elements (a single `(p)` stays an inner pattern).
+struct TuplePat : Pattern {
+    std::vector<PatternPtr> elements;
+    TuplePat() : Pattern(NodeKind::TuplePat) {}
 };
 
 // ------------------------------------------------------------------ decls

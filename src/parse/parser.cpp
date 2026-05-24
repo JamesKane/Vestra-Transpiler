@@ -1021,6 +1021,25 @@ ast::PatternPtr Parser::parse_pattern() {
         w->range = merge(start, last_range());
         return w;
     }
+    if (match(TokenKind::LParen)) {
+        // §6 `(p, q, ...)` is a tuple pattern. A single `(p)` is just
+        // a parenthesized inner pattern (paren noise), not a 1-tuple.
+        std::vector<ast::PatternPtr> elems;
+        if (!check(TokenKind::RParen)) {
+            elems.push_back(parse_pattern());
+            while (match(TokenKind::Comma)) {
+                elems.push_back(parse_pattern());
+            }
+        }
+        expect(TokenKind::RParen, "')' closing tuple pattern");
+        if (elems.size() == 1) {
+            return std::move(elems[0]);
+        }
+        auto tp = std::make_unique<ast::TuplePat>();
+        tp->elements = std::move(elems);
+        tp->range = merge(start, last_range());
+        return tp;
+    }
     if (match(TokenKind::KwLet)) {
         auto b = std::make_unique<ast::BindPat>();
         if (!check(TokenKind::Identifier)) {
@@ -1417,10 +1436,23 @@ ast::ExprPtr Parser::parse_primary() {
     }
     case TokenKind::LParen: {
         advance();
-        auto inner = parse_expr();
+        auto first = parse_expr();
+        // §6 `(e1, e2, …)` is a tuple literal; a single `(e)` is a
+        // ParenExpr (grouping). Switch to tuple mode on first comma.
+        if (match(TokenKind::Comma)) {
+            auto tup = std::make_unique<ast::TupleLitExpr>();
+            tup->elements.push_back(std::move(first));
+            tup->elements.push_back(parse_expr());
+            while (match(TokenKind::Comma)) {
+                tup->elements.push_back(parse_expr());
+            }
+            expect(TokenKind::RParen, "')' to close tuple literal");
+            tup->range = merge(start, last_range());
+            return tup;
+        }
         expect(TokenKind::RParen, "')' to close parenthesized expression");
         auto p = std::make_unique<ast::ParenExpr>();
-        p->inner = std::move(inner);
+        p->inner = std::move(first);
         p->range = merge(start, last_range());
         return p;
     }

@@ -127,6 +127,13 @@ private:
     // without materializing them in the AST.
     [[nodiscard]] bool decl_derives(const ast::Decl* decl, std::string_view protocol) const;
 
+    // §6 tuple destructuring: walk a TuplePat in parallel with a
+    // TupleType, binding each element pattern in the current scope to
+    // the corresponding element's type. Reports arity / non-tuple
+    // errors. Each leaf binding goes through the same IdentPat /
+    // BindPat shape that LetStmt's single-name path uses.
+    void bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type);
+
     // §4 Display-conformance check: is a value of this type usable in
     // a `"\(...)"` interpolation splice? Primitives (numerics, Bool,
     // Char, string-likes) are always OK; user types must derive

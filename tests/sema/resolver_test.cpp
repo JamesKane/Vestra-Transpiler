@@ -365,6 +365,45 @@ TEST_CASE("throw outside a throws function is reported") {
     CHECK(r.first_message.find("throws") != std::string::npos);
 }
 
+// ---- §6 tuple destructuring -----------------------------------------------
+
+TEST_CASE("let (a, b) = pair binds each element at its tuple-element type") {
+    CHECK(check_errors("func mk() -> (Int32, Int32) { return (1, 2) }\n"
+                       "func sum() -> Int32 {\n"
+                       "    let (a, b) = mk()\n"
+                       "    return a + b\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("tuple-pattern arity mismatch is reported") {
+    auto r = check_detail("func mk() -> (Int32, Int32) { return (1, 2) }\n"
+                          "func bad() -> Int32 {\n"
+                          "    let (a, b, c) = mk()\n"
+                          "    return a\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("elements") != std::string::npos);
+}
+
+TEST_CASE("tuple pattern on a non-tuple value is reported") {
+    auto r = check_detail("func bad(_ x: Int32) -> Int32 {\n"
+                          "    let (a, b) = x\n"
+                          "    return a\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("tuple") != std::string::npos);
+}
+
+TEST_CASE("wildcards inside a tuple pattern are accepted") {
+    CHECK(check_errors("func mk() -> (Int32, Int32) { return (1, 2) }\n"
+                       "func only_first() -> Int32 {\n"
+                       "    let (a, _) = mk()\n"
+                       "    return a\n"
+                       "}\n")
+          == 0);
+}
+
 // ---- §10 Box[T] + Alloc capability ---------------------------------------
 
 TEST_CASE("Box.new in a function with `using Alloc` type-checks") {

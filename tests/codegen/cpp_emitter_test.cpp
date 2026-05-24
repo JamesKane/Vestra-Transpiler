@@ -362,6 +362,27 @@ TEST_CASE("a bit-field has no brace-init (would fail to compile)") {
     CHECK(out.header.find("v : 3{}") == std::string::npos);
 }
 
+// ---- §6 tuple destructuring + literals -----------------------------------
+
+TEST_CASE("tuple literal lowers to std::tuple{...}") {
+    auto out = emit("func mk() -> (Int32, Int32) { return (1, 2) }\n");
+    CHECK(out.source.find("return std::tuple{1, 2};") != std::string::npos);
+}
+
+TEST_CASE("let-tuple destructuring lowers to a structured binding") {
+    auto out = emit("func mk() -> (Int32, Int32) { return (1, 2) }\n"
+                    "func sum() -> Int32 {\n"
+                    "    let (a, b) = mk()\n"
+                    "    return a + b\n"
+                    "}\n");
+    CHECK(out.source.find("auto [a, b] = mk();") != std::string::npos);
+}
+
+TEST_CASE("tuple type lowers to std::tuple<...>") {
+    auto out = emit("func mk() -> (Int32, Int32) { return (1, 2) }\n");
+    CHECK(out.header.find("std::tuple<std::int32_t, std::int32_t>") != std::string::npos);
+}
+
 // ---- §10 Box[T] -----------------------------------------------------------
 
 TEST_CASE("Box[T] type lowers to std::unique_ptr<T>") {
