@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §4 layout attributes — pin a type's bit layout.
+//
+//   @repr(C)          — C-compatible field order + padding (default).
+//   @repr(packed)     — remove padding (__attribute__((packed))).
+//   @repr(align(N))   — over-align to N bytes (alignas(N)).
+//   @align(N)         — shorthand for @repr(align(N)).
+//   @bits(N) on field — emit the field as an N-bit bit-field.
+//
+// Absent an attribute, the C++ emitter keeps source field order — so
+// the default IS already @repr(C)-equivalent in v0.5 (no reordering
+// optimization yet).
+
+module examples.layout
+
+// Wire format: every byte counts, no padding allowed.
+@repr(packed)
+struct WireHeader {
+    var version: UInt8
+    var seq: UInt32
+    var flags: UInt8
+}
+
+// Hot-path data that wants its own cache line.
+@repr(align(64))
+struct CacheLine {
+    var hot: UInt64
+}
+
+// Two 4-bit nibbles packed into one byte.
+struct Nibbles {
+    @bits(4) var lo: UInt8
+    @bits(4) var hi: UInt8
+}

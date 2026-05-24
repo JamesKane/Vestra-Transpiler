@@ -329,6 +329,39 @@ TEST_CASE("try! lowers to std::expected::value()") {
     CHECK(out.source.find("f().value()") != std::string::npos);
 }
 
+// ---- §4 layout attributes (@repr / @align / @bits) -----------------------
+
+TEST_CASE("@repr(packed) appends __attribute__((packed)) to the struct") {
+    auto out = emit("@repr(packed)\nstruct W { var v: UInt8 }\n");
+    CHECK(out.header.find("struct W {") != std::string::npos);
+    CHECK(out.header.find("} __attribute__((packed));") != std::string::npos);
+}
+
+TEST_CASE("@repr(align(N)) emits alignas(N) on the struct") {
+    auto out = emit("@repr(align(64))\nstruct C { var v: UInt64 }\n");
+    CHECK(out.header.find("struct alignas(64) C") != std::string::npos);
+}
+
+TEST_CASE("@align(N) is shorthand for @repr(align(N))") {
+    auto out = emit("@align(32)\nstruct C { var v: UInt32 }\n");
+    CHECK(out.header.find("struct alignas(32) C") != std::string::npos);
+}
+
+TEST_CASE("@bits(N) on a field emits a C++ bit-field") {
+    auto out = emit("struct F {\n"
+                    "    @bits(4) var lo: UInt8\n"
+                    "    @bits(4) var hi: UInt8\n"
+                    "}\n");
+    CHECK(out.header.find("std::uint8_t lo : 4;") != std::string::npos);
+    CHECK(out.header.find("std::uint8_t hi : 4;") != std::string::npos);
+}
+
+TEST_CASE("a bit-field has no brace-init (would fail to compile)") {
+    auto out = emit("struct F { @bits(3) var v: UInt8 }\n");
+    CHECK(out.header.find("v : 3;") != std::string::npos);
+    CHECK(out.header.find("v : 3{}") == std::string::npos);
+}
+
 // ---- §3 opaque type -------------------------------------------------------
 
 TEST_CASE("opaque type lowers to enum class with the underlying as base") {

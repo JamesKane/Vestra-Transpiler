@@ -59,6 +59,67 @@ const std::unordered_map<std::string, std::string>& primitive_map() {
     return m;
 }
 
+// §4 layout attributes — extract a small struct of what's interesting
+// for codegen. The Vestra parser stores each attribute as a name plus
+// a single-expression argument; we pattern-match the argument shape.
+struct LayoutAttrs {
+    bool packed = false;
+    std::int64_t align = 0;  // 0 = no explicit alignment
+};
+
+std::int64_t int_from_attr_arg(const ast::Expr* arg) {
+    if (arg == nullptr || arg->kind != ast::NodeKind::IntLit) {
+        return 0;
+    }
+    try {
+        return std::stoll(std::string{static_cast<const ast::IntLit&>(*arg).text});
+    } catch (...) {
+        return 0;
+    }
+}
+
+LayoutAttrs read_layout_attrs(const std::vector<ast::Attribute>& attrs) {
+    LayoutAttrs out;
+    for (const auto& a : attrs) {
+        if (a.name == "repr") {
+            // `@repr(C)` — no-op (C++ default). `@repr(packed)` — adds
+            // __attribute__((packed)). `@repr(align(N))` — alignas(N).
+            if (a.predicate == nullptr) {
+                continue;
+            }
+            if (a.predicate->kind == ast::NodeKind::IdentExpr) {
+                const auto& id = static_cast<const ast::IdentExpr&>(*a.predicate).name;
+                if (id == "packed") {
+                    out.packed = true;
+                }
+                // `C` and any unknown @repr modes are accepted but
+                // not given a special emission yet.
+            } else if (a.predicate->kind == ast::NodeKind::CallExpr) {
+                const auto& call = static_cast<const ast::CallExpr&>(*a.predicate);
+                if (call.callee->kind == ast::NodeKind::IdentExpr) {
+                    const auto& name = static_cast<const ast::IdentExpr&>(*call.callee).name;
+                    if (name == "align" && call.args.size() == 1) {
+                        out.align = int_from_attr_arg(call.args[0].value.get());
+                    }
+                }
+            }
+        } else if (a.name == "align") {
+            // `@align(N)` shorthand for `@repr(align(N))`.
+            out.align = int_from_attr_arg(a.predicate.get());
+        }
+    }
+    return out;
+}
+
+std::int64_t read_bits_attr(const std::vector<ast::Attribute>& attrs) {
+    for (const auto& a : attrs) {
+        if (a.name == "bits") {
+            return int_from_attr_arg(a.predicate.get());
+        }
+    }
+    return 0;
+}
+
 }  // namespace
 
 // ----------------------------------------------------------------------------
@@ -490,13 +551,36 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
 }
 
 void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
-    hdr << "struct " << s.name << " {\n";
+    // §4 layout attributes on the struct itself: @repr(packed) +
+    // @repr(align(N)) / @align(N). C++ accepts `alignas(N)` between
+    // the `struct` keyword and the name; __attribute__((packed)) goes
+    // after the closing brace and before the trailing `;`.
+    const auto struct_attrs = read_layout_attrs(s.attributes);
+    hdr << "struct ";
+    if (struct_attrs.align > 0) {
+        hdr << "alignas(" << struct_attrs.align << ") ";
+    }
+    hdr << s.name << " {\n";
     for (const auto& f : s.fields) {
         write_indent(hdr, 1);
+        const auto field_attrs = read_layout_attrs(f.attributes);
+        const auto bits = read_bits_attr(f.attributes);
+        if (field_attrs.align > 0) {
+            hdr << "alignas(" << field_attrs.align << ") ";
+        }
         if (f.type) {
             emit_type(hdr, *f.type);
         }
-        hdr << " " << f.name << "{};\n";
+        hdr << " " << f.name;
+        if (bits > 0) {
+            // Bit-fields can't have a default brace-init; leave the
+            // default value to the zero-init the C++ compiler gives
+            // each member when its enclosing struct is default-ctor'd.
+            hdr << " : " << bits;
+        } else {
+            hdr << "{}";
+        }
+        hdr << ";\n";
     }
     // §12.3 derive(Eq): a defaulted operator== gives us field-by-field
     // structural equality for free, with the C++ compiler doing the
@@ -571,7 +655,11 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
         }
         hdr << "\n";
     }
-    hdr << "};\n\n";
+    hdr << "}";
+    if (struct_attrs.packed) {
+        hdr << " __attribute__((packed))";
+    }
+    hdr << ";\n\n";
 }
 
 void CppEmitter::emit_hash_spec(std::ostream& os,

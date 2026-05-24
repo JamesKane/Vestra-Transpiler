@@ -422,6 +422,34 @@ set_tests_properties(e2e_optional_run PROPERTIES
     DEPENDS                e2e_optional_compile
     PASS_REGULAR_EXPRESSION "optional OK")
 
+# Layout attributes: §4 @repr / @align / @bits. The packed wire
+# header occupies exactly 6 bytes; the cache-line struct is
+# 64-byte aligned; two 4-bit nibbles share a byte. The e2e uses
+# static_assert to pin every layout invariant, then exercises the
+# bit-field round-trip at runtime.
+set(e2e_layout_input  ${CMAKE_SOURCE_DIR}/examples/layout.vst)
+set(e2e_layout_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_layout.cpp)
+
+add_test(
+    NAME    e2e_layout_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_layout_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_layout_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_layout_driver} ${e2e_workdir}/layout.cpp
+            -o ${e2e_workdir}/layout_app)
+set_tests_properties(e2e_layout_compile PROPERTIES DEPENDS e2e_layout_transpile)
+
+add_test(
+    NAME    e2e_layout_run
+    COMMAND ${e2e_workdir}/layout_app)
+set_tests_properties(e2e_layout_run PROPERTIES
+    DEPENDS                e2e_layout_compile
+    PASS_REGULAR_EXPRESSION "layout OK")
+
 # Opaque type: §3 zero-cost newtype. Each `opaque type Q = T` lowers
 # to `enum class Q : T {}`; `Q(t)` is `static_cast<Q>(t)`; `q.value`
 # is `static_cast<T>(q)`. The e2e round-trips a value through both
