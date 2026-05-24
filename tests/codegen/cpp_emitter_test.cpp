@@ -329,6 +329,25 @@ TEST_CASE("try! lowers to std::expected::value()") {
     CHECK(out.source.find("f().value()") != std::string::npos);
 }
 
+// ---- §3 opaque type -------------------------------------------------------
+
+TEST_CASE("opaque type lowers to enum class with the underlying as base") {
+    auto out = emit("opaque type UserId = Int64\n");
+    CHECK(out.header.find("enum class UserId : std::int64_t {}") != std::string::npos);
+}
+
+TEST_CASE("opaque constructor lowers to static_cast<Q>(t)") {
+    SemaEmitFixture f("opaque type UserId = Int64\n"
+                      "func mk(_ x: Int64) -> UserId { return UserId(x) }\n");
+    CHECK(f.out.source.find("return static_cast<UserId>(x);") != std::string::npos);
+}
+
+TEST_CASE("opaque .value lowers to static_cast<UnderlyingT>(q)") {
+    SemaEmitFixture f("opaque type UserId = Int64\n"
+                      "func raw(_ id: UserId) -> Int64 { return id.value }\n");
+    CHECK(f.out.source.find("return static_cast<std::int64_t>(id);") != std::string::npos);
+}
+
 // ---- §4 derive(Display) ---------------------------------------------------
 
 TEST_CASE("derive(Display) on a struct emits a std::formatter spec") {

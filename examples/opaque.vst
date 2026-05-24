@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §3 `opaque type Q = T` — a zero-cost newtype.
+//
+// Q is a distinct type over a backing representation, inheriting none
+// of T's operations. The lowering uses `enum class Q : T {}` so the
+// host C++ compiler refuses arithmetic / mixing too; the user crosses
+// the boundary explicitly via `Q(t)` (construction) and `q.value`
+// (extraction). Common idiom: compile-time-safe id / unit wrappers.
+//
+// `opaque` is a reserved word in module paths, so the example module
+// is named `examples.newtype` rather than `examples.opaque`.
+
+module examples.newtype
+
+opaque type UserId = Int64
+opaque type PostId = Int64
+
+func make_user(_ x: Int64) -> UserId {
+    return UserId(x)
+}
+
+func make_post(_ x: Int64) -> PostId {
+    return PostId(x)
+}
+
+// Two opaques over the same underlying are distinct in sema: you
+// can't accidentally pass a UserId where a PostId is expected, even
+// though both are Int64 at runtime.
+func raw_user(_ id: UserId) -> Int64 {
+    return id.value
+}
+
+func raw_post(_ id: PostId) -> Int64 {
+    return id.value
+}

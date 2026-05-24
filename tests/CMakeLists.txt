@@ -422,6 +422,34 @@ set_tests_properties(e2e_optional_run PROPERTIES
     DEPENDS                e2e_optional_compile
     PASS_REGULAR_EXPRESSION "optional OK")
 
+# Opaque type: §3 zero-cost newtype. Each `opaque type Q = T` lowers
+# to `enum class Q : T {}`; `Q(t)` is `static_cast<Q>(t)`; `q.value`
+# is `static_cast<T>(q)`. The e2e round-trips a value through both
+# directions and uses static_assert to pin the distinctness of two
+# opaques over the same underlying.
+set(e2e_opaque_input  ${CMAKE_SOURCE_DIR}/examples/opaque.vst)
+set(e2e_opaque_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_opaque.cpp)
+
+add_test(
+    NAME    e2e_opaque_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_opaque_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_opaque_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_opaque_driver} ${e2e_workdir}/opaque.cpp
+            -o ${e2e_workdir}/opaque_app)
+set_tests_properties(e2e_opaque_compile PROPERTIES DEPENDS e2e_opaque_transpile)
+
+add_test(
+    NAME    e2e_opaque_run
+    COMMAND ${e2e_workdir}/opaque_app)
+set_tests_properties(e2e_opaque_run PROPERTIES
+    DEPENDS                e2e_opaque_compile
+    PASS_REGULAR_EXPRESSION "opaque OK")
+
 # Display: §4 Display-conformance check on interpolation splices.
 # Primitives ride free; user types need derive(Display) (or Debug).
 # Both derives lower to a std::formatter spec the std::format call

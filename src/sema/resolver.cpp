@@ -1286,6 +1286,44 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
+    // §3 opaque-type construction: `Q(t)` where Q is a newtype over T —
+    // one positional arg, type-checked against T, result is Q. The
+    // codegen lowers this to `static_cast<Q>(t)` over the `enum class
+    // Q : T {}` emission.
+    if (c.callee->kind == ast::NodeKind::IdentExpr) {
+        const auto& callee_ident = static_cast<const ast::IdentExpr&>(*c.callee);
+        if (const auto* sym = scopes_.current().lookup(callee_ident.name);
+            sym != nullptr && sym->kind == SymbolKind::OpaqueType && sym->decl != nullptr) {
+            resolution_.set_symbol(c.callee.get(), sym);
+            check_visibility(*sym, c.callee->range);
+            const auto& od = static_cast<const ast::OpaqueDecl&>(*sym->decl);
+            auto underlying = od.underlying ? resolve_type(*od.underlying) : types_->error();
+            if (c.args.size() != 1) {
+                for (const auto& a : c.args) {
+                    (void)check_expr(*a.value);
+                }
+                error_at(c.range,
+                         std::format("opaque-type constructor {}(...) takes exactly one argument",
+                                     od.name));
+                return sym->type;
+            }
+            if (!c.args[0].label.empty()) {
+                error_at(c.args[0].value->range,
+                         "opaque-type constructor argument cannot have a label");
+            }
+            auto arg_type = check_expr(*c.args[0].value, underlying);
+            if (!TypeArena::assignable(arg_type, underlying)) {
+                error_at(c.args[0].value->range,
+                         std::format("opaque-type {}({}) requires a {} argument, got {}",
+                                     od.name,
+                                     underlying ? underlying->describe() : "?",
+                                     underlying ? underlying->describe() : "?",
+                                     arg_type ? arg_type->describe() : "?"));
+            }
+            return sym->type;
+        }
+    }
+
     // Resolve the callee first so we know each parameter's expected type
     // before we type its corresponding argument — this is what lets integer
     // literals adopt the parameter's type without an explicit conversion.
@@ -1876,6 +1914,17 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
 
     if (lookup_base->kind() == TypeKind::Vector && m.member == "length") {
         return finish(types_->primitive(TypeKind::Int));
+    }
+
+    // §3 opaque newtype: `q.value` extracts the underlying T. The
+    // opaque inherits none of T's operations, so this is the user's
+    // single explicit unwrap point.
+    if (lookup_base->kind() == TypeKind::OpaqueType && m.member == "value"
+        && lookup_base->nominal_decl() != nullptr) {
+        const auto& od = static_cast<const ast::OpaqueDecl&>(*lookup_base->nominal_decl());
+        if (od.underlying != nullptr) {
+            return finish(resolve_type(*od.underlying));
+        }
     }
 
     // Field on a struct.

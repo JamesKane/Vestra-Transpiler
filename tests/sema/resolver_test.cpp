@@ -365,6 +365,34 @@ TEST_CASE("throw outside a throws function is reported") {
     CHECK(r.first_message.find("throws") != std::string::npos);
 }
 
+// ---- §3 opaque type -------------------------------------------------------
+
+TEST_CASE("opaque type constructor takes one arg of the underlying type") {
+    CHECK(check_errors("opaque type UserId = Int64\n"
+                       "func mk(_ x: Int64) -> UserId { return UserId(x) }\n")
+          == 0);
+}
+
+TEST_CASE("opaque type constructor rejects wrong underlying type") {
+    auto r = check_detail("opaque type UserId = Int64\n"
+                          "func mk() -> UserId { return UserId(true) }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("UserId") != std::string::npos);
+}
+
+TEST_CASE("opaque .value extracts the underlying type") {
+    CHECK(check_errors("opaque type UserId = Int64\n"
+                       "func raw(_ id: UserId) -> Int64 { return id.value }\n")
+          == 0);
+}
+
+TEST_CASE("opaque inherits no underlying operations") {
+    auto r = check_detail("opaque type UserId = Int64\n"
+                          "func bad(_ a: UserId, _ b: UserId) -> UserId { return a + b }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("numeric") != std::string::npos);
+}
+
 // ---- §4 Display conformance on interpolation splices ---------------------
 
 TEST_CASE("interpolation of a primitive is Display-conformant") {

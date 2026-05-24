@@ -1575,6 +1575,17 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << "}";
                 break;
             }
+            // §3 opaque-type construction: `Q(t)` lowers to a single
+            // `static_cast<Q>(t)` over the `enum class Q : T {}`
+            // emission. Single positional arg (sema enforces).
+            if (sym != nullptr && sym->kind == sema::SymbolKind::OpaqueType && sym->decl != nullptr
+                && c.args.size() == 1) {
+                const auto& od = static_cast<const ast::OpaqueDecl&>(*sym->decl);
+                os << "static_cast<" << od.name << ">(";
+                emit_expr(os, *c.args[0].value);
+                os << ")";
+                break;
+            }
         }
         // Recover the callee's parameter modes so we can wrap sink arguments
         // in std::move(). If the callee resolves to a Vestra func declaration,
@@ -1651,6 +1662,23 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 } else {
                     os << enum_decl.name << "::" << m.member;
                 }
+                break;
+            }
+        }
+        // §3 opaque newtype: `q.value` extracts the underlying T via a
+        // single `static_cast` over the `enum class Q : T {}` shape.
+        if (resolution_ != nullptr && m.member == "value") {
+            auto bt = resolution_->type_of(m.base.get());
+            if (bt != nullptr && bt->kind() == sema::TypeKind::OpaqueType
+                && bt->nominal_decl() != nullptr) {
+                const auto& od = static_cast<const ast::OpaqueDecl&>(*bt->nominal_decl());
+                os << "static_cast<";
+                if (od.underlying) {
+                    emit_type(os, *od.underlying);
+                }
+                os << ">(";
+                emit_expr(os, *m.base);
+                os << ")";
                 break;
             }
         }
