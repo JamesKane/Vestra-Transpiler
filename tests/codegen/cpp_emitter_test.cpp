@@ -182,6 +182,33 @@ TEST_CASE("derive(Eq, Hash) emits both operator== and std::hash spec") {
     CHECK(f.out.header.find("__h ^= std::hash<std::int32_t>{}(v.m)") != std::string::npos);
 }
 
+TEST_CASE("derive(Hash) on a payloaded enum emits a visit-based std::hash spec") {
+    SemaEmitFixture f("enum Shape {\n"
+                      "    case circle(radius: Float64)\n"
+                      "    case rect(width: Float64, height: Float64)\n"
+                      "    case point\n"
+                      "}\n"
+                      "derive(Eq, Hash) for Shape\n");
+    // Wrapper-level hash spec.
+    CHECK(f.out.header.find("struct std::hash<Shape>") != std::string::npos);
+    // Seed includes the alt index so different cases never collide
+    // even when their payload bytes are equal.
+    CHECK(f.out.header.find("std::size_t __h = v.value.index();") != std::string::npos);
+    CHECK(f.out.header.find("std::is_same_v<__T, Shape::circle_t>") != std::string::npos);
+    CHECK(f.out.header.find("__h ^= std::hash<double>{}(__alt.radius)") != std::string::npos);
+    CHECK(f.out.header.find("__h ^= std::hash<double>{}(__alt.width)") != std::string::npos);
+    CHECK(f.out.header.find("__h ^= std::hash<double>{}(__alt.height)") != std::string::npos);
+    // point has no payload — the constexpr-if arm is empty (no
+    // per-field combine), and the seeded `__h` carries through.
+    CHECK(f.out.header.find("std::is_same_v<__T, Shape::point_t>") != std::string::npos);
+}
+
+TEST_CASE("derive(Hash) on a bare enum emits no spec (std::hash<E> is built in)") {
+    SemaEmitFixture f("enum Color { case red\n    case green\n}\n"
+                      "derive(Hash) for Color\n");
+    CHECK(f.out.header.find("struct std::hash<Color>") == std::string::npos);
+}
+
 TEST_CASE("derive(Hash) alone (no Eq) still emits std::hash spec") {
     SemaEmitFixture f("struct K { var n: Int32 }\n"
                       "derive(Hash) for K\n");

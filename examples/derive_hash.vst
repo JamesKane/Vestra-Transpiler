@@ -27,3 +27,18 @@ derive(Eq, Hash) for Point
 func make_point(_ x: Int32, _ y: Int32) -> Point {
     return Point(x: x, y: y)
 }
+
+// Payloaded enum — the std::variant wrapper isn't hashable by default,
+// so derive(Hash) emits a std::visit-based spec that combines each
+// active case's payload AND seeds with the alt index so different
+// cases with equal payload bytes still hash distinctly.
+enum Shape {
+    case circle(radius: Float64)
+    case rect(width: Float64, height: Float64)
+    case point
+}
+
+derive(Eq, Hash) for Shape
+
+func make_circle(_ r: Float64) -> Shape { return Shape.circle(radius: r) }
+func make_rect(_ w: Float64, _ h: Float64) -> Shape { return Shape.rect(width: w, height: h) }

@@ -175,16 +175,25 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
         }
     }
     for (const auto& d : unit.decls) {
-        if (d->kind != ast::NodeKind::Struct) {
-            continue;
+        if (d->kind == ast::NodeKind::Struct) {
+            const auto& sd = static_cast<const ast::StructDecl&>(*d);
+            auto it = derives_by_target_.find(sd.name);
+            if (it != derives_by_target_.end() && it->second.contains("Hash")) {
+                hdr << "\n";
+                emit_hash_spec(hdr, sd, qual_prefix);
+            }
+        } else if (d->kind == ast::NodeKind::Enum) {
+            // Sum-type enums need an explicit std::hash spec because the
+            // std::variant wrapper isn't hashable by default. Bare enums
+            // are handled by the standard library's enum-class hash.
+            const auto& ed = static_cast<const ast::EnumDecl&>(*d);
+            auto it = derives_by_target_.find(ed.name);
+            if (it != derives_by_target_.end() && it->second.contains("Hash")
+                && enum_is_sum_type(ed)) {
+                hdr << "\n";
+                emit_hash_spec_enum(hdr, ed, qual_prefix);
+            }
         }
-        const auto& sd = static_cast<const ast::StructDecl&>(*d);
-        auto it = derives_by_target_.find(sd.name);
-        if (it == derives_by_target_.end() || !it->second.contains("Hash")) {
-            continue;
-        }
-        hdr << "\n";
-        emit_hash_spec(hdr, sd, qual_prefix);
     }
 
     // §12.3 derive(Debug): same global-scope placement as derive(Hash).
@@ -518,6 +527,52 @@ void CppEmitter::emit_hash_spec(std::ostream& os,
         os << ">{}(v." << f.name << ") + 0x9e3779b9 + (__h << 6) + (__h >> 2);\n";
     }
     os << "        return __h;\n";
+    os << "    }\n";
+    os << "};\n";
+}
+
+void CppEmitter::emit_hash_spec_enum(std::ostream& os,
+                                     const ast::EnumDecl& e,
+                                     std::string_view qual_prefix) {
+    // Bare enums fall back to the standard library's `std::hash<E>`;
+    // we only need a spec when the enum lowers to a struct-of-variant.
+    if (!enum_is_sum_type(e)) {
+        return;
+    }
+    os << "template <>\n";
+    os << "struct std::hash<" << qual_prefix << e.name << "> {\n";
+    os << "    [[nodiscard]] std::size_t operator()(const " << qual_prefix << e.name
+       << "& v) const noexcept {\n";
+    os << "        return std::visit([&](auto&& __alt) {\n";
+    os << "            using __T = std::decay_t<decltype(__alt)>;\n";
+    os << "            std::size_t __h = v.value.index();\n";
+    bool first = true;
+    for (const auto& c : e.cases) {
+        if (first) {
+            write_indent(os, 3);
+            os << "if";
+        } else {
+            os << " else if";
+        }
+        os << " constexpr (std::is_same_v<__T, " << qual_prefix << e.name << "::" << c.name
+           << "_t>) {\n";
+        for (std::size_t i = 0; i < c.payload.size(); ++i) {
+            const auto& [pname, ptype] = c.payload[i];
+            std::string fname = pname.empty() ? std::format("_{}", i) : pname;
+            write_indent(os, 4);
+            os << "__h ^= std::hash<";
+            emit_type(os, *ptype);
+            os << ">{}(__alt." << fname << ") + 0x9e3779b9 + (__h << 6) + (__h >> 2);\n";
+        }
+        write_indent(os, 3);
+        os << "}";
+        first = false;
+    }
+    if (!first) {
+        os << "\n";
+    }
+    os << "            return __h;\n";
+    os << "        }, v.value);\n";
     os << "    }\n";
     os << "};\n";
 }

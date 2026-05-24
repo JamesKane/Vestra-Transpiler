@@ -51,6 +51,14 @@ private:
     // specialization after the user's namespace closes. `qual_prefix`
     // is the `Q::` part (or empty if the unit has no module decl).
     void emit_hash_spec(std::ostream& os, const ast::StructDecl& s, std::string_view qual_prefix);
+    // §12.3 derive(Hash) for a payloaded enum. The body visits the
+    // variant, seeds the hash with the alt index (so different cases
+    // with equal payload bytes don't collide), and combines each
+    // payload field via the same boost-style combine the struct path
+    // uses. Bare enums don't need an emitted spec — the standard
+    // library already provides `std::hash<E>` for enum types.
+    void
+    emit_hash_spec_enum(std::ostream& os, const ast::EnumDecl& e, std::string_view qual_prefix);
     // §12.3 derive(Debug): emit a `template <> struct std::formatter<Q::T>`
     // specialization at global scope so `std::format("{}", v)` /
     // `std::println("{}", v)` render the value structurally. Three
