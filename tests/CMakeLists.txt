@@ -422,6 +422,34 @@ set_tests_properties(e2e_optional_run PROPERTIES
     DEPENDS                e2e_optional_compile
     PASS_REGULAR_EXPRESSION "optional OK")
 
+# Box[T]: §10 unique-ownership heap pointer. Lowers to
+# std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
+# → *box. Allocation requires the §8 `Alloc` capability. E2E pins
+# both the unique-ptr lowering and move-only property via
+# static_assert, then round-trips through Cell-nesting.
+set(e2e_boxes_input  ${CMAKE_SOURCE_DIR}/examples/boxes.vst)
+set(e2e_boxes_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_boxes.cpp)
+
+add_test(
+    NAME    e2e_boxes_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_boxes_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_boxes_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_boxes_driver} ${e2e_workdir}/boxes.cpp
+            -o ${e2e_workdir}/boxes_app)
+set_tests_properties(e2e_boxes_compile PROPERTIES DEPENDS e2e_boxes_transpile)
+
+add_test(
+    NAME    e2e_boxes_run
+    COMMAND ${e2e_workdir}/boxes_app)
+set_tests_properties(e2e_boxes_run PROPERTIES
+    DEPENDS                e2e_boxes_compile
+    PASS_REGULAR_EXPRESSION "boxes OK")
+
 # Layout attributes: §4 @repr / @align / @bits. The packed wire
 # header occupies exactly 6 bytes; the cache-line struct is
 # 64-byte aligned; two 4-bit nibbles share a byte. The e2e uses

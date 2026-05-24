@@ -1286,6 +1286,30 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
+    // §10 builtin `Box.new(value)` — the unique-ownership heap pointer
+    // constructor. The callee is a `MemberExpr(IdentExpr("Box"), "new")`;
+    // sema doesn't have a symbol for the Box "value" so we intercept
+    // the call shape directly. The result type is Box<typeof(value)>.
+    if (c.callee->kind == ast::NodeKind::MemberExpr) {
+        const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+        if (mem.base->kind == ast::NodeKind::IdentExpr
+            && static_cast<const ast::IdentExpr&>(*mem.base).name == "Box" && mem.member == "new"
+            && scopes_.current().lookup("Box") == nullptr) {
+            if (c.args.size() != 1) {
+                for (const auto& a : c.args) {
+                    (void)check_expr(*a.value);
+                }
+                error_at(c.range, "Box.new(value) takes exactly one argument");
+                return types_->make_box(types_->error());
+            }
+            if (!c.args[0].label.empty()) {
+                error_at(c.args[0].value->range, "Box.new argument cannot have a label");
+            }
+            auto inner = check_expr(*c.args[0].value);
+            return types_->make_box(inner != nullptr ? inner : types_->error());
+        }
+    }
+
     // §3 opaque-type construction: `Q(t)` where Q is a newtype over T —
     // one positional arg, type-checked against T, result is Q. The
     // codegen lowers this to `static_cast<Q>(t)` over the `enum class
@@ -1561,6 +1585,13 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
     case ast::NodeKind::NamedType: {
         const auto& n = static_cast<const ast::NamedType&>(t);
         if (n.path.size() == 1) {
+            // §10 builtin `Box[T]` — the unique-ownership heap pointer.
+            // Recognized here before generic-symbol lookup so it never
+            // needs to be in the user's symbol table.
+            if (n.path[0] == "Box" && n.type_args.size() == 1) {
+                return types_->make_box(n.type_args[0] ? resolve_type(*n.type_args[0])
+                                                       : types_->error());
+            }
             // Try primitives first (Int32, Bool, ...).
             auto prim_kind = TypeArena::primitive_kind_by_name(n.path[0]);
             if (prim_kind != TypeKind::Error) {
@@ -1925,6 +1956,13 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
         if (od.underlying != nullptr) {
             return finish(resolve_type(*od.underlying));
         }
+    }
+
+    // §10 Box[T]: `box.value` reads the heap-pointee. Lowers to `*box`
+    // at the C++ layer over std::unique_ptr.
+    if (lookup_base->kind() == TypeKind::Box && m.member == "value"
+        && lookup_base->inner() != nullptr) {
+        return finish(lookup_base->inner());
     }
 
     // Field on a struct.

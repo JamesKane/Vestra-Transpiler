@@ -49,6 +49,7 @@ enum class TypeKind : std::uint16_t {
     // structural
     Optional,
     Result,
+    Box,
     Vector,
     Function,
     Tuple,
@@ -132,6 +133,9 @@ public:
     // Stored as inner_=T (success), result_=E (error). The codegen lowers it
     // to `std::expected<T, E>`.
     [[nodiscard]] TypePtr make_result(TypePtr success, TypePtr error);
+    // §10 Box<T> — the unique-ownership heap pointer. Lowers to
+    // `std::unique_ptr<T>` (move-only, never null after construction).
+    [[nodiscard]] TypePtr make_box(TypePtr inner);
     [[nodiscard]] TypePtr make_vector(std::int64_t length, TypePtr element);
     [[nodiscard]] TypePtr make_function(std::vector<TypePtr> params, TypePtr result);
     [[nodiscard]] TypePtr make_tuple(std::vector<TypePtr> elements);

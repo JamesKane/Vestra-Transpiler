@@ -172,6 +172,7 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "#include <expected>\n";    // §9 throws(E) → T lowers to std::expected
     hdr << "#include <format>\n";      // §4 interpolated strings lower to std::format
     hdr << "#include <functional>\n";  // §12.3 derive(Hash) std::hash specializations
+    hdr << "#include <memory>\n";      // §10 Box[T] lowers to std::unique_ptr
     hdr << "#include <optional>\n";    // §9 T? / nil / if let / ?? / !
     hdr << "#include <string>\n";
     hdr << "#include <string_view>\n";
@@ -1598,6 +1599,31 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     }
     case ast::NodeKind::CallExpr: {
         const auto& c = static_cast<const ast::CallExpr&>(e);
+        // §10 `Box.new(value)` lowers to `std::make_unique<T>(value)`.
+        // The element type T comes from the resolver (the type of the
+        // CallExpr itself is Box<T>; we peel that to get T).
+        if (c.callee && c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            if (mem.base && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "Box"
+                && mem.member == "new" && c.args.size() == 1) {
+                os << "std::make_unique<";
+                if (resolution_ != nullptr) {
+                    auto rt = resolution_->type_of(&e);
+                    if (rt != nullptr && rt->kind() == sema::TypeKind::Box) {
+                        emit_sema_type(os, rt->inner());
+                    } else {
+                        emit_sema_type(os, resolution_->type_of(c.args[0].value.get()));
+                    }
+                } else {
+                    os << "auto";
+                }
+                os << ">(";
+                emit_expr(os, *c.args[0].value);
+                os << ")";
+                break;
+            }
+        }
         // Payloaded-enum case construction: `Shape.circle(radius: 1.0)` →
         // `Shape{Shape::circle_t{1.0}}`. Bare cases on a payloaded enum
         // come through the MemberExpr path above; here we handle the
@@ -1755,6 +1781,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         }
         // §3 opaque newtype: `q.value` extracts the underlying T via a
         // single `static_cast` over the `enum class Q : T {}` shape.
+        // §10 Box[T]: `box.value` reads the heap-pointee via `*box`.
         if (resolution_ != nullptr && m.member == "value") {
             auto bt = resolution_->type_of(m.base.get());
             if (bt != nullptr && bt->kind() == sema::TypeKind::OpaqueType
@@ -1765,6 +1792,12 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     emit_type(os, *od.underlying);
                 }
                 os << ">(";
+                emit_expr(os, *m.base);
+                os << ")";
+                break;
+            }
+            if (bt != nullptr && bt->kind() == sema::TypeKind::Box) {
+                os << "(*";
                 emit_expr(os, *m.base);
                 os << ")";
                 break;
@@ -1937,6 +1970,11 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         emit_sema_type(os, t->inner());
         os << ">";
         return;
+    case TypeKind::Box:
+        os << "std::unique_ptr<";
+        emit_sema_type(os, t->inner());
+        os << ">";
+        return;
     case TypeKind::Result:
         os << "std::expected<";
         emit_sema_type(os, t->inner());
@@ -1987,6 +2025,13 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
     case ast::NodeKind::NamedType: {
         const auto& n = static_cast<const ast::NamedType&>(t);
         if (n.path.size() == 1) {
+            // §10 `Box[T]` lowers to std::unique_ptr<T>.
+            if (n.path[0] == "Box" && n.type_args.size() == 1) {
+                os << "std::unique_ptr<";
+                emit_type(os, *n.type_args[0]);
+                os << ">";
+                return;
+            }
             const auto& m = primitive_map();
             auto it = m.find(n.path[0]);
             if (it != m.end()) {

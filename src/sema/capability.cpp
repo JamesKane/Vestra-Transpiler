@@ -168,6 +168,18 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
     switch (e.kind) {
     case ast::NodeKind::CallExpr: {
         const auto& c = static_cast<const ast::CallExpr&>(e);
+        // §10: a `Box.new(value)` call is a heap allocation and
+        // therefore requires the `Alloc` capability in scope.
+        // Detected by the callee's syntactic shape so we don't have
+        // to thread a builtin Func into the symbol table.
+        if (c.callee && c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            if (mem.base && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "Box"
+                && mem.member == "new" && !in_scope("Alloc")) {
+                missing_capability("Alloc", c.range);
+            }
+        }
         check_expr(*c.callee);
         for (const auto& a : c.args) {
             check_expr(*a.value);

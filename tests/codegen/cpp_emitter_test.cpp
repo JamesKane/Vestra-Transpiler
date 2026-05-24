@@ -362,6 +362,25 @@ TEST_CASE("a bit-field has no brace-init (would fail to compile)") {
     CHECK(out.header.find("v : 3{}") == std::string::npos);
 }
 
+// ---- §10 Box[T] -----------------------------------------------------------
+
+TEST_CASE("Box[T] type lowers to std::unique_ptr<T>") {
+    auto out = emit("func id(_ b: Box[Int32]) -> Box[Int32] { return b }\n");
+    CHECK(out.header.find("std::unique_ptr<std::int32_t>") != std::string::npos);
+}
+
+TEST_CASE("Box.new(v) lowers to std::make_unique<T>(v)") {
+    SemaEmitFixture f("func mk(_ x: Int32) using Alloc -> Box[Int32] {\n"
+                      "    return Box.new(x)\n"
+                      "}\n");
+    CHECK(f.out.source.find("std::make_unique<std::int32_t>(x)") != std::string::npos);
+}
+
+TEST_CASE("box.value lowers to (*box)") {
+    SemaEmitFixture f("func deref(_ b: Box[Int32]) -> Int32 { return b.value }\n");
+    CHECK(f.out.source.find("(*b)") != std::string::npos);
+}
+
 // ---- §3 opaque type -------------------------------------------------------
 
 TEST_CASE("opaque type lowers to enum class with the underlying as base") {

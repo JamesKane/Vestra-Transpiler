@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §10 `Box[T]` — the unique-ownership heap pointer. Move-only, never
+// null after construction; `deinit` frees the pointee. Lowers to a
+// `std::unique_ptr<T>`, with `Box.new(value)` mapping to
+// `std::make_unique<T>(value)` and `box.value` to `*box`.
+//
+// Allocation goes through the §8 `Alloc` capability: any function
+// that calls `Box.new` must declare `using Alloc` (or `with Alloc =
+// ...` at the call site). The capability checker reports a missing
+// `Alloc` at the allocation point, not at link time.
+
+module examples.boxes
+
+// Allocates — needs Alloc.
+func mk_box(_ x: Int32) using Alloc -> Box[Int32] {
+    return Box.new(x)
+}
+
+// Reads the pointee — no allocation, no capability needed.
+func read_box(_ b: Box[Int32]) -> Int32 {
+    return b.value
+}
+
+// A struct that holds a Box[T] as a field — exercises the type
+// through nominal storage too.
+struct Cell {
+    var inner: Box[Int32]
+}
+
+func mk_cell(_ x: Int32) using Alloc -> Cell {
+    return Cell(inner: Box.new(x))
+}
+
+func read_cell(_ c: Cell) -> Int32 {
+    return c.inner.value
+}

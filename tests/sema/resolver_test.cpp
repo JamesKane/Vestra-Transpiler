@@ -365,6 +365,25 @@ TEST_CASE("throw outside a throws function is reported") {
     CHECK(r.first_message.find("throws") != std::string::npos);
 }
 
+// ---- §10 Box[T] + Alloc capability ---------------------------------------
+
+TEST_CASE("Box.new in a function with `using Alloc` type-checks") {
+    CHECK(check_errors("func mk(_ x: Int32) using Alloc -> Box[Int32] {\n"
+                       "    return Box.new(x)\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("box.value reads the heap-pointee at type T") {
+    CHECK(check_errors("func deref(_ b: Box[Int32]) -> Int32 { return b.value }\n") == 0);
+}
+
+TEST_CASE("Box.new with wrong arity is reported") {
+    auto r = check_detail("func bad() using Alloc -> Box[Int32] { return Box.new(1, 2) }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Box.new") != std::string::npos);
+}
+
 // ---- §3 opaque type -------------------------------------------------------
 
 TEST_CASE("opaque type constructor takes one arg of the underlying type") {

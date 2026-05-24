@@ -121,6 +121,8 @@ std::string Type::describe() const {
     switch (kind_) {
     case TypeKind::Optional:
         return inner_ ? inner_->describe() + "?" : "?";
+    case TypeKind::Box:
+        return inner_ ? std::format("Box[{}]", inner_->describe()) : std::string{"Box"};
     case TypeKind::Result: {
         std::string ok = inner_ ? inner_->describe() : "?";
         std::string err = result_ ? result_->describe() : "?";
@@ -205,6 +207,14 @@ TypePtr TypeArena::primitive(TypeKind k) const {
 
 TypePtr TypeArena::make_optional(TypePtr inner) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::Optional));
+    t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_box(TypePtr inner) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Box));
     t->inner_ = inner;
     auto* p = t.get();
     owned_.push_back(std::move(t));
@@ -299,6 +309,7 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     }
     switch (a->kind()) {
     case TypeKind::Optional:
+    case TypeKind::Box:
         return equal(a->inner(), b->inner());
     case TypeKind::Result:
         return equal(a->inner(), b->inner()) && equal(a->result(), b->result());
@@ -375,6 +386,10 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::Optional: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_optional(inner);
+    }
+    case TypeKind::Box: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_box(inner);
     }
     case TypeKind::Result: {
         auto ok = substitute(t->inner(), bindings);

@@ -159,6 +159,19 @@ TEST_CASE("non-async caller of an async function is rejected") {
     CHECK(r.first_message.find("missing capability 'Async'") != std::string::npos);
 }
 
+// ---- §10 Box.new requires Alloc -------------------------------------------
+
+TEST_CASE("Box.new in a `using Alloc` fn is clean") {
+    CHECK(check("func mk(_ x: Int32) using Alloc -> Box[Int32] { return Box.new(x) }\n").error_count
+          == 0);
+}
+
+TEST_CASE("Box.new without `using Alloc` is reported by the capability checker") {
+    auto r = check("func bad(_ x: Int32) -> Box[Int32] { return Box.new(x) }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("missing capability 'Alloc'") != std::string::npos);
+}
+
 // ---- existing examples remain clean ----------------------------------------
 
 TEST_CASE("the shapes example checks clean under capabilities") {
