@@ -422,6 +422,34 @@ set_tests_properties(e2e_optional_run PROPERTIES
     DEPENDS                e2e_optional_compile
     PASS_REGULAR_EXPRESSION "optional OK")
 
+# derive(Clone): §12.3 explicit copy method. The codegen emits a
+# `T clone() const { return *this; }` on struct and sum-type enum
+# wrappers; bare enums get no method (no slot in C++ enum class).
+# Runtime exercises clone on a struct (mutating the copy, asserting the
+# input is untouched) and on each Shape variant.
+set(e2e_clone_input  ${CMAKE_SOURCE_DIR}/examples/derive_clone.vst)
+set(e2e_clone_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_derive_clone.cpp)
+
+add_test(
+    NAME    e2e_derive_clone_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_clone_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_derive_clone_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_clone_driver} ${e2e_workdir}/derive_clone.cpp
+            -o ${e2e_workdir}/derive_clone_app)
+set_tests_properties(e2e_derive_clone_compile PROPERTIES DEPENDS e2e_derive_clone_transpile)
+
+add_test(
+    NAME    e2e_derive_clone_run
+    COMMAND ${e2e_workdir}/derive_clone_app)
+set_tests_properties(e2e_derive_clone_run PROPERTIES
+    DEPENDS                e2e_derive_clone_compile
+    PASS_REGULAR_EXPRESSION "derive\\(Clone\\) OK")
+
 # do / catch: §9 inline error handling. The do-block is checked under
 # the annotated catch's error type so any `try` inside propagates
 # locally; the catch arm binds the error value and recovers. Lowers to

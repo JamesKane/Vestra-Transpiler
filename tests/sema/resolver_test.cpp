@@ -365,6 +365,36 @@ TEST_CASE("throw outside a throws function is reported") {
     CHECK(r.first_message.find("throws") != std::string::npos);
 }
 
+// ---- §12.3 derive(Clone) --------------------------------------------------
+
+TEST_CASE("derive(Clone) surfaces a synthetic .clone() on the struct") {
+    CHECK(check_errors("struct Point { var x: Int32 }\n"
+                       "derive(Clone) for Point\n"
+                       "func dup(_ p: Point) -> Point { return p.clone() }\n")
+          == 0);
+}
+
+TEST_CASE("derive(Clone) surfaces .clone() on a payloaded enum") {
+    CHECK(check_errors("enum Shape { case circle(r: Float64); case point }\n"
+                       "derive(Clone) for Shape\n"
+                       "func dup(_ s: Shape) -> Shape { return s.clone() }\n")
+          == 0);
+}
+
+TEST_CASE("without derive(Clone), .clone() is reported as missing") {
+    auto r = check_detail("struct Point { var x: Int32 }\n"
+                          "func dup(_ p: Point) -> Point { return p.clone() }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("clone") != std::string::npos);
+}
+
+TEST_CASE("derive(Clone) on a bare enum does NOT surface .clone() (no method slot)") {
+    auto r = check_detail("enum Color { case red; case green }\n"
+                          "derive(Clone) for Color\n"
+                          "func bad(_ c: Color) -> Color { return c.clone() }\n");
+    CHECK(r.error_count >= 1);
+}
+
 // ---- §9 do / catch inline error handling ---------------------------------
 
 TEST_CASE("do/catch type-checks: catch binding has the annotated error type") {

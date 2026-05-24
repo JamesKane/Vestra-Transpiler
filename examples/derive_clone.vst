@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §12.3 derive(Clone) demo: explicit `.clone()` for opt-in copies.
+//
+// `derive(Clone) for T` emits a `T clone() const` method that returns
+// a deep copy of the receiver. Today every Vestra struct / sum-type
+// enum is copy-constructible at the C++ layer, so the generated body
+// delegates to the implicit copy ctor (`return *this`). The method
+// earns its keep once move-only types ship — then the explicit
+// `.clone()` call is the user-visible place to ask for a copy, and
+// the codegen will switch to a per-field/per-alt structural walk.
+//
+// Bare enums (no payloaded case) don't get a `.clone()`; they lower
+// to C++ `enum class`, which has no method slot. Use the implicit
+// copy on the value directly.
+
+module examples.derive_clone
+
+struct Point {
+    var x: Int32
+    var y: Int32
+}
+
+derive(Clone) for Point
+
+enum Shape {
+    case circle(radius: Float64)
+    case rect(width: Float64, height: Float64)
+    case point
+}
+
+derive(Clone) for Shape
+
+// Take a parameter, clone it, mutate the copy, return.
+func bump_x(_ p: Point) -> Point {
+    var q = p.clone()
+    q.x = p.x + 100
+    return q
+}
+
+func dup_shape(_ s: Shape) -> Shape {
+    return s.clone()
+}

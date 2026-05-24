@@ -115,6 +115,12 @@ private:
                                         std::string_view name,
                                         const ast::FuncDecl** out_method = nullptr);
 
+    // True when the unit has `derive(Proto, …) for T` for the given
+    // nominal decl + protocol simple-name (last path segment). Used to
+    // surface synthetic methods like `.clone()` from derive(Clone)
+    // without materializing them in the AST.
+    [[nodiscard]] bool decl_derives(const ast::Decl* decl, std::string_view protocol) const;
+
     // Unify a generic parameter type against a concrete arg type, growing the
     // bindings map. A clash (same generic implied to be two different types
     // by different args) is reported at `site`.

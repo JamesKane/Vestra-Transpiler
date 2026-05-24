@@ -493,13 +493,22 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
     }
     // §12.3 derive(Eq): a defaulted operator== gives us field-by-field
     // structural equality for free, with the C++ compiler doing the
-    // recursion through any nested derived-Eq members. Bigger derives
-    // (Hash, Clone) ride on the same index in later phases.
+    // recursion through any nested derived-Eq members.
     if (auto it = derives_by_target_.find(s.name); it != derives_by_target_.end()) {
         if (it->second.contains("Eq")) {
             write_indent(hdr, 1);
             hdr << "[[nodiscard]] bool operator==(const " << s.name
                 << "&) const noexcept = default;\n";
+        }
+        // §12.3 derive(Clone): emit an explicit `clone()` that delegates
+        // to the implicit C++ copy ctor. For v0.5 every Vestra struct is
+        // copy-constructible (we don't have move-only types yet), so the
+        // structural traversal the spec calls for happens for free. The
+        // method exists so users have an explicit copy site rather than
+        // a silent one.
+        if (it->second.contains("Clone")) {
+            write_indent(hdr, 1);
+            hdr << "[[nodiscard]] " << s.name << " clone() const { return *this; }\n";
         }
     }
     hdr << "};\n\n";
@@ -697,8 +706,11 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
         }
         hdr << "};\n\n";
         // C++ `enum class` already has operator== built in, so
-        // derive(Eq) for a bare enum needs no extra code — but flag
-        // any other (unsupported-for-bare) derives as TODO.
+        // derive(Eq) for a bare enum needs no extra code.
+        // derive(Clone) on a bare enum has no method slot to fill
+        // (C++ enum class can't host methods) — sema's lookup skips
+        // clone for bare enums, so the user just uses the implicit
+        // copy on the enum value directly.
         return;
     }
     // Sum type — emit a struct-of-variant. TODO: tighter sum-type lowering.
@@ -746,6 +758,11 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
             write_indent(hdr, 1);
             hdr << "[[nodiscard]] bool operator==(const " << e.name
                 << "&) const noexcept = default;\n";
+        }
+        // §12.3 derive(Clone): same shape as the struct path.
+        if (it->second.contains("Clone")) {
+            write_indent(hdr, 1);
+            hdr << "[[nodiscard]] " << e.name << " clone() const { return *this; }\n";
         }
     }
     hdr << "};\n\n";
@@ -1436,13 +1453,16 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 break;
             }
         }
-        // Struct construction: if sema typed the call expression as a struct
-        // nominal, emit a C++ designated-initializer instead of a function call.
-        if (resolution_ != nullptr) {
-            auto t = resolution_->type_of(&e);
-            if (t != nullptr && t->kind() == sema::TypeKind::Struct
-                && t->nominal_decl() != nullptr) {
-                const auto& s_decl = static_cast<const ast::StructDecl&>(*t->nominal_decl());
+        // Struct construction: if the callee is a bare identifier
+        // resolving to a Struct symbol, lower as a C++ designated-init
+        // brace expression. Checking the callee (rather than the call's
+        // result type) means a method that *returns* a struct — e.g. a
+        // derive(Clone) `.clone() -> Point` — stays lowered as a real
+        // call instead of a fresh struct literal.
+        if (resolution_ != nullptr && c.callee->kind == ast::NodeKind::IdentExpr) {
+            const auto* sym = resolution_->symbol_of(c.callee.get());
+            if (sym != nullptr && sym->kind == sema::SymbolKind::Struct && sym->decl != nullptr) {
+                const auto& s_decl = static_cast<const ast::StructDecl&>(*sym->decl);
                 os << s_decl.name << "{";
                 for (std::size_t i = 0; i < c.args.size(); ++i) {
                     if (i != 0) {

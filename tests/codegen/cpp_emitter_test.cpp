@@ -329,6 +329,34 @@ TEST_CASE("try! lowers to std::expected::value()") {
     CHECK(out.source.find("f().value()") != std::string::npos);
 }
 
+// ---- §12.3 derive(Clone) --------------------------------------------------
+
+TEST_CASE("derive(Clone) on a struct emits an explicit clone() method") {
+    SemaEmitFixture f("struct Point { var x: Int32 }\n"
+                      "derive(Clone) for Point\n");
+    CHECK(f.out.header.find("[[nodiscard]] Point clone() const { return *this; }")
+          != std::string::npos);
+}
+
+TEST_CASE("derive(Clone) on a payloaded enum emits a clone() on the wrapper") {
+    SemaEmitFixture f("enum Shape { case circle(r: Float64); case point }\n"
+                      "derive(Clone) for Shape\n");
+    CHECK(f.out.header.find("[[nodiscard]] Shape clone() const { return *this; }")
+          != std::string::npos);
+}
+
+TEST_CASE("a method returning a struct stays a real call, not a fresh struct literal") {
+    // Regression: the CallExpr emitter used to lower `p.clone()` to
+    // `Point{}` because its check was result-type-driven. Now it's
+    // gated on the callee being an IdentExpr resolving to a Struct
+    // symbol — so `.clone()` lowers correctly as a method call.
+    SemaEmitFixture f("struct Point { var x: Int32 }\n"
+                      "derive(Clone) for Point\n"
+                      "func dup(_ p: Point) -> Point { return p.clone() }\n");
+    CHECK(f.out.source.find("return p.clone();") != std::string::npos);
+    CHECK(f.out.source.find("return Point{};") == std::string::npos);
+}
+
 // ---- §9 do / catch inline error handling ---------------------------------
 
 TEST_CASE("do/catch lowers to nested IIFEs over std::expected") {

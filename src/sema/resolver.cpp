@@ -1522,6 +1522,50 @@ TypePtr Resolver::lookup_field(TypePtr struct_type,
     return nullptr;
 }
 
+bool Resolver::decl_derives(const ast::Decl* decl, std::string_view protocol) const {
+    if (decl == nullptr || unit_ == nullptr) {
+        return false;
+    }
+    for (const auto& d : unit_->decls) {
+        if (d->kind != ast::NodeKind::Derive) {
+            continue;
+        }
+        const auto& dd = static_cast<const ast::DeriveDecl&>(*d);
+        if (dd.target == nullptr || dd.target->kind != ast::NodeKind::NamedType) {
+            continue;
+        }
+        const auto& tt = static_cast<const ast::NamedType&>(*dd.target);
+        if (tt.path.empty()) {
+            continue;
+        }
+        // Match by simple name — same convention the codegen derive
+        // index uses, since paths today are unqualified for in-unit
+        // derive targets.
+        std::string_view target_name = tt.path.back();
+        std::string_view decl_name;
+        if (decl->kind == ast::NodeKind::Struct) {
+            decl_name = static_cast<const ast::StructDecl&>(*decl).name;
+        } else if (decl->kind == ast::NodeKind::Enum) {
+            decl_name = static_cast<const ast::EnumDecl&>(*decl).name;
+        } else {
+            continue;
+        }
+        if (target_name != decl_name) {
+            continue;
+        }
+        for (const auto& p : dd.protocols) {
+            if (p == nullptr || p->kind != ast::NodeKind::NamedType) {
+                continue;
+            }
+            const auto& pt = static_cast<const ast::NamedType&>(*p);
+            if (!pt.path.empty() && pt.path.back() == protocol) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 TypePtr Resolver::lookup_method(TypePtr owner_type,
                                 std::string_view name,
                                 const ast::FuncDecl** out_method) {
@@ -1531,6 +1575,29 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
     const auto* decl = owner_type->nominal_decl();
     if (decl == nullptr) {
         return nullptr;
+    }
+    // §12.3 derive(Clone): surface a synthetic `clone() -> T` method on
+    // any nominal that derives Clone, without materializing it in the
+    // AST. The codegen injects the matching `T clone() const { return
+    // *this; }` body when it emits the type. Bare enums (no payloaded
+    // case) lower to C++ `enum class`, which has no method slot, so we
+    // skip the synthetic there — the user can just use the implicit
+    // copy on the enum value directly.
+    if (name == "clone" && decl_derives(decl, "Clone")) {
+        bool is_bare_enum = false;
+        if (decl->kind == ast::NodeKind::Enum) {
+            const auto& ed = static_cast<const ast::EnumDecl&>(*decl);
+            is_bare_enum = true;
+            for (const auto& c : ed.cases) {
+                if (!c.payload.empty()) {
+                    is_bare_enum = false;
+                    break;
+                }
+            }
+        }
+        if (!is_bare_enum) {
+            return types_->make_function({}, owner_type);
+        }
     }
 
     auto search = [&](const std::vector<ast::DeclPtr>& methods) -> TypePtr {
