@@ -8,11 +8,14 @@ algebraic-effect-style capabilities, typed errors, structured concurrency, and
 compile-time metaprogramming. This repo is the *implementation*, intended to grow
 toward end-to-end coverage of that spec.
 
-This is **v0**: a working front end plus a partial codegen. The end-to-end pipeline
-(transpile → host-compile → run) works on a meaningful subset; the deeper semantics
-of the language (ownership, capability resolution, exclusivity, generics
-monomorphization) are not yet implemented and are tracked under
-[Roadmap](#roadmap).
+This is **v0.5**: a working front end and a usable codegen. The end-to-end pipeline
+(transpile → host-compile → run) works on a substantial subset of the spec —
+Optional, Result, do/catch, optional chaining, for-in over Iterator, tuple literals
++ destructuring, `Box[T]` with the `Alloc` capability check, opaque types, struct +
+enum derives (Eq / Hash / Debug / Clone / Display), layout attributes (@repr /
+@align / @bits), and the §12.1 comptime fold + §12.2 reflection chain all ship.
+What's shipped, with commit references, lives in [`HANDOFF.md`](HANDOFF.md); the
+forward-looking phase menu is in [`ROADMAP.md`](ROADMAP.md).
 
 ## Quick start
 
@@ -23,7 +26,7 @@ cmake --preset debug
 # Build everything (library + CLI + tests)
 cmake --build build/debug
 
-# Run all 17 tests, including the end-to-end pipeline
+# Run all 339 tests, including the end-to-end pipeline
 ctest --test-dir build/debug --output-on-failure
 
 # Transpile the example
@@ -34,7 +37,7 @@ cat /tmp/vestra-out/hello.hpp
 A successful test run ends with:
 
 ```
-100% tests passed, 0 tests failed out of 17
+100% tests passed, 0 tests failed out of 339
 ```
 
 ## Requirements
@@ -352,81 +355,93 @@ Available on demand:
   the user hasn't written a `default`.
 - **End-to-end** — `vestra build` parses, sema-checks (including
   ownership), and produces `.hpp/.cpp` that compiles and runs for
-  `examples/hello.vst`, `examples/shapes.vst`, and
-  `examples/ownership.vst` (the `e2e_*_run` CTest cases verify each).
-  Sink-mode parameters lower to C++ `T&&` with `std::move(...)` at the
-  call site, and `let` bindings emit as `auto` (not `const auto`) so
-  ownership transfers are actually expressible.
+  every `examples/*.vst` file (the `e2e_*_run` CTest cases verify
+  each). Sink-mode parameters lower to C++ `T&&` with `std::move(...)`
+  at the call site, and `let` bindings emit as `auto` (not `const
+  auto`) so ownership transfers are actually expressible.
+
+### Post-v0 phases shipped after this section
+
+The list above was the original v0 surface. Since then the following
+have landed end-to-end (each entry has a single commit + an `examples/`
+program + an e2e test pinning the lowering):
+
+- **§9 Optional end-to-end** — `T?`, `nil`, `??`, `if let`, postfix
+  `!` (UnaryOp::Unwrap), implicit `T → T?` wrap. Lowers to
+  `std::optional<T>` with `value_or` / `.value()` / `has_value()`
+  dispatch.
+- **§9 Result / throws / try / throw** — `throws(E)` widens the
+  external return to `Result<T, E>` (TypeKind::Result), lowers to
+  `std::expected<T, E>`. The three try forms emit propagation /
+  Optional / `.value()`; mid-expression `try` hoists to a stmt-
+  position let-binding so the propagation actually escapes.
+  `throw e` lowers to `return std::unexpected{e};`.
+- **§9 do / catch inline error handling** — `do { body } catch
+  (NAME: E) { handler }` lowers to nested IIFEs over `std::expected`.
+  Bare `catch NAME` infers E from the body's try-calls.
+- **§9 optional chaining** — `a?.b?.c` lowers to
+  `std::optional::transform` (plain field) or `and_then` (flattens
+  when the field already returns Optional). Chains compose.
+- **§5 `for x in xs`** — Range form (`a..b` / `a..<b`) lowers to a
+  counted C++ for-loop; Iterator form (any value with `next() ->
+  Element?`) lowers to `while-true / next() / break`. Struct
+  methods are now emitted inline so user-defined iterators work.
+- **§6 tuple types + literals + destructuring** — `(T1, T2)`,
+  `(e1, e2)`, `let (a, b) = expr`. Lowers to `std::tuple<…>` /
+  `std::tuple{…}` / C++17 structured bindings.
+- **§3 opaque type** — `opaque type Q = T` lowers to `enum class Q
+  : T {}` (distinct, ops-free). `Q(t)` and `q.value` are the two
+  explicit boundary crossings.
+- **§4 layout attributes** — `@repr(packed)`,
+  `@repr(align(N))` / `@align(N)`, `@bits(N)`. Lower to
+  `__attribute__((packed))`, `alignas(N)`, and C++ bit-fields.
+- **§4 Display protocol** — interpolation splices now must be
+  Display-conformant (primitive, or derive(Display) / derive(Debug)).
+  `derive(Display)` shares the formatter spec with `derive(Debug)`.
+- **§10 Box[T] + Alloc capability** — `Box[T]` (TypeKind::Box) →
+  `std::unique_ptr<T>`. `Box.new(v)` → `std::make_unique<T>(v)`,
+  capability-checked: callers without `using Alloc` in scope are
+  rejected with `missing capability 'Alloc'`. `box.value` → `*box`.
+- **§12.3 derive(Clone)** — surfaces a synthetic `.clone() -> T` on
+  struct + sum-type enum nominals; bare enums use implicit copy.
+  Lowers to `[[nodiscard]] T clone() const { return *this; }`.
+- **§12.3 derive(Hash) for payloaded enums** — sum-type wrappers
+  get a std::hash spec built from std::visit + constexpr-if; alt
+  index seeds the combine so equal payload bytes across cases don't
+  collide.
+
+For the full chronological log with commit hashes and rationale, see
+[`HANDOFF.md`](HANDOFF.md).
 
 ## Roadmap
 
-What's **deliberately stubbed** today, in roughly the order I'd tackle them:
+The forward-looking phase menu — what's a clean next step, what's
+blocked on what, and rough sizing — lives in
+[`ROADMAP.md`](ROADMAP.md). The high-level groupings are:
 
-1. ~~**Name resolution + scope tracking**~~ — **done** in v0.5
-   (`include/vestra/sema/`).
-2. ~~**Type checking**~~ — **mostly done** as of this iteration: arg/return/
-   operator typing with bidirectional inference, member access (including
-   `embed`), struct construction, enum case construction, match
-   exhaustiveness. Still missing: generic instantiation, full visibility
-   enforcement (the hook is in place; needs richer "owning scope" tracking),
-   protocol conformance verification.
-3. ~~**Ownership / move tracking**~~ — **phase 1 done**: linear flow
-   analysis catches use-after-move on sink/return, `copy` salvages a
-   binding, var reassignment revives one. Phase 2 (branch-aware flow
-   merging, linear types, full Trivial detection for user structs)
-   remains.
-4. ~~**Law of Exclusivity** checker~~ — **phase 1 done**: per-call
-   overlap analysis catches conflicting borrows; disjoint fields are
-   independent. Phase 2 needs cross-statement borrow liveness,
-   recognition of `chunks(n)` / `split(at:)` partitions as disjoint,
-   and index-based subview disambiguation.
-5. ~~**Capability resolution**~~ — **phase 1 done**: every `using` row
-   is checked, `with` blocks satisfy them, async/await/spawn require
-   `Async`. Phase 2 needs row polymorphism, narrowing, the audit-trail
-   `// Safety:` mechanism, and gating actual unsafe ops when we have
-   them.
-6. ~~**Generics monomorphization**~~ — **phase 1 done**: generic
-   functions type-check with opaque T's, infer at call sites, and emit
-   as C++ templates that the host compiler monomorphizes. Phase 2:
-   const generics, generic structs/enums, where-clauses, and bound
-   enforcement.
-7. ~~**`comptime` interpreter**~~ — **phases 1+2+3+4+5+6+7+8+9+10 done**:
-   pure expression folding (phase 1), comptime function calls with
-   recursion (phase 2), locals + loops in comptime bodies (phase 3),
-   vectors as values (phase 4), a built-in math stdlib (phase 5),
-   primitive-type-as-callable conversions (phase 6), `@embed` file
-   embedding (phase 7), §12.2 reflection phase 1 (phase 8), §12.2
-   reflection phase 2 (phase 9 — `[N]Field` with `.name`), and
-   **§12.2 reflection phase 3** (phase 10 — `Field.type` returns a
-   comptime `Type` value with `.name`). Composite field types
-   (`[4]UInt8`, `Int32?`, …) round-trip through a small folder-side
-   type-display printer. Later phases extend Field with
-   `offset`/attributes, add `derive(Eq, Hash, Clone, …)` defaults
-   riding on `.type`, declaration macros (`quote`/`$splice`), and a
-   content-hashed `@embed` manifest.
-8. ~~**String interpolation lowering**~~ (§4) — **phase 1 done**: the
-   lexer splits `"a \(x) b"` into Begin/Part/(splice)/Part/End tokens
-   (tracking splice paren depth on a stack so nested splices via inner
-   interpolated strings work); the parser produces an
-   `InterpStringExpr` with alternating literal and splice segments;
-   the resolver types it as `String`; the emitter lowers it to
-   `std::format("a {} b", x)` with `{`/`}` literals doubled to
-   survive std::format. Later phases add explicit `Display` protocol
-   conformance + `derive(Display)` defaults and the `using Alloc`
-   capability check the §4 spec requires.
-9. **`async` / `spawn` / `select` / `parallel` lowering** (§11) — currently
-   parsed as expressions but emitted as `unsupported` comments.
-10. **SIMD `[N]T` lowering** (§13) — map to `std::experimental::simd` or
-    target intrinsics where available; clean scalar fallback elsewhere.
-11. ~~**Conditional compilation `cfg` / `@when`**~~ — **phase 1 done**:
-    `cfg.{os,arch,endian,pointerBits,profile}` populated from the host,
-    `@when(predicate)` gates decls. Phase 2: manifest-declared
-    features/options, declaration-position `comptime if`, every-branch
-    type-check.
+- **Tier S** (closes a current v0.5 gap): mid-expression `try`
+  inside conditional arms, nested tuple destructuring at codegen,
+  tuple patterns in function params / match arms, Optional in
+  Display splices, `derive(Default)`.
+- **Tier A** (bounded next-phase candidates): `.mapError(_ f)` on
+  Result, `Span[T]` non-owning view, `panic` / `abort` lowering,
+  `with X = expr { ... }` capability-supplying blocks, opaque-type
+  derive support + `T(q)` extraction, guarded `do ... catch ...
+  where`, range / or-patterns / tuple patterns inside `match`,
+  generics phase 2 (const generics, generic structs, where-clauses).
+- **Tier B** (bigger swings): `async` / `spawn` / `select` /
+  `parallel` (§11), `Channel[T]`, ownership / exclusivity /
+  capability phase 2, SIMD lowering (§13), content-hashed `@embed`
+  manifest, quote / splice / declaration macros (§12.4),
+  `Iterator` combinators, `Soa[T]`.
 
-Each of these adds one §-block of the spec at a time. The acceptance test for any
-of them is: "the relevant `examples/*.vst` file transpiles to C++ that compiles
-and produces the right answer."
+Each phase is sized for a single session and lands one §-block of the
+spec; the acceptance test is "the relevant `examples/*.vst` file
+transpiles to C++ that compiles and produces the right answer."
+
+For the chronological log of what's already shipped (commit hashes
++ one-line summaries + v0.5 limitations), see
+[`HANDOFF.md`](HANDOFF.md).
 
 ## Common commands
 
