@@ -365,6 +365,42 @@ TEST_CASE("throw outside a throws function is reported") {
     CHECK(r.first_message.find("throws") != std::string::npos);
 }
 
+// ---- §5 for-in over Iterator ---------------------------------------------
+
+TEST_CASE("for-in over a Range types the loop variable as the range element") {
+    CHECK(check_errors("func sum() -> Int32 {\n"
+                       "    var total: Int32 = 0\n"
+                       "    for i in Int32(0)..Int32(9) { total = total + i }\n"
+                       "    return total\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("for-in over a struct with next()->T? uses T as the loop variable type") {
+    CHECK(check_errors("struct Counter {\n"
+                       "    var n: Int32\n"
+                       "    inout func next() -> Int32? { return nil }\n"
+                       "}\n"
+                       "func use() -> Int32 {\n"
+                       "    var c = Counter(n: 0)\n"
+                       "    var t: Int32 = 0\n"
+                       "    for v in c { t = t + v }\n"
+                       "    return t\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("for-in over a non-iterator without next() is reported") {
+    auto r = check_detail("struct S { var x: Int32 }\n"
+                          "func bad() -> Int32 {\n"
+                          "    var t: Int32 = 0\n"
+                          "    for v in S(x: 0) { t = t + v }\n"
+                          "    return t\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("next") != std::string::npos);
+}
+
 // ---- §12.3 derive(Clone) --------------------------------------------------
 
 TEST_CASE("derive(Clone) surfaces a synthetic .clone() on the struct") {

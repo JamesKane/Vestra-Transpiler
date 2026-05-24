@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §5 `for x in xs { ... }` — two shapes:
+//   * Range form: `start..end` (inclusive) and `start..<end` (exclusive)
+//     lower to a C++ counted for-loop.
+//   * Iterator form: any value with a `next() -> Element?` method
+//     drives a while-true loop that breaks when next() yields .none.
+// The compiler inlines the loop in either case — there is no
+// generator coroutine; an "iterator" is just a plain struct.
+
+module examples.forin
+
+// Inclusive range: sum 0..10 = 55.
+func sum_inclusive() -> Int32 {
+    var total: Int32 = 0
+    for i in Int32(0)..Int32(10) {
+        total = total + i
+    }
+    return total
+}
+
+// Half-open range: sum 0..<10 = 45.
+func sum_exclusive() -> Int32 {
+    var total: Int32 = 0
+    for i in Int32(0)..<Int32(10) {
+        total = total + i
+    }
+    return total
+}
+
+// User-defined iterator. Yields n, n-1, …, 1, then `.none` forever.
+struct Countdown {
+    var n: Int32
+    inout func next() -> Int32? {
+        if self.n <= 0 { return nil }
+        let v = self.n
+        self.n = self.n - 1
+        return v
+    }
+}
+
+// Drive the iterator until exhaustion. Countdown(n: 5) sums 5+4+3+2+1.
+func sum_countdown(_ start: Int32) -> Int32 {
+    var total: Int32 = 0
+    var cd = Countdown(n: start)
+    for v in cd {
+        total = total + v
+    }
+    return total
+}

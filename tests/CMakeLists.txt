@@ -422,6 +422,33 @@ set_tests_properties(e2e_optional_run PROPERTIES
     DEPENDS                e2e_optional_compile
     PASS_REGULAR_EXPRESSION "optional OK")
 
+# for-in: §5 loop desugaring. Range forms lower to a C++ counted
+# for-loop; user iterators (any value with `next() -> Element?`) lower
+# to a while-true / next / break loop. Runtime sums an inclusive
+# range, a half-open range, and a Countdown iterator to .none.
+set(e2e_forin_input  ${CMAKE_SOURCE_DIR}/examples/forin.vst)
+set(e2e_forin_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_forin.cpp)
+
+add_test(
+    NAME    e2e_forin_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_forin_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_forin_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_forin_driver} ${e2e_workdir}/forin.cpp
+            -o ${e2e_workdir}/forin_app)
+set_tests_properties(e2e_forin_compile PROPERTIES DEPENDS e2e_forin_transpile)
+
+add_test(
+    NAME    e2e_forin_run
+    COMMAND ${e2e_workdir}/forin_app)
+set_tests_properties(e2e_forin_run PROPERTIES
+    DEPENDS                e2e_forin_compile
+    PASS_REGULAR_EXPRESSION "forin OK")
+
 # derive(Clone): §12.3 explicit copy method. The codegen emits a
 # `T clone() const { return *this; }` on struct and sum-type enum
 # wrappers; bare enums get no method (no slot in C++ enum class).

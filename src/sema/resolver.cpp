@@ -678,14 +678,44 @@ void Resolver::check_stmt(const ast::Stmt& s) {
         break;
     }
     case ast::NodeKind::ForStmt: {
+        // §5 `for x in xs { ... }` — two shapes:
+        //   * Range / RangeLt: `for x in 0..10` / `for x in 0..<10` —
+        //     loop variable inherits the lhs/rhs numeric type.
+        //   * Iterator protocol: `xs` has a `next() -> T?` method;
+        //     loop variable is T.
         const auto& f = static_cast<const ast::ForStmt&>(s);
-        (void)check_expr(*f.iter);
+        auto iter_type = check_expr(*f.iter);
+        TypePtr elem_type = nullptr;
+        if (f.iter->kind == ast::NodeKind::BinaryExpr) {
+            const auto& b = static_cast<const ast::BinaryExpr&>(*f.iter);
+            if (b.op == ast::BinaryOp::Range || b.op == ast::BinaryOp::RangeLt) {
+                // The Range result type is currently the operand type
+                // itself (no nominal Range[T] yet); use it directly.
+                elem_type = iter_type;
+            }
+        }
+        if (elem_type == nullptr && iter_type != nullptr && !iter_type->is_error()) {
+            // Iterator protocol fallback: look for a `next()` method
+            // whose result is Optional<T>; the loop variable type is T.
+            if (auto next_type = lookup_method(iter_type, "next")) {
+                if (next_type->kind() == TypeKind::Function && next_type->result() != nullptr
+                    && next_type->result()->kind() == TypeKind::Optional) {
+                    elem_type = next_type->result()->inner();
+                }
+            }
+            if (elem_type == nullptr) {
+                error_at(f.iter->range,
+                         std::format("'for x in xs' requires xs to be a Range or have a "
+                                     "'next() -> Element?' method, got {}",
+                                     iter_type->describe()));
+            }
+        }
         ScopeStack::Guard g(scopes_);
         if (f.pattern && f.pattern->kind == ast::NodeKind::IdentPat) {
             Symbol sym;
             sym.name = static_cast<const ast::IdentPat&>(*f.pattern).name;
             sym.kind = SymbolKind::Local;
-            sym.type = nullptr;  // element type is the iterator's Element — TODO
+            sym.type = elem_type != nullptr ? elem_type : types_->error();
             sym.definition_range = f.pattern->range;
             (void)g.scope().insert(std::move(sym));
         }

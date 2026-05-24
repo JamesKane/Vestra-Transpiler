@@ -329,6 +329,45 @@ TEST_CASE("try! lowers to std::expected::value()") {
     CHECK(out.source.find("f().value()") != std::string::npos);
 }
 
+// ---- §5 for-in over Iterator ---------------------------------------------
+
+TEST_CASE("for-in over a Range lowers to a C++ counted for-loop") {
+    auto out = emit("func sum() -> Int32 {\n"
+                    "    var total: Int32 = 0\n"
+                    "    for i in Int32(0)..Int32(9) { total = total + i }\n"
+                    "    return total\n"
+                    "}\n");
+    CHECK(out.source.find("for (auto i = static_cast<std::int32_t>(0), __vstr_end = "
+                          "static_cast<std::int32_t>(9); i <= __vstr_end; ++i)")
+          != std::string::npos);
+}
+
+TEST_CASE("for-in over a Range with `..<` uses strict-less-than") {
+    auto out = emit("func sum() -> Int32 {\n"
+                    "    var total: Int32 = 0\n"
+                    "    for i in Int32(0)..<Int32(10) { total = total + i }\n"
+                    "    return total\n"
+                    "}\n");
+    CHECK(out.source.find("i < __vstr_end") != std::string::npos);
+}
+
+TEST_CASE("for-in over an iterator value lowers to a while/next/break loop") {
+    SemaEmitFixture f("struct Counter {\n"
+                      "    var n: Int32\n"
+                      "    inout func next() -> Int32? { return nil }\n"
+                      "}\n"
+                      "func use() -> Int32 {\n"
+                      "    var c = Counter(n: 0)\n"
+                      "    var t: Int32 = 0\n"
+                      "    for v in c { t = t + v }\n"
+                      "    return t\n"
+                      "}\n");
+    CHECK(f.out.source.find("auto __vstr_iter = c;") != std::string::npos);
+    CHECK(f.out.source.find("auto __vstr_o = __vstr_iter.next();") != std::string::npos);
+    CHECK(f.out.source.find("if (!__vstr_o.has_value()) { break; }") != std::string::npos);
+    CHECK(f.out.source.find("auto v = std::move(*__vstr_o);") != std::string::npos);
+}
+
 // ---- §12.3 derive(Clone) --------------------------------------------------
 
 TEST_CASE("derive(Clone) on a struct emits an explicit clone() method") {

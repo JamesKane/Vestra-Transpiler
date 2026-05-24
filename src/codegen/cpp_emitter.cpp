@@ -511,6 +511,59 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
             hdr << "[[nodiscard]] " << s.name << " clone() const { return *this; }\n";
         }
     }
+    // §5: methods declared inside `struct { ... }` lower to inline C++
+    // methods on the same struct. v0.5 is minimal: no const-qualification
+    // (so an `inout` method works), no generics, no out-of-line bodies.
+    // The implicit `this` carries `self` through; SelfExpr already
+    // lowers to `(*this)` so member access works.
+    for (const auto& m : s.methods) {
+        if (m->kind != ast::NodeKind::Func) {
+            continue;
+        }
+        const auto& fn = static_cast<const ast::FuncDecl&>(*m);
+        write_indent(hdr, 1);
+        hdr << "[[nodiscard]] ";
+        if (fn.result) {
+            emit_type(hdr, *fn.result);
+        } else {
+            hdr << "void";
+        }
+        hdr << " " << fn.name << "(";
+        for (std::size_t i = 0; i < fn.params.size(); ++i) {
+            if (i != 0) {
+                hdr << ", ";
+            }
+            const auto& p = fn.params[i];
+            switch (p.mode) {
+            case ast::ParamMode::Read:
+                hdr << "const ";
+                if (p.type) {
+                    emit_type(hdr, *p.type);
+                }
+                hdr << "& " << p.name;
+                break;
+            case ast::ParamMode::Inout:
+                if (p.type) {
+                    emit_type(hdr, *p.type);
+                }
+                hdr << "& " << p.name;
+                break;
+            case ast::ParamMode::Sink:
+                if (p.type) {
+                    emit_type(hdr, *p.type);
+                }
+                hdr << "&& " << p.name;
+                break;
+            }
+        }
+        hdr << ") ";
+        if (fn.body && fn.body->kind == ast::NodeKind::BlockExpr) {
+            emit_block(hdr, static_cast<const ast::BlockExpr&>(*fn.body), 1);
+        } else {
+            hdr << "{}";
+        }
+        hdr << "\n";
+    }
     hdr << "};\n\n";
 }
 
@@ -1086,24 +1139,57 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         break;
     }
     case ast::NodeKind::ForStmt: {
+        // §5 desugaring: two shapes.
+        //   * Range / RangeLt: lower to a C++ counted for-loop, with
+        //     the end expression captured once in a sibling decl.
+        //   * Iterator protocol: lower to a while-true that calls
+        //     __vstr_iter.next() and breaks on .none; the loop body
+        //     binds the unwrapped value as `auto x`.
         const auto& f = static_cast<const ast::ForStmt&>(s);
-        os << "for (const auto& ";
-        if (f.pattern && f.pattern->kind == ast::NodeKind::IdentPat) {
-            os << static_cast<const ast::IdentPat&>(*f.pattern).name;
-        } else if (f.pattern && f.pattern->kind == ast::NodeKind::BindPat) {
-            os << static_cast<const ast::BindPat&>(*f.pattern).name;
-        } else {
-            os << "_it";
+        auto bind_name = [&]() -> std::string {
+            if (f.pattern && f.pattern->kind == ast::NodeKind::IdentPat) {
+                return static_cast<const ast::IdentPat&>(*f.pattern).name;
+            }
+            if (f.pattern && f.pattern->kind == ast::NodeKind::BindPat) {
+                return static_cast<const ast::BindPat&>(*f.pattern).name;
+            }
+            return "_it";
+        };
+        const ast::BinaryExpr* range = nullptr;
+        if (f.iter && f.iter->kind == ast::NodeKind::BinaryExpr) {
+            const auto& b = static_cast<const ast::BinaryExpr&>(*f.iter);
+            if (b.op == ast::BinaryOp::Range || b.op == ast::BinaryOp::RangeLt) {
+                range = &b;
+            }
         }
-        os << " : ";
+        if (range != nullptr) {
+            const char* cmp = range->op == ast::BinaryOp::RangeLt ? "<" : "<=";
+            os << "for (auto " << bind_name() << " = ";
+            emit_expr(os, *range->lhs);
+            os << ", __vstr_end = ";
+            emit_expr(os, *range->rhs);
+            os << "; " << bind_name() << " " << cmp << " __vstr_end; ++" << bind_name() << ") ";
+            if (f.body && f.body->kind == ast::NodeKind::BlockExpr) {
+                emit_block(os, static_cast<const ast::BlockExpr&>(*f.body), indent);
+                os << "\n";
+            } else {
+                os << "{}\n";
+            }
+            break;
+        }
+        // Iterator protocol: capture iter as a mutable local, drive
+        // while-true / .next() / break on nullopt.
+        os << "{ auto __vstr_iter = ";
         emit_expr(os, *f.iter);
-        os << ") ";
+        os << "; while (true) { auto __vstr_o = __vstr_iter.next(); "
+              "if (!__vstr_o.has_value()) { break; } auto "
+           << bind_name() << " = std::move(*__vstr_o); ";
         if (f.body && f.body->kind == ast::NodeKind::BlockExpr) {
             emit_block(os, static_cast<const ast::BlockExpr&>(*f.body), indent);
-            os << "\n";
         } else {
-            os << "{}\n";
+            os << "{}";
         }
+        os << " } }\n";
         break;
     }
     default:
