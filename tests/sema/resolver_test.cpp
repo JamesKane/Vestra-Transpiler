@@ -365,6 +365,33 @@ TEST_CASE("throw outside a throws function is reported") {
     CHECK(r.first_message.find("throws") != std::string::npos);
 }
 
+// ---- §4 Display conformance on interpolation splices ---------------------
+
+TEST_CASE("interpolation of a primitive is Display-conformant") {
+    CHECK(check_errors("func r(_ n: Int32) -> String { return \"n = \\(n)\" }\n") == 0);
+}
+
+TEST_CASE("interpolation of a user struct requires derive(Display) or Debug") {
+    auto r = check_detail("struct Point { var x: Int32 }\n"
+                          "func r(_ p: Point) -> String { return \"p = \\(p)\" }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Display") != std::string::npos);
+}
+
+TEST_CASE("derive(Display) makes a struct interpolation-OK") {
+    CHECK(check_errors("struct Point { var x: Int32 }\n"
+                       "derive(Display) for Point\n"
+                       "func r(_ p: Point) -> String { return \"p = \\(p)\" }\n")
+          == 0);
+}
+
+TEST_CASE("derive(Debug) also makes a struct interpolation-OK") {
+    CHECK(check_errors("struct Point { var x: Int32 }\n"
+                       "derive(Debug) for Point\n"
+                       "func r(_ p: Point) -> String { return \"p = \\(p)\" }\n")
+          == 0);
+}
+
 // ---- §5 for-in over Iterator ---------------------------------------------
 
 TEST_CASE("for-in over a Range types the loop variable as the range element") {

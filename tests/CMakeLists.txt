@@ -422,6 +422,34 @@ set_tests_properties(e2e_optional_run PROPERTIES
     DEPENDS                e2e_optional_compile
     PASS_REGULAR_EXPRESSION "optional OK")
 
+# Display: §4 Display-conformance check on interpolation splices.
+# Primitives ride free; user types need derive(Display) (or Debug).
+# Both derives lower to a std::formatter spec the std::format call
+# from the interpolation can pick up. Runtime renders a Point + Shape
+# + Int splice into one string and byte-checks the result.
+set(e2e_disp_input  ${CMAKE_SOURCE_DIR}/examples/display.vst)
+set(e2e_disp_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_display.cpp)
+
+add_test(
+    NAME    e2e_display_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_disp_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_display_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_disp_driver} ${e2e_workdir}/display.cpp
+            -o ${e2e_workdir}/display_app)
+set_tests_properties(e2e_display_compile PROPERTIES DEPENDS e2e_display_transpile)
+
+add_test(
+    NAME    e2e_display_run
+    COMMAND ${e2e_workdir}/display_app)
+set_tests_properties(e2e_display_run PROPERTIES
+    DEPENDS                e2e_display_compile
+    PASS_REGULAR_EXPRESSION "display OK")
+
 # for-in: §5 loop desugaring. Range forms lower to a C++ counted
 # for-loop; user iterators (any value with `next() -> Element?`) lower
 # to a while-true / next / break loop. Runtime sums an inclusive

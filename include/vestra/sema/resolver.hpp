@@ -121,6 +121,13 @@ private:
     // without materializing them in the AST.
     [[nodiscard]] bool decl_derives(const ast::Decl* decl, std::string_view protocol) const;
 
+    // §4 Display-conformance check: is a value of this type usable in
+    // a `"\(...)"` interpolation splice? Primitives (numerics, Bool,
+    // Char, string-likes) are always OK; user types must derive
+    // Display or Debug (both lower to a std::formatter spec). A
+    // vector is OK iff its element is OK.
+    [[nodiscard]] bool is_display_conformant(TypePtr t) const;
+
     // Unify a generic parameter type against a concrete arg type, growing the
     // bindings map. A clash (same generic implied to be two different types
     // by different args) is reported at `site`.

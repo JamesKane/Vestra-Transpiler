@@ -196,21 +196,28 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
         }
     }
 
-    // §12.3 derive(Debug): same global-scope placement as derive(Hash).
-    // Three lowerings (struct, bare enum, sum-type enum); the helper
-    // picks the right shape per decl kind.
+    // §12.3 derive(Debug) + §4 derive(Display): both lower to a
+    // std::formatter<T> specialization so `std::format("{}", v)` and
+    // string interpolation work. For v0.5 the two produce the same
+    // structural rendering — Display is meant to be more user-facing,
+    // but until we have a customizable `display(into: Sink)` body
+    // they share the Debug-flavoured output. Deriving both on the
+    // same type emits a single spec (we'd otherwise hit a C++ ODR
+    // violation on duplicate template specializations).
     for (const auto& d : unit.decls) {
         if (d->kind == ast::NodeKind::Struct) {
             const auto& sd = static_cast<const ast::StructDecl&>(*d);
             auto it = derives_by_target_.find(sd.name);
-            if (it != derives_by_target_.end() && it->second.contains("Debug")) {
+            if (it != derives_by_target_.end()
+                && (it->second.contains("Debug") || it->second.contains("Display"))) {
                 hdr << "\n";
                 emit_debug_spec_struct(hdr, sd, qual_prefix);
             }
         } else if (d->kind == ast::NodeKind::Enum) {
             const auto& ed = static_cast<const ast::EnumDecl&>(*d);
             auto it = derives_by_target_.find(ed.name);
-            if (it != derives_by_target_.end() && it->second.contains("Debug")) {
+            if (it != derives_by_target_.end()
+                && (it->second.contains("Debug") || it->second.contains("Display"))) {
                 hdr << "\n";
                 emit_debug_spec_enum(hdr, ed, qual_prefix);
             }

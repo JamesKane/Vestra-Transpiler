@@ -950,17 +950,28 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         t = check_match(static_cast<const ast::MatchExpr&>(e), expected);
         break;
     case ast::NodeKind::InterpStringExpr: {
-        // §4: a `"…\(expr)…"` literal is a freshly allocated String. The
-        // current phase types it that way and just type-checks each
-        // splice; the `Display` protocol conformance check and the
-        // `using Alloc` capability requirement are tracked as
-        // follow-ons (a runtime `std::format("{}", ...)` lowering
-        // accepts any C++-formattable scalar today, so practical use
-        // works for the primitives).
+        // §4: a `"…\(expr)…"` literal is a freshly allocated String.
+        // Every splice must be Display-conformant — primitive numerics
+        // / Bool / Char / string-likes pass implicitly; user types need
+        // either `derive(Display)` or `derive(Debug)`. The `using Alloc`
+        // capability requirement (§4) is still a follow-on; the runtime
+        // lowering uses std::format which assumes a default heap.
         const auto& is_ = static_cast<const ast::InterpStringExpr&>(e);
         for (const auto& seg : is_.segments) {
-            if (seg.expr != nullptr) {
-                (void)check_expr(*seg.expr);
+            if (seg.expr == nullptr) {
+                continue;
+            }
+            auto seg_t = check_expr(*seg.expr);
+            if (seg_t == nullptr || seg_t->is_error()) {
+                continue;
+            }
+            if (!is_display_conformant(seg_t)) {
+                error_at(seg.expr->range,
+                         std::format("interpolation splice of type {} is not Display-conformant; "
+                                     "add `derive(Display) for {}` (or `derive(Debug)`) to make it "
+                                     "printable",
+                                     seg_t->describe(),
+                                     seg_t->describe()));
             }
         }
         t = types_->primitive(TypeKind::String);
@@ -1550,6 +1561,33 @@ TypePtr Resolver::lookup_field(TypePtr struct_type,
         }
     }
     return nullptr;
+}
+
+bool Resolver::is_display_conformant(TypePtr t) const {
+    if (t == nullptr || t->is_error()) {
+        return true;  // suppress cascading errors on already-broken types
+    }
+    if (t->is_primitive()) {
+        // Unit / Never / Error aren't usefully Display-printable, but
+        // is_primitive() rules out Never/Error already; Unit would
+        // surface as `void` in C++ and never reach here.
+        return true;
+    }
+    switch (t->kind()) {
+    case TypeKind::Vector:
+        return is_display_conformant(t->inner());
+    case TypeKind::Optional:
+        // `std::format("{}", std::optional<T>{})` isn't standard, so
+        // require an explicit `?? default` / `if let` at the splice
+        // site rather than silently rendering "nullopt".
+        return false;
+    case TypeKind::Struct:
+    case TypeKind::Enum:
+        return decl_derives(t->nominal_decl(), "Display")
+               || decl_derives(t->nominal_decl(), "Debug");
+    default:
+        return false;
+    }
 }
 
 bool Resolver::decl_derives(const ast::Decl* decl, std::string_view protocol) const {

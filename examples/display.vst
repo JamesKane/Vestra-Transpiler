@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §4 Display protocol — gates what types may appear in a
+// `"\(...)"` interpolation splice. Vestra primitives (Int / Float /
+// Bool / Char / string-likes) conform implicitly; user types must
+// derive Display (or Debug, which lowers to the same std::formatter
+// spec in v0.5). Interpolation of a non-conforming value is a sema
+// error with a suggestion to derive(Display).
+
+module examples.display
+
+struct Point {
+    var x: Int32
+    var y: Int32
+}
+
+derive(Display) for Point
+
+enum Shape {
+    case circle(radius: Float64)
+    case point
+}
+
+derive(Display) for Shape
+
+// Mixed splices — primitives ride free; Point + Shape via derive(Display).
+func render(_ p: Point, _ s: Shape, _ count: Int32) -> String {
+    return "p = \(p), s = \(s), count = \(count)"
+}

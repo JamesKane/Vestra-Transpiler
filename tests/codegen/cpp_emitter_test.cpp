@@ -329,6 +329,25 @@ TEST_CASE("try! lowers to std::expected::value()") {
     CHECK(out.source.find("f().value()") != std::string::npos);
 }
 
+// ---- §4 derive(Display) ---------------------------------------------------
+
+TEST_CASE("derive(Display) on a struct emits a std::formatter spec") {
+    SemaEmitFixture f("struct Point { var x: Int32 }\n"
+                      "derive(Display) for Point\n");
+    CHECK(f.out.header.find("struct std::formatter<Point>") != std::string::npos);
+    CHECK(f.out.header.find("\"Point{{x: {}}}\"") != std::string::npos);
+}
+
+TEST_CASE("derive(Display) and derive(Debug) on the same type emit one formatter") {
+    SemaEmitFixture f("struct Point { var x: Int32 }\n"
+                      "derive(Display, Debug) for Point\n");
+    // ODR: only one specialization, not two.
+    auto first = f.out.header.find("struct std::formatter<Point>");
+    REQUIRE(first != std::string::npos);
+    auto second = f.out.header.find("struct std::formatter<Point>", first + 1);
+    CHECK(second == std::string::npos);
+}
+
 // ---- §5 for-in over Iterator ---------------------------------------------
 
 TEST_CASE("for-in over a Range lowers to a C++ counted for-loop") {
