@@ -1604,6 +1604,90 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
+    // §9 iterator combinators: `zip(a, b)` and `take(xs, n)` are
+    // free-function builtins. The user can shadow them with their own
+    // `zip` / `take` (the scope check below defers to a user symbol if
+    // present); otherwise we recognize the call shape directly. Both
+    // require their iterable argument(s) to expose a `next() -> T?`
+    // method.
+    if (c.callee->kind == ast::NodeKind::IdentExpr) {
+        const auto& ci = static_cast<const ast::IdentExpr&>(*c.callee);
+        if ((ci.name == "zip" || ci.name == "take")
+            && scopes_.current().lookup(ci.name) == nullptr) {
+            auto iterator_element = [&](TypePtr iter_t) -> TypePtr {
+                if (iter_t == nullptr || iter_t->is_error()) {
+                    return nullptr;
+                }
+                auto nt = lookup_method(iter_t, "next");
+                if (nt == nullptr || nt->kind() != TypeKind::Function || nt->result() == nullptr
+                    || nt->result()->kind() != TypeKind::Optional) {
+                    return nullptr;
+                }
+                return nt->result()->inner();
+            };
+            if (ci.name == "zip") {
+                if (c.args.size() != 2) {
+                    for (const auto& a : c.args) {
+                        (void)check_expr(*a.value);
+                    }
+                    error_at(c.range, "zip(a, b) takes exactly two iterator arguments");
+                    return types_->make_zip_iter(types_->error(), types_->error());
+                }
+                for (const auto& a : c.args) {
+                    if (!a.label.empty()) {
+                        error_at(a.value->range, "zip arguments cannot have labels");
+                    }
+                }
+                auto ta = check_expr(*c.args[0].value);
+                auto tb = check_expr(*c.args[1].value);
+                auto ea = iterator_element(ta);
+                auto eb = iterator_element(tb);
+                if (ea == nullptr && ta != nullptr && !ta->is_error()) {
+                    error_at(c.args[0].value->range,
+                             std::format("zip's first argument must be an iterator (have a "
+                                         "'next() -> Element?' method), got {}",
+                                         ta->describe()));
+                }
+                if (eb == nullptr && tb != nullptr && !tb->is_error()) {
+                    error_at(c.args[1].value->range,
+                             std::format("zip's second argument must be an iterator (have a "
+                                         "'next() -> Element?' method), got {}",
+                                         tb->describe()));
+                }
+                return types_->make_zip_iter(ea != nullptr ? ea : types_->error(),
+                                             eb != nullptr ? eb : types_->error());
+            }
+            // ci.name == "take"
+            if (c.args.size() != 2) {
+                for (const auto& a : c.args) {
+                    (void)check_expr(*a.value);
+                }
+                error_at(c.range, "take(xs, n) takes exactly two arguments");
+                return types_->make_take_iter(types_->error());
+            }
+            for (const auto& a : c.args) {
+                if (!a.label.empty()) {
+                    error_at(a.value->range, "take arguments cannot have labels");
+                }
+            }
+            auto txs = check_expr(*c.args[0].value);
+            auto tn = check_expr(*c.args[1].value);
+            auto exs = iterator_element(txs);
+            if (exs == nullptr && txs != nullptr && !txs->is_error()) {
+                error_at(c.args[0].value->range,
+                         std::format("take's first argument must be an iterator (have a "
+                                     "'next() -> Element?' method), got {}",
+                                     txs->describe()));
+            }
+            if (tn != nullptr && !tn->is_error() && !tn->is_integer()) {
+                error_at(c.args[1].value->range,
+                         std::format("take's second argument must be an integer count, got {}",
+                                     tn->describe()));
+            }
+            return types_->make_take_iter(exs != nullptr ? exs : types_->error());
+        }
+    }
+
     // §10 builtin `Box.new(value)` — the unique-ownership heap pointer
     // constructor. The callee is a `MemberExpr(IdentExpr("Box"), "new")`;
     // sema doesn't have a symbol for the Box "value" so we intercept
@@ -2212,6 +2296,20 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
                                 const ast::FuncDecl** out_method) {
     if (owner_type == nullptr) {
         return nullptr;
+    }
+    // §9 iterator combinators: synthesize `next() -> Element?` on the
+    // builtin adaptor types. ZipIter[A, B]'s element is the tuple
+    // (A, B); TakeIter[A]'s element is just A. The codegen runtime
+    // provides the matching member function in __vstr::Zip / __vstr::Take
+    // (see emit_runtime_preamble), so this is a pure type-level shim.
+    if (name == "next") {
+        if (owner_type->kind() == TypeKind::ZipIter && owner_type->parts().size() == 2) {
+            auto elem = types_->make_tuple({owner_type->parts()[0], owner_type->parts()[1]});
+            return types_->make_function({}, types_->make_optional(elem));
+        }
+        if (owner_type->kind() == TypeKind::TakeIter && owner_type->inner() != nullptr) {
+            return types_->make_function({}, types_->make_optional(owner_type->inner()));
+        }
     }
     const auto* decl = owner_type->nominal_decl();
     if (decl == nullptr) {

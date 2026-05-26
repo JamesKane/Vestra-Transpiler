@@ -931,6 +931,35 @@ set_tests_properties(e2e_display_run PROPERTIES
     DEPENDS                e2e_display_compile
     PASS_REGULAR_EXPRESSION "display OK")
 
+# Iterator combinators: §9 `zip(a, b)` / `take(xs, n)` builtins. Both
+# adapt iterator-protocol structs into new iterators via __vstr::Zip
+# / __vstr::Take in the runtime preamble; CTAD on each call site
+# instantiates the template against the underlying iterator types.
+# The runtime sums a zip, a take, and a take(zip(...)) composition.
+set(e2e_iter_combinators_input  ${CMAKE_SOURCE_DIR}/examples/iter_combinators.vst)
+set(e2e_iter_combinators_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_iter_combinators.cpp)
+
+add_test(
+    NAME    e2e_iter_combinators_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_iter_combinators_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_iter_combinators_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_iter_combinators_driver} ${e2e_workdir}/iter_combinators.cpp
+            -o ${e2e_workdir}/iter_combinators_app)
+set_tests_properties(e2e_iter_combinators_compile PROPERTIES
+    DEPENDS e2e_iter_combinators_transpile)
+
+add_test(
+    NAME    e2e_iter_combinators_run
+    COMMAND ${e2e_workdir}/iter_combinators_app)
+set_tests_properties(e2e_iter_combinators_run PROPERTIES
+    DEPENDS                e2e_iter_combinators_compile
+    PASS_REGULAR_EXPRESSION "iter_combinators OK")
+
 # for-in: §5 loop desugaring. Range forms lower to a C++ counted
 # for-loop; user iterators (any value with `next() -> Element?`) lower
 # to a while-true / next / break loop. Runtime sums an inclusive

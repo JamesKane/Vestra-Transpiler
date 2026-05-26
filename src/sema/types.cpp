@@ -127,6 +127,13 @@ std::string Type::describe() const {
         return inner_ ? std::format("Span[{}]", inner_->describe()) : std::string{"Span"};
     case TypeKind::MutSpan:
         return inner_ ? std::format("MutSpan[{}]", inner_->describe()) : std::string{"MutSpan"};
+    case TypeKind::ZipIter: {
+        std::string a = (parts_.size() >= 1 && parts_[0]) ? parts_[0]->describe() : "?";
+        std::string b = (parts_.size() >= 2 && parts_[1]) ? parts_[1]->describe() : "?";
+        return std::format("ZipIter[{}, {}]", a, b);
+    }
+    case TypeKind::TakeIter:
+        return inner_ ? std::format("TakeIter[{}]", inner_->describe()) : std::string{"TakeIter"};
     case TypeKind::Result: {
         std::string ok = inner_ ? inner_->describe() : "?";
         std::string err = result_ ? result_->describe() : "?";
@@ -241,6 +248,22 @@ TypePtr TypeArena::make_mut_span(TypePtr inner) {
     return p;
 }
 
+TypePtr TypeArena::make_zip_iter(TypePtr elem_a, TypePtr elem_b) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::ZipIter));
+    t->parts_ = {elem_a, elem_b};
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_take_iter(TypePtr elem) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::TakeIter));
+    t->inner_ = elem;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
 TypePtr TypeArena::make_result(TypePtr success, TypePtr error) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::Result));
     t->inner_ = success;
@@ -332,7 +355,14 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     case TypeKind::Box:
     case TypeKind::Span:
     case TypeKind::MutSpan:
+    case TypeKind::TakeIter:
         return equal(a->inner(), b->inner());
+    case TypeKind::ZipIter: {
+        const auto& pa = a->parts();
+        const auto& pb = b->parts();
+        return pa.size() == pb.size() && pa.size() == 2 && equal(pa[0], pb[0])
+               && equal(pa[1], pb[1]);
+    }
     case TypeKind::Result:
         return equal(a->inner(), b->inner()) && equal(a->result(), b->result());
     case TypeKind::Vector:
@@ -470,6 +500,18 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::MutSpan: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_mut_span(inner);
+    }
+    case TypeKind::TakeIter: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_take_iter(inner);
+    }
+    case TypeKind::ZipIter: {
+        if (t->parts().size() != 2) {
+            return t;
+        }
+        auto a = substitute(t->parts()[0], bindings);
+        auto b = substitute(t->parts()[1], bindings);
+        return (a == t->parts()[0] && b == t->parts()[1]) ? t : make_zip_iter(a, b);
     }
     case TypeKind::Result: {
         auto ok = substitute(t->inner(), bindings);

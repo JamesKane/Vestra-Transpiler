@@ -548,6 +548,66 @@ TEST_CASE("for-in over a non-iterator without next() is reported") {
     CHECK(r.first_message.find("next") != std::string::npos);
 }
 
+// ---- §9 iterator combinators (zip / take) --------------------------------
+
+static constexpr const char* kIter = "struct It {\n"
+                                     "    var n: Int32\n"
+                                     "    inout func next() -> Int32? {\n"
+                                     "        if self.n <= 0 { return nil }\n"
+                                     "        let v = self.n\n"
+                                     "        self.n = self.n - 1\n"
+                                     "        return v\n"
+                                     "    }\n"
+                                     "}\n";
+
+TEST_CASE("zip(a, b) types as a ZipIter and the for-loop binds tuple elements") {
+    CHECK(check_errors(std::string{kIter}
+                       + "func use() -> Int32 {\n"
+                         "    var t: Int32 = 0\n"
+                         "    var a = It(n: 3)\n"
+                         "    var b = It(n: 5)\n"
+                         "    for (x, y) in zip(a, b) { t = t + x + y }\n"
+                         "    return t\n"
+                         "}\n")
+          == 0);
+}
+
+TEST_CASE("take(xs, n) types as a TakeIter and the loop variable is the inner element") {
+    CHECK(check_errors(std::string{kIter}
+                       + "func use() -> Int32 {\n"
+                         "    var t: Int32 = 0\n"
+                         "    var a = It(n: 100)\n"
+                         "    for v in take(a, 3) { t = t + v }\n"
+                         "    return t\n"
+                         "}\n")
+          == 0);
+}
+
+TEST_CASE("zip rejects a non-iterator argument with a clear diagnostic") {
+    auto r = check_detail("struct NotIter { var x: Int32 }\n"
+                          "func use() -> Int32 {\n"
+                          "    var n = NotIter(x: 0)\n"
+                          "    var t: Int32 = 0\n"
+                          "    for v in zip(n, n) { t = t + v }\n"
+                          "    return t\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("zip") != std::string::npos);
+    CHECK(r.first_message.find("next") != std::string::npos);
+}
+
+TEST_CASE("take rejects a non-integer count") {
+    auto r = check_detail(std::string{kIter}
+                          + "func use() -> Int32 {\n"
+                            "    var a = It(n: 10)\n"
+                            "    var t: Int32 = 0\n"
+                            "    for v in take(a, true) { t = t + v }\n"
+                            "    return t\n"
+                            "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("integer count") != std::string::npos);
+}
+
 // ---- §12.3 derive(Clone) --------------------------------------------------
 
 TEST_CASE("derive(Clone) surfaces a synthetic .clone() on the struct") {

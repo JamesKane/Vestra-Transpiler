@@ -59,6 +59,15 @@ enum class TypeKind : std::uint16_t {
     // names them so callers can see the contract).
     Span,
     MutSpan,
+    // §9 iterator combinators. `ZipIter[A, B]` yields `(A, B)` tuples;
+    // `TakeIter[A]` yields up to N values of A. Both expose a
+    // synthetic `next() -> Element?` so the existing iterator-protocol
+    // for-loop machinery drives them. Sema tracks the *element* types
+    // of the inner iterators (so it can shape next()'s return);
+    // codegen lowers the calls with CTAD so the C++ side deduces the
+    // underlying iterator types from the argument expressions.
+    ZipIter,
+    TakeIter,
     // nominal — point back to an ast::Decl
     Struct,
     Enum,
@@ -146,6 +155,11 @@ public:
     // Lower to `std::span<const T>` and `std::span<T>` respectively.
     [[nodiscard]] TypePtr make_span(TypePtr inner);
     [[nodiscard]] TypePtr make_mut_span(TypePtr inner);
+    // §9 iterator-combinator types. ZipIter[A, B] tracks the *element*
+    // types yielded by each side; TakeIter[A] tracks the inner
+    // iterator's element type.
+    [[nodiscard]] TypePtr make_zip_iter(TypePtr elem_a, TypePtr elem_b);
+    [[nodiscard]] TypePtr make_take_iter(TypePtr elem);
     [[nodiscard]] TypePtr make_vector(std::int64_t length, TypePtr element);
     [[nodiscard]] TypePtr make_function(std::vector<TypePtr> params, TypePtr result);
     [[nodiscard]] TypePtr make_tuple(std::vector<TypePtr> elements);

@@ -55,6 +55,8 @@ The commit hash is the canonical reference; the summary is the
 
 | Commit | Phase |
 |---|---|
+| (this branch) | **§9 iterator combinators (`zip` / `take`)** — free-function builtins recognized by sema; new `ZipIter` / `TakeIter` type kinds with synthesized `next() -> Element?` for the existing iterator-protocol for-loop. Runtime preamble adds `__vstr::Zip<A, B>` / `__vstr::Take<A>` templates with CTAD deduction guides. The iterator-protocol for-loop now lowers TuplePat as a C++ structured binding over `*__vstr_o`. |
+| `2a7abea` | **§9 do/catch where-guard fall-through propagation** — sema requires an enclosing `throws(E)` matching the caught error; codegen extends the IfExpr/MatchExpr cond-hoist machinery to DoCatchExpr-with-guard, replacing the v0.5 panic-on-fall-through with `return std::unexpected{e}` from the lifted lambda. |
 | `c5861ce` | **§6 tuple literals + destructuring patterns** — TupleLitExpr (`(e1, e2, …)`) and TuplePat (`let (a, b) = expr`); TupleType lowers to `std::tuple<…>`; patterns lower to C++17 structured bindings. ForStmt supports tuple patterns too. |
 | `9536216` | **§10 Box[T] heap pointer + Alloc capability** — `Box[T]` → `std::unique_ptr<T>`; `Box.new(v)` → `std::make_unique<T>(v)`; `box.value` → `*box`. Capability checker rejects `Box.new` without `using Alloc` in scope. |
 | `20f26e3` | **§4 layout attributes** — `@repr(packed)`, `@repr(align(N))` / `@align(N)`, `@bits(N)` on struct fields. Codegen emits `__attribute__((packed))`, `alignas(N)`, and C++ bit-fields. |

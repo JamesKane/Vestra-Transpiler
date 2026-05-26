@@ -632,6 +632,55 @@ TEST_CASE("do/catch where-guard lowers to a cond-hoist with error propagation") 
           != std::string::npos);
 }
 
+// ---- §9 iterator combinators (zip / take) --------------------------------
+
+TEST_CASE("zip(a, b) lowers via CTAD on __vstr::Zip and binds tuples in the for-loop") {
+    SemaEmitFixture f("struct It {\n"
+                      "    var n: Int32\n"
+                      "    inout func next() -> Int32? {\n"
+                      "        if self.n <= 0 { return nil }\n"
+                      "        let v = self.n\n"
+                      "        self.n = self.n - 1\n"
+                      "        return v\n"
+                      "    }\n"
+                      "}\n"
+                      "func use() -> Int32 {\n"
+                      "    var t: Int32 = 0\n"
+                      "    var a = It(n: 3)\n"
+                      "    var b = It(n: 5)\n"
+                      "    for (x, y) in zip(a, b) { t = t + x + y }\n"
+                      "    return t\n"
+                      "}\n");
+    // The header-local Zip template lands once in the preamble.
+    CHECK(f.out.header.find("struct Zip {") != std::string::npos);
+    CHECK(f.out.header.find("Zip(A, B) -> Zip<A, B>") != std::string::npos);
+    // The call lowers to a CTAD instantiation.
+    CHECK(f.out.source.find("__vstr::Zip{a, b}") != std::string::npos);
+    // The TuplePat in the for-loop lowers to a structured binding
+    // over the yielded std::tuple.
+    CHECK(f.out.source.find("auto [x, y] = std::move(*__vstr_o);") != std::string::npos);
+}
+
+TEST_CASE("take(xs, n) lowers via CTAD and casts the count to std::int64_t") {
+    SemaEmitFixture f("struct It {\n"
+                      "    var n: Int32\n"
+                      "    inout func next() -> Int32? {\n"
+                      "        if self.n <= 0 { return nil }\n"
+                      "        let v = self.n\n"
+                      "        self.n = self.n - 1\n"
+                      "        return v\n"
+                      "    }\n"
+                      "}\n"
+                      "func use() -> Int32 {\n"
+                      "    var t: Int32 = 0\n"
+                      "    var a = It(n: 10)\n"
+                      "    for v in take(a, 3) { t = t + v }\n"
+                      "    return t\n"
+                      "}\n");
+    CHECK(f.out.header.find("struct Take {") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::Take{a, static_cast<std::int64_t>(3)}") != std::string::npos);
+}
+
 // ---- §17.4 with name = expr { ... } binding ------------------------------
 
 TEST_CASE("with-binding emits a sub-scope with `auto&& NAME = EXPR;`") {

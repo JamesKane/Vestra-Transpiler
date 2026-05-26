@@ -224,6 +224,40 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    if (!r.has_value()) { panic(\"force-unwrap of Result error\"); }\n";
     hdr << "    return *std::forward<Exp>(r);\n";
     hdr << "}\n\n";
+    // §9 iterator combinators. `Zip<A, B>` and `Take<A>` are header-
+    // local templates driven by the existing iterator-protocol for-
+    // loop machinery — both expose `next()` returning std::optional
+    // over the appropriate element shape. CTAD lets the call sites
+    // write `__vstr::Zip{a, b}` / `__vstr::Take{xs, n}` without
+    // spelling the underlying iterator types.
+    hdr << "template <class A, class B>\n";
+    hdr << "struct Zip {\n";
+    hdr << "    A a;\n";
+    hdr << "    B b;\n";
+    hdr << "    using ElemA = typename decltype(std::declval<A&>().next())::value_type;\n";
+    hdr << "    using ElemB = typename decltype(std::declval<B&>().next())::value_type;\n";
+    hdr << "    using Elem = std::tuple<ElemA, ElemB>;\n";
+    hdr << "    std::optional<Elem> next() {\n";
+    hdr << "        auto xa = a.next();\n";
+    hdr << "        if (!xa.has_value()) { return std::nullopt; }\n";
+    hdr << "        auto xb = b.next();\n";
+    hdr << "        if (!xb.has_value()) { return std::nullopt; }\n";
+    hdr << "        return Elem{std::move(*xa), std::move(*xb)};\n";
+    hdr << "    }\n";
+    hdr << "};\n";
+    hdr << "template <class A, class B> Zip(A, B) -> Zip<A, B>;\n\n";
+    hdr << "template <class A>\n";
+    hdr << "struct Take {\n";
+    hdr << "    A a;\n";
+    hdr << "    std::int64_t remaining;\n";
+    hdr << "    using Elem = typename decltype(std::declval<A&>().next())::value_type;\n";
+    hdr << "    std::optional<Elem> next() {\n";
+    hdr << "        if (remaining <= 0) { return std::nullopt; }\n";
+    hdr << "        --remaining;\n";
+    hdr << "        return a.next();\n";
+    hdr << "    }\n";
+    hdr << "};\n";
+    hdr << "template <class A, class N> Take(A, N) -> Take<A>;\n\n";
     hdr << "}  // namespace __vstr\n\n";
 
     // §4 Optional in a Display splice. Vestra renders `"\(opt)"` as
@@ -2089,11 +2123,34 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         }
         // Iterator protocol: capture iter as a mutable local, drive
         // while-true / .next() / break on nullopt.
+        //
+        // §6 TuplePat support: when the loop variable is a tuple
+        // pattern (e.g., `for (a, b) in zip(...)`), bind via C++
+        // structured binding over `*__vstr_o`. Sub-patterns reuse the
+        // collect_tuple_pat_names / emit_tuple_pat_followons machinery
+        // that param-level tuple destructuring uses, so nested tuple
+        // patterns lower the same way.
         os << "{ auto __vstr_iter = ";
         emit_expr(os, *f.iter);
         os << "; while (true) { auto __vstr_o = __vstr_iter.next(); "
-              "if (!__vstr_o.has_value()) { break; } auto "
-           << bind_name() << " = std::move(*__vstr_o); ";
+              "if (!__vstr_o.has_value()) { break; } ";
+        if (f.pattern && f.pattern->kind == ast::NodeKind::TuplePat) {
+            const auto& tp = static_cast<const ast::TuplePat&>(*f.pattern);
+            std::vector<std::string> names;
+            std::vector<std::pair<std::string, const ast::TuplePat*>> followons;
+            collect_tuple_pat_names(tp, names, followons);
+            os << "auto [";
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                if (i != 0) {
+                    os << ", ";
+                }
+                os << names[i];
+            }
+            os << "] = std::move(*__vstr_o); ";
+            emit_tuple_pat_followons(os, followons, indent + 1);
+        } else {
+            os << "auto " << bind_name() << " = std::move(*__vstr_o); ";
+        }
         if (f.body && f.body->kind == ast::NodeKind::BlockExpr) {
             emit_block(os, static_cast<const ast::BlockExpr&>(*f.body), indent);
         } else {
@@ -2614,6 +2671,35 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             if (callee_ident.name == "unreachable" && c.args.empty()) {
                 os << "__vstr::unreachable_fn()";
                 break;
+            }
+            // §9 iterator combinators: `zip(a, b)` / `take(xs, n)`
+            // recognized by the resolver as builtin types
+            // (ZipIter / TakeIter). The lowering uses CTAD so we
+            // don't have to spell the underlying iterator types — the
+            // C++ side deduces them from the argument expressions.
+            // The take count widens to std::int64_t to match Take's
+            // `remaining` slot regardless of the Vestra-side integer
+            // width.
+            if (resolution_ != nullptr) {
+                auto result_t = resolution_->type_of(&e);
+                if (result_t != nullptr && callee_ident.name == "zip"
+                    && result_t->kind() == sema::TypeKind::ZipIter && c.args.size() == 2) {
+                    os << "__vstr::Zip{";
+                    emit_expr(os, *c.args[0].value);
+                    os << ", ";
+                    emit_expr(os, *c.args[1].value);
+                    os << "}";
+                    break;
+                }
+                if (result_t != nullptr && callee_ident.name == "take"
+                    && result_t->kind() == sema::TypeKind::TakeIter && c.args.size() == 2) {
+                    os << "__vstr::Take{";
+                    emit_expr(os, *c.args[0].value);
+                    os << ", static_cast<std::int64_t>(";
+                    emit_expr(os, *c.args[1].value);
+                    os << ")}";
+                    break;
+                }
             }
         }
         // §12.3 derive(Default) construction: `T.default()` lowers to

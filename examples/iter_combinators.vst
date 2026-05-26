@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §9 iterator combinators — `zip` and `take`.
+//
+// Both are free-function builtins recognized by sema; the codegen
+// lowers each call to a `__vstr::Zip` / `__vstr::Take` struct
+// instance with CTAD on the underlying iterator types. The existing
+// iterator-protocol for-loop machinery drives them.
+//
+// `zip(a, b)` yields a tuple of each side's element on every step
+// and stops the first time either inner iterator yields `nil`.
+// `take(xs, n)` forwards up to n elements from xs and then stops.
+//
+// `for (a, b) in zip(...)` exercises the §6 tuple-pattern binding
+// the loop variable now supports for the iterator-protocol shape.
+
+module examples.iter_combinators
+
+// A descending counter: yields n, n-1, …, 1, then nil forever.
+struct Countdown {
+    var n: Int32
+    inout func next() -> Int32? {
+        if self.n <= 0 { return nil }
+        let v = self.n
+        self.n = self.n - 1
+        return v
+    }
+}
+
+// An ascending stepper: yields start, start+step, start+2*step, …
+// up to the supplied limit, then nil. Two iterator types so the
+// zip exercises the heterogeneous-A/B template instantiation.
+struct Stepper {
+    var current: Int32
+    var step:    Int32
+    var limit:   Int32
+    inout func next() -> Int32? {
+        if self.current >= self.limit { return nil }
+        let v = self.current
+        self.current = self.current + self.step
+        return v
+    }
+}
+
+// Sum (i * j) for each (i, j) drawn from zip(Countdown(5), Stepper).
+// The for-loop's TuplePat binding destructures each yielded pair
+// directly into i and j — no inner `let (i, j) = …` needed.
+func zip_sum() -> Int32 {
+    var total: Int32 = 0
+    var cd = Countdown(n: 5)
+    var sp = Stepper(current: 10, step: 1, limit: 100)
+    for (i, j) in zip(cd, sp) {
+        total = total + (i * j)
+    }
+    return total
+}
+
+// `take` truncates an iterator: pull at most 3 from a 10-step
+// Stepper, sum the values. Verifies the count gate without
+// relying on the inner iterator's own exhaustion path.
+func take_sum() -> Int32 {
+    var total: Int32 = 0
+    var sp = Stepper(current: 0, step: 7, limit: 1000)
+    for v in take(sp, 3) {
+        total = total + v
+    }
+    return total
+}
+
+// Compose: take the first 4 (i, j) pairs from a long zip. The
+// outer iterator is `Take<Zip<Stepper, Countdown>>`; the codegen
+// instantiates each template via CTAD on the call-site arg type.
+func zip_take_sum() -> Int32 {
+    var total: Int32 = 0
+    var sp = Stepper(current: 1, step: 1, limit: 1000)
+    var cd = Countdown(n: 100)
+    for (i, j) in take(zip(sp, cd), 4) {
+        total = total + (i + j)
+    }
+    return total
+}
