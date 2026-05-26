@@ -68,6 +68,8 @@ enum class TypeKind : std::uint16_t {
     // underlying iterator types from the argument expressions.
     ZipIter,
     TakeIter,
+    MapIter,
+    FilterIter,
     // nominal — point back to an ast::Decl
     Struct,
     Enum,
@@ -160,6 +162,12 @@ public:
     // iterator's element type.
     [[nodiscard]] TypePtr make_zip_iter(TypePtr elem_a, TypePtr elem_b);
     [[nodiscard]] TypePtr make_take_iter(TypePtr elem);
+    // §9 map / filter combinators. MapIter tracks both the source
+    // element type (parts[0]) and the post-transform type (parts[1]);
+    // FilterIter just carries the source element (the predicate
+    // produces Bool, which lookup_method synthesizes implicitly).
+    [[nodiscard]] TypePtr make_map_iter(TypePtr elem_in, TypePtr elem_out);
+    [[nodiscard]] TypePtr make_filter_iter(TypePtr elem);
     [[nodiscard]] TypePtr make_vector(std::int64_t length, TypePtr element);
     [[nodiscard]] TypePtr make_function(std::vector<TypePtr> params, TypePtr result);
     [[nodiscard]] TypePtr make_tuple(std::vector<TypePtr> elements);

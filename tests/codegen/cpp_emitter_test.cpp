@@ -661,6 +661,49 @@ TEST_CASE("zip(a, b) lowers via CTAD on __vstr::Zip and binds tuples in the for-
     CHECK(f.out.source.find("auto [x, y] = std::move(*__vstr_o);") != std::string::npos);
 }
 
+TEST_CASE("map(xs, closure) lowers to __vstr::Map{xs, [&](T x){ return ... }}") {
+    SemaEmitFixture f("struct It {\n"
+                      "    var n: Int32\n"
+                      "    inout func next() -> Int32? {\n"
+                      "        if self.n <= 0 { return nil }\n"
+                      "        let v = self.n\n"
+                      "        self.n = self.n - 1\n"
+                      "        return v\n"
+                      "    }\n"
+                      "}\n"
+                      "func use() -> Int32 {\n"
+                      "    var t: Int32 = 0\n"
+                      "    var a = It(n: 5)\n"
+                      "    for v in map(a, { x => x * 2 }) { t = t + v }\n"
+                      "    return t\n"
+                      "}\n");
+    CHECK(f.out.header.find("struct Map {") != std::string::npos);
+    CHECK(f.out.header.find("Map(A, F) -> Map<A, F>") != std::string::npos);
+    // Closure lowers with the param typed from sema and `[&]` capture.
+    CHECK(f.out.source.find("__vstr::Map{a, [&](std::int32_t x) { return x * 2; }}")
+          != std::string::npos);
+}
+
+TEST_CASE("filter(xs, predicate) lowers to __vstr::Filter and demands a Bool return") {
+    SemaEmitFixture f("struct It {\n"
+                      "    var n: Int32\n"
+                      "    inout func next() -> Int32? {\n"
+                      "        if self.n <= 0 { return nil }\n"
+                      "        let v = self.n\n"
+                      "        self.n = self.n - 1\n"
+                      "        return v\n"
+                      "    }\n"
+                      "}\n"
+                      "func use() -> Int32 {\n"
+                      "    var t: Int32 = 0\n"
+                      "    var a = It(n: 10)\n"
+                      "    for v in filter(a, { x => (x % 2) == 0 }) { t = t + v }\n"
+                      "    return t\n"
+                      "}\n");
+    CHECK(f.out.header.find("struct Filter {") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::Filter{a, [&](std::int32_t x)") != std::string::npos);
+}
+
 TEST_CASE("take(xs, n) lowers via CTAD and casts the count to std::int64_t") {
     SemaEmitFixture f("struct It {\n"
                       "    var n: Int32\n"

@@ -258,6 +258,41 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    }\n";
     hdr << "};\n";
     hdr << "template <class A, class N> Take(A, N) -> Take<A>;\n\n";
+    // Map<A, F> forwards each yielded element through f; the element
+    // type of the resulting iterator is `decltype(f(elem))`. F is
+    // captured by value (same as A) so the inner lambda's captures
+    // — by-ref into the surrounding fn's locals — stay alive for
+    // every call to next().
+    hdr << "template <class A, class F>\n";
+    hdr << "struct Map {\n";
+    hdr << "    A a;\n";
+    hdr << "    F f;\n";
+    hdr << "    using ElemA = typename decltype(std::declval<A&>().next())::value_type;\n";
+    hdr << "    using Elem  = decltype(std::declval<F&>()(std::declval<ElemA&>()));\n";
+    hdr << "    std::optional<Elem> next() {\n";
+    hdr << "        auto x = a.next();\n";
+    hdr << "        if (!x.has_value()) { return std::nullopt; }\n";
+    hdr << "        return std::optional<Elem>{f(*x)};\n";
+    hdr << "    }\n";
+    hdr << "};\n";
+    hdr << "template <class A, class F> Map(A, F) -> Map<A, F>;\n\n";
+    // Filter<A, P> loops a.next() until p(v) is true (returning v)
+    // or a.next() reports nullopt (returning nullopt). The element
+    // type matches the source iterator's.
+    hdr << "template <class A, class P>\n";
+    hdr << "struct Filter {\n";
+    hdr << "    A a;\n";
+    hdr << "    P p;\n";
+    hdr << "    using Elem = typename decltype(std::declval<A&>().next())::value_type;\n";
+    hdr << "    std::optional<Elem> next() {\n";
+    hdr << "        for (;;) {\n";
+    hdr << "            auto x = a.next();\n";
+    hdr << "            if (!x.has_value()) { return std::nullopt; }\n";
+    hdr << "            if (p(*x)) { return x; }\n";
+    hdr << "        }\n";
+    hdr << "    }\n";
+    hdr << "};\n";
+    hdr << "template <class A, class P> Filter(A, P) -> Filter<A, P>;\n\n";
     hdr << "}  // namespace __vstr\n\n";
 
     // §4 Optional in a Display splice. Vestra renders `"\(opt)"` as
@@ -2700,6 +2735,24 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << ")}";
                     break;
                 }
+                if (result_t != nullptr && callee_ident.name == "map"
+                    && result_t->kind() == sema::TypeKind::MapIter && c.args.size() == 2) {
+                    os << "__vstr::Map{";
+                    emit_expr(os, *c.args[0].value);
+                    os << ", ";
+                    emit_expr(os, *c.args[1].value);
+                    os << "}";
+                    break;
+                }
+                if (result_t != nullptr && callee_ident.name == "filter"
+                    && result_t->kind() == sema::TypeKind::FilterIter && c.args.size() == 2) {
+                    os << "__vstr::Filter{";
+                    emit_expr(os, *c.args[0].value);
+                    os << ", ";
+                    emit_expr(os, *c.args[1].value);
+                    os << "}";
+                    break;
+                }
             }
         }
         // §12.3 derive(Default) construction: `T.default()` lowers to
@@ -3045,6 +3098,48 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             }
         }
         os << " }()";
+        break;
+    }
+    case ast::NodeKind::ClosureExpr: {
+        // §16 closure literal `{ p1, p2, … => body }` lowers to a C++
+        // lambda. Param types come from the resolver-typed Function
+        // for this closure; without sema the param list emits as
+        // `auto` (the resolver-free codegen test path). The capture
+        // is `[&]` since closures don't yet have an escape-rule story
+        // in v0.5 — every closure is consumed at the call site
+        // (.mapError / map / filter / etc.), so by-reference capture
+        // is safe.
+        const auto& cx = static_cast<const ast::ClosureExpr&>(e);
+        sema::TypePtr fn_type = resolution_ != nullptr ? resolution_->type_of(&e) : nullptr;
+        os << "[&](";
+        for (std::size_t i = 0; i < cx.params.size(); ++i) {
+            if (i != 0) {
+                os << ", ";
+            }
+            if (fn_type != nullptr && fn_type->kind() == sema::TypeKind::Function
+                && i < fn_type->parts().size() && fn_type->parts()[i] != nullptr) {
+                emit_sema_type(os, fn_type->parts()[i]);
+            } else {
+                os << "auto";
+            }
+            os << " " << cx.params[i];
+        }
+        os << ") { ";
+        for (std::size_t i = 0; i < cx.body.size(); ++i) {
+            const auto& s = *cx.body[i];
+            bool last = (i + 1 == cx.body.size());
+            if (last && s.kind == ast::NodeKind::ExprStmt
+                && static_cast<const ast::ExprStmt&>(s).expr != nullptr) {
+                os << "return ";
+                emit_expr(os, *static_cast<const ast::ExprStmt&>(s).expr);
+                os << ";";
+            } else {
+                std::ostringstream tmp;
+                emit_stmt(tmp, s, 0);
+                os << tmp.str();
+            }
+        }
+        os << " }";
         break;
     }
     default:

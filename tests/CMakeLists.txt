@@ -931,6 +931,35 @@ set_tests_properties(e2e_display_run PROPERTIES
     DEPENDS                e2e_display_compile
     PASS_REGULAR_EXPRESSION "display OK")
 
+# map / filter combinators: §9 builtins that take a closure for the
+# per-element transform / predicate. Lower to __vstr::Map / __vstr::Filter
+# via CTAD on both the iterator and the closure. Closures themselves
+# emit as C++ `[&](T x) { return body; }` lambdas. The runtime
+# combines map + filter + capture on a Stepper iterator.
+set(e2e_map_filter_input  ${CMAKE_SOURCE_DIR}/examples/map_filter.vst)
+set(e2e_map_filter_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_map_filter.cpp)
+
+add_test(
+    NAME    e2e_map_filter_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_map_filter_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_map_filter_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_map_filter_driver} ${e2e_workdir}/map_filter.cpp
+            -o ${e2e_workdir}/map_filter_app)
+set_tests_properties(e2e_map_filter_compile PROPERTIES
+    DEPENDS e2e_map_filter_transpile)
+
+add_test(
+    NAME    e2e_map_filter_run
+    COMMAND ${e2e_workdir}/map_filter_app)
+set_tests_properties(e2e_map_filter_run PROPERTIES
+    DEPENDS                e2e_map_filter_compile
+    PASS_REGULAR_EXPRESSION "map_filter OK")
+
 # Iterator combinators: §9 `zip(a, b)` / `take(xs, n)` builtins. Both
 # adapt iterator-protocol structs into new iterators via __vstr::Zip
 # / __vstr::Take in the runtime preamble; CTAD on each call site

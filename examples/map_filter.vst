@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §9 iterator combinators — `map` and `filter`. Both take a closure
+// for the per-element transform / predicate; the existing
+// iterator-protocol for-loop drives the resulting adaptor.
+//
+// `map(xs, f)` yields `f(elem)` for each elem in xs; the result's
+// element type is whatever the closure returns.
+// `filter(xs, p)` yields just the elems where `p(elem)` is true;
+// the element type is unchanged.
+//
+// Closure literals lower to C++ lambdas with `[&]` capture. The
+// param types come from the call-site's expected function type, so
+// `{ x => x * 2 }` against a `(Int32) -> Int32` slot binds x at
+// Int32 without needing a Vestra-side annotation.
+
+module examples.map_filter
+
+// A minimal iterator: yields 0, step, 2*step, … below limit.
+struct Stepper {
+    var current: Int32
+    var step:    Int32
+    var limit:   Int32
+    inout func next() -> Int32? {
+        if self.current >= self.limit { return nil }
+        let v = self.current
+        self.current = self.current + self.step
+        return v
+    }
+}
+
+// Double every yielded value. The closure types as
+// `(Int32) -> Int32` because the iterator's element type is Int32
+// and the closure body's `x * 2` types as Int32 too.
+func sum_doubled() -> Int32 {
+    var total: Int32 = 0
+    var sp = Stepper(current: 1, step: 1, limit: 6)  // 1, 2, 3, 4, 5
+    for v in map(sp, { x => x * 2 }) {
+        total = total + v
+    }
+    return total
+}
+
+// Drop everything but the evens. Predicate types as
+// `(Int32) -> Bool`.
+func sum_evens() -> Int32 {
+    var total: Int32 = 0
+    var sp = Stepper(current: 1, step: 1, limit: 11)  // 1..10
+    for v in filter(sp, { x => (x % 2) == 0 }) {
+        total = total + v
+    }
+    return total
+}
+
+// Compose: take the squares of the evens. The pipeline is
+// Filter<Stepper, P> -> Map<Filter<…>, F>; CTAD instantiates each
+// template at the call site without us needing to spell the
+// underlying types.
+func sum_even_squares() -> Int32 {
+    var total: Int32 = 0
+    var sp = Stepper(current: 1, step: 1, limit: 11)  // 1..10
+    for v in map(filter(sp, { x => (x % 2) == 0 }), { x => x * x }) {
+        total = total + v
+    }
+    return total
+}
+
+// Capture: closure references a local. `factor` is captured by
+// reference via the lambda's `[&]` clause, so the multiplier reads
+// from the enclosing scope at each invocation.
+func sum_scaled() -> Int32 {
+    let factor: Int32 = 3
+    var total: Int32 = 0
+    var sp = Stepper(current: 1, step: 1, limit: 5)  // 1, 2, 3, 4
+    for v in map(sp, { x => x * factor }) {
+        total = total + v
+    }
+    return total
+}

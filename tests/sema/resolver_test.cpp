@@ -631,6 +631,58 @@ TEST_CASE("zip rejects a non-iterator argument with a clear diagnostic") {
     CHECK(r.first_message.find("next") != std::string::npos);
 }
 
+TEST_CASE("map(xs, closure) types as a MapIter with the closure's return as element type") {
+    CHECK(check_errors(std::string{kIter}
+                       + "func use() -> Int32 {\n"
+                         "    var t: Int32 = 0\n"
+                         "    var a = It(n: 5)\n"
+                         "    for v in map(a, { x => x * 2 }) { t = t + v }\n"
+                         "    return t\n"
+                         "}\n")
+          == 0);
+}
+
+TEST_CASE("filter(xs, closure) types as a FilterIter keeping the source element type") {
+    CHECK(check_errors(std::string{kIter}
+                       + "func use() -> Int32 {\n"
+                         "    var t: Int32 = 0\n"
+                         "    var a = It(n: 10)\n"
+                         "    for v in filter(a, { x => (x % 2) == 0 }) { t = t + v }\n"
+                         "    return t\n"
+                         "}\n")
+          == 0);
+}
+
+TEST_CASE("a closure used outside a function-typed slot is rejected") {
+    // No contextual function type means the closure can't be typed
+    // in v0.5; sema points the user at the function-slot use site.
+    auto r = check_detail("func use() -> Int32 {\n"
+                          "    let f = { x => x + 1 }\n"
+                          "    return 0\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("closure type cannot be inferred") != std::string::npos);
+}
+
+TEST_CASE("filter rejects a closure whose return type isn't Bool") {
+    // The closure's expected result type is Bool (filter sets that as
+    // its predicate shape); the closure-body diagnostic fires first
+    // because the closure's own return-type mismatch is caught before
+    // we get back to filter's outer check. Either message is fine
+    // for the user — we pin the closure-level one since it's the
+    // first thing they see.
+    auto r = check_detail(std::string{kIter}
+                          + "func use() -> Int32 {\n"
+                            "    var a = It(n: 5)\n"
+                            "    var t: Int32 = 0\n"
+                            "    for v in filter(a, { x => x + 1 }) { t = t + v }\n"
+                            "    return t\n"
+                            "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("closure body types as") != std::string::npos);
+    CHECK(r.first_message.find("Bool") != std::string::npos);
+}
+
 TEST_CASE("take rejects a non-integer count") {
     auto r = check_detail(std::string{kIter}
                           + "func use() -> Int32 {\n"

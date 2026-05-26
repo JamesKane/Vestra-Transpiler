@@ -1007,6 +1007,79 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
     case ast::NodeKind::BlockExpr:
         t = check_block_expr(static_cast<const ast::BlockExpr&>(e), expected);
         break;
+    case ast::NodeKind::ClosureExpr: {
+        // §16 closure literal. The parser stores param names with no
+        // type annotations — types come from a contextual expected
+        // Function type supplied by the use site (e.g. .mapError, the
+        // map/filter builtins, or a typed local). Without that
+        // context the closure can't be typed in v0.5; we diagnose
+        // here rather than fall through to Error so the user gets a
+        // specific message.
+        const auto& cx = static_cast<const ast::ClosureExpr&>(e);
+        if (expected == nullptr || expected->kind() != TypeKind::Function
+            || expected->parts().size() != cx.params.size()) {
+            error_at(cx.range,
+                     "closure type cannot be inferred without context; pass it directly to a "
+                     "function-typed slot (e.g. .mapError, map, filter) or annotate the binding");
+            // Still walk the body so any errors inside it surface,
+            // but with each param at Error (so they're permissive).
+            ScopeStack::Guard g(scopes_);
+            for (const auto& name : cx.params) {
+                Symbol sym;
+                sym.name = name;
+                sym.kind = SymbolKind::Local;
+                sym.type = types_->error();
+                (void)g.scope().insert(std::move(sym));
+            }
+            for (const auto& stmt : cx.body) {
+                if (stmt) {
+                    check_stmt(*stmt);
+                }
+            }
+            t = types_->error();
+            break;
+        }
+        ScopeStack::Guard g(scopes_);
+        for (std::size_t i = 0; i < cx.params.size(); ++i) {
+            Symbol sym;
+            sym.name = cx.params[i];
+            sym.kind = SymbolKind::Local;
+            sym.type = expected->parts()[i] != nullptr ? expected->parts()[i] : types_->error();
+            (void)g.scope().insert(std::move(sym));
+        }
+        // The body's trailing ExprStmt yields the closure result —
+        // mirror check_block_expr's "last expression types the block"
+        // shape so a single-expression closure `{ x => x * 2 }` types
+        // cleanly without needing a `return`. Mid-body statements are
+        // checked normally.
+        TypePtr body_type = nullptr;
+        for (std::size_t i = 0; i < cx.body.size(); ++i) {
+            const auto& stmt = cx.body[i];
+            if (!stmt) {
+                continue;
+            }
+            const bool is_last = (i + 1 == cx.body.size());
+            if (is_last && stmt->kind == ast::NodeKind::ExprStmt
+                && static_cast<const ast::ExprStmt&>(*stmt).expr != nullptr) {
+                body_type =
+                    check_expr(*static_cast<const ast::ExprStmt&>(*stmt).expr, expected->result());
+            } else {
+                check_stmt(*stmt);
+            }
+        }
+        if (body_type == nullptr) {
+            body_type = types_->unit();
+        }
+        if (expected->result() != nullptr
+            && !TypeArena::assignable(body_type, expected->result())) {
+            error_at(cx.range,
+                     std::format("closure body types as {} but the expected return type is {}",
+                                 body_type->describe(),
+                                 expected->result()->describe()));
+        }
+        t = types_->make_function(expected->parts(), body_type);
+        break;
+    }
     case ast::NodeKind::CopyExpr:
         t = check_expr(*static_cast<const ast::CopyExpr&>(e).inner);
         break;
@@ -1656,7 +1729,7 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
     // method.
     if (c.callee->kind == ast::NodeKind::IdentExpr) {
         const auto& ci = static_cast<const ast::IdentExpr&>(*c.callee);
-        if ((ci.name == "zip" || ci.name == "take")
+        if ((ci.name == "zip" || ci.name == "take" || ci.name == "map" || ci.name == "filter")
             && scopes_.current().lookup(ci.name) == nullptr) {
             auto iterator_element = [&](TypePtr iter_t) -> TypePtr {
                 if (iter_t == nullptr || iter_t->is_error()) {
@@ -1701,34 +1774,121 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                 return types_->make_zip_iter(ea != nullptr ? ea : types_->error(),
                                              eb != nullptr ? eb : types_->error());
             }
-            // ci.name == "take"
-            if (c.args.size() != 2) {
+            if (ci.name == "take") {
+                if (c.args.size() != 2) {
+                    for (const auto& a : c.args) {
+                        (void)check_expr(*a.value);
+                    }
+                    error_at(c.range, "take(xs, n) takes exactly two arguments");
+                    return types_->make_take_iter(types_->error());
+                }
                 for (const auto& a : c.args) {
-                    (void)check_expr(*a.value);
+                    if (!a.label.empty()) {
+                        error_at(a.value->range, "take arguments cannot have labels");
+                    }
                 }
-                error_at(c.range, "take(xs, n) takes exactly two arguments");
-                return types_->make_take_iter(types_->error());
-            }
-            for (const auto& a : c.args) {
-                if (!a.label.empty()) {
-                    error_at(a.value->range, "take arguments cannot have labels");
+                auto txs = check_expr(*c.args[0].value);
+                auto tn = check_expr(*c.args[1].value);
+                auto exs = iterator_element(txs);
+                if (exs == nullptr && txs != nullptr && !txs->is_error()) {
+                    error_at(c.args[0].value->range,
+                             std::format("take's first argument must be an iterator (have a "
+                                         "'next() -> Element?' method), got {}",
+                                         txs->describe()));
                 }
+                if (tn != nullptr && !tn->is_error() && !tn->is_integer()) {
+                    error_at(c.args[1].value->range,
+                             std::format("take's second argument must be an integer count, got {}",
+                                         tn->describe()));
+                }
+                return types_->make_take_iter(exs != nullptr ? exs : types_->error());
             }
-            auto txs = check_expr(*c.args[0].value);
-            auto tn = check_expr(*c.args[1].value);
-            auto exs = iterator_element(txs);
-            if (exs == nullptr && txs != nullptr && !txs->is_error()) {
-                error_at(c.args[0].value->range,
-                         std::format("take's first argument must be an iterator (have a "
-                                     "'next() -> Element?' method), got {}",
-                                     txs->describe()));
+            // §9 `map(xs, f)` / `filter(xs, p)` — both type-check the
+            // closure against an expected function type derived from
+            // xs's element type. For map, f is (T) -> U and the
+            // result's element type is U; for filter, p is (T) -> Bool
+            // and the element type is preserved. The closure must be
+            // passed directly so the expected-type flow can shape its
+            // params (sema rejects a free closure with no context).
+            if (ci.name == "map" || ci.name == "filter") {
+                if (c.args.size() != 2) {
+                    for (const auto& a : c.args) {
+                        (void)check_expr(*a.value);
+                    }
+                    error_at(c.range,
+                             std::format("{}(xs, {}) takes exactly two arguments",
+                                         ci.name,
+                                         ci.name == "map" ? "f" : "p"));
+                    if (ci.name == "map") {
+                        return types_->make_map_iter(types_->error(), types_->error());
+                    }
+                    return types_->make_filter_iter(types_->error());
+                }
+                for (const auto& a : c.args) {
+                    if (!a.label.empty()) {
+                        error_at(a.value->range,
+                                 std::format("{} arguments cannot have labels", ci.name));
+                    }
+                }
+                auto txs = check_expr(*c.args[0].value);
+                auto exs = iterator_element(txs);
+                if (exs == nullptr && txs != nullptr && !txs->is_error()) {
+                    error_at(c.args[0].value->range,
+                             std::format("{}'s first argument must be an iterator (have a "
+                                         "'next() -> Element?' method), got {}",
+                                         ci.name,
+                                         txs->describe()));
+                    exs = types_->error();
+                }
+                if (exs == nullptr) {
+                    exs = types_->error();
+                }
+                if (ci.name == "filter") {
+                    // Predicate: shape (T) -> Bool. Flow the expected
+                    // type so a closure literal types its param.
+                    auto pred_expected = types_->make_function({exs}, types_->boolean());
+                    auto tp = check_expr(*c.args[1].value, pred_expected);
+                    if (tp == nullptr || tp->is_error()) {
+                        return types_->make_filter_iter(exs);
+                    }
+                    if (tp->kind() != TypeKind::Function || tp->parts().size() != 1
+                        || tp->result() == nullptr || tp->result()->kind() != TypeKind::Bool) {
+                        error_at(c.args[1].value->range,
+                                 std::format("filter's predicate must be (T) -> Bool, got {}",
+                                             tp->describe()));
+                        return types_->make_filter_iter(exs);
+                    }
+                    if (!TypeArena::assignable(exs, tp->parts()[0])) {
+                        error_at(c.args[1].value->range,
+                                 std::format("filter predicate expects {} but iterator yields {}",
+                                             tp->parts()[0]->describe(),
+                                             exs->describe()));
+                    }
+                    return types_->make_filter_iter(exs);
+                }
+                // map: shape (T) -> U. Flow only the param type into
+                // the closure context; the return type is whatever
+                // the closure body produces.
+                auto fn_expected = types_->make_function({exs}, /*result=*/nullptr);
+                auto tf = check_expr(*c.args[1].value, fn_expected);
+                if (tf == nullptr || tf->is_error()) {
+                    return types_->make_map_iter(exs, types_->error());
+                }
+                if (tf->kind() != TypeKind::Function || tf->parts().size() != 1) {
+                    error_at(c.args[1].value->range,
+                             std::format("map's transform must be a function (T) -> U, got {}",
+                                         tf->describe()));
+                    return types_->make_map_iter(exs, types_->error());
+                }
+                if (!TypeArena::assignable(exs, tf->parts()[0])) {
+                    error_at(c.args[1].value->range,
+                             std::format("map transform expects {} but iterator yields {}",
+                                         tf->parts()[0]->describe(),
+                                         exs->describe()));
+                }
+                return types_->make_map_iter(
+                    exs, tf->result() != nullptr ? tf->result() : types_->error());
             }
-            if (tn != nullptr && !tn->is_error() && !tn->is_integer()) {
-                error_at(c.args[1].value->range,
-                         std::format("take's second argument must be an integer count, got {}",
-                                     tn->describe()));
-            }
-            return types_->make_take_iter(exs != nullptr ? exs : types_->error());
         }
     }
 
@@ -2352,6 +2512,13 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
             return types_->make_function({}, types_->make_optional(elem));
         }
         if (owner_type->kind() == TypeKind::TakeIter && owner_type->inner() != nullptr) {
+            return types_->make_function({}, types_->make_optional(owner_type->inner()));
+        }
+        if (owner_type->kind() == TypeKind::MapIter && owner_type->parts().size() == 2) {
+            // The element type is the *output* of f — parts[1].
+            return types_->make_function({}, types_->make_optional(owner_type->parts()[1]));
+        }
+        if (owner_type->kind() == TypeKind::FilterIter && owner_type->inner() != nullptr) {
             return types_->make_function({}, types_->make_optional(owner_type->inner()));
         }
     }
