@@ -591,8 +591,17 @@ struct WhileStmt : Stmt {
 };
 
 struct WithBinding {
+    // §17.4 admits three w-bind shapes:
+    //   `with TYPE { ... }`         — marker capability (no value, no name)
+    //   `with TYPE = EXPR { ... }`  — capability satisfaction with a value
+    //   `with name = EXPR { ... }`  — value binding (no capability)
+    // The parser disambiguates the third shape by the leading
+    // identifier's first letter: lowercase → name binding; uppercase
+    // → capability type. When `name` is non-empty, `cap_type` stays
+    // null and only the value's lexical scope matters.
+    std::string name;
     TypePtr cap_type;
-    ExprPtr value;  // optional — marker capabilities omit it
+    ExprPtr value;
 };
 
 struct WithStmt : Stmt {

@@ -764,6 +764,34 @@ set_tests_properties(e2e_map_error_run PROPERTIES
     DEPENDS                e2e_map_error_compile
     PASS_REGULAR_EXPRESSION "mapError OK")
 
+# With-binding: §17.4 `with NAME = EXPR { ... }` value-binding form
+# distinct from the existing cap-typed form (`with Alloc { ... }`).
+# Lowers to a C++ sub-scope with `auto&& NAME = EXPR;`. Parser
+# disambiguates by the leading identifier's first letter (lowercase
+# = name binding, uppercase = capability type) per Vestra convention.
+set(e2e_with_binding_input  ${CMAKE_SOURCE_DIR}/examples/with_binding.vst)
+set(e2e_with_binding_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_with_binding.cpp)
+
+add_test(
+    NAME    e2e_with_binding_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_with_binding_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_with_binding_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_with_binding_driver} ${e2e_workdir}/with_binding.cpp
+            -o ${e2e_workdir}/with_binding_app)
+set_tests_properties(e2e_with_binding_compile PROPERTIES DEPENDS e2e_with_binding_transpile)
+
+add_test(
+    NAME    e2e_with_binding_run
+    COMMAND ${e2e_workdir}/with_binding_app)
+set_tests_properties(e2e_with_binding_run PROPERTIES
+    DEPENDS                e2e_with_binding_compile
+    PASS_REGULAR_EXPRESSION "with binding OK")
+
 # Box[T]: §10 unique-ownership heap pointer. Lowers to
 # std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
 # → *box. Allocation requires the §8 `Alloc` capability. E2E pins

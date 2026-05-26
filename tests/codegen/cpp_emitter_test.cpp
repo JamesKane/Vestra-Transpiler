@@ -607,6 +607,29 @@ TEST_CASE("a method returning a struct stays a real call, not a fresh struct lit
     CHECK(f.out.source.find("return Point{};") == std::string::npos);
 }
 
+// ---- §17.4 with name = expr { ... } binding ------------------------------
+
+TEST_CASE("with-binding emits a sub-scope with `auto&& NAME = EXPR;`") {
+    SemaEmitFixture f("struct R { var x: Int32 }\n"
+                      "func mk() -> R { return R(x: 42) }\n"
+                      "func use() -> Int32 {\n"
+                      "    var total: Int32 = 0\n"
+                      "    with r = mk() {\n"
+                      "        total = r.x\n"
+                      "    }\n"
+                      "    return total\n"
+                      "}\n");
+    CHECK(f.out.source.find("auto&& r = mk();") != std::string::npos);
+    // The binding lives inside a `{ ... }` sub-scope.
+    auto auto_pos = f.out.source.find("auto&& r =");
+    auto open = f.out.source.rfind("{", auto_pos);
+    auto close = f.out.source.find("}", auto_pos);
+    REQUIRE(open != std::string::npos);
+    REQUIRE(close != std::string::npos);
+    CHECK(open < auto_pos);
+    CHECK(close > auto_pos);
+}
+
 // ---- §9 .mapError(_ f) on Result -----------------------------------------
 
 TEST_CASE("mapError lowers to std::expected::transform_error") {

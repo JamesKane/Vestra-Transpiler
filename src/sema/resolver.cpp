@@ -864,6 +864,41 @@ void Resolver::check_stmt(const ast::Stmt& s) {
     case ast::NodeKind::BreakStmt:
     case ast::NodeKind::ContinueStmt:
         break;
+    case ast::NodeKind::WithStmt: {
+        // §17.4 `with` block. Three shapes per WithBinding (parser
+        // disambiguates):
+        //   * cap_type only        — `with Alloc { … }`
+        //   * cap_type + value     — `with Alloc = myAllocator { … }`
+        //   * name + value         — `with mmio = createRegion() { … }`
+        // Push a single scope for all bindings; insert each named
+        // binding into the scope at the value's type; then recurse
+        // into the body.
+        const auto& w = static_cast<const ast::WithStmt&>(s);
+        ScopeStack::Guard g(scopes_);
+        for (const auto& b : w.bindings) {
+            TypePtr value_t = nullptr;
+            if (b.value) {
+                value_t = check_expr(*b.value);
+            }
+            if (!b.name.empty()) {
+                Symbol sym;
+                sym.name = b.name;
+                sym.kind = SymbolKind::Local;
+                sym.type = value_t != nullptr ? value_t : types_->error();
+                sym.definition_range = {};
+                if (auto* prev = g.scope().insert(std::move(sym))) {
+                    duplicate_definition(*prev, b.name, {});
+                }
+            }
+            // Cap-typed bindings don't introduce a Vestra-side
+            // identifier — the capability checker handles their
+            // discharge separately.
+        }
+        if (w.body) {
+            check_expr(*w.body);
+        }
+        break;
+    }
     default:
         break;
     }

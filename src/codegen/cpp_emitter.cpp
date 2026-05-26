@@ -2020,6 +2020,44 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         os << " } }\n";
         break;
     }
+    case ast::NodeKind::WithStmt: {
+        // §17.4 `with` statement: open a fresh C++ block, declare any
+        // named bindings (`with mmio = createRegion() { ... }`) at
+        // their value's deduced type, then emit the body's statements
+        // at one-deeper indent. Cap-typed bindings (`with Alloc { ... }`)
+        // contribute no identifier but still take the sub-scope so
+        // their lifetime story is uniform.
+        const auto& w = static_cast<const ast::WithStmt&>(s);
+        os << "{\n";
+        for (const auto& b : w.bindings) {
+            if (!b.name.empty() && b.value) {
+                write_indent(os, indent + 1);
+                os << "auto&& " << b.name << " = ";
+                emit_expr(os, *b.value);
+                os << ";\n";
+            }
+            // Cap-typed bindings (TYPE = EXPR shape with no name) are
+            // discharged by the capability checker; the value runs but
+            // doesn't introduce an identifier. Discard via void-cast
+            // so it doesn't trigger -Wunused-result on a [[nodiscard]]
+            // expression.
+            else if (b.name.empty() && b.value) {
+                write_indent(os, indent + 1);
+                os << "(void)(";
+                emit_expr(os, *b.value);
+                os << ");\n";
+            }
+        }
+        if (w.body && w.body->kind == ast::NodeKind::BlockExpr) {
+            const auto& blk = static_cast<const ast::BlockExpr&>(*w.body);
+            for (const auto& stmt : blk.stmts) {
+                emit_stmt(os, *stmt, indent + 1);
+            }
+        }
+        write_indent(os, indent);
+        os << "}\n";
+        break;
+    }
     default:
         unsupported(os, "stmt", s.range);
         os << "\n";

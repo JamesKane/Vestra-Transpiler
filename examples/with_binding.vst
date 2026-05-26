@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §17.4 `with NAME = EXPR { ... }` value binding. The block scopes
+// the binding to its body — the name is in scope inside the braces
+// and goes out of scope when the block ends. C++ lowering is a
+// straightforward `{ auto&& NAME = EXPR; ... }` sub-scope.
+//
+// Distinct from the cap-typed forms (`with Alloc { ... }` for marker,
+// `with Alloc = myAllocator { ... }` for satisfaction with value) —
+// the parser disambiguates by the leading identifier's first letter
+// (lowercase ⇒ name, uppercase ⇒ type), following Vestra's casing
+// convention.
+//
+// The annex's MMIO views and DMA-descriptor patterns build on this
+// shape (a typed view minted from a raw pointer, scoped to a block
+// for the duration of the operation). v0.5 is the language primitive;
+// the kernel-side library shapes layer on top.
+
+module examples.with_binding
+
+struct Region {
+    var base: Int32
+    var size: Int32
+}
+
+derive(Eq) for Region
+
+func makeRegion(_ base: Int32, _ size: Int32) -> Region {
+    return Region(base: base, size: size)
+}
+
+// The classic shape: bind a resource, use it, and let the binding go
+// out of scope when the block ends. Inside the block, `r` is the
+// resource's value type (the &&-binding keeps the lifetime to the
+// block's brace; lifetime-extension rules on temporary objects apply
+// per the C++ standard).
+func totalSize() -> Int32 {
+    var total: Int32 = 0
+    with r = makeRegion(0x1000, 256) {
+        total = total + r.size
+    }
+    with r = makeRegion(0x2000, 128) {
+        total = total + r.size
+    }
+    return total
+}
+
+// Nested with-bindings — outer's name is in scope for the inner block.
+func nested(_ a: Int32, _ b: Int32) -> Int32 {
+    with outer = makeRegion(a, 10) {
+        with inner = makeRegion(b, 20) {
+            return outer.size + inner.size + outer.base + inner.base
+        }
+    }
+}

@@ -1226,14 +1226,32 @@ ast::StmtPtr Parser::parse_statement() {
     }
     case TokenKind::KwWith: {
         // §17.4: `with` w-bind (',' w-bind)* block
-        // w-bind: type ('=' expr)?  — the '=' is omitted for marker caps.
+        // w-bind admits three shapes:
+        //   * `TYPE`          — marker capability (no `=`, no name)
+        //   * `TYPE = EXPR`   — capability satisfaction with value
+        //   * `name = EXPR`   — value binding (no capability)
+        // The first letter of the leading identifier disambiguates the
+        // value-binding form from a cap-typed form: lowercase ⇒ name
+        // binding, uppercase ⇒ type. Vestra's casing convention
+        // (types PascalCase, identifiers camelCase) makes this
+        // unambiguous in practice.
         advance();
         auto w = std::make_unique<ast::WithStmt>();
         do {
             ast::WithBinding b;
-            b.cap_type = parse_type();
-            if (match(TokenKind::Assign)) {
+            const bool name_binding =
+                check(TokenKind::Identifier) && peek(1).kind == TokenKind::Assign
+                && !peek().lexeme.empty()
+                && (peek().lexeme.front() >= 'a' && peek().lexeme.front() <= 'z');
+            if (name_binding) {
+                b.name = std::string{advance().lexeme};
+                expect(TokenKind::Assign, "'=' in `with name = expr` binding");
                 b.value = parse_expr();
+            } else {
+                b.cap_type = parse_type();
+                if (match(TokenKind::Assign)) {
+                    b.value = parse_expr();
+                }
             }
             w->bindings.push_back(std::move(b));
         } while (match(TokenKind::Comma));
