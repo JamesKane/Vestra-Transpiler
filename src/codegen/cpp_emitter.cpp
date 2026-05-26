@@ -120,13 +120,17 @@ std::int64_t read_bits_attr(const std::vector<ast::Attribute>& attrs) {
     return 0;
 }
 
-// §A1 (§6.7): link-time symbol attributes. Each maps to a GNU
-// attribute or the asm-label declarator-trailer.
+// §A1 (§6.7) / §A2 (§7.8): link-time symbol attributes. Each maps to
+// a GNU attribute or the asm-label declarator-trailer. `inline_mode`
+// covers `@inline(.always | .never | .hint)`: the C++ lowering is
+// [[gnu::always_inline]] / [[gnu::noinline]] / a plain `inline`
+// suggestion respectively.
 struct LinkAttrs {
-    std::string section;     // empty when not set
-    std::string symbol;      // asm-name; empty when not set
-    std::string alias;       // empty when not set
-    std::string visibility;  // "default" / "hidden" / "protected"; empty when not set
+    std::string section;      // empty when not set
+    std::string symbol;       // asm-name; empty when not set
+    std::string alias;        // empty when not set
+    std::string visibility;   // "default" / "hidden" / "protected"; empty when not set
+    std::string inline_mode;  // "always" / "never" / "hint"; empty when not set
     bool weak = false;
     bool noinit = false;
 };
@@ -157,6 +161,12 @@ LinkAttrs read_link_attrs(const std::vector<ast::Attribute>& attrs) {
             if (d.name == "default" || d.name == "hidden" || d.name == "protected") {
                 out.visibility = d.name;
             }
+        } else if (a.name == "inline" && a.predicate != nullptr
+                   && a.predicate->kind == ast::NodeKind::LeadingDotExpr) {
+            const auto& d = static_cast<const ast::LeadingDotExpr&>(*a.predicate);
+            if (d.name == "always" || d.name == "never" || d.name == "hint") {
+                out.inline_mode = d.name;
+            }
         }
     }
     return out;
@@ -179,6 +189,31 @@ void emit_link_attr_prefix(std::ostream& os, const LinkAttrs& la) {
     }
     if (!la.visibility.empty()) {
         os << "[[gnu::visibility(\"" << la.visibility << "\")]] ";
+    }
+    // §A2 (§7.8) `@inline`. `.always` is a correctness directive —
+    // [[gnu::always_inline]] turns failure-to-inline into a compile
+    // error naming the obstructing call site, which matches the
+    // spec. `.never` is [[gnu::noinline]]. `.hint` is the plain C++
+    // `inline` keyword — advisory only. The `inline` decl-specifier
+    // itself is emitted *after* the [[nodiscard]] attribute in
+    // emit_func, so this prefix sticks to attributes only — putting
+    // `inline` between the prefix and `[[nodiscard]]` would have the
+    // C++ parser reading `[[nodiscard]]` as part of the type-specifier
+    // rather than the function declaration.
+    if (la.inline_mode == "always") {
+        os << "[[gnu::always_inline]] ";
+    } else if (la.inline_mode == "never") {
+        os << "[[gnu::noinline]] ";
+    }
+}
+
+// Renders the `inline` decl-specifier that pairs with the
+// [[gnu::always_inline]] attribute (or stands alone for the `.hint`
+// case). Called *after* [[nodiscard]] so the attribute attaches to
+// the function declaration, not the return type.
+void emit_inline_specifier(std::ostream& os, const LinkAttrs& la) {
+    if (la.inline_mode == "always" || la.inline_mode == "hint") {
+        os << "inline ";
     }
 }
 
@@ -838,6 +873,7 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         if (has_result) {
             hdr << "[[nodiscard]] ";
         }
+        emit_inline_specifier(hdr, link_attrs);
         // Templates emit body inline in the header, so this is both
         // declaration *and* definition — the asm-label can't ride
         // along here, so is_decl is false. If the user combines
@@ -867,6 +903,7 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
     if (has_result) {
         hdr << "[[nodiscard]] ";
     }
+    emit_inline_specifier(hdr, link_attrs);
     emit_signature(hdr, /*is_decl=*/true);
     hdr << ";\n";
 
@@ -875,6 +912,7 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
     }
 
     emit_link_attr_prefix(src, link_attrs);
+    emit_inline_specifier(src, link_attrs);
     emit_signature(src, /*is_decl=*/false);
     src << " {\n";
     emit_tuple_param_prologue(src);

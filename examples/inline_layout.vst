@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A2 — `@inline(.always | .never | .hint)` plus compile-time
+// layout reflection (`T.size`, `T.alignment`).
+//
+// `@inline(.always)` is the spec's *correctness* directive (§7.8):
+// the body must reach the call site inline so the borrow checker
+// and the §14.9 weak-CAS-shape checker can see through it. Codegen
+// renders it as `[[gnu::always_inline]] inline`. `.never` becomes
+// `[[gnu::noinline]]`. `.hint` is the plain C++ `inline` —
+// advisory only.
+//
+// Layout reflection folds at sema time. `T.size` and `T.alignment`
+// are ordinary `Int` expressions wherever they appear; the folder
+// computes them with C-style padding rules over primitives, vectors
+// of primitives, and structs of those. Static assertions like
+// `comptime { assert(CapabilityEntry.size == 16) }` are the
+// expected use site.
+
+module examples.inline_layout
+
+// 16 bytes when laid out with the natural C alignment.
+struct CapEntry {
+    var id:      UInt64
+    var flags:   UInt32
+    var version: UInt16
+    var status:  UInt8
+    var pad:     UInt8
+}
+
+// 8 bytes (UInt64 on its own).
+struct Tag {
+    var bits: UInt64
+}
+
+// Composition: a 24-byte CapEntry that embeds a Tag at offset 0.
+// (24 = 8 for Tag + 16 for CapEntry, with 8-byte struct alignment.)
+struct TaggedCap {
+    var tag:   Tag
+    var entry: CapEntry
+}
+
+// Vector of primitives sizes as N * sizeof(T).
+struct Pool {
+    var slots: [4]UInt32
+}
+
+// @inline(.always) forces inlining — a tight projection.
+@inline(.always)
+func slot_count() -> Int32 {
+    return 4
+}
+
+// @inline(.never) opts out — the panic-style helper the spec uses
+// for `panicReport`.
+@inline(.never)
+func slow_path() -> Int32 {
+    return -1
+}
+
+// .hint is advisory; the host compiler may still inline or not.
+@inline(.hint)
+func popcount_lower(_ x: UInt32) -> Int32 {
+    return Int32(x & UInt32(1))
+}
+
+// Sum the layout knobs across the structs so the driver can spot a
+// regression in any single value.
+func layout_total() -> Int {
+    return CapEntry.size + CapEntry.alignment
+        + Tag.size + Tag.alignment
+        + TaggedCap.size + TaggedCap.alignment
+        + Pool.size + Pool.alignment
+}
+
+// Drive @inline functions so they end up in the emitted output.
+func inline_total() -> Int32 {
+    return slot_count() + slow_path() + popcount_lower(0)
+}

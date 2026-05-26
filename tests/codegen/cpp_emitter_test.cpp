@@ -661,6 +661,49 @@ TEST_CASE("zip(a, b) lowers via CTAD on __vstr::Zip and binds tuples in the for-
     CHECK(f.out.source.find("auto [x, y] = std::move(*__vstr_o);") != std::string::npos);
 }
 
+// ---- §A2 @inline + layout reflection (§6.8 + §7.8) -----------------------
+
+TEST_CASE("@inline(.always) lowers to [[gnu::always_inline]] + inline") {
+    SemaEmitFixture f("@inline(.always)\n"
+                      "func one() -> Int32 { return 1 }\n");
+    CHECK(f.out.header.find("[[gnu::always_inline]] [[nodiscard]] inline std::int32_t one()")
+          != std::string::npos);
+}
+
+TEST_CASE("@inline(.never) lowers to [[gnu::noinline]] without inline keyword") {
+    SemaEmitFixture f("@inline(.never)\n"
+                      "func slow() -> Int32 { return -1 }\n");
+    CHECK(f.out.header.find("[[gnu::noinline]] [[nodiscard]] std::int32_t slow();")
+          != std::string::npos);
+    // .never doesn't add the `inline` decl-specifier — the attribute
+    // alone is enough to forbid inlining.
+    CHECK(f.out.header.find("[[gnu::noinline]] [[nodiscard]] inline") == std::string::npos);
+}
+
+TEST_CASE("@inline(.hint) emits a plain inline (no gnu attribute)") {
+    SemaEmitFixture f("@inline(.hint)\n"
+                      "func maybe() -> Int32 { return 7 }\n");
+    CHECK(f.out.header.find("[[nodiscard]] inline std::int32_t maybe();") != std::string::npos);
+    CHECK(f.out.header.find("[[gnu::") == std::string::npos);
+}
+
+TEST_CASE("T.size and T.alignment fold to integer literals at the use site") {
+    SemaEmitFixture f("struct S {\n"
+                      "    var id: UInt64\n"
+                      "    var flag: UInt8\n"
+                      "}\n"
+                      "func size() -> Int { return S.size }\n"
+                      "func align() -> Int { return S.alignment }\n");
+    // id (8,8) + flag (1,1) → offsets 0, 8. Total running 9, struct
+    // align 8, padded-up to 16.
+    CHECK(f.out.source.find("return 16;") != std::string::npos);
+    CHECK(f.out.source.find("return 8;") != std::string::npos);
+    // The Vestra-side spelling shouldn't leak into the C++ source —
+    // verifies the fold actually fired.
+    CHECK(f.out.source.find("S.size") == std::string::npos);
+    CHECK(f.out.source.find("S.alignment") == std::string::npos);
+}
+
 // ---- §A1 link attributes (§4.5 + §6.7) -----------------------------------
 
 TEST_CASE("@noinit static emits as `inline T name;` with no initializer") {

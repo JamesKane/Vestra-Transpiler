@@ -931,6 +931,37 @@ set_tests_properties(e2e_display_run PROPERTIES
     DEPENDS                e2e_display_compile
     PASS_REGULAR_EXPRESSION "display OK")
 
+# inline directive + layout reflection (§A2, §6.8 + §7.8).
+# `@inline(.always|.never|.hint)` lowers to `[[gnu::always_inline]]
+# inline` / `[[gnu::noinline]]` / `inline`. `T.size` / `T.alignment`
+# fold at sema time to Int literals computed with C-style padding
+# rules over primitives, vectors of primitives, and structs of those.
+# The e2e cross-checks Vestra's fold against the host C++ ABI via
+# static_assert on the matching std::size_t.
+set(e2e_inline_layout_input  ${CMAKE_SOURCE_DIR}/examples/inline_layout.vst)
+set(e2e_inline_layout_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_inline_layout.cpp)
+
+add_test(
+    NAME    e2e_inline_layout_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_inline_layout_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_inline_layout_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_inline_layout_driver} ${e2e_workdir}/inline_layout.cpp
+            -o ${e2e_workdir}/inline_layout_app)
+set_tests_properties(e2e_inline_layout_compile PROPERTIES
+    DEPENDS e2e_inline_layout_transpile)
+
+add_test(
+    NAME    e2e_inline_layout_run
+    COMMAND ${e2e_workdir}/inline_layout_app)
+set_tests_properties(e2e_inline_layout_run PROPERTIES
+    DEPENDS                e2e_inline_layout_compile
+    PASS_REGULAR_EXPRESSION "inline_layout OK")
+
 # Link attributes (§A1, §4.5 + §6.7). `@noinit static` reserves .bss
 # storage with no initializer; `@section` / `@symbol` / `@weak` /
 # `@alias` / `@visibility` lower to GNU attributes + asm-label

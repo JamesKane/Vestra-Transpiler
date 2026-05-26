@@ -318,6 +318,110 @@ std::string type_display_name(const ast::Type& t) {
     }
 }
 
+// §A2 (§6.8) primitive size/alignment tables. The kernel uses these
+// for layout assertions (`comptime { assert(T.size == 64) }`); they
+// need to match the LP64 / AArch64 / x86_64 platform ABI the
+// transpiler targets. Returns {0,0} on shapes we don't size yet —
+// the caller treats that as "not foldable" so the assertion fails
+// loudly rather than silently picking a wrong size.
+struct PrimLayout {
+    std::int64_t size = 0;
+    std::int64_t align = 0;
+};
+PrimLayout primitive_layout(TypeKind k) {
+    switch (k) {
+    case TypeKind::Bool:
+    case TypeKind::UInt8:
+    case TypeKind::Int8:
+        return {1, 1};
+    case TypeKind::UInt16:
+    case TypeKind::Int16:
+        return {2, 2};
+    case TypeKind::UInt32:
+    case TypeKind::Int32:
+    case TypeKind::Float32:
+    case TypeKind::Char:
+        return {4, 4};
+    case TypeKind::UInt64:
+    case TypeKind::Int64:
+    case TypeKind::UInt:
+    case TypeKind::Int:
+    case TypeKind::Float64:
+        return {8, 8};
+    default:
+        return {0, 0};
+    }
+}
+
+std::int64_t align_up(std::int64_t offset, std::int64_t alignment) {
+    if (alignment <= 0) {
+        return offset;
+    }
+    return (offset + alignment - 1) / alignment * alignment;
+}
+
+// Forward declaration — struct layout walks back to type_layout for
+// each field, and type_layout dispatches into struct_layout when it
+// hits a nominal Struct.
+PrimLayout type_layout(const ast::Type& t, const Scope& globals);
+
+PrimLayout struct_layout(const ast::StructDecl& sd, const Scope& globals) {
+    PrimLayout out;
+    for (const auto& f : sd.fields) {
+        if (f.kind == ast::StructDecl::Field::Kind::Embed || f.type == nullptr) {
+            continue;
+        }
+        auto fl = type_layout(*f.type, globals);
+        if (fl.size == 0 || fl.align == 0) {
+            return {0, 0};  // bail: can't size some field
+        }
+        out.size = align_up(out.size, fl.align) + fl.size;
+        if (fl.align > out.align) {
+            out.align = fl.align;
+        }
+    }
+    if (out.align > 0) {
+        out.size = align_up(out.size, out.align);
+    }
+    return out;
+}
+
+PrimLayout type_layout(const ast::Type& t, const Scope& globals) {
+    if (t.kind == ast::NodeKind::NamedType) {
+        const auto& n = static_cast<const ast::NamedType&>(t);
+        if (n.path.empty()) {
+            return {0, 0};
+        }
+        const auto& name = n.path.back();
+        // Primitive shorthand: NamedType{path=["Int32"]} → primitive.
+        auto prim = TypeArena::primitive_kind_by_name(name);
+        if (prim != TypeKind::Error) {
+            return primitive_layout(prim);
+        }
+        // Nominal: look up in scope. Today only Struct gets a layout
+        // walk — Enum/Opaque/Protocol layouts are out of scope for
+        // v0.5 (enums are tag-only or sum-typed in C++ std::variant,
+        // and that layout depends on the host compiler).
+        if (const auto* sym = globals.lookup(name);
+            sym != nullptr && sym->kind == SymbolKind::Struct && sym->decl != nullptr) {
+            return struct_layout(static_cast<const ast::StructDecl&>(*sym->decl), globals);
+        }
+        return {0, 0};
+    }
+    if (t.kind == ast::NodeKind::VectorType) {
+        const auto& v = static_cast<const ast::VectorType&>(t);
+        if (v.element == nullptr || v.length <= 0) {
+            return {0, 0};
+        }
+        auto elem = type_layout(*v.element, globals);
+        if (elem.size == 0 || elem.align == 0) {
+            return {0, 0};
+        }
+        return {v.length * elem.size, elem.align};
+    }
+    return {0, 0};
+}
+
 // Extract the element TypeKind from an `ast::VectorType` (e.g. `[8]Int32`
 // → TypeKind::Int32). Returns TypeKind::Error if the shape isn't one of
 // the primitives we recognize.
@@ -477,6 +581,24 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
             }
             if (global_scope_ != nullptr) {
                 if (const auto* sym = global_scope_->lookup(bi.name)) {
+                    // §A2 (§6.8) compile-time layout reflection on a
+                    // struct: T.size / T.alignment fold to Int values
+                    // computed via the C-style padding rules in
+                    // struct_layout. Returns nullopt — meaning "not
+                    // foldable" — if any field uses a type we don't
+                    // know how to size yet; the comptime assertion
+                    // surfaces that as a clear "couldn't fold" path
+                    // rather than silently picking a wrong size.
+                    if (sym->kind == SymbolKind::Struct && sym->decl != nullptr
+                        && (m.member == "size" || m.member == "alignment")) {
+                        const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
+                        auto lay = struct_layout(sd, *global_scope_);
+                        std::int64_t v = m.member == "size" ? lay.size : lay.align;
+                        if (v <= 0) {
+                            return std::nullopt;
+                        }
+                        return make_int(v, TypeKind::Int);
+                    }
                     if (sym->kind == SymbolKind::Struct && sym->decl != nullptr
                         && m.member == "fields") {
                         // §12.2 reflection: build a Vector of Field values,

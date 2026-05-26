@@ -683,6 +683,42 @@ TEST_CASE("filter rejects a closure whose return type isn't Bool") {
     CHECK(r.first_message.find("Bool") != std::string::npos);
 }
 
+// ---- §A2 @inline + layout reflection (§6.8, §7.8) ------------------------
+
+TEST_CASE("@inline accepts .always / .never / .hint") {
+    CHECK(check_errors("@inline(.always)\n"
+                       "func a() -> Int32 { return 1 }\n"
+                       "@inline(.never)\n"
+                       "func b() -> Int32 { return 2 }\n"
+                       "@inline(.hint)\n"
+                       "func c() -> Int32 { return 3 }\n")
+          == 0);
+}
+
+TEST_CASE("@inline rejects an unknown case") {
+    auto r = check_detail("@inline(.maybe)\n"
+                          "func f() -> Int32 { return 0 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@inline(.maybe)") != std::string::npos);
+}
+
+TEST_CASE("T.size and T.alignment type as Int") {
+    CHECK(check_errors("struct S { var x: UInt32; var y: UInt16 }\n"
+                       "func size() -> Int { return S.size }\n"
+                       "func align() -> Int { return S.alignment }\n")
+          == 0);
+}
+
+TEST_CASE("layout reflection fails on a struct with no v0.5 layout for a field") {
+    // Optional<T> isn't sized by the v0.5 fold (its layout depends on
+    // std::optional's host implementation). Sema diagnoses cleanly
+    // instead of returning a wrong number.
+    auto r = check_detail("struct S { var maybe: Int32? }\n"
+                          "func size() -> Int { return S.size }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("can't compute") != std::string::npos);
+}
+
 // ---- §A1 link attributes (§4.5, §6.7) ------------------------------------
 
 TEST_CASE("@noinit static type-checks with no initializer") {

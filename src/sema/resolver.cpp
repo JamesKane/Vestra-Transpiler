@@ -627,6 +627,22 @@ void Resolver::check_link_attributes(const std::vector<ast::Attribute>& attrs) {
             if (a.predicate != nullptr) {
                 error_at(a.range, std::format("@{} takes no arguments", a.name));
             }
+        } else if (a.name == "inline") {
+            // §A1 (§7.8) — `@inline(.always | .never | .hint)`. The
+            // argument is a leading-dot case-name; sema enforces the
+            // three legal spellings here so codegen can dispatch on
+            // them without re-validating.
+            std::string_view case_name;
+            if (a.predicate != nullptr && a.predicate->kind == ast::NodeKind::LeadingDotExpr) {
+                case_name = static_cast<const ast::LeadingDotExpr&>(*a.predicate).name;
+            }
+            if (case_name.empty()) {
+                error_at(a.range, "@inline expects one of .always, .never, .hint");
+            } else if (case_name != "always" && case_name != "never" && case_name != "hint") {
+                error_at(
+                    a.range,
+                    std::format("@inline(.{}) — expected .always, .never, or .hint", case_name));
+            }
         } else if (a.name == "visibility") {
             // The argument is `.default` / `.hidden` / `.protected` —
             // an anonymous case name. The parser produces a
@@ -2691,6 +2707,26 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
                 resolution_.set_symbol(m.base.get(), sym);
                 check_visibility(*sym, m.base->range);
                 const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
+                // §A2 (§6.8) compile-time layout reflection: T.size /
+                // T.alignment fold to Int values. We invoke the folder
+                // right here so codegen has a concrete literal to emit
+                // (without the fold, `CapEntry.size` would land in the
+                // C++ source verbatim — not valid). The fold may
+                // return nullopt if some field uses an unsizeable
+                // type; we diagnose so the user knows.
+                if (m.member == "size" || m.member == "alignment") {
+                    if (auto folded = folder_.fold(m, comptime_env_)) {
+                        resolution_.set_folded_value(&m, *folded);
+                    } else {
+                        error_at(m.range,
+                                 std::format("can't compute {}.{} at fold time — some field's "
+                                             "type has no v0.5 layout (only primitives, vectors "
+                                             "of primitives, and structs of those are supported)",
+                                             sd.name,
+                                             m.member));
+                    }
+                    return types_->primitive(TypeKind::Int);
+                }
                 if (m.member == "fields") {
                     std::int64_t count = 0;
                     for (const auto& f : sd.fields) {
