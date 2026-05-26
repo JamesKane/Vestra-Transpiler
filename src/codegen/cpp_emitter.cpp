@@ -1063,13 +1063,34 @@ void CppEmitter::collect_try_hoists(const ast::Expr& e,
         }
         break;
     }
-    case ast::NodeKind::MatchExpr:
-        // Scrutinee is always evaluated; arm bodies aren't. MatchExpr
-        // cond-hoist (for arms containing propagating tries) is a
-        // follow-on — for v0.5 the match-codegen IIFE still falls back
-        // to `.value()` on inner tries.
-        collect_try_hoists(*static_cast<const ast::MatchExpr&>(e).scrutinee, out, exclude);
+    case ast::NodeKind::MatchExpr: {
+        const auto& m = static_cast<const ast::MatchExpr&>(e);
+        // Scrutinee is always evaluated; arm bodies aren't. Walk the
+        // scrutinee unconditionally for inner tries, then — if any arm
+        // body carries a propagating try — register the whole MatchExpr
+        // as a conditional hoist (parallel to the IfExpr case above).
+        // emit_cond_hoist lowers the match as a statement-form lambda
+        // returning std::expected<T, E>; the outer scope unwraps via
+        // the canonical 3-line escape, same as for IfExpr.
+        if (m.scrutinee) {
+            collect_try_hoists(*m.scrutinee, out, exclude);
+        }
+        bool arms_have_try = false;
+        for (const auto& arm : m.arms) {
+            if (arm.guard && expr_contains_propagating_try(*arm.guard)) {
+                arms_have_try = true;
+                break;
+            }
+            if (arm.body && expr_contains_propagating_try(*arm.body)) {
+                arms_have_try = true;
+                break;
+            }
+        }
+        if (arms_have_try && !already_hoisted(&e)) {
+            out.push_back({&e, std::format("__vstr_c{}", hoist_counter_++)});
+        }
         break;
+    }
     case ast::NodeKind::CopyExpr:
         collect_try_hoists(*static_cast<const ast::CopyExpr&>(e).inner, out, exclude);
         break;
@@ -1166,20 +1187,20 @@ void CppEmitter::emit_try_hoist(std::ostream& os, const TryHoist& h, int indent)
         os << "auto " << h.name << " = *" << r << ";\n";
         return;
     }
-    if (h.node->kind == ast::NodeKind::IfExpr) {
+    if (h.node->kind == ast::NodeKind::IfExpr || h.node->kind == ast::NodeKind::MatchExpr) {
         emit_cond_hoist(os, h, indent);
         return;
     }
 }
 
 void CppEmitter::emit_cond_hoist(std::ostream& os, const TryHoist& h, int indent) {
-    // §9 conditional hoist: an IfExpr whose branches contain a
-    // propagating try lifts to a lambda returning std::expected<T, E>.
-    // The lambda body emits the if/else as statements; each branch's
-    // local try-hoists fire inside the branch's brace, escaping the
-    // lambda via `return std::unexpected{...}`. The outer scope then
-    // unwraps the lambda's result and re-propagates on error — same
-    // shape as the TryExpr hoist.
+    // §9 conditional hoist: an IfExpr or MatchExpr whose branches /
+    // arms contain a propagating try lifts to a lambda returning
+    // std::expected<T, E>. Each branch's local try-hoists fire inside
+    // the branch's brace, escaping the lambda via `return
+    // std::unexpected{...}`. The outer scope then unwraps the lambda's
+    // result and re-propagates on error — same shape as the TryExpr
+    // hoist.
     sema::TypePtr value_type = resolution_ != nullptr ? resolution_->type_of(h.node) : nullptr;
     write_indent(os, indent);
     os << "auto " << h.name << " = [&]() -> std::expected<";
@@ -1198,13 +1219,17 @@ void CppEmitter::emit_cond_hoist(std::ostream& os, const TryHoist& h, int indent
     }
     os << "> {\n";
 
-    // While emitting the IfExpr's own body, suppress self-substitution
-    // — `emit_expr` would otherwise see the hoist for this very node
-    // and write `*name` instead of the if-else statements.
+    // While emitting the hoisted node's own body, suppress
+    // self-substitution — `emit_expr` would otherwise see the hoist for
+    // this very node and write `*name` instead of the if/match shape.
     const auto* prev_skip = skip_hoist_;
     skip_hoist_ = h.node;
-    write_indent(os, indent + 1);
-    emit_stmt_expr(os, *h.node, /*return_value=*/true);
+    if (h.node->kind == ast::NodeKind::IfExpr) {
+        write_indent(os, indent + 1);
+        emit_stmt_expr(os, *h.node, /*return_value=*/true);
+    } else if (h.node->kind == ast::NodeKind::MatchExpr) {
+        emit_match_in_lambda(os, static_cast<const ast::MatchExpr&>(*h.node), indent + 1);
+    }
     skip_hoist_ = prev_skip;
 
     write_indent(os, indent);
@@ -1212,6 +1237,197 @@ void CppEmitter::emit_cond_hoist(std::ostream& os, const TryHoist& h, int indent
     write_indent(os, indent);
     os << "if (!" << h.name << ".has_value()) { return std::unexpected{" << h.name
        << ".error()}; }\n";
+}
+
+void CppEmitter::emit_match_in_lambda(std::ostream& os, const ast::MatchExpr& m, int indent) {
+    // §9 statement-form match for the conditional hoist's lambda body.
+    // Mirrors emit_match's two lowerings — switch for bare enum,
+    // std::holds_alternative chain for payloaded enum — but every arm
+    // body is emit_stmt_expr'd with return_value=true so a propagating
+    // try inside an arm body escapes via `return std::unexpected{...}`
+    // from the enclosing cond-hoist lambda. The std::visit-with-
+    // constexpr-if shape that emit_match uses can't be reused here
+    // because std::visit's lambda is its own return scope: a
+    // `return std::unexpected{...}` inside that lambda would return
+    // expected<T,E> from the visit's lambda rather than from the outer
+    // cond-hoist lambda, breaking propagation. Using
+    // std::holds_alternative + std::get instead keeps `return` rooted
+    // in the cond-hoist lambda.
+    if (resolution_ == nullptr) {
+        unsupported(os, "match expression without resolved scrutinee in cond-hoist", m.range);
+        return;
+    }
+    auto scrutinee_type = resolution_->type_of(m.scrutinee.get());
+    if (scrutinee_type == nullptr || scrutinee_type->kind() != sema::TypeKind::Enum
+        || scrutinee_type->nominal_decl() == nullptr) {
+        unsupported(os, "match over non-enum scrutinee in cond-hoist", m.range);
+        return;
+    }
+    const auto& enum_decl = static_cast<const ast::EnumDecl&>(*scrutinee_type->nominal_decl());
+
+    bool has_payload = false;
+    for (const auto& c : enum_decl.cases) {
+        if (!c.payload.empty()) {
+            has_payload = true;
+            break;
+        }
+    }
+
+    if (!has_payload) {
+        write_indent(os, indent);
+        os << "switch (";
+        emit_expr(os, *m.scrutinee);
+        os << ") {\n";
+        const ast::MatchArm* default_arm = nullptr;
+        for (const auto& arm : m.arms) {
+            if (arm.is_default
+                || (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::WildcardPat)) {
+                default_arm = &arm;
+                continue;
+            }
+            if (arm.pattern == nullptr || arm.pattern->kind != ast::NodeKind::EnumPat) {
+                unsupported(os, "match arm pattern in cond-hoist", m.range);
+                continue;
+            }
+            const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
+            write_indent(os, indent);
+            os << "case " << enum_decl.name << "::" << ep.case_name << ": {\n";
+            write_indent(os, indent + 1);
+            emit_stmt_expr(os, *arm.body, /*return_value=*/true);
+            write_indent(os, indent);
+            os << "}\n";
+        }
+        write_indent(os, indent);
+        os << "default: ";
+        if (default_arm != nullptr) {
+            os << "{\n";
+            write_indent(os, indent + 1);
+            emit_stmt_expr(os, *default_arm->body, /*return_value=*/true);
+            write_indent(os, indent);
+            os << "}\n";
+        } else {
+            os << "std::unreachable();\n";
+        }
+        write_indent(os, indent);
+        os << "}\n";
+        return;
+    }
+
+    // Payloaded enum: emit an if-chain over std::holds_alternative so
+    // every `return` inside an arm body returns from the enclosing
+    // cond-hoist lambda. The payload-field binding mirrors
+    // emit_match's std::visit path.
+    write_indent(os, indent);
+    os << "auto&& __vstr_alt_ref = (";
+    emit_expr(os, *m.scrutinee);
+    os << ").value;\n";
+
+    bool first = true;
+    const ast::MatchArm* default_arm = nullptr;
+    for (const auto& arm : m.arms) {
+        if (arm.is_default
+            || (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::WildcardPat)) {
+            default_arm = &arm;
+            continue;
+        }
+        if (arm.pattern == nullptr || arm.pattern->kind != ast::NodeKind::EnumPat) {
+            unsupported(os, "match arm pattern in cond-hoist over payloaded enum", m.range);
+            continue;
+        }
+        const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
+
+        const ast::EnumDecl::Case* case_decl = nullptr;
+        for (const auto& c : enum_decl.cases) {
+            if (c.name == ep.case_name) {
+                case_decl = &c;
+                break;
+            }
+        }
+        if (case_decl == nullptr) {
+            unsupported(os, "match arm references unknown enum case", arm.pattern->range);
+            continue;
+        }
+
+        write_indent(os, indent);
+        if (first) {
+            os << "if";
+        } else {
+            os << "else if";
+        }
+        os << " (std::holds_alternative<" << enum_decl.name << "::" << ep.case_name
+           << "_t>(__vstr_alt_ref)) {\n";
+
+        // Bind payload fields. The alt is `std::get<case_t>(__vstr_alt_ref)`;
+        // only mint the named handle when there are children to read off it,
+        // otherwise `-Werror=unused-variable` rejects the empty-payload arm.
+        const bool has_child_binding =
+            std::any_of(ep.children.begin(), ep.children.end(), [](const ast::PatternPtr& child) {
+                if (!child) {
+                    return false;
+                }
+                switch (child->kind) {
+                case ast::NodeKind::BindPat:
+                case ast::NodeKind::IdentPat:
+                case ast::NodeKind::TuplePat:
+                    return true;
+                default:
+                    return false;
+                }
+            });
+        if (has_child_binding) {
+            write_indent(os, indent + 1);
+            os << "auto&& __vstr_alt = std::get<" << enum_decl.name << "::" << ep.case_name
+               << "_t>(__vstr_alt_ref);\n";
+        }
+
+        for (std::size_t i = 0; i < ep.children.size() && i < case_decl->payload.size(); ++i) {
+            const auto& child = *ep.children[i];
+            std::string field_name = case_decl->payload[i].first.empty()
+                                         ? std::format("_{}", i)
+                                         : case_decl->payload[i].first;
+            if (child.kind == ast::NodeKind::BindPat) {
+                write_indent(os, indent + 1);
+                os << "auto&& " << static_cast<const ast::BindPat&>(child).name << " = __vstr_alt."
+                   << field_name << ";\n";
+            } else if (child.kind == ast::NodeKind::IdentPat) {
+                write_indent(os, indent + 1);
+                os << "auto&& " << static_cast<const ast::IdentPat&>(child).name << " = __vstr_alt."
+                   << field_name << ";\n";
+            } else if (child.kind == ast::NodeKind::TuplePat) {
+                const auto& sub_tp = static_cast<const ast::TuplePat&>(child);
+                std::vector<std::string> sub_names;
+                std::vector<std::pair<std::string, const ast::TuplePat*>> sub_followons;
+                collect_tuple_pat_names(sub_tp, sub_names, sub_followons);
+                write_indent(os, indent + 1);
+                os << "auto&& [";
+                for (std::size_t k = 0; k < sub_names.size(); ++k) {
+                    if (k != 0) {
+                        os << ", ";
+                    }
+                    os << sub_names[k];
+                }
+                os << "] = __vstr_alt." << field_name << ";\n";
+                emit_tuple_pat_followons(os, sub_followons, indent + 1);
+            }
+        }
+
+        write_indent(os, indent + 1);
+        emit_stmt_expr(os, *arm.body, /*return_value=*/true);
+        write_indent(os, indent);
+        os << "}\n";
+        first = false;
+    }
+
+    write_indent(os, indent);
+    if (default_arm != nullptr) {
+        os << "else {\n";
+        write_indent(os, indent + 1);
+        emit_stmt_expr(os, *default_arm->body, /*return_value=*/true);
+        write_indent(os, indent);
+        os << "}\n";
+    } else {
+        os << "else { std::unreachable(); }\n";
+    }
 }
 
 const std::string* CppEmitter::lookup_try_hoist(const ast::Expr* node) const {
@@ -2271,7 +2487,16 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         break;
     }
     case ast::NodeKind::MatchExpr:
-        emit_match(os, static_cast<const ast::MatchExpr&>(e));
+        // §9 conditional hoist: when the parent statement registered
+        // this MatchExpr as a hoist (because a propagating try lives
+        // in an arm body), the lambda was pre-emitted and bound to a
+        // name — substitute `*name` here so propagation already
+        // happened. Otherwise fall through to the regular IIFE.
+        if (auto* name = lookup_try_hoist(&e)) {
+            os << "(*" << *name << ")";
+        } else {
+            emit_match(os, static_cast<const ast::MatchExpr&>(e));
+        }
         break;
     case ast::NodeKind::IfExpr: {
         const auto& i = static_cast<const ast::IfExpr&>(e);

@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §9 mid-expression `try` inside match-expression arms — the symmetric
+// completion of the IfExpr cond-hoist shipped in examples/midtry.vst.
+//
+// A MatchExpr whose arm bodies contain a propagating `try` lifts to a
+// lambda returning `std::expected<T, E>`. The lambda body emits the
+// match in statement form so each arm's `return` returns from the
+// lambda directly:
+//   * bare enum  → switch with case arms (return per case)
+//   * payloaded  → if-chain over std::holds_alternative + std::get
+//                  (std::visit's lambda would swallow the propagation)
+// The outer scope unwraps the lambda's result via the canonical 3-line
+// escape, identical to TryExpr-hoist and IfExpr-cond-hoist.
+
+module examples.midmatch
+
+enum E {
+    case bad
+}
+
+// ---- bare enum with try in arms ----
+
+enum Cmd {
+    case noop
+    case fetch
+    case panic
+}
+
+func fetchValue() throws(E) -> Int32 { return 42 }
+func defaultValue() -> Int32 { return 0 }
+
+// Statement-position match: the cond-hoist lambda is at function scope,
+// each arm `return`s into it, then propagation unwraps.
+func dispatch_return(_ c: Cmd) throws(E) -> Int32 {
+    return match c {
+        case .noop:  defaultValue()
+        case .fetch: try fetchValue()
+        case .panic: throw E.bad
+    }
+}
+
+// Let-binding position. v0.5 used to fall back to `.value()` for the
+// inner try; the cond-hoist now fires here too.
+func dispatch_let(_ c: Cmd) throws(E) -> Int32 {
+    let x = match c {
+        case .noop:  defaultValue()
+        case .fetch: try fetchValue()
+        case .panic: throw E.bad
+    }
+    return x + 100
+}
+
+// ---- payloaded enum with try in arms ----
+
+enum Shape {
+    case circle(radius: Int32)
+    case rect(width: Int32, height: Int32)
+    case empty
+}
+
+func tryDouble(_ x: Int32) throws(E) -> Int32 {
+    if x < 0 {
+        throw E.bad
+    }
+    return x * 2
+}
+
+func area(_ s: Shape) throws(E) -> Int32 {
+    return match s {
+        case .circle(let r):       try tryDouble(r)
+        case .rect(let w, let h):  try tryDouble(w * h)
+        case .empty:               0
+    }
+}

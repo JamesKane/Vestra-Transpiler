@@ -714,6 +714,97 @@ TEST_CASE("if-expr as a sub-expression of a larger expr hoists") {
     CHECK(f.out.source.find("((*__vstr_c0)) + 1") != std::string::npos);
 }
 
+TEST_CASE("match-expr with try-in-arms hoists like an if-expr does") {
+    // Symmetric with the IfExpr cond-hoist: a MatchExpr whose arm
+    // bodies contain a propagating try lifts to a lambda returning
+    // std::expected<T, E>, emitted as a statement-form switch (bare
+    // enum) so each arm's `return` returns from the lambda directly.
+    SemaEmitFixture f("enum E { case bad }\n"
+                      "enum Cmd { case noop\n    case takeFirst\n    case takeSecond\n}\n"
+                      "func tryFirst() throws(E) -> Int32 { return 1 }\n"
+                      "func trySecond() throws(E) -> Int32 { return 2 }\n"
+                      "func defaultVal() -> Int32 { return 10 }\n"
+                      "func dispatch(_ c: Cmd) throws(E) -> Int32 {\n"
+                      "    return match c {\n"
+                      "        case .noop:        defaultVal()\n"
+                      "        case .takeFirst:   try tryFirst()\n"
+                      "        case .takeSecond:  try trySecond()\n"
+                      "    }\n"
+                      "}\n");
+    // The MatchExpr is hoisted as a lambda returning expected<T, E>.
+    CHECK(f.out.source.find("auto __vstr_c0 = [&]() -> std::expected<std::int32_t, E>")
+          != std::string::npos);
+    // The lambda body uses a statement-form switch (not a nested IIFE),
+    // so each arm's `return` returns from the cond-hoist lambda
+    // directly — which is what makes propagation work.
+    CHECK(f.out.source.find("switch (c) {") != std::string::npos);
+    CHECK(f.out.source.find("case Cmd::noop:") != std::string::npos);
+    // Each arm with a try carries the canonical 3-line escape.
+    CHECK(f.out.source.find(
+              "if (!__vstr_r.has_value()) { return std::unexpected{__vstr_r.error()}; }")
+          != std::string::npos);
+    // Outer propagation re-emits the error from the function.
+    CHECK(f.out.source.find(
+              "if (!__vstr_c0.has_value()) { return std::unexpected{__vstr_c0.error()};")
+          != std::string::npos);
+    // The use-site substitutes the unwrapped value.
+    CHECK(f.out.source.find("return (*__vstr_c0);") != std::string::npos);
+}
+
+TEST_CASE("let x = match { ... try ... } hoists to a sibling lambda") {
+    SemaEmitFixture f("enum E { case bad }\n"
+                      "enum Cmd { case noop\n    case fetch\n}\n"
+                      "func tryFetch() throws(E) -> Int32 { return 7 }\n"
+                      "func defaultVal() -> Int32 { return 0 }\n"
+                      "func dispatch(_ c: Cmd) throws(E) -> Int32 {\n"
+                      "    let x = match c {\n"
+                      "        case .noop:  defaultVal()\n"
+                      "        case .fetch: try tryFetch()\n"
+                      "    }\n"
+                      "    return x + 1\n"
+                      "}\n");
+    CHECK(f.out.source.find("auto __vstr_c0 = [&]() -> std::expected<std::int32_t, E>")
+          != std::string::npos);
+    CHECK(f.out.source.find("auto x = (*__vstr_c0);") != std::string::npos);
+}
+
+TEST_CASE("payloaded match with try-in-arms uses std::holds_alternative chain") {
+    // The payloaded path can't reuse emit_match's std::visit lambda
+    // because a `return std::unexpected{...}` inside that lambda would
+    // return from the visit's lambda rather than the outer cond-hoist
+    // lambda. emit_match_in_lambda switches to an if-chain over
+    // std::holds_alternative so every `return` is rooted in the
+    // cond-hoist scope.
+    SemaEmitFixture f("enum E { case bad }\n"
+                      "enum Shape {\n"
+                      "    case circle(radius: Int32)\n"
+                      "    case rect(width: Int32, height: Int32)\n"
+                      "    case empty\n"
+                      "}\n"
+                      "func tryDouble(_ x: Int32) throws(E) -> Int32 { return x * 2 }\n"
+                      "func area(_ s: Shape) throws(E) -> Int32 {\n"
+                      "    return match s {\n"
+                      "        case .circle(let r):       try tryDouble(r)\n"
+                      "        case .rect(let w, let h):  try tryDouble(w * h)\n"
+                      "        case .empty:               0\n"
+                      "    }\n"
+                      "}\n");
+    CHECK(f.out.source.find("auto __vstr_c0 = [&]() -> std::expected<std::int32_t, E>")
+          != std::string::npos);
+    // No std::visit on the cond-hoist path.
+    CHECK(f.out.source.find("std::visit([&](auto&& __vstr_alt)") == std::string::npos);
+    // Instead: if-chain over std::holds_alternative.
+    CHECK(f.out.source.find("std::holds_alternative<Shape::circle_t>(__vstr_alt_ref)")
+          != std::string::npos);
+    CHECK(f.out.source.find("auto&& r = __vstr_alt.radius;") != std::string::npos);
+    // Empty-payload arm doesn't mint the unused alt handle.
+    auto pos_empty = f.out.source.find("std::holds_alternative<Shape::empty_t>");
+    REQUIRE(pos_empty != std::string::npos);
+    auto pos_unreach = f.out.source.find("std::unreachable()", pos_empty);
+    REQUIRE(pos_unreach != std::string::npos);
+    CHECK(f.out.source.find("std::get<Shape::empty_t>", pos_empty) > pos_unreach);
+}
+
 TEST_CASE("try inside a sub-expression of an if branch fires the branch-local hoist") {
     // The branch body `(try f()) + 1` is a BinaryExpr — emit_stmt_expr's
     // generic tail now collects local try-hoists and pre-emits them

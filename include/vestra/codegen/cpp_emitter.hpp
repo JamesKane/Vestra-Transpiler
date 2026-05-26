@@ -113,10 +113,18 @@ private:
                             const std::vector<TryHoist>* exclude = nullptr);
     void collect_stmt_hoists(const ast::Stmt& s, std::vector<TryHoist>& out);
     void emit_try_hoist(std::ostream& os, const TryHoist& h, int indent);
-    // Conditional hoist: IfExpr containing a propagating try. Emits a
-    // lambda returning std::expected<T, E> over the if's body plus the
-    // outer propagation check.
+    // Conditional hoist: IfExpr or MatchExpr containing a propagating
+    // try. Emits a lambda returning std::expected<T, E> over the body
+    // plus the outer propagation check.
     void emit_cond_hoist(std::ostream& os, const TryHoist& h, int indent);
+    // §9 statement-form match used inside the conditional hoist's
+    // lambda body. Mirrors emit_match's shape (switch for bare enum,
+    // if-chain over std::holds_alternative for payloaded enum) but
+    // emits each arm body via emit_stmt_expr(..., return_value=true)
+    // so propagating tries escape with `return std::unexpected{...}`
+    // from the enclosing cond-hoist lambda. No outer IIFE here — the
+    // lambda envelope is supplied by emit_cond_hoist.
+    void emit_match_in_lambda(std::ostream& os, const ast::MatchExpr& m, int indent);
     const std::string* lookup_try_hoist(const ast::Expr* node) const;
 
     // True when any sub-expression of `e` (walking into IfExpr branches,

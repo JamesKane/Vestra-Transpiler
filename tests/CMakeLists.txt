@@ -534,6 +534,35 @@ set_tests_properties(e2e_midtry_run PROPERTIES
     DEPENDS                e2e_midtry_compile
     PASS_REGULAR_EXPRESSION "midtry OK")
 
+# Mid-expression try inside match arms: §9 cond-hoist for MatchExpr.
+# Sibling of the IfExpr cond-hoist shipped in 84f718e: a MatchExpr whose
+# arm bodies contain a propagating try lifts to a lambda returning
+# std::expected<T, E>. Bare enum lowers to a statement-form switch;
+# payloaded enum to an if-chain over std::holds_alternative (std::visit
+# can't be reused because its lambda swallows the propagation).
+set(e2e_midmatch_input  ${CMAKE_SOURCE_DIR}/examples/midmatch.vst)
+set(e2e_midmatch_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_midmatch.cpp)
+
+add_test(
+    NAME    e2e_midmatch_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_midmatch_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_midmatch_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_midmatch_driver} ${e2e_workdir}/midmatch.cpp
+            -o ${e2e_workdir}/midmatch_app)
+set_tests_properties(e2e_midmatch_compile PROPERTIES DEPENDS e2e_midmatch_transpile)
+
+add_test(
+    NAME    e2e_midmatch_run
+    COMMAND ${e2e_workdir}/midmatch_app)
+set_tests_properties(e2e_midmatch_run PROPERTIES
+    DEPENDS                e2e_midmatch_compile
+    PASS_REGULAR_EXPRESSION "midmatch OK")
+
 # Box[T]: §10 unique-ownership heap pointer. Lowers to
 # std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
 # → *box. Allocation requires the §8 `Alloc` capability. E2E pins
