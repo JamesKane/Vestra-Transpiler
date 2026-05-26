@@ -683,6 +683,36 @@ TEST_CASE("filter rejects a closure whose return type isn't Bool") {
     CHECK(r.first_message.find("Bool") != std::string::npos);
 }
 
+// ---- §A1 link attributes (§4.5, §6.7) ------------------------------------
+
+TEST_CASE("@noinit static type-checks with no initializer") {
+    CHECK(check_errors("@noinit @section(\"__BSS,__buf\")\n"
+                       "static buf: [16]UInt8\n")
+          == 0);
+}
+
+TEST_CASE("@section / @symbol / @alias require a string-literal argument") {
+    auto r = check_detail("@section(42)\n"
+                          "func f() -> Int32 { return 0 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@section") != std::string::npos);
+    CHECK(r.first_message.find("string literal") != std::string::npos);
+}
+
+TEST_CASE("@weak takes no arguments") {
+    auto r = check_detail("@weak(\"oops\")\n"
+                          "func f() -> Int32 { return 0 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@weak takes no arguments") != std::string::npos);
+}
+
+TEST_CASE("@visibility rejects an unknown case") {
+    auto r = check_detail("@visibility(.invisible)\n"
+                          "func f() -> Int32 { return 0 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@visibility(.invisible)") != std::string::npos);
+}
+
 TEST_CASE("take rejects a non-integer count") {
     auto r = check_detail(std::string{kIter}
                           + "func use() -> Int32 {\n"

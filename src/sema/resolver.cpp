@@ -501,6 +501,22 @@ void Resolver::check_decl(const ast::Decl& d) {
                                      annotated->describe()));
             }
         }
+        // §A1 (§4.5): a `@noinit static` reserves uninitialized storage
+        // in .bss and *must* have a type annotation (sema can't infer
+        // the size of a slot with no initializer). It also can't carry
+        // an initializer — the parser already rejects that, but we
+        // double-check here in case future parser changes thread a
+        // value through anyway.
+        if (s.noinit) {
+            if (s.type == nullptr) {
+                error_at(s.range, "@noinit static requires a type annotation");
+            }
+            if (s.value) {
+                error_at(s.value->range,
+                         "@noinit static cannot carry an initializer (its storage lands in .bss)");
+            }
+        }
+        check_link_attributes(s.attributes);
         break;
     }
     case ast::NodeKind::Struct: {
@@ -594,7 +610,46 @@ void Resolver::check_decl(const ast::Decl& d) {
     }
 }
 
+void Resolver::check_link_attributes(const std::vector<ast::Attribute>& attrs) {
+    // §A1 (§6.7): shape-check the symbol-level attributes. We accept
+    // the common case for each — string literal for
+    // @section/@symbol/@alias; bare for @weak/@noinit; an anonymous
+    // member-access (`.default` / `.hidden` / `.protected`) for
+    // @visibility — and emit a clear diagnostic otherwise. No type or
+    // effect checks here: these are link-time data and don't
+    // influence Vestra-side types.
+    for (const auto& a : attrs) {
+        if (a.name == "section" || a.name == "symbol" || a.name == "alias") {
+            if (a.predicate == nullptr || a.predicate->kind != ast::NodeKind::StringLit) {
+                error_at(a.range, std::format("@{} expects a string literal argument", a.name));
+            }
+        } else if (a.name == "weak" || a.name == "noinit") {
+            if (a.predicate != nullptr) {
+                error_at(a.range, std::format("@{} takes no arguments", a.name));
+            }
+        } else if (a.name == "visibility") {
+            // The argument is `.default` / `.hidden` / `.protected` —
+            // an anonymous case name. The parser produces a
+            // LeadingDotExpr here (not MemberExpr — there's no base).
+            std::string_view case_name;
+            if (a.predicate != nullptr && a.predicate->kind == ast::NodeKind::LeadingDotExpr) {
+                case_name = static_cast<const ast::LeadingDotExpr&>(*a.predicate).name;
+            }
+            if (case_name.empty()) {
+                error_at(a.range, "@visibility expects one of .default, .hidden, .protected");
+            } else if (case_name != "default" && case_name != "hidden"
+                       && case_name != "protected") {
+                error_at(a.range,
+                         std::format("@visibility(.{}) — expected .default, .hidden, "
+                                     "or .protected",
+                                     case_name));
+            }
+        }
+    }
+}
+
 void Resolver::check_func(const ast::FuncDecl& f) {
+    check_link_attributes(f.attributes);
     if (!f.body) {
         return;  // protocol requirement / extern stub — nothing to check
     }

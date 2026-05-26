@@ -931,6 +931,36 @@ set_tests_properties(e2e_display_run PROPERTIES
     DEPENDS                e2e_display_compile
     PASS_REGULAR_EXPRESSION "display OK")
 
+# Link attributes (§A1, §4.5 + §6.7). `@noinit static` reserves .bss
+# storage with no initializer; `@section` / `@symbol` / `@weak` /
+# `@alias` / `@visibility` lower to GNU attributes + asm-label
+# trailers. The runtime confirms the .bss-resident byte reads back
+# as zero, the renamed symbol still binds correctly, and the weak
+# default's body runs.
+set(e2e_link_attrs_input  ${CMAKE_SOURCE_DIR}/examples/link_attrs.vst)
+set(e2e_link_attrs_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_link_attrs.cpp)
+
+add_test(
+    NAME    e2e_link_attrs_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_link_attrs_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_link_attrs_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_link_attrs_driver} ${e2e_workdir}/link_attrs.cpp
+            -o ${e2e_workdir}/link_attrs_app)
+set_tests_properties(e2e_link_attrs_compile PROPERTIES
+    DEPENDS e2e_link_attrs_transpile)
+
+add_test(
+    NAME    e2e_link_attrs_run
+    COMMAND ${e2e_workdir}/link_attrs_app)
+set_tests_properties(e2e_link_attrs_run PROPERTIES
+    DEPENDS                e2e_link_attrs_compile
+    PASS_REGULAR_EXPRESSION "link_attrs OK")
+
 # map / filter combinators: §9 builtins that take a closure for the
 # per-element transform / predicate. Lower to __vstr::Map / __vstr::Filter
 # via CTAD on both the iterator and the closure. Closures themselves

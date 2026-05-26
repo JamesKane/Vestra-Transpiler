@@ -59,7 +59,8 @@ private:
     std::unique_ptr<ast::ExtensionDecl> parse_extension(std::vector<ast::Attribute> attrs);
     std::unique_ptr<ast::OpaqueDecl> parse_opaque(ast::Visibility vis);
     std::unique_ptr<ast::ConstDecl> parse_const(ast::Visibility vis);
-    std::unique_ptr<ast::StaticDecl> parse_static(ast::Visibility vis);
+    std::unique_ptr<ast::StaticDecl> parse_static(std::vector<ast::Attribute> attrs,
+                                                  ast::Visibility vis);
     std::unique_ptr<ast::DeriveDecl> parse_derive();
 
     // ---- shared sub-productions ------------------------------------------

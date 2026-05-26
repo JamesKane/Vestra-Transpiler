@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A1 (§4.5, §6.7) — kernel-grade link attributes.
+//
+// `@noinit static` reserves uninitialized storage in .bss: no
+// initializer in source, the symbol lands in the linker's BSS
+// region. The static is reachable by name (the spec's §14.6.3 `&buf`
+// address-of comes later under the raw-mint primitives; v0.5
+// exposes the storage as an ordinary global so the test driver can
+// poke it).
+//
+// The `@section("...")` string is passed verbatim to the host C++
+// compiler's `gnu::section` attribute. Section-name syntax is
+// platform-specific — ELF accepts dot-prefixed names like
+// `.text.foo` / `.bss.foo`, Mach-O wants `__SEGMENT,__section`.
+// This example uses Mach-O form so it compiles on the user's CI
+// host; a kernel build targeting a freestanding ELF target uses the
+// ELF spellings instead. The codegen passes the string through
+// unchanged either way.
+//
+// `@weak` lets a strong definition override at link time.
+// `@symbol("...")` renames the emitted symbol without changing the
+// C++-visible identifier — the foreign view of the symbol uses the
+// asm-label. `@visibility(.hidden)` controls ELF visibility class
+// so the symbol doesn't end up in the dynamic export table (Mach-O
+// ignores it but accepts the syntax).
+
+module examples.link_attrs
+
+// .bss-resident byte buffer. No initializer; sized at compile time.
+@noinit @section("__DATA,__cap_table")
+static cap_table_buf: [16]UInt8
+
+// A static with an initializer plus a custom section. The cap
+// table needs an entry-count published in a const-data section
+// for the host runtime; we pin it via @section.
+@section("__DATA,__cap_count")
+static cap_count: UInt32 = 16
+
+// A weak default that a kernel implementation can override. Without
+// a real strong definition the compiler-emitted version stands; with
+// one, the linker silently swaps it in.
+@weak
+func default_trap_handler() -> Int32 {
+    return -1
+}
+
+// @symbol renames the emitted symbol. The Vestra-visible identifier
+// stays `kernel_entry`, but the linker sees `kernel_entry_symbol`.
+// Useful for boot symbols whose name is constrained by the linker
+// script.
+@symbol("kernel_entry_symbol") @section("__TEXT,__boot") @visibility(.hidden)
+func kernel_entry() -> Int32 {
+    return 42
+}
+
+// Pure read access so the e2e driver can confirm the static is
+// addressable and reads back as zero (the .bss-initialized default).
+func first_cap_byte() -> UInt8 {
+    return cap_table_buf[0]
+}

@@ -661,6 +661,48 @@ TEST_CASE("zip(a, b) lowers via CTAD on __vstr::Zip and binds tuples in the for-
     CHECK(f.out.source.find("auto [x, y] = std::move(*__vstr_o);") != std::string::npos);
 }
 
+// ---- §A1 link attributes (§4.5 + §6.7) -----------------------------------
+
+TEST_CASE("@noinit static emits as `inline T name;` with no initializer") {
+    SemaEmitFixture f("@noinit @section(\"__DATA,__buf\")\n"
+                      "static buf: [8]UInt8\n");
+    CHECK(f.out.header.find("[[gnu::section(\"__DATA,__buf\")]] inline std::array<std::uint8_t, "
+                            "8> buf;")
+          != std::string::npos);
+    // No `= ...` follows the name on this declaration.
+    CHECK(f.out.header.find("buf =") == std::string::npos);
+}
+
+TEST_CASE("static with @section + initializer emits both") {
+    SemaEmitFixture f("@section(\"__DATA,__count\")\n"
+                      "static count: UInt32 = 16\n");
+    CHECK(f.out.header.find("[[gnu::section(\"__DATA,__count\")]] inline std::uint32_t count = 16;")
+          != std::string::npos);
+}
+
+TEST_CASE("@weak func emits [[gnu::weak]]") {
+    SemaEmitFixture f("@weak\n"
+                      "func default_trap() -> Int32 { return -1 }\n");
+    CHECK(f.out.header.find("[[gnu::weak]]") != std::string::npos);
+}
+
+TEST_CASE("@symbol renames the func at the asm-label, on declaration only") {
+    SemaEmitFixture f("@symbol(\"real_entry\")\n"
+                      "func entry() -> Int32 { return 0 }\n");
+    // Declaration in the header carries the asm-label.
+    CHECK(f.out.header.find("entry() asm(\"real_entry\");") != std::string::npos);
+    // The source-side definition omits it — C++ rejects asm-label on
+    // a function definition.
+    CHECK(f.out.source.find("entry() {") != std::string::npos);
+    CHECK(f.out.source.find("asm(\"real_entry\")") == std::string::npos);
+}
+
+TEST_CASE("@visibility lowers to the matching gnu::visibility string") {
+    SemaEmitFixture f("@visibility(.hidden)\n"
+                      "func tucked_away() -> Int32 { return 0 }\n");
+    CHECK(f.out.header.find("[[gnu::visibility(\"hidden\")]]") != std::string::npos);
+}
+
 TEST_CASE("map(xs, closure) lowers to __vstr::Map{xs, [&](T x){ return ... }}") {
     SemaEmitFixture f("struct It {\n"
                       "    var n: Int32\n"

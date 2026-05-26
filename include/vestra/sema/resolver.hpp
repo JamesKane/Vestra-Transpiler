@@ -93,6 +93,12 @@ private:
     void check_decl(const ast::Decl& d);
     void check_func(const ast::FuncDecl& f);
 
+    // §A1 (§6.7): validate shapes of the link-attribute family —
+    // @section / @symbol / @alias / @weak / @noinit / @visibility.
+    // No type-system effect; this just shapes the arguments so codegen
+    // can lower them cleanly. Called from both Static and Func checks.
+    void check_link_attributes(const std::vector<ast::Attribute>& attrs);
+
     void check_stmt(const ast::Stmt& s);
 
     // Compute and record an expression's type. `expected` is the type the

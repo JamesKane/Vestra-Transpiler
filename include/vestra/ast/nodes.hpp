@@ -793,6 +793,15 @@ struct StaticDecl : Decl {
     std::string name;
     TypePtr type;
     ExprPtr value;
+    // §A1 (§4.5 / §6.7): top-level attribute set. Carries @noinit,
+    // @section, @symbol, @weak, @alias, @visibility — sema validates
+    // their shapes, codegen lowers each to the matching gnu attribute
+    // or asm-label trailer.
+    std::vector<Attribute> attributes;
+    // True when the static was declared `@noinit`; the parser then
+    // omits the `= value` part and codegen emits the symbol with no
+    // initializer (lands in .bss).
+    bool noinit = false;
     StaticDecl() : Decl(NodeKind::Static) {}
 };
 

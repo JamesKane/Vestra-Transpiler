@@ -120,6 +120,68 @@ std::int64_t read_bits_attr(const std::vector<ast::Attribute>& attrs) {
     return 0;
 }
 
+// §A1 (§6.7): link-time symbol attributes. Each maps to a GNU
+// attribute or the asm-label declarator-trailer.
+struct LinkAttrs {
+    std::string section;     // empty when not set
+    std::string symbol;      // asm-name; empty when not set
+    std::string alias;       // empty when not set
+    std::string visibility;  // "default" / "hidden" / "protected"; empty when not set
+    bool weak = false;
+    bool noinit = false;
+};
+
+std::string string_from_attr_arg(const ast::Expr* arg) {
+    if (arg == nullptr || arg->kind != ast::NodeKind::StringLit) {
+        return {};
+    }
+    return std::string{static_cast<const ast::StringLit&>(*arg).text};
+}
+
+LinkAttrs read_link_attrs(const std::vector<ast::Attribute>& attrs) {
+    LinkAttrs out;
+    for (const auto& a : attrs) {
+        if (a.name == "section") {
+            out.section = string_from_attr_arg(a.predicate.get());
+        } else if (a.name == "symbol") {
+            out.symbol = string_from_attr_arg(a.predicate.get());
+        } else if (a.name == "alias") {
+            out.alias = string_from_attr_arg(a.predicate.get());
+        } else if (a.name == "weak") {
+            out.weak = true;
+        } else if (a.name == "noinit") {
+            out.noinit = true;
+        } else if (a.name == "visibility" && a.predicate != nullptr
+                   && a.predicate->kind == ast::NodeKind::LeadingDotExpr) {
+            const auto& d = static_cast<const ast::LeadingDotExpr&>(*a.predicate);
+            if (d.name == "default" || d.name == "hidden" || d.name == "protected") {
+                out.visibility = d.name;
+            }
+        }
+    }
+    return out;
+}
+
+// Emit the GNU attribute prefix common to func + static: [[gnu::section(...)]]
+// [[gnu::weak]] [[gnu::alias(...)]] [[gnu::visibility(...)]]. The
+// asm("name") for @symbol lives at the declarator trailer, not the
+// prefix; it's emitted separately. Each attribute on its own
+// guarantees the order is stable across compilers.
+void emit_link_attr_prefix(std::ostream& os, const LinkAttrs& la) {
+    if (!la.section.empty()) {
+        os << "[[gnu::section(\"" << la.section << "\")]] ";
+    }
+    if (la.weak) {
+        os << "[[gnu::weak]] ";
+    }
+    if (!la.alias.empty()) {
+        os << "[[gnu::alias(\"" << la.alias << "\")]] ";
+    }
+    if (!la.visibility.empty()) {
+        os << "[[gnu::visibility(\"" << la.visibility << "\")]] ";
+    }
+}
+
 }  // namespace
 
 // ----------------------------------------------------------------------------
@@ -559,6 +621,36 @@ void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl
         hdr << ";\n";
         break;
     }
+    case ast::NodeKind::Static: {
+        // §A1 (§4.5, §6.7): top-level mutable static storage. `inline`
+        // keeps the definition safe across multiple includes of the
+        // generated header (each TU sees the same definition).
+        // @noinit omits the initializer so the symbol lands in .bss
+        // — C++ default-initializes a non-trivially-initialized
+        // primitive / array to zero anyway, which matches the .bss
+        // convention. The link attributes (@section / @weak /
+        // @alias / @visibility) attach via gnu attribute syntax; the
+        // @symbol custom name is emitted as an asm("name") trailer.
+        const auto& s = static_cast<const ast::StaticDecl&>(d);
+        const auto la = read_link_attrs(s.attributes);
+        emit_link_attr_prefix(hdr, la);
+        hdr << "inline ";
+        if (s.type) {
+            emit_type(hdr, *s.type);
+        } else {
+            hdr << "auto";
+        }
+        hdr << " " << s.name;
+        if (!la.symbol.empty()) {
+            hdr << " asm(\"" << la.symbol << "\")";
+        }
+        if (!la.noinit && s.value) {
+            hdr << " = ";
+            emit_expr(hdr, *s.value);
+        }
+        hdr << ";\n";
+        break;
+    }
     case ast::NodeKind::Opaque: {
         const auto& o = static_cast<const ast::OpaqueDecl&>(d);
         hdr << "// opaque type " << o.name << "\n";
@@ -632,7 +724,17 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         return p.name;
     };
 
-    auto emit_signature = [&](std::ostream& os) {
+    // §A1 (§6.7) link-attribute prefix for the function. The
+    // attributes attach to every declaration of the symbol — both
+    // the header forward-declare and the source definition — so the
+    // linker sees a consistent set.
+    const auto link_attrs = read_link_attrs(f.attributes);
+
+    // `is_decl` controls the asm-label trailer: GCC / Clang allow
+    // asm("name") on a forward declaration but reject it on a
+    // function *definition* (header + body). The header gets the
+    // trailer; the source definition omits it.
+    auto emit_signature = [&](std::ostream& os, bool is_decl) {
         // §9: a `throws(E)` clause wraps the user-visible result in
         // `std::expected<T, E>` so callers see the fallible type. Inside
         // the body, `return x` works via the converting ctor; `throw e`
@@ -685,6 +787,16 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
             }
         }
         os << ")";
+        // §A1 (§6.7) @symbol: GCC / Clang accept the asm-label
+        // trailer on a function *declaration* — after the closing
+        // paren, before the `;`. A function *definition* (signature
+        // followed by `{`) doesn't allow it, so we emit it only when
+        // is_decl is true. The forward declaration in the header
+        // carries the rename; the source definition still binds at
+        // link time via the declared name.
+        if (is_decl && !link_attrs.symbol.empty()) {
+            os << " asm(\"" << link_attrs.symbol << "\")";
+        }
     };
 
     // §6 prologue for tuple-pattern params: each synthetic arg gets a
@@ -722,10 +834,17 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
     // declaration/definition split.
     if (has_type_generics) {
         emit_template_prefix(hdr);
+        emit_link_attr_prefix(hdr, link_attrs);
         if (has_result) {
             hdr << "[[nodiscard]] ";
         }
-        emit_signature(hdr);
+        // Templates emit body inline in the header, so this is both
+        // declaration *and* definition — the asm-label can't ride
+        // along here, so is_decl is false. If the user combines
+        // @symbol with a generic function, the rename silently does
+        // nothing in v0.5; that's an acceptable v0.5 limitation
+        // since the kernel-tagged symbols are almost always concrete.
+        emit_signature(hdr, /*is_decl=*/false);
         if (!f.body) {
             hdr << ";\n";
             return;
@@ -744,17 +863,19 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         return;
     }
 
+    emit_link_attr_prefix(hdr, link_attrs);
     if (has_result) {
         hdr << "[[nodiscard]] ";
     }
-    emit_signature(hdr);
+    emit_signature(hdr, /*is_decl=*/true);
     hdr << ";\n";
 
     if (!f.body) {
         return;
     }
 
-    emit_signature(src);
+    emit_link_attr_prefix(src, link_attrs);
+    emit_signature(src, /*is_decl=*/false);
     src << " {\n";
     emit_tuple_param_prologue(src);
     if (f.body->kind == ast::NodeKind::BlockExpr) {

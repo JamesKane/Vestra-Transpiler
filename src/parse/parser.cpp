@@ -583,7 +583,7 @@ ast::DeclPtr Parser::parse_decl(std::vector<ast::Attribute> attrs) {
         return parse_const(vis);
     }
     if (check(TokenKind::KwStatic)) {
-        return parse_static(vis);
+        return parse_static(std::move(attrs), vis);
     }
     if (check(TokenKind::KwDerive)) {
         return parse_derive();
@@ -875,11 +875,22 @@ std::unique_ptr<ast::ConstDecl> Parser::parse_const(ast::Visibility vis) {
     return c;
 }
 
-std::unique_ptr<ast::StaticDecl> Parser::parse_static(ast::Visibility vis) {
+std::unique_ptr<ast::StaticDecl> Parser::parse_static(std::vector<ast::Attribute> attrs,
+                                                      ast::Visibility vis) {
     auto start = peek().range;
     advance();  // 'static'
     auto s = std::make_unique<ast::StaticDecl>();
     s->visibility = vis;
+    // §A1 (§4.5): `@noinit static name: T` reserves uninitialized
+    // storage in .bss — the parser skips the `= value` part entirely
+    // for this form so it round-trips cleanly with the spec.
+    for (const auto& a : attrs) {
+        if (a.name == "noinit") {
+            s->noinit = true;
+            break;
+        }
+    }
+    s->attributes = std::move(attrs);
     if (!check(TokenKind::Identifier)) {
         emit_error(peek().range, "expected static name");
     } else {
@@ -887,8 +898,10 @@ std::unique_ptr<ast::StaticDecl> Parser::parse_static(ast::Visibility vis) {
     }
     expect(TokenKind::Colon, "':' after static name");
     s->type = parse_type();
-    expect(TokenKind::Assign, "'=' after static type");
-    s->value = parse_expr();
+    if (!s->noinit) {
+        expect(TokenKind::Assign, "'=' after static type");
+        s->value = parse_expr();
+    }
     s->range = merge(start, last_range());
     return s;
 }
