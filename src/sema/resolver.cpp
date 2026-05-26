@@ -230,10 +230,24 @@ void Resolver::register_builtin_reflection() {
     }
 
     {
+        // §A2 (§6.8) Field reflection: `name`, `type`, plus the three
+        // layout knobs `offset`, `size`, `alignment`. The folder
+        // computes the latter via the same C-style padding walk that
+        // drives `T.size` / `T.alignment`, and stashes them at
+        // positional indices 2..4 of each Field comptime value. The
+        // declaration's field-list shape is the single source of
+        // truth — sema looks up by name through the resolver's
+        // ordinary member-access path, the folder reads by index.
         auto str_type = std::make_unique<ast::NamedType>();
         str_type->path = {"Str"};
         auto type_type = std::make_unique<ast::NamedType>();
         type_type->path = {"Type"};
+        auto int_offset_t = std::make_unique<ast::NamedType>();
+        int_offset_t->path = {"Int"};
+        auto int_size_t = std::make_unique<ast::NamedType>();
+        int_size_t->path = {"Int"};
+        auto int_align_t = std::make_unique<ast::NamedType>();
+        int_align_t->path = {"Int"};
 
         auto decl = std::make_unique<ast::StructDecl>();
         decl->name = "Field";
@@ -248,6 +262,21 @@ void Resolver::register_builtin_reflection() {
         type_field.kind = ast::StructDecl::Field::Kind::Let;
         type_field.type = std::move(type_type);
         decl->fields.push_back(std::move(type_field));
+        ast::StructDecl::Field offset_field;
+        offset_field.name = "offset";
+        offset_field.kind = ast::StructDecl::Field::Kind::Let;
+        offset_field.type = std::move(int_offset_t);
+        decl->fields.push_back(std::move(offset_field));
+        ast::StructDecl::Field size_field;
+        size_field.name = "size";
+        size_field.kind = ast::StructDecl::Field::Kind::Let;
+        size_field.type = std::move(int_size_t);
+        decl->fields.push_back(std::move(size_field));
+        ast::StructDecl::Field align_field;
+        align_field.name = "alignment";
+        align_field.kind = ast::StructDecl::Field::Kind::Let;
+        align_field.type = std::move(int_align_t);
+        decl->fields.push_back(std::move(align_field));
         builtin_field_decl_ = std::move(decl);
 
         Symbol s;
@@ -2831,6 +2860,20 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
 
     // Field on a struct.
     if (auto field_type = lookup_field(lookup_base, m.member)) {
+        // §A2 (§12.2): when the base is a builtin reflection Field
+        // value (from `T.fields[i]`), the member access is comptime-
+        // only — there's no runtime layout for Field. Eager-fold here
+        // so codegen sees a concrete literal (`return 8;` rather than
+        // `return CapEntry.fields[1].offset;`). The fold may still
+        // fail for an unsizeable struct, in which case codegen would
+        // see the raw spelling — but sema also wouldn't have typed
+        // the member as a useful Int anyway.
+        if (lookup_base->nominal_decl() != nullptr
+            && lookup_base->nominal_decl() == builtin_field_decl_.get()) {
+            if (auto folded = folder_.fold(m, comptime_env_)) {
+                resolution_.set_folded_value(&m, *folded);
+            }
+        }
         return finish(field_type);
     }
     // Method on a struct/enum.

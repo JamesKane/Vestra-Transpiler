@@ -348,6 +348,15 @@ PrimLayout primitive_layout(TypeKind k) {
     case TypeKind::Int:
     case TypeKind::Float64:
         return {8, 8};
+    case TypeKind::Str:
+    case TypeKind::StrConst:
+        // Str / StrConst lower to std::string_view. The C++ Standard
+        // doesn't pin its layout, but every libstdc++/libc++ build the
+        // transpiler targets uses two pointer-width words (data
+        // pointer + size), so 16-byte size + 8-byte align on the
+        // 64-bit hosts. Pin that explicitly here; if a target ever
+        // diverges, the static_assert in the e2e fires.
+        return {16, 8};
     default:
         return {0, 0};
     }
@@ -382,6 +391,35 @@ PrimLayout struct_layout(const ast::StructDecl& sd, const Scope& globals) {
     }
     if (out.align > 0) {
         out.size = align_up(out.size, out.align);
+    }
+    return out;
+}
+
+// Per-field layout sentinel. `offset` is where the field starts in
+// the struct (after C-style padding to the field's own alignment);
+// `size`/`align` are the field's own type metrics. Returned in
+// declaration order, one entry per *non-embed* field. An empty
+// vector means we couldn't size some field — the caller treats it
+// the same as struct_layout's {0, 0} bail.
+struct FieldLayout {
+    std::int64_t offset = 0;
+    std::int64_t size = 0;
+    std::int64_t align = 0;
+};
+std::vector<FieldLayout> struct_field_layouts(const ast::StructDecl& sd, const Scope& globals) {
+    std::vector<FieldLayout> out;
+    std::int64_t running = 0;
+    for (const auto& f : sd.fields) {
+        if (f.kind == ast::StructDecl::Field::Kind::Embed || f.type == nullptr) {
+            continue;
+        }
+        auto fl = type_layout(*f.type, globals);
+        if (fl.size == 0 || fl.align == 0) {
+            return {};
+        }
+        std::int64_t offset = align_up(running, fl.align);
+        out.push_back({offset, fl.size, fl.align});
+        running = offset + fl.size;
     }
     return out;
 }
@@ -605,11 +643,20 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
                         // one per non-embed StructDecl field. Each Field is
                         // laid out positionally to match its builtin
                         // StructDecl: elements[0]=name (String),
-                        // elements[1]=type (TypeRef).
+                        // elements[1]=type (TypeRef), elements[2]=offset,
+                        // elements[3]=size, elements[4]=alignment (all Int).
+                        // The §A2 layout walk supplies the latter three; if
+                        // any field has no v0.5 layout, the walk returns
+                        // an empty vector and we leave the integer slots
+                        // at 0 — the user still gets name/type, just not
+                        // the offsets.
                         const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
+                        auto layouts = struct_field_layouts(sd, *global_scope_);
+                        const bool has_layout = !layouts.empty();
                         ComptimeValue v;
                         v.kind = ComptimeValue::Kind::Vector;
                         v.type = TypeKind::Struct;  // element kind is Field (nominal struct)
+                        std::size_t lay_idx = 0;
                         for (const auto& f : sd.fields) {
                             if (f.kind == ast::StructDecl::Field::Kind::Embed) {
                                 continue;
@@ -624,6 +671,14 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
                             type_ref.type = TypeKind::Struct;
                             type_ref.s = f.type ? type_display_name(*f.type) : "?";
                             field.elements.push_back(std::move(type_ref));
+                            FieldLayout lay{};
+                            if (has_layout && lay_idx < layouts.size()) {
+                                lay = layouts[lay_idx];
+                            }
+                            field.elements.push_back(make_int(lay.offset, TypeKind::Int));
+                            field.elements.push_back(make_int(lay.size, TypeKind::Int));
+                            field.elements.push_back(make_int(lay.align, TypeKind::Int));
+                            ++lay_idx;
                             v.elements.push_back(std::move(field));
                         }
                         v.length = static_cast<std::int64_t>(v.elements.size());

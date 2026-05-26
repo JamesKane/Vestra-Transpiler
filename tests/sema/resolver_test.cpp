@@ -709,6 +709,17 @@ TEST_CASE("T.size and T.alignment type as Int") {
           == 0);
 }
 
+TEST_CASE("T.fields[i] carries offset / size / alignment as Int members") {
+    CHECK(check_errors("struct S {\n"
+                       "    var id: UInt64\n"
+                       "    var flag: UInt8\n"
+                       "}\n"
+                       "func at_off() -> Int { return S.fields[0].offset }\n"
+                       "func at_size() -> Int { return S.fields[0].size }\n"
+                       "func at_align() -> Int { return S.fields[0].alignment }\n")
+          == 0);
+}
+
 TEST_CASE("layout reflection fails on a struct with no v0.5 layout for a field") {
     // Optional<T> isn't sized by the v0.5 fold (its layout depends on
     // std::optional's host implementation). Sema diagnoses cleanly

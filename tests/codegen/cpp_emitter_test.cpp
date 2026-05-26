@@ -687,6 +687,23 @@ TEST_CASE("@inline(.hint) emits a plain inline (no gnu attribute)") {
     CHECK(f.out.header.find("[[gnu::") == std::string::npos);
 }
 
+TEST_CASE("T.fields[i].offset / .size / .alignment fold to literals") {
+    SemaEmitFixture f("struct S {\n"
+                      "    var id: UInt64\n"
+                      "    var flag: UInt8\n"
+                      "    var ext: UInt32\n"
+                      "}\n"
+                      "func at_off() -> Int { return S.fields[2].offset }\n"
+                      "func at_size() -> Int { return S.fields[2].size }\n"
+                      "func at_align() -> Int { return S.fields[2].alignment }\n");
+    // id (8,8) → offset 0. flag (1,1) → offset 8. ext (4,4) → next
+    // aligned-up from 9 is 12 → offset 12, size 4, align 4.
+    CHECK(f.out.source.find("return 12;") != std::string::npos);
+    CHECK(f.out.source.find("return 4;") != std::string::npos);
+    // No raw spelling leaks through.
+    CHECK(f.out.source.find("S.fields") == std::string::npos);
+}
+
 TEST_CASE("T.size and T.alignment fold to integer literals at the use site") {
     SemaEmitFixture f("struct S {\n"
                       "    var id: UInt64\n"

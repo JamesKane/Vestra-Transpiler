@@ -34,6 +34,30 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // §A2 (§6.8) per-field offsets / size / align. Cross-check the
+    // Vestra-side fold against the C++ struct's actual offsetof
+    // values so any future drift between the v0.5 layout walker and
+    // the host ABI shows up here loudly.
+    static_assert(offsetof(CapEntry, id) == 0);
+    static_assert(offsetof(CapEntry, flags) == 8);
+    static_assert(offsetof(CapEntry, version) == 12);
+    static_assert(offsetof(CapEntry, status) == 14);
+    static_assert(offsetof(CapEntry, pad) == 15);
+    if (id_offset() != 0 || flags_offset() != 8 || version_offset() != 12 || status_offset() != 14
+        || pad_offset() != 15) {
+        std::println("field offsets disagreed: {} {} {} {} {}",
+                     id_offset(),
+                     flags_offset(),
+                     version_offset(),
+                     status_offset(),
+                     pad_offset());
+        return EXIT_FAILURE;
+    }
+    if (flags_size() != 4 || flags_align() != 4) {
+        std::println("flags field metrics wrong: size={} align={}", flags_size(), flags_align());
+        return EXIT_FAILURE;
+    }
+
     std::println("inline_layout OK");
     return EXIT_SUCCESS;
 }

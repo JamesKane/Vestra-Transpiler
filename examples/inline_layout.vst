@@ -78,3 +78,16 @@ func layout_total() -> Int {
 func inline_total() -> Int32 {
     return slot_count() + slow_path() + popcount_lower(0)
 }
+
+// §A2 (§6.8) field-level layout reflection. Each Field carries
+// `name: Str`, `type: Type`, plus the three layout knobs:
+// `offset`, `size`, `alignment` (all `Int`). All folded at sema
+// time from the struct walk, so the C++ source sees literals.
+func id_offset()      -> Int { return CapEntry.fields[0].offset }
+func flags_offset()   -> Int { return CapEntry.fields[1].offset }
+func version_offset() -> Int { return CapEntry.fields[2].offset }
+func status_offset()  -> Int { return CapEntry.fields[3].offset }
+func pad_offset()     -> Int { return CapEntry.fields[4].offset }
+
+func flags_size()     -> Int { return CapEntry.fields[1].size }
+func flags_align()    -> Int { return CapEntry.fields[1].alignment }
