@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §6 tuple patterns at sites other than `let` / `var` / `for`. Two
+// shapes:
+//   * Function parameter: `func f((a, b): (Int32, Int32))`.
+//     Codegen emits a synthetic `__vstr_arg0` of the tuple type, plus
+//     a structured-binding prologue at the top of the body.
+//   * Match-arm payload: `case .point((let x, let y))`.
+//     The tuple sub-pattern destructures the payload field directly
+//     in the constexpr-if arm.
+
+module examples.tuple_params
+
+// Two-element tuple destructured at the param slot.
+func add_pair((a, b): (Int32, Int32)) -> Int32 {
+    return a + b
+}
+
+// Nested tuple pattern at the param slot — uses the same
+// sibling-statement hoist the LetStmt path uses.
+func sum_pair_and_third(((p, q), r): ((Int32, Int32), Int32)) -> Int32 {
+    return p + q + r
+}
+
+// A payloaded enum where two cases carry tuple-typed payload fields.
+enum Action {
+    case quit
+    case point(p: (Int32, Int32))
+    case region(r: ((Int32, Int32), Int32))
+}
+
+// Match arms destructure the payload tuple in-place. No separate
+// let-binding needed; the leaves are in scope inside the arm body.
+func score(_ a: Action) -> Int32 {
+    return match a {
+        case .quit: 0
+        case .point((let x, let y)): x + y
+        case .region(((let x, let y), let bonus)): x + y + bonus
+    }
+}

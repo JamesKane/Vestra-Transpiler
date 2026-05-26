@@ -431,6 +431,43 @@ TEST_CASE("nested tuple pattern with wildcard sub-element drops the slot") {
     CHECK(out.source.find("auto [a, __vstr_tp_unused_") != std::string::npos);
 }
 
+TEST_CASE("tuple-pattern param emits a synthetic arg + prologue binding") {
+    auto out = emit("func add_pair((a, b): (Int32, Int32)) -> Int32 {\n"
+                    "    return a + b\n"
+                    "}\n");
+    // The C++ signature loses the user's leaf names — the param is a
+    // synthetic `__vstr_arg0` of the tuple type.
+    CHECK(out.header.find("add_pair(const std::tuple<std::int32_t, std::int32_t>& __vstr_arg0)")
+          != std::string::npos);
+    // The body opens with the structured-binding unpack so the leaves
+    // are in scope for the rest of the function.
+    CHECK(out.source.find("auto [a, b] = __vstr_arg0;") != std::string::npos);
+}
+
+TEST_CASE("nested tuple-pattern param threads through the prologue") {
+    auto out = emit("func sum3(((p, q), r): ((Int32, Int32), Int32)) -> Int32 {\n"
+                    "    return p + q + r\n"
+                    "}\n");
+    CHECK(out.source.find("auto [__vstr_tp0, r] = __vstr_arg0;") != std::string::npos);
+    CHECK(out.source.find("auto [p, q] = __vstr_tp0;") != std::string::npos);
+}
+
+TEST_CASE("match-arm tuple sub-pattern destructures the enum payload field") {
+    SemaEmitFixture f("enum Action {\n"
+                      "    case quit\n"
+                      "    case point(p: (Int32, Int32))\n"
+                      "}\n"
+                      "func score(_ a: Action) -> Int32 {\n"
+                      "    return match a {\n"
+                      "        case .quit: 0\n"
+                      "        case .point((let x, let y)): x + y\n"
+                      "    }\n"
+                      "}\n");
+    // The point-case arm binds the payload's tuple field by reference
+    // via a structured binding off the variant alternative's `.p`.
+    CHECK(f.out.source.find("auto&& [x, y] = __vstr_alt.p;") != std::string::npos);
+}
+
 // ---- §10 Box[T] -----------------------------------------------------------
 
 TEST_CASE("Box[T] type lowers to std::unique_ptr<T>") {

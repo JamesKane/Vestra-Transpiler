@@ -478,6 +478,34 @@ set_tests_properties(e2e_nested_tuples_run PROPERTIES
     DEPENDS                e2e_nested_tuples_compile
     PASS_REGULAR_EXPRESSION "nested tuples OK")
 
+# Tuple params + match-arm tuple patterns: §6 tuple patterns at sites
+# other than `let` / `var` / `for`. Param slot: codegen emits a
+# synthetic `__vstr_arg{i}` plus a structured-binding prologue at the
+# top of the body. Match-arm: `case .point((let x, let y)):` destructures
+# the payload field inline.
+set(e2e_tuple_params_input  ${CMAKE_SOURCE_DIR}/examples/tuple_params.vst)
+set(e2e_tuple_params_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_tuple_params.cpp)
+
+add_test(
+    NAME    e2e_tuple_params_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_tuple_params_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_tuple_params_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_tuple_params_driver} ${e2e_workdir}/tuple_params.cpp
+            -o ${e2e_workdir}/tuple_params_app)
+set_tests_properties(e2e_tuple_params_compile PROPERTIES DEPENDS e2e_tuple_params_transpile)
+
+add_test(
+    NAME    e2e_tuple_params_run
+    COMMAND ${e2e_workdir}/tuple_params_app)
+set_tests_properties(e2e_tuple_params_run PROPERTIES
+    DEPENDS                e2e_tuple_params_compile
+    PASS_REGULAR_EXPRESSION "tuple params OK")
+
 # Box[T]: §10 unique-ownership heap pointer. Lowers to
 # std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
 # → *box. Allocation requires the §8 `Alloc` capability. E2E pins

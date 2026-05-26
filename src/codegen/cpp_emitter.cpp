@@ -452,6 +452,18 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         os << ">\n";
     };
 
+    // §6 tuple-pattern param: a param whose AST stores a TuplePat (no
+    // `name`) gets a synthetic C++ identifier — the structured binding
+    // happens via prologue statements at the top of the body. The same
+    // name is used for the signature in header + source so the
+    // forward-declared decl and the definition agree.
+    auto param_cpp_name = [&](std::size_t i, const ast::Param& p) -> std::string {
+        if (p.pattern != nullptr) {
+            return std::format("__vstr_arg{}", i);
+        }
+        return p.name;
+    };
+
     auto emit_signature = [&](std::ostream& os) {
         // §9: a `throws(E)` clause wraps the user-visible result in
         // `std::expected<T, E>` so callers see the fallible type. Inside
@@ -488,23 +500,49 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
                 if (p.type) {
                     emit_type(os, *p.type);
                 }
-                os << "& " << p.name;
+                os << "& " << param_cpp_name(i, p);
                 break;
             case ast::ParamMode::Inout:
                 if (p.type) {
                     emit_type(os, *p.type);
                 }
-                os << "& " << p.name;
+                os << "& " << param_cpp_name(i, p);
                 break;
             case ast::ParamMode::Sink:
                 if (p.type) {
                     emit_type(os, *p.type);
                 }
-                os << "&& " << p.name;
+                os << "&& " << param_cpp_name(i, p);
                 break;
             }
         }
         os << ")";
+    };
+
+    // §6 prologue for tuple-pattern params: each synthetic arg gets a
+    // structured-binding statement at the top of the body, plus any
+    // nested follow-on unpacks via the same helpers LetStmt uses.
+    auto emit_tuple_param_prologue = [&](std::ostream& os) {
+        for (std::size_t i = 0; i < f.params.size(); ++i) {
+            const auto& p = f.params[i];
+            if (p.pattern == nullptr || p.pattern->kind != ast::NodeKind::TuplePat) {
+                continue;
+            }
+            const auto& tp = static_cast<const ast::TuplePat&>(*p.pattern);
+            std::vector<std::string> names;
+            std::vector<std::pair<std::string, const ast::TuplePat*>> followons;
+            collect_tuple_pat_names(tp, names, followons);
+            write_indent(os, 1);
+            os << "auto [";
+            for (std::size_t j = 0; j < names.size(); ++j) {
+                if (j != 0) {
+                    os << ", ";
+                }
+                os << names[j];
+            }
+            os << "] = " << param_cpp_name(i, p) << ";\n";
+            emit_tuple_pat_followons(os, followons, 1);
+        }
     };
 
     // Templates must be visible at every instantiation site, so a generic
@@ -519,6 +557,7 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
             return;
         }
         hdr << " {\n";
+        emit_tuple_param_prologue(hdr);
         if (f.body->kind == ast::NodeKind::BlockExpr) {
             const auto& blk = static_cast<const ast::BlockExpr&>(*f.body);
             for (const auto& s : blk.stmts) {
@@ -541,6 +580,7 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
 
     emit_signature(src);
     src << " {\n";
+    emit_tuple_param_prologue(src);
     if (f.body->kind == ast::NodeKind::BlockExpr) {
         const auto& blk = static_cast<const ast::BlockExpr&>(*f.body);
         for (const auto& s : blk.stmts) {
@@ -2362,9 +2402,28 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
                 write_indent(os, 3);
                 os << "auto&& " << static_cast<const ast::IdentPat&>(child).name << " = __vstr_alt."
                    << field_name << ";\n";
+            } else if (child.kind == ast::NodeKind::TuplePat) {
+                // §6 tuple-pattern payload child:
+                //   case .pair((a, b)): ...
+                // Lower to a structured binding off the payload field,
+                // with the existing tuple-pat helpers handling any
+                // nested sub-tuple via sibling follow-on statements.
+                const auto& sub_tp = static_cast<const ast::TuplePat&>(child);
+                std::vector<std::string> sub_names;
+                std::vector<std::pair<std::string, const ast::TuplePat*>> sub_followons;
+                collect_tuple_pat_names(sub_tp, sub_names, sub_followons);
+                write_indent(os, 3);
+                os << "auto&& [";
+                for (std::size_t k = 0; k < sub_names.size(); ++k) {
+                    if (k != 0) {
+                        os << ", ";
+                    }
+                    os << sub_names[k];
+                }
+                os << "] = __vstr_alt." << field_name << ";\n";
+                emit_tuple_pat_followons(os, sub_followons, 3);
             }
-            // Wildcard / nested patterns: nothing to bind. Sub-pattern
-            // matching is a follow-on.
+            // Wildcard: nothing to bind.
         }
 
         write_indent(os, 3);

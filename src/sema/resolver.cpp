@@ -526,13 +526,23 @@ void Resolver::check_func(const ast::FuncDecl& f) {
 
     // Bind parameters.
     for (const auto& p : f.params) {
+        TypePtr param_type = p.type ? resolve_type(*p.type) : types_->error();
+        // §6 tuple-pattern param: `func f((a, b): (Int32, Int32))` —
+        // there's no single name to insert; instead each leaf of the
+        // pattern binds to its corresponding tuple element.
+        if (p.pattern != nullptr) {
+            if (p.pattern->kind == ast::NodeKind::TuplePat) {
+                bind_tuple_pattern(static_cast<const ast::TuplePat&>(*p.pattern), param_type);
+            }
+            continue;
+        }
         if (p.name.empty()) {
             continue;
         }
         Symbol s;
         s.name = p.name;
         s.kind = SymbolKind::Parameter;
-        s.type = p.type ? resolve_type(*p.type) : types_->error();
+        s.type = param_type;
         s.definition_range = p.range;
         if (auto* prev = g.scope().insert(std::move(s))) {
             duplicate_definition(*prev, p.name, p.range);
@@ -2179,6 +2189,19 @@ void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
         sym.type = scrutinee;
         sym.definition_range = p.range;
         (void)scopes_.current().insert(std::move(sym));
+        break;
+    }
+    case ast::NodeKind::TuplePat: {
+        // §6 tuple pattern in match-arm position. Two shapes:
+        //   * `match tup { case (a, b): ... }` — the scrutinee is a
+        //     tuple, the pattern destructures it directly.
+        //   * As an EnumPat child: `case .pair((a, b)):` — the enclosing
+        //     EnumPat case threads the payload field's type in as
+        //     `scrutinee` for this recursive call.
+        // Either way, bind_tuple_pattern walks the elements in parallel
+        // with the scrutinee's TupleType and reports arity / non-tuple
+        // mismatches.
+        bind_tuple_pattern(static_cast<const ast::TuplePat&>(p), scrutinee);
         break;
     }
     case ast::NodeKind::EnumPat: {

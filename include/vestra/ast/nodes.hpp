@@ -233,6 +233,13 @@ struct Param {
     ParamMode mode = ParamMode::Read;
     TypePtr type;
     ExprPtr default_value;  // optional
+    // §6 tuple-pattern destructuring at the param slot:
+    //   func f((a, b): (Int32, Int32)) -> Int32
+    // When set, `name` is empty (the parser binds the pattern instead),
+    // sema walks the pattern via bind_tuple_pattern, and codegen emits a
+    // synthetic C++ parameter (`__vstr_arg_i`) plus follow-on
+    // structured-binding statements at the top of the body.
+    PatternPtr pattern;
     diag::SourceRange range;
 };
 

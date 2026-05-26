@@ -404,6 +404,40 @@ TEST_CASE("wildcards inside a tuple pattern are accepted") {
           == 0);
 }
 
+TEST_CASE("function-param tuple pattern binds leaves into the body scope") {
+    CHECK(check_errors("func add_pair((a, b): (Int32, Int32)) -> Int32 {\n"
+                       "    return a + b\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("nested tuple-pattern param destructures all the way down") {
+    CHECK(check_errors("func sum3(((p, q), r): ((Int32, Int32), Int32)) -> Int32 {\n"
+                       "    return p + q + r\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("tuple-pattern param against a non-tuple type is reported") {
+    auto r = check_detail("func bad((a, b): Int32) -> Int32 { return a + b }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("tuple") != std::string::npos);
+}
+
+TEST_CASE("match arm with tuple pattern inside enum payload binds leaves") {
+    CHECK(check_errors("enum Action {\n"
+                       "    case quit\n"
+                       "    case point(p: (Int32, Int32))\n"
+                       "}\n"
+                       "func score(_ a: Action) -> Int32 {\n"
+                       "    return match a {\n"
+                       "        case .quit: 0\n"
+                       "        case .point((let x, let y)): x + y\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
 // ---- §10 Box[T] + Alloc capability ---------------------------------------
 
 TEST_CASE("Box.new in a function with `using Alloc` type-checks") {

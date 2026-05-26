@@ -467,7 +467,16 @@ std::vector<ast::Param> Parser::parse_params() {
         // Per §17.2: (IDENT|'_')? IDENT ':' 'nonescaping'? pmode? type ('=' expr)?
         // The leading external label is optional; if a single identifier precedes
         // the colon, it is the parameter name and the label defaults to it.
-        if (check(TokenKind::Underscore)) {
+        //
+        // §6 tuple-pattern params: `((a, b): (Int32, Int32))` — when the
+        // slot starts with `(`, parse a tuple pattern instead of a name.
+        // The pattern's leaves become the in-body bindings; the C++
+        // signature gets a synthetic argument name (codegen). Label and
+        // mode keywords are not allowed here.
+        if (check(TokenKind::LParen)) {
+            p.label_omitted = true;
+            p.pattern = parse_pattern();
+        } else if (check(TokenKind::Underscore)) {
             p.label_omitted = true;
             advance();
             if (check(TokenKind::Identifier)) {
