@@ -93,6 +93,8 @@ enum class NodeKind : std::uint16_t {
     IdentPat,
     EnumPat,
     TuplePat,
+    RangePat,
+    OrPat,
 };
 
 // The four parameter modes from §5.
@@ -636,6 +638,27 @@ struct EnumPat : Pattern {
 struct TuplePat : Pattern {
     std::vector<PatternPtr> elements;
     TuplePat() : Pattern(NodeKind::TuplePat) {}
+};
+
+// §17.7 range pattern at match-arm position: `case 0 ..< 10:` or
+// `case 0 .. 10:`. Bounds must be integer literals (or comptime-
+// foldable integer expressions); the scrutinee must be integer.
+// `inclusive` mirrors the BinaryOp::Range / RangeLt distinction in
+// expression position — `..` is inclusive, `..<` is exclusive.
+struct RangePat : Pattern {
+    ExprPtr low;
+    ExprPtr high;
+    bool inclusive = false;
+    RangePat() : Pattern(NodeKind::RangePat) {}
+};
+
+// §17.7 or-pattern: `case .red | .green:` or `case 1 | 2 | 3:`. v0.5
+// rejects alternatives that introduce conflicting bindings — all
+// alternatives must either name the same binding(s) of the same
+// type, or none at all. Each alt is parsed as an ordinary pattern.
+struct OrPat : Pattern {
+    std::vector<PatternPtr> alternatives;
+    OrPat() : Pattern(NodeKind::OrPat) {}
 };
 
 // ------------------------------------------------------------------ decls

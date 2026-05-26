@@ -73,6 +73,20 @@ private:
     void emit_stmt(std::ostream& os, const ast::Stmt& s, int indent);
     void emit_expr(std::ostream& os, const ast::Expr& e);
     void emit_match(std::ostream& os, const ast::MatchExpr& m);
+    // §17.7 match-arm pattern helpers. `emit_pat_predicate` writes a C++
+    // expression that returns true when the value spelled by `base`
+    // matches the pattern; `emit_pat_bindings` writes the `auto&&
+    // name = base;` lines for each binding the pattern introduces.
+    // Used by the value-scrutinee if-chain and (predicate only) by the
+    // bare-enum OrPat fallback.
+    void emit_pat_predicate(std::ostream& os, const ast::Pattern& p, std::string_view base);
+    void
+    emit_pat_bindings(std::ostream& os, const ast::Pattern& p, std::string_view base, int indent);
+    // Match over a non-enum scrutinee (integer, bool, string, tuple).
+    // Lowers to an IIFE that binds the scrutinee to `__vstr_m` and
+    // walks an if/else-if chain over each arm's predicate, with arm
+    // bindings emitted inside the matching branch.
+    void emit_match_value_scrutinee(std::ostream& os, const ast::MatchExpr& m);
     void emit_type(std::ostream& os, const ast::Type& t);
     // Emit the C++ spelling of a resolver-canonicalized type. Used in a
     // handful of places where the AST type isn't reachable (e.g. the

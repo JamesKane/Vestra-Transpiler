@@ -69,6 +69,10 @@ TEST_CASE("emitter wraps the module path in a namespace") {
 }
 
 TEST_CASE("match over a bare enum lowers to a switch-case IIFE") {
+    // §17.7 extends this shape to stack labels for or-patterns; the
+    // `case Color::X:` line now sits on its own row (so it can stack
+    // with siblings under one return statement when the user writes
+    // `case .red | .green:`). The single-case form still works.
     SemaEmitFixture f("enum Color { case red\n    case green\n    case blue\n}\n"
                       "func ch(_ c: Color) -> Int32 {\n"
                       "    return match c {\n"
@@ -78,8 +82,10 @@ TEST_CASE("match over a bare enum lowers to a switch-case IIFE") {
                       "    }\n"
                       "}\n");
     CHECK(f.out.source.find("switch (c)") != std::string::npos);
-    CHECK(f.out.source.find("case Color::red: return 1") != std::string::npos);
-    CHECK(f.out.source.find("case Color::blue: return 3") != std::string::npos);
+    CHECK(f.out.source.find("case Color::red:") != std::string::npos);
+    CHECK(f.out.source.find("case Color::blue:") != std::string::npos);
+    CHECK(f.out.source.find("return 1;") != std::string::npos);
+    CHECK(f.out.source.find("return 3;") != std::string::npos);
 }
 
 TEST_CASE("match over a payloaded enum lowers to std::visit") {
@@ -599,6 +605,74 @@ TEST_CASE("a method returning a struct stays a real call, not a fresh struct lit
                       "func dup(_ p: Point) -> Point { return p.clone() }\n");
     CHECK(f.out.source.find("return p.clone();") != std::string::npos);
     CHECK(f.out.source.find("return Point{};") == std::string::npos);
+}
+
+// ---- §17.7 pattern matching enhancements ---------------------------------
+
+TEST_CASE("integer-scrutinee match lowers to an if-else-if chain") {
+    SemaEmitFixture f("func bucket(_ n: Int32) -> Int32 {\n"
+                      "    return match n {\n"
+                      "        case 0: 100\n"
+                      "        case 1 | 2 | 3: 200\n"
+                      "        case 10..<20: 300\n"
+                      "        default: 0\n"
+                      "    }\n"
+                      "}\n");
+    // No switch — non-enum scrutinees take the value-scrutinee path.
+    CHECK(f.out.source.find("switch (n)") == std::string::npos);
+    // The IIFE binds the scrutinee, then runs the if-chain.
+    CHECK(f.out.source.find("auto&& __vstr_m = n;") != std::string::npos);
+    // Literal predicate.
+    CHECK(f.out.source.find("(__vstr_m == 0)") != std::string::npos);
+    // Or-pattern combines per-alt predicates with `||`.
+    CHECK(f.out.source.find("((__vstr_m == 1) || (__vstr_m == 2) || (__vstr_m == 3))")
+          != std::string::npos);
+    // Exclusive range uses `<`.
+    CHECK(f.out.source.find("(10 <= __vstr_m && __vstr_m < 20)") != std::string::npos);
+}
+
+TEST_CASE("inclusive range pattern uses `<=` on the upper bound") {
+    SemaEmitFixture f("func grade(_ n: Int32) -> Int32 {\n"
+                      "    return match n {\n"
+                      "        case 90..100: 4\n"
+                      "        default: 0\n"
+                      "    }\n"
+                      "}\n");
+    CHECK(f.out.source.find("(90 <= __vstr_m && __vstr_m <= 100)") != std::string::npos);
+}
+
+TEST_CASE("bare-enum or-pattern stacks case labels above one return") {
+    SemaEmitFixture f("enum Color { case red\n    case green\n    case blue\n}\n"
+                      "func warm(_ c: Color) -> Int32 {\n"
+                      "    return match c {\n"
+                      "        case .red | .green: 1\n"
+                      "        case .blue: 0\n"
+                      "    }\n"
+                      "}\n");
+    // The switch path emits stacked labels (newline-separated), then
+    // the body return on the next line.
+    CHECK(f.out.source.find("case Color::red:") != std::string::npos);
+    CHECK(f.out.source.find("case Color::green:") != std::string::npos);
+    // Only one `return 1;` (the bodies don't duplicate).
+    auto first = f.out.source.find("return 1;");
+    auto second =
+        first != std::string::npos ? f.out.source.find("return 1;", first + 1) : std::string::npos;
+    CHECK(first != std::string::npos);
+    CHECK(second == std::string::npos);
+}
+
+TEST_CASE("tuple-scrutinee match uses std::get<i> in each predicate") {
+    SemaEmitFixture f("func classify(_ p: (Int32, Int32)) -> Int32 {\n"
+                      "    return match p {\n"
+                      "        case (0, 0): 1\n"
+                      "        case (0, _): 2\n"
+                      "        default: 4\n"
+                      "    }\n"
+                      "}\n");
+    CHECK(f.out.source.find("std::get<0>(__vstr_m)") != std::string::npos);
+    CHECK(f.out.source.find("std::get<1>(__vstr_m)") != std::string::npos);
+    CHECK(f.out.source.find("(std::get<0>(__vstr_m) == 0) && (std::get<1>(__vstr_m) == 0)")
+          != std::string::npos);
 }
 
 // ---- §4 Optional in a Display splice -------------------------------------

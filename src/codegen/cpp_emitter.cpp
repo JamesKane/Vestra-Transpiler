@@ -2975,9 +2975,15 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
         return;
     }
     auto scrutinee_type = resolution_->type_of(m.scrutinee.get());
-    if (scrutinee_type == nullptr || scrutinee_type->kind() != sema::TypeKind::Enum
-        || scrutinee_type->nominal_decl() == nullptr) {
-        unsupported(os, "match over non-enum scrutinee", m.range);
+    // Non-enum scrutinees (integer / bool / string / tuple) go through
+    // the value-scrutinee if-chain path. Enum dispatch stays on the
+    // switch / std::visit shapes below.
+    if (scrutinee_type == nullptr || (scrutinee_type->kind() != sema::TypeKind::Enum)) {
+        emit_match_value_scrutinee(os, m);
+        return;
+    }
+    if (scrutinee_type->nominal_decl() == nullptr) {
+        unsupported(os, "match over enum without resolved decl", m.range);
         return;
     }
     const auto& enum_decl = static_cast<const ast::EnumDecl&>(*scrutinee_type->nominal_decl());
@@ -2996,17 +3002,41 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
 
     if (!has_payload) {
         // Lower the whole expression as an IIFE returning a switch's value
-        // through a tail `return`. Wildcard patterns map to `default:`.
+        // through a tail `return`. Wildcard patterns map to `default:`;
+        // `case .a | .b:` stacks both labels above one return statement.
         os << "[&]{ switch (";
         emit_expr(os, *m.scrutinee);
         os << ") {\n";
+        auto emit_enum_labels = [&](const ast::Pattern& p, auto& self) -> bool {
+            if (p.kind == ast::NodeKind::EnumPat) {
+                const auto& ep = static_cast<const ast::EnumPat&>(p);
+                os << "        case " << enum_decl.name << "::" << ep.case_name << ":\n";
+                return true;
+            }
+            if (p.kind == ast::NodeKind::OrPat) {
+                bool ok = true;
+                for (const auto& alt : static_cast<const ast::OrPat&>(p).alternatives) {
+                    if (alt == nullptr || !self(*alt, self)) {
+                        ok = false;
+                    }
+                }
+                return ok;
+            }
+            return false;
+        };
         for (const auto& arm : m.arms) {
             if (arm.is_default
                 || (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::WildcardPat)) {
-                os << "        default: return ";
-            } else if (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::EnumPat) {
-                const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
-                os << "        case " << enum_decl.name << "::" << ep.case_name << ": return ";
+                os << "        default:\n            return ";
+            } else if (arm.pattern != nullptr
+                       && (arm.pattern->kind == ast::NodeKind::EnumPat
+                           || arm.pattern->kind == ast::NodeKind::OrPat)) {
+                if (!emit_enum_labels(*arm.pattern, emit_enum_labels)) {
+                    unsupported(os, "match arm pattern", m.range);
+                    os << ";\n";
+                    continue;
+                }
+                os << "            return ";
             } else {
                 unsupported(os, "match arm pattern", m.range);
                 os << ";\n";
@@ -3138,6 +3168,178 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
     os << "\n    }, ";
     emit_expr(os, *m.scrutinee);
     os << ".value)";
+}
+
+// §17.7 pattern predicate. Writes a C++ expression that evaluates to
+// `true` when the value spelled by `base` matches the pattern. Used by
+// the value-scrutinee if-chain (where the predicate gates the arm's
+// body). The base string is composed deeper for tuple elements
+// (`std::get<i>(parent_base)`), so the helper stays purely functional.
+void CppEmitter::emit_pat_predicate(std::ostream& os,
+                                    const ast::Pattern& p,
+                                    std::string_view base) {
+    switch (p.kind) {
+    case ast::NodeKind::WildcardPat:
+    case ast::NodeKind::IdentPat:
+    case ast::NodeKind::BindPat:
+        // Always-match — the binding is emitted separately if any.
+        os << "true";
+        return;
+    case ast::NodeKind::LiteralPat: {
+        const auto& lp = static_cast<const ast::LiteralPat&>(p);
+        os << "(" << base << " == ";
+        if (lp.literal) {
+            emit_expr(os, *lp.literal);
+        }
+        os << ")";
+        return;
+    }
+    case ast::NodeKind::RangePat: {
+        const auto& rp = static_cast<const ast::RangePat&>(p);
+        os << "(";
+        if (rp.low) {
+            emit_expr(os, *rp.low);
+        }
+        os << " <= " << base << " && " << base << (rp.inclusive ? " <= " : " < ");
+        if (rp.high) {
+            emit_expr(os, *rp.high);
+        }
+        os << ")";
+        return;
+    }
+    case ast::NodeKind::OrPat: {
+        const auto& op = static_cast<const ast::OrPat&>(p);
+        os << "(";
+        for (std::size_t i = 0; i < op.alternatives.size(); ++i) {
+            if (i != 0) {
+                os << " || ";
+            }
+            if (op.alternatives[i]) {
+                emit_pat_predicate(os, *op.alternatives[i], base);
+            }
+        }
+        os << ")";
+        return;
+    }
+    case ast::NodeKind::TuplePat: {
+        const auto& tp = static_cast<const ast::TuplePat&>(p);
+        os << "(";
+        bool first = true;
+        for (std::size_t i = 0; i < tp.elements.size(); ++i) {
+            if (tp.elements[i] == nullptr) {
+                continue;
+            }
+            if (!first) {
+                os << " && ";
+            }
+            first = false;
+            std::string sub_base = std::format("std::get<{}>({})", i, base);
+            emit_pat_predicate(os, *tp.elements[i], sub_base);
+        }
+        if (first) {
+            os << "true";
+        }
+        os << ")";
+        return;
+    }
+    default:
+        // Unrecognized — return true so the arm is always taken (and
+        // the caller's `unsupported` diagnostic surfaces the real
+        // issue elsewhere).
+        os << "true";
+        return;
+    }
+}
+
+// Emit `auto&& name = base;` for every binding the pattern introduces.
+// IdentPat and BindPat bind directly; TuplePat recurses into each
+// element with `std::get<i>(base)` as the new base. Literal, range,
+// or, and wildcard patterns introduce no bindings.
+void CppEmitter::emit_pat_bindings(std::ostream& os,
+                                   const ast::Pattern& p,
+                                   std::string_view base,
+                                   int indent) {
+    switch (p.kind) {
+    case ast::NodeKind::IdentPat:
+        write_indent(os, indent);
+        os << "auto&& " << static_cast<const ast::IdentPat&>(p).name << " = " << base << ";\n";
+        return;
+    case ast::NodeKind::BindPat:
+        write_indent(os, indent);
+        os << "auto&& " << static_cast<const ast::BindPat&>(p).name << " = " << base << ";\n";
+        return;
+    case ast::NodeKind::TuplePat: {
+        const auto& tp = static_cast<const ast::TuplePat&>(p);
+        for (std::size_t i = 0; i < tp.elements.size(); ++i) {
+            if (tp.elements[i]) {
+                std::string sub_base = std::format("std::get<{}>({})", i, base);
+                emit_pat_bindings(os, *tp.elements[i], sub_base, indent);
+            }
+        }
+        return;
+    }
+    default:
+        return;
+    }
+}
+
+// Match over a non-enum scrutinee. Lowers to an IIFE that binds the
+// scrutinee to `__vstr_m` and walks an if/else-if chain over each
+// arm's predicate. Bindings (for IdentPat / BindPat / TuplePat
+// elements) land inside the matched branch's brace. Missing default
+// emits `std::unreachable()` to satisfy the C++ "no return path" rule.
+void CppEmitter::emit_match_value_scrutinee(std::ostream& os, const ast::MatchExpr& m) {
+    os << "[&]() -> auto {\n";
+    os << "        auto&& __vstr_m = ";
+    emit_expr(os, *m.scrutinee);
+    os << ";\n";
+
+    bool first = true;
+    const ast::MatchArm* default_arm = nullptr;
+    for (const auto& arm : m.arms) {
+        if (arm.is_default
+            || (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::WildcardPat)) {
+            default_arm = &arm;
+            continue;
+        }
+        if (arm.pattern == nullptr) {
+            continue;
+        }
+        write_indent(os, 2);
+        os << (first ? "if (" : "else if (");
+        emit_pat_predicate(os, *arm.pattern, "__vstr_m");
+        if (arm.guard) {
+            os << " && (";
+            emit_expr(os, *arm.guard);
+            os << ")";
+        }
+        os << ") {\n";
+        emit_pat_bindings(os, *arm.pattern, "__vstr_m", 3);
+        write_indent(os, 3);
+        os << "return ";
+        if (arm.body) {
+            emit_expr(os, *arm.body);
+        }
+        os << ";\n";
+        write_indent(os, 2);
+        os << "}\n";
+        first = false;
+    }
+
+    if (default_arm != nullptr) {
+        write_indent(os, 2);
+        os << (first ? "{ " : "else { ");
+        os << "return ";
+        if (default_arm->body) {
+            emit_expr(os, *default_arm->body);
+        }
+        os << "; }\n";
+    } else {
+        write_indent(os, 2);
+        os << (first ? "std::unreachable();\n" : "else { std::unreachable(); }\n");
+    }
+    write_indent(os, 1);
+    os << "}()";
 }
 
 }  // namespace vestra::codegen

@@ -681,6 +681,34 @@ set_tests_properties(e2e_optional_display_run PROPERTIES
     DEPENDS                e2e_optional_display_compile
     PASS_REGULAR_EXPRESSION "optional display OK")
 
+# Match-pattern enhancements: §17.7 brings literal / or- / range
+# patterns and tuple-scrutinee match into the basic match story.
+# Bare-enum or-patterns stack as switch labels; non-enum scrutinees
+# go through an if-else-if chain with per-pattern predicates;
+# tuple patterns compose via std::get<i> on the bound scrutinee.
+set(e2e_match_patterns_input  ${CMAKE_SOURCE_DIR}/examples/match_patterns.vst)
+set(e2e_match_patterns_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_match_patterns.cpp)
+
+add_test(
+    NAME    e2e_match_patterns_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_match_patterns_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_match_patterns_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_match_patterns_driver} ${e2e_workdir}/match_patterns.cpp
+            -o ${e2e_workdir}/match_patterns_app)
+set_tests_properties(e2e_match_patterns_compile PROPERTIES DEPENDS e2e_match_patterns_transpile)
+
+add_test(
+    NAME    e2e_match_patterns_run
+    COMMAND ${e2e_workdir}/match_patterns_app)
+set_tests_properties(e2e_match_patterns_run PROPERTIES
+    DEPENDS                e2e_match_patterns_compile
+    PASS_REGULAR_EXPRESSION "match patterns OK")
+
 # Box[T]: §10 unique-ownership heap pointer. Lowers to
 # std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
 # → *box. Allocation requires the §8 `Alloc` capability. E2E pins

@@ -2007,10 +2007,17 @@ void Resolver::bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type) 
         } else if (sub->kind == ast::NodeKind::TuplePat) {
             bind_tuple_pattern(static_cast<const ast::TuplePat&>(*sub), parts[i]);
             continue;
+        } else if (sub->kind == ast::NodeKind::LiteralPat || sub->kind == ast::NodeKind::RangePat
+                   || sub->kind == ast::NodeKind::OrPat) {
+            // §17.7 value-shape patterns inside a tuple pattern: each
+            // sub-pattern type-checks against the corresponding element
+            // type; no binding is introduced.
+            check_pattern(*sub, parts[i]);
+            continue;
         } else {
             error_at(sub->range,
-                     "v0.5 only supports identifier / `_` / nested-tuple element "
-                     "patterns inside a tuple pattern");
+                     "v0.5 only supports identifier / `_` / nested-tuple / literal / "
+                     "range / or-pattern element kinds inside a tuple pattern");
             continue;
         }
         if (name.empty()) {
@@ -2341,6 +2348,36 @@ TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
     std::vector<bool> case_seen(scrutinee_enum ? scrutinee_enum->cases.size() : 0, false);
     bool saw_default = false;
 
+    // §17.7 enum-coverage walk: drain through OrPat alternatives so a
+    // `case .red | .green:` arm marks both cases as covered. Wildcard
+    // and unrelated patterns terminate the walk on this arm.
+    auto mark_enum_covered = [&](const ast::Pattern& p, auto& self) -> void {
+        if (scrutinee_enum == nullptr) {
+            return;
+        }
+        if (p.kind == ast::NodeKind::WildcardPat) {
+            for (auto&& s : case_seen) {
+                s = true;
+            }
+            return;
+        }
+        if (p.kind == ast::NodeKind::EnumPat) {
+            const auto& ep = static_cast<const ast::EnumPat&>(p);
+            for (std::size_t i = 0; i < scrutinee_enum->cases.size(); ++i) {
+                if (scrutinee_enum->cases[i].name == ep.case_name) {
+                    case_seen[i] = true;
+                    break;
+                }
+            }
+            return;
+        }
+        if (p.kind == ast::NodeKind::OrPat) {
+            for (const auto& alt : static_cast<const ast::OrPat&>(p).alternatives) {
+                self(*alt, self);
+            }
+        }
+    };
+
     TypePtr result_type = nullptr;
     for (const auto& arm : m.arms) {
         ScopeStack::Guard g(scopes_);
@@ -2348,15 +2385,7 @@ TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
             saw_default = true;
         } else if (arm.pattern) {
             check_pattern(*arm.pattern, scrutinee_type);
-            if (scrutinee_enum != nullptr && arm.pattern->kind == ast::NodeKind::EnumPat) {
-                const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
-                for (std::size_t i = 0; i < scrutinee_enum->cases.size(); ++i) {
-                    if (scrutinee_enum->cases[i].name == ep.case_name) {
-                        case_seen[i] = true;
-                        break;
-                    }
-                }
-            }
+            mark_enum_covered(*arm.pattern, mark_enum_covered);
         }
         if (arm.guard) {
             auto gt = check_expr(*arm.guard, types_->boolean());
@@ -2396,8 +2425,62 @@ TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
 void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
     switch (p.kind) {
     case ast::NodeKind::WildcardPat:
-    case ast::NodeKind::LiteralPat:
         break;
+    case ast::NodeKind::LiteralPat: {
+        // §17.7 literal pattern: the literal must adapt to the
+        // scrutinee's type (Int literal in an Int32 slot, etc.).
+        // check_expr with the scrutinee as the expected hint does the
+        // adaptation, and assignable carries the natural-width rule.
+        const auto& lp = static_cast<const ast::LiteralPat&>(p);
+        if (lp.literal != nullptr) {
+            auto lt = check_expr(*lp.literal, scrutinee);
+            if (lt != nullptr && !lt->is_error() && scrutinee != nullptr && !scrutinee->is_error()
+                && !TypeArena::assignable(lt, scrutinee)) {
+                error_at(p.range,
+                         std::format("literal of type {} does not match scrutinee of type {}",
+                                     lt->describe(),
+                                     scrutinee->describe()));
+            }
+        }
+        break;
+    }
+    case ast::NodeKind::RangePat: {
+        // §17.7 range pattern: scrutinee must be integer; both bounds
+        // adapt to the scrutinee's width. Inclusive vs exclusive is a
+        // codegen concern — sema just types the bounds.
+        const auto& rp = static_cast<const ast::RangePat&>(p);
+        if (scrutinee != nullptr && !scrutinee->is_error() && !scrutinee->is_integer()) {
+            error_at(p.range,
+                     std::format("range pattern requires an integer scrutinee, got {}",
+                                 scrutinee->describe()));
+        }
+        auto check_bound = [&](const ast::Expr* b) {
+            if (b == nullptr) {
+                return;
+            }
+            auto bt = check_expr(*b, scrutinee);
+            if (bt != nullptr && !bt->is_error() && !bt->is_integer()) {
+                error_at(b->range,
+                         std::format("range bound must be integer, got {}", bt->describe()));
+            }
+        };
+        check_bound(rp.low.get());
+        check_bound(rp.high.get());
+        break;
+    }
+    case ast::NodeKind::OrPat: {
+        // §17.7 or-pattern: each alternative is checked against the
+        // scrutinee independently. v0.5 doesn't enforce the
+        // same-bindings-across-alts rule — a follow-on pass adds the
+        // diagnostic for `case .a(let x) | .b(let y):` style mismatch.
+        const auto& op = static_cast<const ast::OrPat&>(p);
+        for (const auto& alt : op.alternatives) {
+            if (alt) {
+                check_pattern(*alt, scrutinee);
+            }
+        }
+        break;
+    }
     case ast::NodeKind::IdentPat: {
         // Plain identifier patterns match by name; in match-arm position we
         // treat them as a binding to the scrutinee's type.

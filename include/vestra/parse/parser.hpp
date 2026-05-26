@@ -72,6 +72,11 @@ private:
     // ---- types / patterns / statements / expressions ---------------------
     ast::TypePtr parse_type();
     ast::PatternPtr parse_pattern();
+    // §17.7 single-pattern alternative (no top-level or-chaining).
+    // Recursive sub-pattern sites (tuple elements, enum-payload
+    // children, range bounds) use this so a nested `|` doesn't change
+    // the surrounding grouping's meaning.
+    ast::PatternPtr parse_pattern_alt();
 
     std::unique_ptr<ast::BlockExpr> parse_block_expr();
     ast::StmtPtr parse_statement();

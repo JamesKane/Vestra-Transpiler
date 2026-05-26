@@ -578,6 +578,66 @@ TEST_CASE("derive(Clone) on a bare enum does NOT surface .clone() (no method slo
     CHECK(r.error_count >= 1);
 }
 
+// ---- §17.7 pattern matching enhancements ---------------------------------
+
+TEST_CASE("literal patterns type-check against the scrutinee") {
+    CHECK(check_errors("func test(_ n: Int32) -> Int32 {\n"
+                       "    return match n {\n"
+                       "        case 0: 1\n"
+                       "        case 1: 2\n"
+                       "        default: 3\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("range patterns require an integer scrutinee") {
+    CHECK(check_errors("func test(_ n: Int32) -> Int32 {\n"
+                       "    return match n {\n"
+                       "        case 0..<10: 1\n"
+                       "        case 10..20: 2\n"
+                       "        default: 0\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("or-patterns stacking enum cases are accepted") {
+    CHECK(check_errors("enum Color { case red\n    case green\n    case blue\n}\n"
+                       "func is_warm(_ c: Color) -> Int32 {\n"
+                       "    return match c {\n"
+                       "        case .red | .green: 1\n"
+                       "        case .blue: 0\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("or-patterns drain exhaustiveness coverage") {
+    // Without `case .blue`, the or-pattern still covers red and green;
+    // a single un-covered case fires the diagnostic.
+    auto r = check_detail("enum Color { case red\n    case green\n    case blue\n}\n"
+                          "func partial(_ c: Color) -> Int32 {\n"
+                          "    return match c {\n"
+                          "        case .red | .green: 1\n"
+                          "    }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("'blue' is not covered") != std::string::npos);
+}
+
+TEST_CASE("match over a tuple scrutinee accepts a tuple pattern") {
+    CHECK(check_errors("func classify(_ p: (Int32, Int32)) -> Int32 {\n"
+                       "    return match p {\n"
+                       "        case (0, 0): 1\n"
+                       "        case (0, _): 2\n"
+                       "        case (_, 0): 3\n"
+                       "        default: 4\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
 // ---- §4 Optional in a Display splice -------------------------------------
 
 TEST_CASE("Optional<T> is Display-conformant when T is") {

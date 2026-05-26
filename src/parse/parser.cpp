@@ -1024,6 +1024,24 @@ ast::TypePtr Parser::parse_type() {
 // ============================================================================
 
 ast::PatternPtr Parser::parse_pattern() {
+    // §17.7 or-pattern: `pat1 | pat2 | …` is a comma-separated chain
+    // of single-pattern alternatives. Parse the first; if `|` follows,
+    // accumulate. Single-pattern paths return the alt directly.
+    auto first = parse_pattern_alt();
+    if (!check(TokenKind::Pipe)) {
+        return first;
+    }
+    auto op = std::make_unique<ast::OrPat>();
+    op->range = first->range;
+    op->alternatives.push_back(std::move(first));
+    while (match(TokenKind::Pipe)) {
+        op->alternatives.push_back(parse_pattern_alt());
+    }
+    op->range = merge(op->range, last_range());
+    return op;
+}
+
+ast::PatternPtr Parser::parse_pattern_alt() {
     auto start = peek().range;
     if (match(TokenKind::Underscore)) {
         auto w = std::make_unique<ast::WildcardPat>();
@@ -1086,8 +1104,22 @@ ast::PatternPtr Parser::parse_pattern() {
     }
     if (check(TokenKind::IntLit) || check(TokenKind::FloatLit) || check(TokenKind::StringLit)
         || check(TokenKind::CharLit) || check(TokenKind::KwTrue) || check(TokenKind::KwFalse)) {
+        auto literal = parse_primary();
+        // §17.7 range pattern: `low ..< high` (exclusive) or `low .. high`
+        // (inclusive). Both bounds are literals at the syntactic surface;
+        // sema requires them to fold to integer constants. If no range
+        // operator follows, this stays a plain LiteralPat.
+        if (check(TokenKind::DotDot) || check(TokenKind::DotDotLt)) {
+            auto rp = std::make_unique<ast::RangePat>();
+            rp->inclusive = check(TokenKind::DotDot);
+            advance();  // consume `..` / `..<`
+            rp->low = std::move(literal);
+            rp->high = parse_primary();
+            rp->range = merge(start, last_range());
+            return rp;
+        }
         auto lp = std::make_unique<ast::LiteralPat>();
-        lp->literal = parse_primary();
+        lp->literal = std::move(literal);
         lp->range = merge(start, last_range());
         return lp;
     }
