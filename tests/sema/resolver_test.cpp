@@ -365,6 +365,41 @@ TEST_CASE("throw outside a throws function is reported") {
     CHECK(r.first_message.find("throws") != std::string::npos);
 }
 
+TEST_CASE("try? on an Optional points the user at the Optional idioms") {
+    // The diagnostic should mention `try?` specifically and suggest
+    // the non-try idioms — `?.`, `if let`, `match`. The user is
+    // probably reaching for `try?` by analogy with Result and just
+    // needs to drop the prefix.
+    auto r = check_detail("func opt() -> Int32? { return 7 }\n"
+                          "func use() -> Int32? { return try? opt() }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("try?") != std::string::npos);
+    CHECK(r.first_message.find("?.") != std::string::npos);
+}
+
+TEST_CASE("try on an Optional suggests ?. / match / ! instead of propagation") {
+    auto r = check_detail("func opt() -> Int32? { return 7 }\n"
+                          "func use() -> Int32? { return try opt() }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Optional doesn't carry an error") != std::string::npos);
+}
+
+TEST_CASE("try! on an Optional suggests postfix ! instead") {
+    auto r = check_detail("func opt() -> Int32? { return 7 }\n"
+                          "func use() -> Int32 { return try! opt() }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("postfix `!`") != std::string::npos);
+}
+
+TEST_CASE("try over a non-Result non-Optional keeps the generic message") {
+    // Sanity: the old shape (try over a plain Int32) still emits the
+    // "must produce a Result<T, E>" diagnostic with no Optional hint.
+    auto r = check_detail("func use() -> Int32 { return try 7 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("must produce a Result") != std::string::npos);
+    CHECK(r.first_message.find("Optional") == std::string::npos);
+}
+
 // ---- §6 tuple destructuring -----------------------------------------------
 
 TEST_CASE("let (a, b) = pair binds each element at its tuple-element type") {

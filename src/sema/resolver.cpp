@@ -1048,9 +1048,53 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
             break;
         }
         if (inner_type->kind() != TypeKind::Result) {
-            error_at(tx.inner->range,
-                     std::format("'try' operand must produce a Result<T, E>, got {}",
-                                 inner_type->describe()));
+            // §9 form-specific diagnostic. The most common confusion is
+            // applying a try-prefix to an Optional-returning call —
+            // each form has a different "right idiom" to suggest, and
+            // a vague "needs Result<T, E>" message just sends the user
+            // hunting. When the operand is Optional<T>, point them at
+            // the matching non-try construct directly.
+            const bool inner_opt = inner_type->kind() == TypeKind::Optional;
+            std::string_view form_text = "try";
+            switch (tx.form) {
+            case ast::TryExpr::Form::Propagating:
+                form_text = "try";
+                break;
+            case ast::TryExpr::Form::Optional:
+                form_text = "try?";
+                break;
+            case ast::TryExpr::Form::Forced:
+                form_text = "try!";
+                break;
+            }
+            if (inner_opt) {
+                std::string_view hint;
+                switch (tx.form) {
+                case ast::TryExpr::Form::Optional:
+                    hint = "this operand already produces an Optional — drop `try?`, or use "
+                           "`?.` / `if let` / `match` to consume it";
+                    break;
+                case ast::TryExpr::Form::Propagating:
+                    hint = "Optional doesn't carry an error to propagate — use `?.` for "
+                           "chaining, `if let` / `match` to branch, or `!` for an asserted "
+                           "unwrap";
+                    break;
+                case ast::TryExpr::Form::Forced:
+                    hint = "use postfix `!` for force-unwrap of an Optional; `try!` is for "
+                           "Result<T, E>";
+                    break;
+                }
+                error_at(tx.inner->range,
+                         std::format("'{}' requires a Result<T, E> operand, got {}: {}",
+                                     form_text,
+                                     inner_type->describe(),
+                                     hint));
+            } else {
+                error_at(tx.inner->range,
+                         std::format("'{}' operand must produce a Result<T, E>, got {}",
+                                     form_text,
+                                     inner_type->describe()));
+            }
             t = types_->error();
             break;
         }
