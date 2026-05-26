@@ -709,6 +709,34 @@ set_tests_properties(e2e_match_patterns_run PROPERTIES
     DEPENDS                e2e_match_patterns_compile
     PASS_REGULAR_EXPRESSION "match patterns OK")
 
+# Opaque-newtype follow-ons: §3 derive(Hash, Debug, Display) for an
+# `opaque type Q = T` newtype. The codegen emits std::hash<Q> +
+# std::formatter<Q> specs that delegate to the underlying T via
+# static_cast<T>(q). The e2e also exercises the inverse conversion
+# `T(q)` (Vestra-side symmetric counterpart of `Q(t)`).
+set(e2e_newtype_input  ${CMAKE_SOURCE_DIR}/examples/newtype.vst)
+set(e2e_newtype_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_newtype.cpp)
+
+add_test(
+    NAME    e2e_newtype_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_newtype_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_newtype_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_newtype_driver} ${e2e_workdir}/newtype.cpp
+            -o ${e2e_workdir}/newtype_app)
+set_tests_properties(e2e_newtype_compile PROPERTIES DEPENDS e2e_newtype_transpile)
+
+add_test(
+    NAME    e2e_newtype_run
+    COMMAND ${e2e_workdir}/newtype_app)
+set_tests_properties(e2e_newtype_run PROPERTIES
+    DEPENDS                e2e_newtype_compile
+    PASS_REGULAR_EXPRESSION "opaque newtype OK")
+
 # Box[T]: §10 unique-ownership heap pointer. Lowers to
 # std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
 # → *box. Allocation requires the §8 `Alloc` capability. E2E pins

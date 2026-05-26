@@ -1467,7 +1467,27 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                              "conversion call argument cannot have a label");
                 }
                 auto arg_type = check_expr(*c.args[0].value);
-                if (arg_type != nullptr && !arg_type->is_numeric() && !arg_type->is_error()) {
+                // §3 inverse opaque conversion: `T(q)` where q is an
+                // opaque newtype admits the call iff the underlying
+                // is numeric (the C++ side does `static_cast<T>(q)`
+                // through `enum class Q : T {}`). Symmetric with the
+                // `Q(t)` forward conversion below.
+                bool ok = false;
+                if (arg_type == nullptr || arg_type->is_error()) {
+                    ok = true;
+                } else if (arg_type->is_numeric()) {
+                    ok = true;
+                } else if (arg_type->kind() == TypeKind::OpaqueType
+                           && arg_type->nominal_decl() != nullptr) {
+                    const auto& od = static_cast<const ast::OpaqueDecl&>(*arg_type->nominal_decl());
+                    if (od.underlying != nullptr) {
+                        auto under = resolve_type(*od.underlying);
+                        if (under != nullptr && under->is_numeric()) {
+                            ok = true;
+                        }
+                    }
+                }
+                if (!ok) {
                     error_at(c.args[0].value->range,
                              std::format("cannot convert non-numeric {} to {}",
                                          arg_type->describe(),
@@ -1920,6 +1940,7 @@ bool Resolver::is_display_conformant(TypePtr t) const {
         return is_display_conformant(t->inner());
     case TypeKind::Struct:
     case TypeKind::Enum:
+    case TypeKind::OpaqueType:
         return decl_derives(t->nominal_decl(), "Display")
                || decl_derives(t->nominal_decl(), "Debug");
     default:
@@ -2059,6 +2080,8 @@ bool Resolver::decl_derives(const ast::Decl* decl, std::string_view protocol) co
             decl_name = static_cast<const ast::StructDecl&>(*decl).name;
         } else if (decl->kind == ast::NodeKind::Enum) {
             decl_name = static_cast<const ast::EnumDecl&>(*decl).name;
+        } else if (decl->kind == ast::NodeKind::Opaque) {
+            decl_name = static_cast<const ast::OpaqueDecl&>(*decl).name;
         } else {
             continue;
         }

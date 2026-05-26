@@ -607,6 +607,31 @@ TEST_CASE("a method returning a struct stays a real call, not a fresh struct lit
     CHECK(f.out.source.find("return Point{};") == std::string::npos);
 }
 
+// ---- §3 opaque newtype follow-ons ----------------------------------------
+
+TEST_CASE("derive(Hash) for an opaque newtype emits a delegating std::hash") {
+    SemaEmitFixture f("module example.id\n"
+                      "opaque type UserId = UInt32\n"
+                      "derive(Hash) for UserId\n");
+    CHECK(f.out.header.find("struct std::hash<example::id::UserId>") != std::string::npos);
+    CHECK(f.out.header.find("std::hash<std::uint32_t>{}(static_cast<std::uint32_t>(v))")
+          != std::string::npos);
+}
+
+TEST_CASE("derive(Debug) for an opaque newtype renders `Q(value)`") {
+    SemaEmitFixture f("module example.id\n"
+                      "opaque type UserId = UInt32\n"
+                      "derive(Debug) for UserId\n");
+    CHECK(f.out.header.find("struct std::formatter<example::id::UserId>") != std::string::npos);
+    CHECK(f.out.header.find("\"UserId({})\", static_cast<std::uint32_t>(v)") != std::string::npos);
+}
+
+TEST_CASE("inverse conversion T(q) lowers to static_cast over the opaque value") {
+    SemaEmitFixture f("opaque type UserId = UInt32\n"
+                      "func unwrap(_ u: UserId) -> UInt32 { return UInt32(u) }\n");
+    CHECK(f.out.source.find("static_cast<std::uint32_t>(u)") != std::string::npos);
+}
+
 // ---- §17.7 pattern matching enhancements ---------------------------------
 
 TEST_CASE("integer-scrutinee match lowers to an if-else-if chain") {

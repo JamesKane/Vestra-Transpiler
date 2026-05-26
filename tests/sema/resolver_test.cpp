@@ -578,6 +578,34 @@ TEST_CASE("derive(Clone) on a bare enum does NOT surface .clone() (no method slo
     CHECK(r.error_count >= 1);
 }
 
+// ---- §3 opaque newtype follow-ons ----------------------------------------
+
+TEST_CASE("opaque with derive(Debug) is Display-conformant in an interpolation splice") {
+    CHECK(check_errors("opaque type UserId = UInt32\n"
+                       "derive(Debug) for UserId\n"
+                       "func render(_ u: UserId) -> String { return \"u=\\(u)\" }\n")
+          == 0);
+}
+
+TEST_CASE("opaque without derive(Debug|Display) is still rejected in a splice") {
+    auto r = check_detail("opaque type UserId = UInt32\n"
+                          "func render(_ u: UserId) -> String { return \"u=\\(u)\" }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Display-conformant") != std::string::npos);
+}
+
+TEST_CASE("inverse conversion T(q) accepts opaque arg with numeric underlying") {
+    CHECK(check_errors("opaque type UserId = UInt32\n"
+                       "func unwrap(_ u: UserId) -> UInt32 { return UInt32(u) }\n")
+          == 0);
+}
+
+TEST_CASE("forward conversion Q(t) still type-checks the underlying") {
+    CHECK(check_errors("opaque type UserId = UInt32\n"
+                       "func wrap(_ n: UInt32) -> UserId { return UserId(n) }\n")
+          == 0);
+}
+
 // ---- §17.7 pattern matching enhancements ---------------------------------
 
 TEST_CASE("literal patterns type-check against the scrutinee") {

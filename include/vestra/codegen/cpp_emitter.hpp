@@ -68,6 +68,16 @@ private:
                                 std::string_view qual_prefix);
     void
     emit_debug_spec_enum(std::ostream& os, const ast::EnumDecl& e, std::string_view qual_prefix);
+    // §3 derive(Hash) / derive(Debug | Display) for an opaque newtype.
+    // Both specs delegate to the underlying T's std::hash /
+    // std::formatter, through a `static_cast<T>(q)`. Rendered shape is
+    // `Q(value)` — keeps the nominal identity visible alongside the
+    // underlying value.
+    void
+    emit_hash_spec_opaque(std::ostream& os, const ast::OpaqueDecl& o, std::string_view qual_prefix);
+    void emit_debug_spec_opaque(std::ostream& os,
+                                const ast::OpaqueDecl& o,
+                                std::string_view qual_prefix);
 
     void emit_block(std::ostream& os, const ast::BlockExpr& b, int indent);
     void emit_stmt(std::ostream& os, const ast::Stmt& s, int indent);

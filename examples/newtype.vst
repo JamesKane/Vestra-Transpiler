@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §3 opaque newtype follow-ons. The base `opaque type Q = T` was
+// already in place (forward constructor `Q(t)` and `.value`
+// extraction); this phase closes the ergonomic story with:
+//
+//   * `derive(Eq, Hash, Debug, Display) for Q`
+//     Eq comes from C++'s `enum class Q : T {}` for free; Hash and
+//     Debug/Display now emit a `std::hash<Q>` / `std::formatter<Q>`
+//     spec that delegates to the underlying T's stdlib spec via a
+//     single `static_cast<T>(q)`.
+//   * `T(q)` inverse conversion — the symmetric counterpart of
+//     `Q(t)`. The codegen lowers both to a `static_cast`; sema now
+//     admits the call when q's opaque underlying is numeric.
+//
+// `derive(Clone) for Q` stays unsupported in v0.5 because `enum
+// class` has no method slot for `.clone()` — the user can just copy
+// the value directly (opaque types over numeric underlyings are
+// Copyable by default).
+
+module examples.newtype
+
+opaque type UserId  = UInt32
+opaque type OrderId = UInt32
+
+derive(Eq, Hash, Debug, Display) for UserId
+derive(Eq, Hash, Debug, Display) for OrderId
+
+// Distinct types over the same underlying — Vestra rejects a cross-
+// type comparison at sema time. The forward / inverse conversions
+// stay explicit at the call site.
+func sameUser(_ a: UserId, _ b: UserId) -> Bool {
+    return a == b
+}
+
+// Display via the derive(Debug) spec — renders `UserId(42)`.
+func label(_ u: UserId) -> String {
+    return "user=\(u)"
+}
+
+// Round-trip: UInt32 → UserId → UInt32 via the inverse conversion.
+func roundTrip(_ n: UInt32) -> UInt32 {
+    let u = UserId(n)
+    return UInt32(u)
+}

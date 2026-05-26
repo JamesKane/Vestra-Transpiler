@@ -324,6 +324,16 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
                 hdr << "\n";
                 emit_hash_spec_enum(hdr, ed, qual_prefix);
             }
+        } else if (d->kind == ast::NodeKind::Opaque) {
+            // §3 opaque newtype: enum class `Q : T {}` has no implicit
+            // std::hash specialization, so we synthesize one that
+            // delegates to std::hash<T> over static_cast<T>(q).
+            const auto& od = static_cast<const ast::OpaqueDecl&>(*d);
+            auto it = derives_by_target_.find(od.name);
+            if (it != derives_by_target_.end() && it->second.contains("Hash")) {
+                hdr << "\n";
+                emit_hash_spec_opaque(hdr, od, qual_prefix);
+            }
         }
     }
 
@@ -351,6 +361,16 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
                 && (it->second.contains("Debug") || it->second.contains("Display"))) {
                 hdr << "\n";
                 emit_debug_spec_enum(hdr, ed, qual_prefix);
+            }
+        } else if (d->kind == ast::NodeKind::Opaque) {
+            // §3 opaque newtype Debug/Display: render `Q(value)` via the
+            // underlying T's formatter.
+            const auto& od = static_cast<const ast::OpaqueDecl&>(*d);
+            auto it = derives_by_target_.find(od.name);
+            if (it != derives_by_target_.end()
+                && (it->second.contains("Debug") || it->second.contains("Display"))) {
+                hdr << "\n";
+                emit_debug_spec_opaque(hdr, od, qual_prefix);
             }
         }
     }
@@ -813,6 +833,45 @@ void CppEmitter::emit_hash_spec(std::ostream& os,
         os << ">{}(v." << f.name << ") + 0x9e3779b9 + (__h << 6) + (__h >> 2);\n";
     }
     os << "        return __h;\n";
+    os << "    }\n";
+    os << "};\n";
+}
+
+void CppEmitter::emit_hash_spec_opaque(std::ostream& os,
+                                       const ast::OpaqueDecl& o,
+                                       std::string_view qual_prefix) {
+    if (o.underlying == nullptr) {
+        return;
+    }
+    os << "template <>\n";
+    os << "struct std::hash<" << qual_prefix << o.name << "> {\n";
+    os << "    [[nodiscard]] std::size_t operator()(" << qual_prefix << o.name
+       << " v) const noexcept {\n";
+    os << "        return std::hash<";
+    emit_type(os, *o.underlying);
+    os << ">{}(static_cast<";
+    emit_type(os, *o.underlying);
+    os << ">(v));\n";
+    os << "    }\n";
+    os << "};\n";
+}
+
+void CppEmitter::emit_debug_spec_opaque(std::ostream& os,
+                                        const ast::OpaqueDecl& o,
+                                        std::string_view qual_prefix) {
+    if (o.underlying == nullptr) {
+        return;
+    }
+    // Render as `Q(value)` — keeps the nominal name visible alongside
+    // the underlying. Delegates to the underlying's std::formatter via
+    // the `{}` placeholder so widths, precisions, etc. flow through.
+    os << "template <>\n";
+    os << "struct std::formatter<" << qual_prefix << o.name << "> {\n";
+    os << "    constexpr auto parse(auto& __ctx) { return __ctx.begin(); }\n";
+    os << "    auto format(" << qual_prefix << o.name << " v, auto& __ctx) const {\n";
+    os << "        return std::format_to(__ctx.out(), \"" << o.name << "({})\", static_cast<";
+    emit_type(os, *o.underlying);
+    os << ">(v));\n";
     os << "    }\n";
     os << "};\n";
 }
