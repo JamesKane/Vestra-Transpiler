@@ -511,6 +511,12 @@ struct DoCatchExpr : Expr {
     ExprPtr do_body;
     std::string error_name;
     TypePtr error_type;
+    // §9 optional `where guard` clause between the catch binding and
+    // the catch body's `{`. Evaluated with `error_name` in scope; if
+    // false at runtime, the catch arm doesn't apply and the codegen
+    // falls through to a panic (v0.5; the natural propagation
+    // semantic is a follow-on phase).
+    ExprPtr guard;
     ExprPtr catch_body;
     DoCatchExpr() : Expr(NodeKind::DoCatchExpr) {}
 };

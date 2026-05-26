@@ -792,6 +792,33 @@ set_tests_properties(e2e_with_binding_run PROPERTIES
     DEPENDS                e2e_with_binding_compile
     PASS_REGULAR_EXPRESSION "with binding OK")
 
+# Do/catch where guard: §9 `catch (e: E) where guard { … }`. The
+# guard runs with the bound error in scope; on true the handler
+# applies, on false v0.5 panics via the named primitive (the e2e
+# driver verifies the panic path via fork+SIGABRT).
+set(e2e_docatch_where_input  ${CMAKE_SOURCE_DIR}/examples/docatch_where.vst)
+set(e2e_docatch_where_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_docatch_where.cpp)
+
+add_test(
+    NAME    e2e_docatch_where_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_docatch_where_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_docatch_where_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_docatch_where_driver} ${e2e_workdir}/docatch_where.cpp
+            -o ${e2e_workdir}/docatch_where_app)
+set_tests_properties(e2e_docatch_where_compile PROPERTIES DEPENDS e2e_docatch_where_transpile)
+
+add_test(
+    NAME    e2e_docatch_where_run
+    COMMAND ${e2e_workdir}/docatch_where_app)
+set_tests_properties(e2e_docatch_where_run PROPERTIES
+    DEPENDS                e2e_docatch_where_compile
+    PASS_REGULAR_EXPRESSION "docatch where OK")
+
 # Box[T]: §10 unique-ownership heap pointer. Lowers to
 # std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
 # → *box. Allocation requires the §8 `Alloc` capability. E2E pins

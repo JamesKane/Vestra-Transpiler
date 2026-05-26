@@ -2358,7 +2358,18 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // the resolver — it's the do-catch expression's own type.
         const auto& dc = static_cast<const ast::DoCatchExpr&>(e);
         sema::TypePtr result_type = resolution_ != nullptr ? resolution_->type_of(&e) : nullptr;
-        os << "([&]{ auto __vstr_do = [&]() -> std::expected<";
+        // Pin the outer lambda's return type explicitly so a where-
+        // guard panic-fallthrough (returning `__vstr::Never`) and the
+        // catch body (returning T) don't trip the C++ "two different
+        // return types" deduction failure. Falls back to `auto` when
+        // sema didn't supply a type (resolver-free emit path).
+        os << "([&]() -> ";
+        if (result_type != nullptr) {
+            emit_sema_type(os, result_type);
+        } else {
+            os << "auto";
+        }
+        os << " { auto __vstr_do = [&]() -> std::expected<";
         emit_sema_type(os, result_type);
         os << ", ";
         // Annotated form (dc.error_type != null): emit the AST type
@@ -2400,9 +2411,28 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         emit_stmt_expr(os, *dc.do_body, /*return_value=*/true);
         active_hoists_ = prev_hoists;
         os << " }(); if (__vstr_do.has_value()) { return *__vstr_do; } [[maybe_unused]] auto "
-           << dc.error_name << " = __vstr_do.error(); return ";
-        emit_expr(os, *dc.catch_body);
-        os << "; }())";
+           << dc.error_name << " = __vstr_do.error(); ";
+        if (dc.guard) {
+            // §9 `catch (e: E) where guard`: gate the handler on the
+            // guard's runtime value. Guard-fail panics — v0.5 doesn't
+            // yet propagate the error through the do-catch IIFE to
+            // the enclosing throws context, so the safe answer is a
+            // hard stop. Users who want propagation write the no-
+            // guard form `catch (e: E) { match e { case … default:
+            // throw e } }` explicitly.
+            os << "if (";
+            emit_expr(os, *dc.guard);
+            os << ") { return ";
+            emit_expr(os, *dc.catch_body);
+            os << "; } return __vstr::panic(\"do/catch where-guard fell through; "
+                  "restructure as `catch (e: E) { match e { case ... default: throw e } }` "
+                  "for explicit propagation\");";
+        } else {
+            os << "return ";
+            emit_expr(os, *dc.catch_body);
+            os << ";";
+        }
+        os << " }())";
         break;
     }
     case ast::NodeKind::BinaryExpr: {

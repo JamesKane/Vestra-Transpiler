@@ -1140,6 +1140,15 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         sym.type = error_type;
         sym.definition_range = dc.range;
         (void)scopes_.current().insert(std::move(sym));
+        // §9 `where guard`: type-check under the binding's scope; the
+        // guard must produce Bool.
+        if (dc.guard) {
+            auto gt = check_expr(*dc.guard, types_->boolean());
+            if (gt != nullptr && !gt->is_error() && gt->kind() != TypeKind::Bool) {
+                error_at(dc.guard->range,
+                         std::format("do/catch where-guard must be Bool, got {}", gt->describe()));
+            }
+        }
         TypePtr catch_type = check_expr(*dc.catch_body, expected != nullptr ? expected : body_type);
 
         if (body_type == nullptr || catch_type == nullptr || body_type->is_error()

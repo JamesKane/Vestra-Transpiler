@@ -1674,6 +1674,12 @@ ast::ExprPtr Parser::parse_primary() {
         } else {
             emit_error(peek().range, "expected '(NAME: E)' or bare 'NAME' after 'catch'");
         }
+        // §9 optional `where guard` clause between the catch binding
+        // and the body's `{`. The guard sees the bound error value
+        // and gates whether this catch arm applies at runtime.
+        if (match(TokenKind::KwWhere)) {
+            dc->guard = parse_expr();
+        }
         dc->catch_body = parse_block_expr();
         dc->range = merge(start, last_range());
         return dc;

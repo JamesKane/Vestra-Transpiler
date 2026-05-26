@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §9 `do { … } catch (e: E) where guard { … }` — guarded catch arm.
+// The guard runs with the bound error in scope; if true, the handler
+// applies; if false, v0.5 panics via the named primitive. Users who
+// want explicit propagation write the no-guard form
+// `catch (e: E) { match e { case … default: throw e } }` instead.
+//
+// Sugar for the common "retry on a subset of failure modes" pattern,
+// without forcing an inner match.
+
+module examples.docatch_where
+
+enum NetErr {
+    case timeout
+    case refused
+    case fatal
+}
+
+func makeReq(_ kind: Int32) throws(NetErr) -> Int32 {
+    if kind == 1 { throw NetErr.timeout }
+    if kind == 2 { throw NetErr.refused }
+    if kind == 3 { throw NetErr.fatal }
+    return 42
+}
+
+// The discriminator: only `timeout` and `refused` are worth retrying;
+// `fatal` errors should be left alone.
+func isRetryable(_ e: NetErr) -> Bool {
+    return match e {
+        case .timeout: true
+        case .refused: true
+        case .fatal:   false
+    }
+}
+
+// The where-guarded catch dispatches the retryable family to the
+// handler arm (returning the sentinel -1). A `fatal` error falls
+// through the guard and panics — the driver verifies this via
+// fork + SIGABRT.
+func attempt(_ kind: Int32) -> Int32 {
+    return do { try makeReq(kind) } catch (e: NetErr) where isRetryable(e) { -1 }
+}

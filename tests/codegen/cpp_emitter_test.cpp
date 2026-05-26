@@ -607,6 +607,25 @@ TEST_CASE("a method returning a struct stays a real call, not a fresh struct lit
     CHECK(f.out.source.find("return Point{};") == std::string::npos);
 }
 
+// ---- §9 do/catch where guard ---------------------------------------------
+
+TEST_CASE("do/catch where-guard lowers to an if-guard + panic fall-through") {
+    SemaEmitFixture f("enum E { case bad }\n"
+                      "func f() throws(E) -> Int32 { return 1 }\n"
+                      "func isBad(_ e: E) -> Bool { return true }\n"
+                      "func go() -> Int32 {\n"
+                      "    return do { try f() } catch (e: E) where isBad(e) { -1 }\n"
+                      "}\n");
+    // The handler runs only if the guard says so.
+    CHECK(f.out.source.find("if (isBad(e))") != std::string::npos);
+    // Guard fall-through panics via the named primitive.
+    CHECK(f.out.source.find("__vstr::panic(\"do/catch where-guard fell through")
+          != std::string::npos);
+    // The outer lambda has an explicit return type so the catch
+    // body's T and the panic's Never both deduce to the same slot.
+    CHECK(f.out.source.find("([&]() -> std::int32_t {") != std::string::npos);
+}
+
 // ---- §17.4 with name = expr { ... } binding ------------------------------
 
 TEST_CASE("with-binding emits a sub-scope with `auto&& NAME = EXPR;`") {

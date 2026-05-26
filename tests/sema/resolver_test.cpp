@@ -578,6 +578,31 @@ TEST_CASE("derive(Clone) on a bare enum does NOT surface .clone() (no method slo
     CHECK(r.error_count >= 1);
 }
 
+// ---- §9 do/catch where guard ---------------------------------------------
+
+TEST_CASE("do/catch with a where guard type-checks under the bound error name") {
+    CHECK(check_errors("enum E { case bad; case worse }\n"
+                       "func f() throws(E) -> Int32 { return 1 }\n"
+                       "func isBad(_ e: E) -> Bool { return match e {\n"
+                       "    case .bad: true\n"
+                       "    case .worse: false\n"
+                       "} }\n"
+                       "func go() -> Int32 {\n"
+                       "    return do { try f() } catch (e: E) where isBad(e) { -1 }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("non-Bool guard is rejected with a clear diagnostic") {
+    auto r = check_detail("enum E { case bad }\n"
+                          "func f() throws(E) -> Int32 { return 1 }\n"
+                          "func go() -> Int32 {\n"
+                          "    return do { try f() } catch (e: E) where 42 { -1 }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("where-guard must be Bool") != std::string::npos);
+}
+
 // ---- §17.4 with name = expr { ... } binding ------------------------------
 
 TEST_CASE("with-binding name is visible inside the block body") {
