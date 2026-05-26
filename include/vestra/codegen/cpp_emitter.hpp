@@ -110,6 +110,26 @@ private:
     const std::vector<TryHoist>* active_hoists_ = nullptr;
     int hoist_counter_ = 0;
 
+    // §6 nested tuple destructuring. C++ structured bindings are
+    // single-level, so `let ((a, b), c) = …` needs a sibling-statement
+    // hoist: a placeholder name binds the inner tuple in the outer
+    // structured binding, then a follow-on `auto [a, b] = placeholder;`
+    // unpacks it. `collect_tuple_pat_names` walks one TuplePat level,
+    // appending one entry to `names` per element (the real binder name
+    // for leaf patterns, a generated placeholder for nested tuple
+    // sub-patterns) and recording each nested sub-tuple in `followons`.
+    // `emit_tuple_pat_followons` then emits each follow-on as
+    // `auto [...] = placeholder;`, recursing for deeper nesting.
+    void
+    collect_tuple_pat_names(const ast::TuplePat& tp,
+                            std::vector<std::string>& names,
+                            std::vector<std::pair<std::string, const ast::TuplePat*>>& followons);
+    void emit_tuple_pat_followons(
+        std::ostream& os,
+        const std::vector<std::pair<std::string, const ast::TuplePat*>>& followons,
+        int indent);
+    int tuple_pat_counter_ = 0;
+
     void unsupported(std::ostream& os, std::string_view what, diag::SourceRange r);
 
     static const char* binop_text(ast::BinaryOp op);

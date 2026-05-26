@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §6 nested tuple destructuring. C++ structured bindings are
+// single-level, so `let ((a, b), c) = expr` needs an extra step in the
+// emitted C++: the outer binding takes a placeholder for the inner
+// tuple, then a sibling `auto [a, b] = placeholder;` statement unpacks
+// it. The codegen pass generates one such follow-on per nested level,
+// so arbitrarily deep tuple patterns round-trip.
+
+module examples.nested_tuples
+
+// Wraps a (sum, count) pair inside another tuple. The outer tuple's
+// second element is the running max.
+func summarise(_ a: Int32, _ b: Int32, _ c: Int32) -> ((Int32, Int32), Int32) {
+    var max_v: Int32 = a
+    if b > max_v { max_v = b }
+    if c > max_v { max_v = c }
+    return ((a + b + c, 3), max_v)
+}
+
+// `let` at two levels: the outer pattern names `peak`, the inner names
+// the sum and count.
+func mean_and_peak(_ a: Int32, _ b: Int32, _ c: Int32) -> (Int32, Int32) {
+    let ((sum, count), peak) = summarise(a, b, c)
+    return (sum / count, peak)
+}
+
+// `var` at two levels — the inner bindings are mutable.
+func bump_sum(_ a: Int32, _ b: Int32, _ c: Int32) -> Int32 {
+    var ((sum, count), peak) = summarise(a, b, c)
+    sum = sum + 1
+    return sum + count + peak
+}
+
+// Wildcard at the inner level — only the count slot is dropped.
+func sum_and_peak(_ a: Int32, _ b: Int32, _ c: Int32) -> Int32 {
+    let ((sum, _), peak) = summarise(a, b, c)
+    return sum + peak
+}
+
+// Three-level nesting: the outer binding hoists a placeholder, the
+// middle binding hoists another placeholder, the leaves all land.
+func triple() -> (((Int32, Int32), Int32), Int32) {
+    return (((1, 2), 3), 4)
+}
+
+func triple_sum() -> Int32 {
+    let (((x, y), z), w) = triple()
+    return x + y + z + w
+}

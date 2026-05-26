@@ -383,6 +383,54 @@ TEST_CASE("tuple type lowers to std::tuple<...>") {
     CHECK(out.header.find("std::tuple<std::int32_t, std::int32_t>") != std::string::npos);
 }
 
+TEST_CASE("nested tuple pattern hoists inner unpacks into sibling stmts") {
+    auto out = emit("func mk() -> ((Int32, Int32), Int32) { return ((1, 2), 3) }\n"
+                    "func sum() -> Int32 {\n"
+                    "    let ((a, b), c) = mk()\n"
+                    "    return a + b + c\n"
+                    "}\n");
+    // The outer level binds a placeholder for the inner tuple plus the
+    // leaf `c`; a follow-on statement then unpacks the placeholder.
+    CHECK(out.source.find("auto [__vstr_tp0, c] = mk();") != std::string::npos);
+    CHECK(out.source.find("auto [a, b] = __vstr_tp0;") != std::string::npos);
+}
+
+TEST_CASE("three-deep tuple pattern emits one unpack per level") {
+    auto out = emit("func mk() -> (((Int32, Int32), Int32), Int32) {\n"
+                    "    return (((1, 2), 3), 4)\n"
+                    "}\n"
+                    "func sum() -> Int32 {\n"
+                    "    let (((x, y), z), w) = mk()\n"
+                    "    return x + y + z + w\n"
+                    "}\n");
+    CHECK(out.source.find("auto [__vstr_tp0, w] = mk();") != std::string::npos);
+    CHECK(out.source.find("auto [__vstr_tp1, z] = __vstr_tp0;") != std::string::npos);
+    CHECK(out.source.find("auto [x, y] = __vstr_tp1;") != std::string::npos);
+}
+
+TEST_CASE("nested tuple pattern in var destructures the same way") {
+    auto out = emit("func mk() -> ((Int32, Int32), Int32) { return ((1, 2), 3) }\n"
+                    "func bump() -> Int32 {\n"
+                    "    var ((a, b), c) = mk()\n"
+                    "    a = a + 1\n"
+                    "    return a + b + c\n"
+                    "}\n");
+    CHECK(out.source.find("auto [__vstr_tp0, c] = mk();") != std::string::npos);
+    CHECK(out.source.find("auto [a, b] = __vstr_tp0;") != std::string::npos);
+}
+
+TEST_CASE("nested tuple pattern with wildcard sub-element drops the slot") {
+    auto out = emit("func mk() -> ((Int32, Int32), Int32) { return ((1, 2), 3) }\n"
+                    "func pick() -> Int32 {\n"
+                    "    let ((a, _), c) = mk()\n"
+                    "    return a + c\n"
+                    "}\n");
+    CHECK(out.source.find("auto [__vstr_tp0, c] = mk();") != std::string::npos);
+    // The wildcard slot is given a generated name so the sibling unpack
+    // still binds something for `a`.
+    CHECK(out.source.find("auto [a, __vstr_tp_unused_") != std::string::npos);
+}
+
 // ---- §10 Box[T] -----------------------------------------------------------
 
 TEST_CASE("Box[T] type lowers to std::unique_ptr<T>") {

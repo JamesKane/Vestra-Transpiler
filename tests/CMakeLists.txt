@@ -450,6 +450,34 @@ set_tests_properties(e2e_tuples_run PROPERTIES
     DEPENDS                e2e_tuples_compile
     PASS_REGULAR_EXPRESSION "tuples OK")
 
+# Nested tuples: §6 nested tuple destructuring. C++ structured bindings
+# are single-level; the codegen hoists each nested sub-tuple into a
+# sibling `auto [...] = placeholder;` follow-on statement so arbitrarily
+# deep tuple patterns round-trip. E2E exercises two-level let/var,
+# wildcard at an inner slot, and three-level nesting.
+set(e2e_nested_tuples_input  ${CMAKE_SOURCE_DIR}/examples/nested_tuples.vst)
+set(e2e_nested_tuples_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_nested_tuples.cpp)
+
+add_test(
+    NAME    e2e_nested_tuples_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_nested_tuples_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_nested_tuples_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_nested_tuples_driver} ${e2e_workdir}/nested_tuples.cpp
+            -o ${e2e_workdir}/nested_tuples_app)
+set_tests_properties(e2e_nested_tuples_compile PROPERTIES DEPENDS e2e_nested_tuples_transpile)
+
+add_test(
+    NAME    e2e_nested_tuples_run
+    COMMAND ${e2e_workdir}/nested_tuples_app)
+set_tests_properties(e2e_nested_tuples_run PROPERTIES
+    DEPENDS                e2e_nested_tuples_compile
+    PASS_REGULAR_EXPRESSION "nested tuples OK")
+
 # Box[T]: §10 unique-ownership heap pointer. Lowers to
 # std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
 # → *box. Allocation requires the §8 `Alloc` capability. E2E pins

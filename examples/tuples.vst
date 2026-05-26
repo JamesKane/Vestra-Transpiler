@@ -30,9 +30,5 @@ func quotient(_ a: Int32, _ b: Int32) -> Int32 {
     return q
 }
 
-// v0.5 codegen note: nested tuple patterns (`let ((a, b), c) = ...`)
-// type-check in sema but only the outer element is bound to a real
-// name in C++ — sub-tuples would need an extra unpacking statement
-// the structured-binding form doesn't give us. Single-level patterns
-// cover the common case; the follow-on is to hoist sub-tuple
-// destructuring into sibling `auto [...] = ...;` statements.
+// Nested tuple patterns (`let ((a, b), c) = ...`) round-trip too via
+// a sibling-statement hoist — see examples/nested_tuples.vst.

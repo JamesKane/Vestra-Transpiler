@@ -1102,6 +1102,53 @@ void CppEmitter::emit_block(std::ostream& os, const ast::BlockExpr& b, int inden
     os << "}";
 }
 
+void CppEmitter::collect_tuple_pat_names(
+    const ast::TuplePat& tp,
+    std::vector<std::string>& names,
+    std::vector<std::pair<std::string, const ast::TuplePat*>>& followons) {
+    for (std::size_t i = 0; i < tp.elements.size(); ++i) {
+        const auto& sub = tp.elements[i];
+        if (sub && sub->kind == ast::NodeKind::IdentPat) {
+            names.push_back(static_cast<const ast::IdentPat&>(*sub).name);
+        } else if (sub && sub->kind == ast::NodeKind::BindPat) {
+            names.push_back(static_cast<const ast::BindPat&>(*sub).name);
+        } else if (sub && sub->kind == ast::NodeKind::WildcardPat) {
+            names.push_back(std::format("__vstr_tp_unused_{}", tuple_pat_counter_++));
+        } else if (sub && sub->kind == ast::NodeKind::TuplePat) {
+            // Nested sub-tuple: bind a placeholder at this level, then
+            // unpack it in a follow-on statement after the parent
+            // structured binding.
+            auto placeholder = std::format("__vstr_tp{}", tuple_pat_counter_++);
+            names.push_back(placeholder);
+            followons.emplace_back(std::move(placeholder),
+                                   &static_cast<const ast::TuplePat&>(*sub));
+        } else {
+            names.push_back(std::format("__vstr_tp_bind_{}", tuple_pat_counter_++));
+        }
+    }
+}
+
+void CppEmitter::emit_tuple_pat_followons(
+    std::ostream& os,
+    const std::vector<std::pair<std::string, const ast::TuplePat*>>& followons,
+    int indent) {
+    for (const auto& [placeholder, inner_tp] : followons) {
+        std::vector<std::string> names;
+        std::vector<std::pair<std::string, const ast::TuplePat*>> nested;
+        collect_tuple_pat_names(*inner_tp, names, nested);
+        write_indent(os, indent);
+        os << "auto [";
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            if (i != 0) {
+                os << ", ";
+            }
+            os << names[i];
+        }
+        os << "] = " << placeholder << ";\n";
+        emit_tuple_pat_followons(os, nested, indent);
+    }
+}
+
 void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
     // §9 try-hoisting: pull every TryExpr-Propagating in this statement's
     // expressions out into a stmt-position let-binding, so propagation
@@ -1123,29 +1170,27 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         // §6 tuple destructuring: `let (a, b, ...) = expr` lowers to
         // a C++17 structured binding. The annotation is dropped — the
         // element types come from the tuple value's static type.
+        // Nested sub-tuples bind a placeholder here and unpack it in
+        // a sibling follow-on statement (structured bindings are
+        // single-level in C++).
         if (l.pattern && l.pattern->kind == ast::NodeKind::TuplePat) {
             const auto& tp = static_cast<const ast::TuplePat&>(*l.pattern);
+            std::vector<std::string> names;
+            std::vector<std::pair<std::string, const ast::TuplePat*>> followons;
+            collect_tuple_pat_names(tp, names, followons);
             os << "auto [";
-            for (std::size_t i = 0; i < tp.elements.size(); ++i) {
+            for (std::size_t i = 0; i < names.size(); ++i) {
                 if (i != 0) {
                     os << ", ";
                 }
-                const auto& sub = tp.elements[i];
-                if (sub && sub->kind == ast::NodeKind::IdentPat) {
-                    os << static_cast<const ast::IdentPat&>(*sub).name;
-                } else if (sub && sub->kind == ast::NodeKind::BindPat) {
-                    os << static_cast<const ast::BindPat&>(*sub).name;
-                } else if (sub && sub->kind == ast::NodeKind::WildcardPat) {
-                    os << "_vstr_unused_" << i;  // C++ has no real `_` discard
-                } else {
-                    os << "_bind_" << i;
-                }
+                os << names[i];
             }
             os << "] = ";
             if (l.value) {
                 emit_expr(os, *l.value);
             }
             os << ";\n";
+            emit_tuple_pat_followons(os, followons, indent);
             break;
         }
         // Vestra's `let` is "no reassignment" — but it does allow consumption
@@ -1185,27 +1230,22 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
             // mutable [auto&] form would let us bind by ref; for v0.5
             // we always take by-value to match Vestra's `var` move).
             const auto& tp = static_cast<const ast::TuplePat&>(*v.pattern);
+            std::vector<std::string> names;
+            std::vector<std::pair<std::string, const ast::TuplePat*>> followons;
+            collect_tuple_pat_names(tp, names, followons);
             os << "auto [";
-            for (std::size_t i = 0; i < tp.elements.size(); ++i) {
+            for (std::size_t i = 0; i < names.size(); ++i) {
                 if (i != 0) {
                     os << ", ";
                 }
-                const auto& sub = tp.elements[i];
-                if (sub && sub->kind == ast::NodeKind::IdentPat) {
-                    os << static_cast<const ast::IdentPat&>(*sub).name;
-                } else if (sub && sub->kind == ast::NodeKind::BindPat) {
-                    os << static_cast<const ast::BindPat&>(*sub).name;
-                } else if (sub && sub->kind == ast::NodeKind::WildcardPat) {
-                    os << "_vstr_unused_" << i;
-                } else {
-                    os << "_bind_" << i;
-                }
+                os << names[i];
             }
             os << "] = ";
             if (v.value) {
                 emit_expr(os, *v.value);
             }
             os << ";\n";
+            emit_tuple_pat_followons(os, followons, indent);
             break;
         }
         if (v.type) {
