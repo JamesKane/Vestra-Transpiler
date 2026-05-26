@@ -581,13 +581,16 @@ TEST_CASE("derive(Clone) on a bare enum does NOT surface .clone() (no method slo
 // ---- §9 do/catch where guard ---------------------------------------------
 
 TEST_CASE("do/catch with a where guard type-checks under the bound error name") {
+    // §9 the guard runs after the catch binding is established, so
+    // `e` is visible. The enclosing fn carries `throws(E)` because
+    // the guard's fall-through propagates the bound error.
     CHECK(check_errors("enum E { case bad; case worse }\n"
                        "func f() throws(E) -> Int32 { return 1 }\n"
                        "func isBad(_ e: E) -> Bool { return match e {\n"
                        "    case .bad: true\n"
                        "    case .worse: false\n"
                        "} }\n"
-                       "func go() -> Int32 {\n"
+                       "func go() throws(E) -> Int32 {\n"
                        "    return do { try f() } catch (e: E) where isBad(e) { -1 }\n"
                        "}\n")
           == 0);
@@ -596,11 +599,41 @@ TEST_CASE("do/catch with a where guard type-checks under the bound error name") 
 TEST_CASE("non-Bool guard is rejected with a clear diagnostic") {
     auto r = check_detail("enum E { case bad }\n"
                           "func f() throws(E) -> Int32 { return 1 }\n"
-                          "func go() -> Int32 {\n"
+                          "func go() throws(E) -> Int32 {\n"
                           "    return do { try f() } catch (e: E) where 42 { -1 }\n"
                           "}\n");
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("where-guard must be Bool") != std::string::npos);
+}
+
+TEST_CASE("where-guard requires an enclosing throws(E) context") {
+    // No `throws` on the enclosing fn means the failed-guard
+    // propagation has nowhere to go — sema rejects with a clear
+    // diagnostic pointing at the guard.
+    auto r = check_detail("enum E { case bad }\n"
+                          "func f() throws(E) -> Int32 { return 1 }\n"
+                          "func isBad(_ e: E) -> Bool { return true }\n"
+                          "func go() -> Int32 {\n"
+                          "    return do { try f() } catch (e: E) where isBad(e) { -1 }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("where-guard requires the enclosing function to be")
+          != std::string::npos);
+}
+
+TEST_CASE("where-guard rejects a throws context whose E differs from the caught E") {
+    // The do-catch catches NetErr; the enclosing fn throws DbErr.
+    // The fall-through can't propagate NetErr through a DbErr slot,
+    // so sema rejects.
+    auto r = check_detail("enum NetErr { case timeout }\n"
+                          "enum DbErr  { case lost }\n"
+                          "func f() throws(NetErr) -> Int32 { return 1 }\n"
+                          "func isBad(_ e: NetErr) -> Bool { return true }\n"
+                          "func go() throws(DbErr) -> Int32 {\n"
+                          "    return do { try f() } catch (e: NetErr) where isBad(e) { -1 }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("fall-through propagates") != std::string::npos);
 }
 
 // ---- §17.4 with name = expr { ... } binding ------------------------------

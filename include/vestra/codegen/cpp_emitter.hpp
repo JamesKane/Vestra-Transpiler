@@ -149,6 +149,14 @@ private:
     // from the enclosing cond-hoist lambda. No outer IIFE here — the
     // lambda envelope is supplied by emit_cond_hoist.
     void emit_match_in_lambda(std::ostream& os, const ast::MatchExpr& m, int indent);
+    // §9 statement-form do/catch-with-where-guard used inside the
+    // conditional hoist's lambda body. Emits the inner do-body lambda
+    // returning std::expected<T, E>, then the dispatch: success →
+    // `return *do_value`, guard-pass → `return CATCH_BODY`, guard-fail
+    // → `return std::unexpected{bound_error}` (the propagation path).
+    // The outer cond-hoist lambda already has the expected<T, E>
+    // return shape, so std::unexpected escapes cleanly.
+    void emit_do_catch_in_lambda(std::ostream& os, const ast::DoCatchExpr& dc, int indent);
     const std::string* lookup_try_hoist(const ast::Expr* node) const;
 
     // True when any sub-expression of `e` (walking into IfExpr branches,

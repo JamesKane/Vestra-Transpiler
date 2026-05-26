@@ -3,52 +3,33 @@
 
 #include "docatch_where.hpp"
 
-#include <sys/wait.h>
-#include <unistd.h>
-
 #include <cstdlib>
 #include <print>
-
-namespace {
-
-// Same fork+SIGABRT helper shape as the §10 panic e2e — the child
-// runs the body, the parent verifies it terminated abnormally with
-// SIGABRT (the abort signal __vstr::panic raises).
-template <class F>
-[[nodiscard]] bool child_aborts(F&& body) {
-    pid_t pid = fork();
-    if (pid < 0) {
-        std::exit(EXIT_FAILURE);
-    }
-    if (pid == 0) {
-        (void)freopen("/dev/null", "w", stderr);
-        body();
-        std::exit(0);
-    }
-    int status = 0;
-    waitpid(pid, &status, 0);
-    return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
-}
-
-}  // namespace
 
 int main() {
     using namespace examples::docatch_where;
 
-    if (attempt(0) != 42) {
-        std::println("kind=0 should succeed");
+    // Success path: makeReq(0) returns 42, so the do-body's expected
+    // is a value and attempt's expected wraps it.
+    if (auto r = attempt(0); !r.has_value() || *r != 42) {
+        std::println("kind=0 should succeed with 42");
         return EXIT_FAILURE;
     }
-    if (attempt(1) != -1) {
+    // Retryable family: the where-guard fires, the handler returns
+    // -1, and attempt's expected wraps it.
+    if (auto r = attempt(1); !r.has_value() || *r != -1) {
         std::println("kind=1 (timeout) should hit the retry arm");
         return EXIT_FAILURE;
     }
-    if (attempt(2) != -1) {
+    if (auto r = attempt(2); !r.has_value() || *r != -1) {
         std::println("kind=2 (refused) should hit the retry arm");
         return EXIT_FAILURE;
     }
-    if (!child_aborts([] { (void)attempt(3); })) {
-        std::println("kind=3 (fatal) should fall through the guard and panic");
+    // Fatal: the where-guard returns false, the bound NetErr.fatal
+    // falls through and propagates as std::unexpected through
+    // attempt's throws(NetErr) clause.
+    if (auto r = attempt(3); r.has_value() || r.error() != NetErr::fatal) {
+        std::println("kind=3 (fatal) should propagate NetErr.fatal");
         return EXIT_FAILURE;
     }
 

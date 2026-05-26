@@ -1141,12 +1141,31 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         sym.definition_range = dc.range;
         (void)scopes_.current().insert(std::move(sym));
         // §9 `where guard`: type-check under the binding's scope; the
-        // guard must produce Bool.
+        // guard must produce Bool. A failed guard at runtime
+        // propagates the bound error to the enclosing throws context,
+        // so we also require that context exists and matches the
+        // do-catch's error type. (throws_stack_'s top here is the
+        // enclosing function's throws_type — the do-catch's own push
+        // / pop already happened above.)
         if (dc.guard) {
             auto gt = check_expr(*dc.guard, types_->boolean());
             if (gt != nullptr && !gt->is_error() && gt->kind() != TypeKind::Bool) {
                 error_at(dc.guard->range,
                          std::format("do/catch where-guard must be Bool, got {}", gt->describe()));
+            }
+            TypePtr enclosing = throws_stack_.empty() ? nullptr : throws_stack_.back();
+            if (enclosing == nullptr) {
+                error_at(dc.guard->range,
+                         "do/catch where-guard requires the enclosing function to be "
+                         "`throws(E)` so the fall-through can propagate the error");
+            } else if (error_type != nullptr && !error_type->is_error()
+                       && !TypeArena::assignable(error_type, enclosing)) {
+                error_at(dc.guard->range,
+                         std::format("do/catch where-guard fall-through propagates {}, but "
+                                     "the enclosing throws context is {}; either widen with "
+                                     "`.mapError(...)` or remove the guard",
+                                     error_type->describe(),
+                                     enclosing->describe()));
             }
         }
         TypePtr catch_type = check_expr(*dc.catch_body, expected != nullptr ? expected : body_type);

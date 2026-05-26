@@ -3,12 +3,12 @@
 
 // §9 `do { … } catch (e: E) where guard { … }` — guarded catch arm.
 // The guard runs with the bound error in scope; if true, the handler
-// applies; if false, v0.5 panics via the named primitive. Users who
-// want explicit propagation write the no-guard form
-// `catch (e: E) { match e { case … default: throw e } }` instead.
+// applies; if false, the bound error propagates to the enclosing
+// `throws(E)` context. Sugar for the common "retry on a subset of
+// failure modes" pattern, without forcing an inner match.
 //
-// Sugar for the common "retry on a subset of failure modes" pattern,
-// without forcing an inner match.
+// Sema requires an enclosing throws context that matches E; this is
+// what makes the fall-through propagation typesafe.
 
 module examples.docatch_where
 
@@ -37,8 +37,9 @@ func isRetryable(_ e: NetErr) -> Bool {
 
 // The where-guarded catch dispatches the retryable family to the
 // handler arm (returning the sentinel -1). A `fatal` error falls
-// through the guard and panics — the driver verifies this via
-// fork + SIGABRT.
-func attempt(_ kind: Int32) -> Int32 {
+// through the guard and propagates the NetErr up to attempt's own
+// throws(NetErr) clause — the driver verifies this by unwrapping
+// the std::expected at the call site.
+func attempt(_ kind: Int32) throws(NetErr) -> Int32 {
     return do { try makeReq(kind) } catch (e: NetErr) where isRetryable(e) { -1 }
 }

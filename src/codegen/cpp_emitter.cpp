@@ -1226,6 +1226,29 @@ void CppEmitter::collect_try_hoists(const ast::Expr& e,
         }
         break;
     }
+    case ast::NodeKind::DoCatchExpr: {
+        // §9 `do { … } catch (e: E) where guard { … }`: failed guard
+        // re-throws E to the enclosing throws context. Register the
+        // whole DoCatchExpr as a cond-hoist when a guard is present;
+        // emit_cond_hoist will lift it to an IIFE returning
+        // std::expected<T, E>, and the outer scope unwraps via the
+        // canonical 3-line escape.
+        //
+        // The do-body's and catch-body's inner tries are handled by
+        // the do-catch's own emit machinery (the inner lambda already
+        // collects its own hoists scoped to its return-type
+        // expected<T, E>), so we deliberately do *not* walk into them
+        // here — that'd double-hoist.
+        //
+        // Do-catches without a guard keep their existing T-returning
+        // shape: they're total over the error path, no propagation
+        // needed.
+        const auto& dc = static_cast<const ast::DoCatchExpr&>(e);
+        if (dc.guard != nullptr && !already_hoisted(&e)) {
+            out.push_back({&e, std::format("__vstr_c{}", hoist_counter_++)});
+        }
+        break;
+    }
     case ast::NodeKind::CopyExpr:
         collect_try_hoists(*static_cast<const ast::CopyExpr&>(e).inner, out, exclude);
         break;
@@ -1322,7 +1345,8 @@ void CppEmitter::emit_try_hoist(std::ostream& os, const TryHoist& h, int indent)
         os << "auto " << h.name << " = *" << r << ";\n";
         return;
     }
-    if (h.node->kind == ast::NodeKind::IfExpr || h.node->kind == ast::NodeKind::MatchExpr) {
+    if (h.node->kind == ast::NodeKind::IfExpr || h.node->kind == ast::NodeKind::MatchExpr
+        || h.node->kind == ast::NodeKind::DoCatchExpr) {
         emit_cond_hoist(os, h, indent);
         return;
     }
@@ -1364,6 +1388,8 @@ void CppEmitter::emit_cond_hoist(std::ostream& os, const TryHoist& h, int indent
         emit_stmt_expr(os, *h.node, /*return_value=*/true);
     } else if (h.node->kind == ast::NodeKind::MatchExpr) {
         emit_match_in_lambda(os, static_cast<const ast::MatchExpr&>(*h.node), indent + 1);
+    } else if (h.node->kind == ast::NodeKind::DoCatchExpr) {
+        emit_do_catch_in_lambda(os, static_cast<const ast::DoCatchExpr&>(*h.node), indent + 1);
     }
     skip_hoist_ = prev_skip;
 
@@ -1563,6 +1589,62 @@ void CppEmitter::emit_match_in_lambda(std::ostream& os, const ast::MatchExpr& m,
     } else {
         os << "else { std::unreachable(); }\n";
     }
+}
+
+void CppEmitter::emit_do_catch_in_lambda(std::ostream& os, const ast::DoCatchExpr& dc, int indent) {
+    // §9 statement-form do/catch-with-where-guard for the cond-hoist
+    // lambda body. The outer cond-hoist lambda returns
+    // std::expected<T, E_outer>; we render the inner do-body lambda
+    // (returning std::expected<T, E_inner>), dispatch on it, gate the
+    // handler on the guard, and on guard-fail emit `return
+    // std::unexpected{bound}` — that escapes through the cond-hoist
+    // lambda to the enclosing throws context. Sema requires
+    // `E_inner` to be assignable to `E_outer` (typically the same
+    // enum), so the implicit std::unexpected conversion works.
+    sema::TypePtr value_type = resolution_ != nullptr ? resolution_->type_of(&dc) : nullptr;
+    write_indent(os, indent);
+    os << "auto __vstr_do = [&]() -> std::expected<";
+    if (value_type != nullptr) {
+        emit_sema_type(os, value_type);
+    } else {
+        os << "auto";
+    }
+    os << ", ";
+    if (dc.error_type) {
+        emit_type(os, *dc.error_type);
+    } else if (resolution_ != nullptr) {
+        emit_sema_type(os, resolution_->do_catch_error_type(&dc));
+    }
+    os << "> { ";
+    // Inner hoist scope for the do-body's trailing expression — same
+    // shape as the non-hoisted DoCatchExpr emit path. Without this,
+    // mid-expression tries inside `do { … }` would fall back to
+    // `.value()` panics.
+    std::vector<TryHoist> body_hoists;
+    if (dc.do_body->kind == ast::NodeKind::BlockExpr) {
+        const auto& b = static_cast<const ast::BlockExpr&>(*dc.do_body);
+        if (!b.stmts.empty() && b.stmts.back()->kind == ast::NodeKind::ExprStmt) {
+            const auto& trailing = static_cast<const ast::ExprStmt&>(*b.stmts.back());
+            if (trailing.expr) {
+                collect_try_hoists(*trailing.expr, body_hoists);
+            }
+        }
+    } else {
+        collect_try_hoists(*dc.do_body, body_hoists);
+    }
+    for (const auto& bh : body_hoists) {
+        emit_try_hoist(os, bh, 0);
+    }
+    const auto* prev_hoists = active_hoists_;
+    active_hoists_ = &body_hoists;
+    emit_stmt_expr(os, *dc.do_body, /*return_value=*/true);
+    active_hoists_ = prev_hoists;
+    os << " }(); if (__vstr_do.has_value()) { return *__vstr_do; } [[maybe_unused]] auto "
+       << dc.error_name << " = __vstr_do.error(); if (";
+    emit_expr(os, *dc.guard);
+    os << ") { return ";
+    emit_expr(os, *dc.catch_body);
+    os << "; } return std::unexpected{" << dc.error_name << "};\n";
 }
 
 const std::string* CppEmitter::lookup_try_hoist(const ast::Expr* node) const {
@@ -2356,13 +2438,23 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // outer dispatches has_value to the body value or to the catch
         // handler with NAME bound to E. The success type T comes from
         // the resolver — it's the do-catch expression's own type.
+        //
+        // When the do-catch carries a `where` guard, sema requires the
+        // enclosing function to be `throws(E)` and collect_try_hoists
+        // lifts the whole DoCatchExpr as a cond-hoist (the inner
+        // lambda returns expected<T,E> at the outer scope, the
+        // guard-fail propagates as std::unexpected). The substitution
+        // below routes the use-site to that hoisted name.
         const auto& dc = static_cast<const ast::DoCatchExpr&>(e);
+        if (const auto* name = lookup_try_hoist(&e)) {
+            os << "(*" << *name << ")";
+            break;
+        }
         sema::TypePtr result_type = resolution_ != nullptr ? resolution_->type_of(&e) : nullptr;
-        // Pin the outer lambda's return type explicitly so a where-
-        // guard panic-fallthrough (returning `__vstr::Never`) and the
-        // catch body (returning T) don't trip the C++ "two different
-        // return types" deduction failure. Falls back to `auto` when
-        // sema didn't supply a type (resolver-free emit path).
+        // Pin the outer lambda's return type explicitly so the catch
+        // body's expression-typed return doesn't trip C++ "two
+        // different return types" deduction. Falls back to `auto`
+        // when sema didn't supply a type (resolver-free emit path).
         os << "([&]() -> ";
         if (result_type != nullptr) {
             emit_sema_type(os, result_type);
@@ -2414,19 +2506,20 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
            << dc.error_name << " = __vstr_do.error(); ";
         if (dc.guard) {
             // §9 `catch (e: E) where guard`: gate the handler on the
-            // guard's runtime value. Guard-fail panics — v0.5 doesn't
-            // yet propagate the error through the do-catch IIFE to
-            // the enclosing throws context, so the safe answer is a
-            // hard stop. Users who want propagation write the no-
-            // guard form `catch (e: E) { match e { case … default:
-            // throw e } }` explicitly.
+            // guard's runtime value. The normal path is the cond-
+            // hoist substitution above — sema requires an enclosing
+            // throws(E) context and collect_try_hoists registers the
+            // DoCatchExpr, so guard-fail propagates via
+            // std::unexpected from the lifted lambda. This branch is
+            // a defensive fallback: it only fires on the resolver-
+            // free emit path (codegen-only tests), where no hoist
+            // gets registered. The panic keeps that path safe.
             os << "if (";
             emit_expr(os, *dc.guard);
             os << ") { return ";
             emit_expr(os, *dc.catch_body);
-            os << "; } return __vstr::panic(\"do/catch where-guard fell through; "
-                  "restructure as `catch (e: E) { match e { case ... default: throw e } }` "
-                  "for explicit propagation\");";
+            os << "; } return __vstr::panic(\"do/catch where-guard fell through "
+                  "(resolver-free emit path)\");";
         } else {
             os << "return ";
             emit_expr(os, *dc.catch_body);
