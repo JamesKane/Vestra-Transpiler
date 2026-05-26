@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §4 Optional in a Display splice. `"\(maybeValue)"` renders `.none`
+// as `nil` and `.some(v)` by delegating to T's formatter. Sema's
+// is_display_conformant rule now recurses through Optional<T>, so the
+// inner T's Display contract carries the chain. The C++ side is one
+// std::formatter<std::optional<T>> partial specialization in the
+// runtime preamble, defined for any T satisfying std::formattable.
+
+module examples.optional_display
+
+// Primitives in Optional: the inner T's natural formatter fires when
+// the value is present.
+func renderName(_ name: Str?, _ count: Int32?) -> String {
+    return "name=\(name) count=\(count)"
+}
+
+// Optional composes with derive(Display) (or derive(Debug)) on user
+// types: the Optional's formatter delegates to Point's formatter on
+// .some, prints "nil" on .none.
+struct Point {
+    var x: Int32
+    var y: Int32
+}
+
+derive(Debug) for Point
+
+func renderPoint(_ p: Point?) -> String {
+    return "p=\(p)"
+}

@@ -226,6 +226,30 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "}\n\n";
     hdr << "}  // namespace __vstr\n\n";
 
+    // §4 Optional in a Display splice. Vestra renders `"\(opt)"` as
+    // `nil` for `.none` and delegates to T's formatter for `.some(v)`.
+    // libc++ on Apple Clang 21 doesn't yet ship the C++26 P2585
+    // formatter for std::optional, so we provide a partial
+    // specialization in namespace std. The constraint on
+    // std::formattable<T, char> keeps it composable with anything T's
+    // own formatter accepts, and `inline` keeps the spec safe across
+    // headers in one TU.
+    hdr << "namespace std {\n";
+    hdr << "template <class T>\n";
+    hdr << "    requires std::formattable<T, char>\n";
+    hdr << "struct formatter<std::optional<T>, char> {\n";
+    hdr << "    std::formatter<T, char> inner;\n";
+    hdr << "    constexpr auto parse(std::format_parse_context& ctx) {\n";
+    hdr << "        return inner.parse(ctx);\n";
+    hdr << "    }\n";
+    hdr << "    template <class FormatContext>\n";
+    hdr << "    auto format(const std::optional<T>& opt, FormatContext& ctx) const {\n";
+    hdr << "        if (opt.has_value()) { return inner.format(*opt, ctx); }\n";
+    hdr << "        return std::format_to(ctx.out(), \"nil\");\n";
+    hdr << "    }\n";
+    hdr << "};\n";
+    hdr << "}  // namespace std\n\n";
+
     auto write_module_path = [&](std::ostream& os) {
         for (std::size_t i = 0; i < unit.module->path.size(); ++i) {
             if (i != 0) {

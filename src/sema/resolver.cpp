@@ -1911,10 +1911,13 @@ bool Resolver::is_display_conformant(TypePtr t) const {
     case TypeKind::Vector:
         return is_display_conformant(t->inner());
     case TypeKind::Optional:
-        // `std::format("{}", std::optional<T>{})` isn't standard, so
-        // require an explicit `?? default` / `if let` at the splice
-        // site rather than silently rendering "nullopt".
-        return false;
+        // `"\(opt)"` renders `.none` as `nil` and `.some(v)` by
+        // delegating to T's formatter. Codegen emits a templated
+        // `std::formatter<std::optional<T>>` specialization in the
+        // runtime preamble (`__vstr::OptionalFormatter`) to carry
+        // the C++ side. The inner T still has to be Display-
+        // conformant — this rule composes, it doesn't bypass.
+        return is_display_conformant(t->inner());
     case TypeKind::Struct:
     case TypeKind::Enum:
         return decl_derives(t->nominal_decl(), "Display")

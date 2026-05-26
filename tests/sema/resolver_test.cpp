@@ -578,6 +578,19 @@ TEST_CASE("derive(Clone) on a bare enum does NOT surface .clone() (no method slo
     CHECK(r.error_count >= 1);
 }
 
+// ---- §4 Optional in a Display splice -------------------------------------
+
+TEST_CASE("Optional<T> is Display-conformant when T is") {
+    CHECK(check_errors("func render(_ a: Int32?) -> String { return \"a=\\(a)\" }\n") == 0);
+}
+
+TEST_CASE("Optional<T> over a non-conformant T is still rejected") {
+    auto r = check_detail("struct Bare { var n: Int32 }\n"
+                          "func render(_ b: Bare?) -> String { return \"b=\\(b)\" }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Display-conformant") != std::string::npos);
+}
+
 // ---- §10 Span[T] / MutSpan[T] --------------------------------------------
 
 TEST_CASE("Span[T] type resolution + array-to-Span call-site coercion") {

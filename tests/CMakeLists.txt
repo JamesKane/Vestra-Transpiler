@@ -652,6 +652,35 @@ set_tests_properties(e2e_spans_run PROPERTIES
     DEPENDS                e2e_spans_compile
     PASS_REGULAR_EXPRESSION "spans OK")
 
+# Optional in Display: §4 interpolation now accepts an Optional<T>
+# splice when T is itself Display-conformant. The runtime preamble
+# carries a std::formatter<std::optional<T>> partial specialization
+# (constrained on std::formattable<T, char>) that renders `.none` as
+# "nil" and delegates `.some(v)` to T's formatter — composes with
+# derive(Display) / derive(Debug) on user types.
+set(e2e_optdisp_input  ${CMAKE_SOURCE_DIR}/examples/optional_display.vst)
+set(e2e_optdisp_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_optional_display.cpp)
+
+add_test(
+    NAME    e2e_optional_display_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_optdisp_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_optional_display_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_optdisp_driver} ${e2e_workdir}/optional_display.cpp
+            -o ${e2e_workdir}/optional_display_app)
+set_tests_properties(e2e_optional_display_compile PROPERTIES DEPENDS e2e_optional_display_transpile)
+
+add_test(
+    NAME    e2e_optional_display_run
+    COMMAND ${e2e_workdir}/optional_display_app)
+set_tests_properties(e2e_optional_display_run PROPERTIES
+    DEPENDS                e2e_optional_display_compile
+    PASS_REGULAR_EXPRESSION "optional display OK")
+
 # Box[T]: §10 unique-ownership heap pointer. Lowers to
 # std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
 # → *box. Allocation requires the §8 `Alloc` capability. E2E pins

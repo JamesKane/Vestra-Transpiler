@@ -253,8 +253,12 @@ TEST_CASE("derive(Debug) for a payloaded enum uses std::visit + constexpr-if") {
 }
 
 TEST_CASE("a struct without derive(Debug) gets no formatter spec") {
+    // The runtime preamble emits a `std::formatter<std::optional<T>>`
+    // for the §4 Optional-in-Display story, so a bare `std::formatter`
+    // grep no longer works as a proxy. Check that *no struct-targeted*
+    // formatter is emitted instead.
     SemaEmitFixture f("struct Bare { var n: Int32 }\n");
-    CHECK(f.out.header.find("std::formatter") == std::string::npos);
+    CHECK(f.out.header.find("std::formatter<Bare>") == std::string::npos);
 }
 
 // ---- §9 Optional ----------------------------------------------------------
@@ -595,6 +599,23 @@ TEST_CASE("a method returning a struct stays a real call, not a fresh struct lit
                       "func dup(_ p: Point) -> Point { return p.clone() }\n");
     CHECK(f.out.source.find("return p.clone();") != std::string::npos);
     CHECK(f.out.source.find("return Point{};") == std::string::npos);
+}
+
+// ---- §4 Optional in a Display splice -------------------------------------
+
+TEST_CASE("runtime preamble emits std::formatter<std::optional<T>> spec") {
+    auto out = emit("func id(_ x: Int32) -> Int32 { return x }\n");
+    CHECK(out.header.find("struct formatter<std::optional<T>, char>") != std::string::npos);
+    CHECK(out.header.find("requires std::formattable<T, char>") != std::string::npos);
+    CHECK(out.header.find("std::format_to(ctx.out(), \"nil\")") != std::string::npos);
+}
+
+TEST_CASE("interpolation accepts an Optional splice and emits std::format normally") {
+    auto out = emit("func render(_ a: Int32?) -> String { return \"a=\\(a)\" }\n");
+    // The splice goes through std::format with no special-casing at
+    // the splice site; the preamble formatter handles `.none → nil`
+    // and `.some(v)` → T's formatter.
+    CHECK(out.source.find("std::format(\"a={}\", a)") != std::string::npos);
 }
 
 // ---- §10 Span[T] / MutSpan[T] --------------------------------------------
