@@ -591,6 +591,36 @@ set_tests_properties(e2e_derive_default_run PROPERTIES
     DEPENDS                e2e_derive_default_compile
     PASS_REGULAR_EXPRESSION "derive\\(Default\\) OK")
 
+# Panic primitives: §10 `panic(msg)` / `abort()` / `unreachable()`.
+# Each returns `Never` (bottom type) so the call fits any expression
+# slot through `__vstr::Never`'s templated [[noreturn]] conversion op.
+# Force-unwrap (`!`) and `try!` now route through the same named
+# primitive instead of std::bad_optional_access / std::bad_expected_access
+# exceptions. The driver fork+aborts the panic paths so the parent
+# can verify the abort happened without itself dying.
+set(e2e_panic_input  ${CMAKE_SOURCE_DIR}/examples/panic.vst)
+set(e2e_panic_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_panic.cpp)
+
+add_test(
+    NAME    e2e_panic_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_panic_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_panic_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_panic_driver} ${e2e_workdir}/panic.cpp
+            -o ${e2e_workdir}/panic_app)
+set_tests_properties(e2e_panic_compile PROPERTIES DEPENDS e2e_panic_transpile)
+
+add_test(
+    NAME    e2e_panic_run
+    COMMAND ${e2e_workdir}/panic_app)
+set_tests_properties(e2e_panic_run PROPERTIES
+    DEPENDS                e2e_panic_compile
+    PASS_REGULAR_EXPRESSION "panic OK")
+
 # Box[T]: §10 unique-ownership heap pointer. Lowers to
 # std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
 # → *box. Allocation requires the §8 `Alloc` capability. E2E pins

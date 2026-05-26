@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §10 panic primitives — the three terminal builtins that collapse
+// the spec's "this point is never reached" / "this fails terminally"
+// patterns onto a single named pathway, replacing the C++ exception
+// machinery the v0.5 force-unwrap path used to rely on.
+//
+//   panic(msg: StrConst) -> Never   — print + std::abort
+//   abort()              -> Never   — std::abort, no message
+//   unreachable()        -> Never   — std::unreachable() (UB if hit)
+//
+// All three return `Never` (the bottom type), so they fit in any
+// expression position. The codegen lowers them through the
+// `__vstr::Never` C++ struct whose templated `[[noreturn]]` conversion
+// operator slots into whatever the surrounding C++ slot expects.
+
+module examples.panic
+
+// Bottom-type return: a function declared `-> Int32` may end in
+// `panic(...)` because Never is assignable to every type.
+func divideOrPanic(_ a: Int32, _ b: Int32) -> Int32 {
+    if b == 0 {
+        panic("divide by zero")
+    }
+    return a / b
+}
+
+// `abort()` is the no-message terminal — when even building a
+// message would be too much (e.g. inside a panic-during-panic
+// rescue path).
+func giveUp() {
+    abort()
+}
+
+// `unreachable()` documents to both reader and compiler that a
+// branch is provably dead. The compiler is free to optimize the
+// surrounding code on that promise (UB if a control path reaches
+// it at runtime).
+enum Mode {
+    case fast
+    case slow
+}
+
+func defaultLatencyMs(_ m: Mode) -> Int32 {
+    return match m {
+        case .fast: 1
+        case .slow: 50
+    }
+}
+
+// Force-unwrap now routes through `__vstr::unwrap_opt` which panics
+// via the same named primitive on `.none`. Behavioral parity with the
+// prior `.value()` lowering, but the path is named.
+func forced(_ o: Int32?) -> Int32 {
+    return o!
+}

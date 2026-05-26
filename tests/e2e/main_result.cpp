@@ -40,14 +40,10 @@ int main() {
         return EXIT_FAILURE;
     }
 
-    // try! failure → panic (std::bad_expected_access).
-    try {
-        (void)unwrap_div(10, 0);
-        std::println("unwrap_div(10, 0) should have panicked");
-        return EXIT_FAILURE;
-    } catch (const std::bad_expected_access<DivErr>&) {
-        // expected
-    }
+    // try! failure → panic via `__vstr::panic` → std::abort. The
+    // abort isn't catchable in-process, so we don't exercise the
+    // failure path here; the e2e_panic driver covers it via a forked
+    // child that asserts the abort.
 
     // Propagating chain: every divide succeeds.
     auto c1 = chain(20, 2, 5);

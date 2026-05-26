@@ -77,6 +77,7 @@ void Resolver::resolve() {
     register_builtin_capabilities();
     register_builtin_math();
     register_builtin_reflection();
+    register_builtin_panic();
     collect_top_level();
     for (const auto& d : unit_->decls) {
         // §12.6: same gate as collect_top_level. Skipping here keeps the
@@ -123,6 +124,38 @@ void Resolver::register_builtin_capabilities() {
 // register the symbols so the resolver can type-check a `sin(theta)` or
 // a `tau` reference without flagging an undeclared identifier. Phase 1
 // keeps every signature Float64-only; later phases revisit polymorphism.
+// §10 panic primitives. Each one returns `Never` (bottom type), so a
+// call type-checks against any expected slot — `let x: Int32 =
+// panic("oops")` is fine because Never is assignable to every type.
+// Codegen intercepts the three names by IdentExpr in emit_expr(CallExpr)
+// and lowers to the C++ runtime shims; the symbols here exist so the
+// resolver sees a real Func at the call site and the call's static
+// type comes out to Never.
+void Resolver::register_builtin_panic() {
+    auto never = types_->never();
+    // §10 `panic` takes a compile-time string. v0.5 doesn't try to
+    // promote `Str` / `String` (the runtime / heap-formatted strings)
+    // to the panic message — most kernel and library panic sites use
+    // a literal anyway, and the StrConst-only signature keeps the
+    // primitive composable with @panic_handler (annex §15.5) whose
+    // signature is also `(message: Str, file: StrConst, line: Int)`
+    // — the future widening is a one-line change here.
+    auto str_const = types_->primitive(TypeKind::StrConst);
+    auto insert = [&](std::string name, std::vector<TypePtr> params) {
+        Symbol s;
+        s.name = std::move(name);
+        s.kind = SymbolKind::Func;
+        s.decl = nullptr;
+        s.type = types_->make_function(std::move(params), never);
+        s.definition_range = {};
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
+    };
+    insert("panic", {str_const});
+    insert("abort", {});
+    insert("unreachable", {});
+}
+
 void Resolver::register_builtin_math() {
     auto f64 = types_->primitive(TypeKind::Float64);
 

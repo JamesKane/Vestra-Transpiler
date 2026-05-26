@@ -74,6 +74,12 @@ private:
     void register_builtin_capabilities();
     void register_builtin_math();
     void register_builtin_reflection();
+    // §10 panic primitives: `panic(msg: Str) -> Never`, `abort() -> Never`,
+    // `unreachable() -> Never`. Each is registered as a Func symbol so a
+    // user call type-checks through the standard call path; the codegen
+    // intercepts the three names and lowers to `__vstr_panic` /
+    // `std::abort()` / `std::unreachable()` respectively.
+    void register_builtin_panic();
     void collect_top_level();
     void collect_func(const ast::FuncDecl& f);
     void collect_struct(const ast::StructDecl& s);

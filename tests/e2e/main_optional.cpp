@@ -48,15 +48,10 @@ int main() {
         return EXIT_FAILURE;
     }
 
-    // Force-unwrap on `.none` throws std::bad_optional_access; check
-    // that the panic contract is actually a hard stop.
-    try {
-        (void)forced(empty());
-        std::println("force-unwrap on nil should have panicked");
-        return EXIT_FAILURE;
-    } catch (const std::bad_optional_access&) {
-        // expected
-    }
+    // Force-unwrap on `.none` panics via `__vstr::panic` → std::abort.
+    // We can't catch the abort in-process, so this driver only
+    // exercises the .some path; the nil-panic behavior is covered by
+    // the e2e_panic driver (which forks and asserts the child aborts).
 
     std::println("optional OK");
     return EXIT_SUCCESS;

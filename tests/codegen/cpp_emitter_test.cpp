@@ -270,9 +270,12 @@ TEST_CASE("?? lowers to std::optional::value_or") {
     CHECK(out.source.find("(o).value_or(0)") != std::string::npos);
 }
 
-TEST_CASE("postfix ! lowers to std::optional::value()") {
+TEST_CASE("postfix ! lowers to __vstr::unwrap_opt") {
+    // §10 force-unwrap routes through the named panic primitive
+    // (`__vstr::unwrap_opt` panics via `__vstr::panic` on .none)
+    // instead of relying on the std::bad_optional_access exception.
     auto out = emit("func use(_ o: Int32?) -> Int32 { return o! }\n");
-    CHECK(out.source.find("o.value()") != std::string::npos);
+    CHECK(out.source.find("__vstr::unwrap_opt(o)") != std::string::npos);
 }
 
 TEST_CASE("if let lowers to a C++23 if-with-initializer over std::optional") {
@@ -322,11 +325,13 @@ TEST_CASE("try? lowers to a Result→Optional conversion IIFE") {
           != std::string::npos);
 }
 
-TEST_CASE("try! lowers to std::expected::value()") {
+TEST_CASE("try! lowers to __vstr::unwrap_exp") {
+    // §10 try! routes through the named panic primitive (same shape
+    // as the postfix `!` Optional unwrap above).
     auto out = emit("enum E { case bad }\n"
                     "func f() throws(E) -> Int32 { return 7 }\n"
                     "func g() -> Int32 { return try! f() }\n");
-    CHECK(out.source.find("f().value()") != std::string::npos);
+    CHECK(out.source.find("__vstr::unwrap_exp(f())") != std::string::npos);
 }
 
 // ---- §4 layout attributes (@repr / @align / @bits) -----------------------
@@ -590,6 +595,42 @@ TEST_CASE("a method returning a struct stays a real call, not a fresh struct lit
                       "func dup(_ p: Point) -> Point { return p.clone() }\n");
     CHECK(f.out.source.find("return p.clone();") != std::string::npos);
     CHECK(f.out.source.find("return Point{};") == std::string::npos);
+}
+
+// ---- §10 panic / abort / unreachable -------------------------------------
+
+TEST_CASE("panic(msg) lowers to __vstr::panic(...)") {
+    auto out = emit("func bad() -> Int32 { panic(\"out of range\") }\n");
+    CHECK(out.source.find("__vstr::panic(") != std::string::npos);
+    CHECK(out.source.find("\"out of range\"") != std::string::npos);
+}
+
+TEST_CASE("abort() and unreachable() lower to the named __vstr shims") {
+    auto out = emit("func a() -> Int32 { abort() }\n"
+                    "func u() -> Int32 { unreachable() }\n");
+    CHECK(out.source.find("__vstr::abort_fn()") != std::string::npos);
+    CHECK(out.source.find("__vstr::unreachable_fn()") != std::string::npos);
+}
+
+TEST_CASE("runtime preamble emits the __vstr::Never bottom type + shims") {
+    // The preamble lives at global scope before the user's namespace,
+    // and `inline` keeps the definitions safe across multi-header TUs.
+    auto out = emit("func id(_ x: Int32) -> Int32 { return x }\n");
+    CHECK(out.header.find("namespace __vstr {") != std::string::npos);
+    CHECK(out.header.find("struct Never {") != std::string::npos);
+    CHECK(out.header.find("[[noreturn]] inline Never panic(") != std::string::npos);
+    CHECK(out.header.find("[[noreturn]] inline Never abort_fn()") != std::string::npos);
+    CHECK(out.header.find("[[noreturn]] inline Never unreachable_fn()") != std::string::npos);
+    CHECK(out.header.find("inline auto unwrap_opt(Opt&& o)") != std::string::npos);
+    CHECK(out.header.find("inline auto unwrap_exp(Exp&& r)") != std::string::npos);
+}
+
+TEST_CASE("void-returning function does not carry [[nodiscard]]") {
+    // The attribute is invalid on void return; emit_func gates it on
+    // `f.result != nullptr || f.effects.throws_type != nullptr`.
+    auto out = emit("func bail() { abort() }\n");
+    CHECK(out.header.find("[[nodiscard]] void") == std::string::npos);
+    CHECK(out.header.find("void bail()") != std::string::npos);
 }
 
 // ---- §12.3 derive(Default) -----------------------------------------------

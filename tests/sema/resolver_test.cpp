@@ -578,6 +578,33 @@ TEST_CASE("derive(Clone) on a bare enum does NOT surface .clone() (no method slo
     CHECK(r.error_count >= 1);
 }
 
+// ---- §10 panic / abort / unreachable -------------------------------------
+
+TEST_CASE("panic(msg) type-checks against any return slot (Never is bottom)") {
+    CHECK(check_errors("func bad() -> Int32 { panic(\"out of range\") }\n") == 0);
+}
+
+TEST_CASE("abort() and unreachable() are zero-arg and return Never") {
+    CHECK(check_errors("func a() -> Float64 { abort() }\n"
+                       "func u() -> Bool { unreachable() }\n")
+          == 0);
+}
+
+TEST_CASE("panic requires exactly one StrConst arg") {
+    auto r0 = check_detail("func bad() -> Int32 { panic() }\n");
+    CHECK(r0.error_count >= 1);
+    auto r1 = check_detail("func bad() -> Int32 { panic(\"a\", \"b\") }\n");
+    CHECK(r1.error_count >= 1);
+}
+
+TEST_CASE("panic admits an interpolated message? no — v0.5 needs a literal") {
+    // v0.5 panic takes StrConst; an interpolation produces `String`
+    // which doesn't assign. The diagnostic guides the user toward a
+    // literal until the @panic_handler annex item widens the surface.
+    auto r = check_detail("func bad(_ n: Int32) -> Int32 { panic(\"err \\(n)\") }\n");
+    CHECK(r.error_count >= 1);
+}
+
 // ---- §12.3 derive(Default) ------------------------------------------------
 
 TEST_CASE("derive(Default) surfaces a static T.default() with primitive fields") {
