@@ -98,17 +98,46 @@ private:
     // TryExpr. The walk skips conditional contexts (IfExpr/MatchExpr
     // branches, short-circuit && / ||) so a hoisted try never runs in a
     // branch that the source program wouldn't have taken.
+    //
+    // The same machinery is overloaded to hoist a whole IfExpr whose
+    // branches contain a propagating try: the conditional becomes a
+    // lambda returning `std::expected<T, E>`, and the outer scope
+    // unwraps it via the same `if (!r) return std::unexpected{r.error()};`
+    // pattern. `node` is widened to `ast::Expr*` to cover that case.
     struct TryHoist {
-        const ast::TryExpr* node;
+        const ast::Expr* node;
         std::string name;
     };
-    void collect_try_hoists(const ast::Expr& e, std::vector<TryHoist>& out);
+    void collect_try_hoists(const ast::Expr& e,
+                            std::vector<TryHoist>& out,
+                            const std::vector<TryHoist>* exclude = nullptr);
     void collect_stmt_hoists(const ast::Stmt& s, std::vector<TryHoist>& out);
     void emit_try_hoist(std::ostream& os, const TryHoist& h, int indent);
-    const std::string* lookup_try_hoist(const ast::TryExpr* node) const;
+    // Conditional hoist: IfExpr containing a propagating try. Emits a
+    // lambda returning std::expected<T, E> over the if's body plus the
+    // outer propagation check.
+    void emit_cond_hoist(std::ostream& os, const TryHoist& h, int indent);
+    const std::string* lookup_try_hoist(const ast::Expr* node) const;
+
+    // True when any sub-expression of `e` (walking into IfExpr branches,
+    // MatchExpr arms, BlockExpr trailing positions, …) is a propagating
+    // `try`. Used by collect_try_hoists to decide whether to register a
+    // conditional hoist for a given IfExpr/MatchExpr.
+    [[nodiscard]] bool expr_contains_propagating_try(const ast::Expr& e) const;
+    [[nodiscard]] bool stmt_contains_propagating_try(const ast::Stmt& s) const;
 
     const std::vector<TryHoist>* active_hoists_ = nullptr;
     int hoist_counter_ = 0;
+    // §9 self-suppression: while emit_cond_hoist is emitting the body
+    // of an IfExpr's IIFE, the IfExpr is its own hoist target — we
+    // must not substitute `*name` for it during that emission.
+    // lookup_try_hoist consults this and returns nullptr for skip_hoist_.
+    const ast::Expr* skip_hoist_ = nullptr;
+    // §9 propagation target: the enclosing function's `throws(E)` E type
+    // (the AST node — codegen renders it via emit_type). Set at the top
+    // of emit_func and restored after; emit_cond_hoist writes it into
+    // the lambda's `std::expected<T, E>` return type.
+    const ast::Type* current_throws_type_ = nullptr;
 
     // §6 nested tuple destructuring. C++ structured bindings are
     // single-level, so `let ((a, b), c) = …` needs a sibling-statement

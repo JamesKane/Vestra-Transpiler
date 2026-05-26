@@ -506,6 +506,34 @@ set_tests_properties(e2e_tuple_params_run PROPERTIES
     DEPENDS                e2e_tuple_params_compile
     PASS_REGULAR_EXPRESSION "tuple params OK")
 
+# Mid-expression try: §9 IfExpr branches that contain a propagating
+# `try`. The codegen hoists the whole conditional into a lambda
+# returning std::expected<T, E>; the outer scope unwraps via the
+# canonical 3-line escape so propagation actually escapes the enclosing
+# throws(E) function. Used to fall back to .value() (panic) under v0.5.
+set(e2e_midtry_input  ${CMAKE_SOURCE_DIR}/examples/midtry.vst)
+set(e2e_midtry_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_midtry.cpp)
+
+add_test(
+    NAME    e2e_midtry_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_midtry_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_midtry_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_midtry_driver} ${e2e_workdir}/midtry.cpp
+            -o ${e2e_workdir}/midtry_app)
+set_tests_properties(e2e_midtry_compile PROPERTIES DEPENDS e2e_midtry_transpile)
+
+add_test(
+    NAME    e2e_midtry_run
+    COMMAND ${e2e_workdir}/midtry_app)
+set_tests_properties(e2e_midtry_run PROPERTIES
+    DEPENDS                e2e_midtry_compile
+    PASS_REGULAR_EXPRESSION "midtry OK")
+
 # Box[T]: §10 unique-ownership heap pointer. Lowers to
 # std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
 # → *box. Allocation requires the §8 `Alloc` capability. E2E pins

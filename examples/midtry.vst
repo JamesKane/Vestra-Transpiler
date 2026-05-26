@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §9 mid-expression `try` inside if-expression branches.
+//
+// `try EXPR` only propagates cleanly at a statement boundary — but
+// the user wants to write things like
+//
+//     let x = if cond { try parse(a) } else { try parse(b) }
+//
+// directly, without manual hoisting. The codegen detects an IfExpr
+// whose branches contain a propagating `try` and lifts the whole
+// conditional to a lambda returning `std::expected<T, E>`. The outer
+// scope unwraps the lambda's result via the same canonical 3-line
+// escape used for plain `try`, so the propagation actually escapes
+// the enclosing throws(E) function.
+//
+// Three shapes the e2e exercises:
+//   * `return if c { try ... } else { try ... }`         (return slot)
+//   * `let x = if c { try ... } else { try ... }`         (let slot)
+//   * `return (if c { try ... } else { try ... }) + 1`    (sub-expr)
+// plus a sub-expression `try` inside one branch body:
+//   * `return if c { (try ...) + 1 } else { fallback }`
+
+module examples.midtry
+
+enum E {
+    case bad
+}
+
+// The fallible primitive: returns the input on success, throws on
+// the negative branch so the driver can exercise the error path.
+func parse(_ x: Int32) throws(E) -> Int32 {
+    if x < 0 {
+        throw E.bad
+    }
+    return x
+}
+
+// Return-position if. Both branches `try`.
+func choose_return(_ c: Bool, _ a: Int32, _ b: Int32) throws(E) -> Int32 {
+    return if c { try parse(a) } else { try parse(b) }
+}
+
+// Let-binding position. Used to fall back to `.value()` (panic) under
+// v0.5 — the conditional hoist fixes that.
+func choose_let(_ c: Bool, _ a: Int32, _ b: Int32) throws(E) -> Int32 {
+    let x = if c { try parse(a) } else { try parse(b) }
+    return x
+}
+
+// The if-expr is itself a sub-expression of a larger binary op.
+func plus_one(_ c: Bool, _ a: Int32, _ b: Int32) throws(E) -> Int32 {
+    return (if c { try parse(a) } else { try parse(b) }) + 1
+}
+
+// Sub-expression try inside one branch's body — the branch-local
+// hoist at emit_stmt_expr's tail pre-emits the 3-line escape inside
+// the branch brace, so the propagation escapes the conditional lambda.
+func with_bump(_ c: Bool, _ a: Int32, _ fallback: Int32) throws(E) -> Int32 {
+    return if c { (try parse(a)) + 1 } else { fallback }
+}

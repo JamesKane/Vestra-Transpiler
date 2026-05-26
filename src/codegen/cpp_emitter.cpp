@@ -425,6 +425,17 @@ void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl
 }
 
 void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::FuncDecl& f) {
+    // §9 propagation: conditional hoists need to write
+    // `std::expected<T, E>` as their lambda's return type, where E is
+    // this function's `throws(E)`. Stash + restore for nested funcs.
+    const ast::Type* prev_throws = current_throws_type_;
+    current_throws_type_ = f.effects.throws_type.get();
+    struct ThrowsRestore {
+        CppEmitter* self;
+        const ast::Type* prev;
+        ~ThrowsRestore() { self->current_throws_type_ = prev; }
+    } _throws_restore{this, prev_throws};
+
     // §7 generics: a Vestra generic function lowers to a C++ template. The
     // host compiler then monomorphizes per instantiation, which is what
     // Vestra semantically requires anyway. Const generics ([const N: Int])
@@ -958,86 +969,115 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
     hdr << "};\n\n";
 }
 
-void CppEmitter::collect_try_hoists(const ast::Expr& e, std::vector<TryHoist>& out) {
+void CppEmitter::collect_try_hoists(const ast::Expr& e,
+                                    std::vector<TryHoist>& out,
+                                    const std::vector<TryHoist>* exclude) {
+    auto already_hoisted = [&](const ast::Expr* node) {
+        if (exclude == nullptr) {
+            return false;
+        }
+        for (const auto& h : *exclude) {
+            if (h.node == node) {
+                return true;
+            }
+        }
+        return false;
+    };
     switch (e.kind) {
     case ast::NodeKind::TryExpr: {
         const auto& tx = static_cast<const ast::TryExpr&>(e);
         if (tx.form == ast::TryExpr::Form::Propagating) {
             // Post-order: inner hoists go first so they're emitted before
             // the outer one consumes their values.
-            collect_try_hoists(*tx.inner, out);
-            out.push_back({&tx, std::format("__vstr_t{}", hoist_counter_++)});
+            collect_try_hoists(*tx.inner, out, exclude);
+            if (!already_hoisted(&tx)) {
+                out.push_back({&tx, std::format("__vstr_t{}", hoist_counter_++)});
+            }
         }
         // try? / try! don't propagate, so they don't need a hoist.
         break;
     }
     case ast::NodeKind::CallExpr: {
         const auto& c = static_cast<const ast::CallExpr&>(e);
-        collect_try_hoists(*c.callee, out);
+        collect_try_hoists(*c.callee, out, exclude);
         for (const auto& a : c.args) {
             if (a.value) {
-                collect_try_hoists(*a.value, out);
+                collect_try_hoists(*a.value, out, exclude);
             }
         }
         break;
     }
     case ast::NodeKind::BinaryExpr: {
         const auto& b = static_cast<const ast::BinaryExpr&>(e);
-        collect_try_hoists(*b.lhs, out);
+        collect_try_hoists(*b.lhs, out, exclude);
         // Skip RHS of short-circuit logicals — it might not evaluate.
         if (b.op == ast::BinaryOp::And || b.op == ast::BinaryOp::Or) {
             break;
         }
-        collect_try_hoists(*b.rhs, out);
+        collect_try_hoists(*b.rhs, out, exclude);
         break;
     }
     case ast::NodeKind::UnaryExpr:
-        collect_try_hoists(*static_cast<const ast::UnaryExpr&>(e).operand, out);
+        collect_try_hoists(*static_cast<const ast::UnaryExpr&>(e).operand, out, exclude);
         break;
     case ast::NodeKind::MemberExpr:
-        collect_try_hoists(*static_cast<const ast::MemberExpr&>(e).base, out);
+        collect_try_hoists(*static_cast<const ast::MemberExpr&>(e).base, out, exclude);
         break;
     case ast::NodeKind::IndexExpr: {
         const auto& ix = static_cast<const ast::IndexExpr&>(e);
-        collect_try_hoists(*ix.base, out);
+        collect_try_hoists(*ix.base, out, exclude);
         for (const auto& idx : ix.indices) {
             if (idx) {
-                collect_try_hoists(*idx, out);
+                collect_try_hoists(*idx, out, exclude);
             }
         }
         break;
     }
     case ast::NodeKind::ParenExpr:
-        collect_try_hoists(*static_cast<const ast::ParenExpr&>(e).inner, out);
+        collect_try_hoists(*static_cast<const ast::ParenExpr&>(e).inner, out, exclude);
         break;
     case ast::NodeKind::AsExpr:
-        collect_try_hoists(*static_cast<const ast::AsExpr&>(e).value, out);
+        collect_try_hoists(*static_cast<const ast::AsExpr&>(e).value, out, exclude);
         break;
     case ast::NodeKind::IfExpr: {
         const auto& i = static_cast<const ast::IfExpr&>(e);
         // Walk the unconditionally-evaluated bits: the cond and the
-        // let-init. Skip then/else — they're conditional, so a hoist
-        // would change execution order.
+        // let-init. Branches stay un-walked here — each branch's tries
+        // would otherwise evaluate eagerly.
         if (i.cond) {
-            collect_try_hoists(*i.cond, out);
+            collect_try_hoists(*i.cond, out, exclude);
         }
         if (i.let_init) {
-            collect_try_hoists(*i.let_init, out);
+            collect_try_hoists(*i.let_init, out, exclude);
+        }
+        // §9 mid-expression `try` inside a branch: when a propagating
+        // try sits in either branch (or deeper), hoist the IfExpr
+        // itself. emit_cond_hoist lowers it as a lambda returning
+        // std::expected<T, E>; the parent scope unwraps via the same
+        // canonical 3-line escape used for TryExpr-hoists.
+        const bool branches_have_try =
+            (i.then_branch != nullptr && expr_contains_propagating_try(*i.then_branch))
+            || (i.else_branch != nullptr && expr_contains_propagating_try(*i.else_branch));
+        if (branches_have_try && !already_hoisted(&e)) {
+            out.push_back({&e, std::format("__vstr_c{}", hoist_counter_++)});
         }
         break;
     }
     case ast::NodeKind::MatchExpr:
-        // Scrutinee is always evaluated; arm bodies aren't.
-        collect_try_hoists(*static_cast<const ast::MatchExpr&>(e).scrutinee, out);
+        // Scrutinee is always evaluated; arm bodies aren't. MatchExpr
+        // cond-hoist (for arms containing propagating tries) is a
+        // follow-on — for v0.5 the match-codegen IIFE still falls back
+        // to `.value()` on inner tries.
+        collect_try_hoists(*static_cast<const ast::MatchExpr&>(e).scrutinee, out, exclude);
         break;
     case ast::NodeKind::CopyExpr:
-        collect_try_hoists(*static_cast<const ast::CopyExpr&>(e).inner, out);
+        collect_try_hoists(*static_cast<const ast::CopyExpr&>(e).inner, out, exclude);
         break;
     case ast::NodeKind::VectorLitExpr: {
         const auto& v = static_cast<const ast::VectorLitExpr&>(e);
         for (const auto& el : v.elements) {
             if (el) {
-                collect_try_hoists(*el, out);
+                collect_try_hoists(*el, out, exclude);
             }
         }
         break;
@@ -1046,7 +1086,7 @@ void CppEmitter::collect_try_hoists(const ast::Expr& e, std::vector<TryHoist>& o
         const auto& tup = static_cast<const ast::TupleLitExpr&>(e);
         for (const auto& el : tup.elements) {
             if (el) {
-                collect_try_hoists(*el, out);
+                collect_try_hoists(*el, out, exclude);
             }
         }
         break;
@@ -1055,7 +1095,7 @@ void CppEmitter::collect_try_hoists(const ast::Expr& e, std::vector<TryHoist>& o
         const auto& is_ = static_cast<const ast::InterpStringExpr&>(e);
         for (const auto& seg : is_.segments) {
             if (seg.expr) {
-                collect_try_hoists(*seg.expr, out);
+                collect_try_hoists(*seg.expr, out, exclude);
             }
         }
         break;
@@ -1110,19 +1150,75 @@ void CppEmitter::collect_stmt_hoists(const ast::Stmt& s, std::vector<TryHoist>& 
 }
 
 void CppEmitter::emit_try_hoist(std::ostream& os, const TryHoist& h, int indent) {
-    const std::string r = h.name + "_r";
-    write_indent(os, indent);
-    os << "auto " << r << " = ";
-    emit_expr(os, *h.node->inner);
-    os << ";\n";
-    write_indent(os, indent);
-    os << "if (!" << r << ".has_value()) { return std::unexpected{" << r << ".error()}; }\n";
-    write_indent(os, indent);
-    os << "auto " << h.name << " = *" << r << ";\n";
+    // §9 dispatch by hoisted node kind. TryExpr → canonical 3-line
+    // escape; IfExpr → IIFE returning std::expected (a "conditional
+    // hoist") via emit_cond_hoist.
+    if (h.node->kind == ast::NodeKind::TryExpr) {
+        const auto& tx = static_cast<const ast::TryExpr&>(*h.node);
+        const std::string r = h.name + "_r";
+        write_indent(os, indent);
+        os << "auto " << r << " = ";
+        emit_expr(os, *tx.inner);
+        os << ";\n";
+        write_indent(os, indent);
+        os << "if (!" << r << ".has_value()) { return std::unexpected{" << r << ".error()}; }\n";
+        write_indent(os, indent);
+        os << "auto " << h.name << " = *" << r << ";\n";
+        return;
+    }
+    if (h.node->kind == ast::NodeKind::IfExpr) {
+        emit_cond_hoist(os, h, indent);
+        return;
+    }
 }
 
-const std::string* CppEmitter::lookup_try_hoist(const ast::TryExpr* node) const {
+void CppEmitter::emit_cond_hoist(std::ostream& os, const TryHoist& h, int indent) {
+    // §9 conditional hoist: an IfExpr whose branches contain a
+    // propagating try lifts to a lambda returning std::expected<T, E>.
+    // The lambda body emits the if/else as statements; each branch's
+    // local try-hoists fire inside the branch's brace, escaping the
+    // lambda via `return std::unexpected{...}`. The outer scope then
+    // unwraps the lambda's result and re-propagates on error — same
+    // shape as the TryExpr hoist.
+    sema::TypePtr value_type = resolution_ != nullptr ? resolution_->type_of(h.node) : nullptr;
+    write_indent(os, indent);
+    os << "auto " << h.name << " = [&]() -> std::expected<";
+    if (value_type != nullptr) {
+        emit_sema_type(os, value_type);
+    } else {
+        os << "auto";
+    }
+    os << ", ";
+    if (current_throws_type_ != nullptr) {
+        emit_type(os, *current_throws_type_);
+    } else {
+        // Defensive: sema should reject `try` outside a throws(E) fn,
+        // but the codegen still needs to write something legal here.
+        os << "std::monostate";
+    }
+    os << "> {\n";
+
+    // While emitting the IfExpr's own body, suppress self-substitution
+    // — `emit_expr` would otherwise see the hoist for this very node
+    // and write `*name` instead of the if-else statements.
+    const auto* prev_skip = skip_hoist_;
+    skip_hoist_ = h.node;
+    write_indent(os, indent + 1);
+    emit_stmt_expr(os, *h.node, /*return_value=*/true);
+    skip_hoist_ = prev_skip;
+
+    write_indent(os, indent);
+    os << "}();\n";
+    write_indent(os, indent);
+    os << "if (!" << h.name << ".has_value()) { return std::unexpected{" << h.name
+       << ".error()}; }\n";
+}
+
+const std::string* CppEmitter::lookup_try_hoist(const ast::Expr* node) const {
     if (active_hoists_ == nullptr) {
+        return nullptr;
+    }
+    if (skip_hoist_ != nullptr && skip_hoist_ == node) {
         return nullptr;
     }
     for (const auto& h : *active_hoists_) {
@@ -1131,6 +1227,144 @@ const std::string* CppEmitter::lookup_try_hoist(const ast::TryExpr* node) const 
         }
     }
     return nullptr;
+}
+
+bool CppEmitter::expr_contains_propagating_try(const ast::Expr& e) const {
+    switch (e.kind) {
+    case ast::NodeKind::TryExpr:
+        return static_cast<const ast::TryExpr&>(e).form == ast::TryExpr::Form::Propagating;
+    case ast::NodeKind::IfExpr: {
+        const auto& i = static_cast<const ast::IfExpr&>(e);
+        if (i.cond && expr_contains_propagating_try(*i.cond)) {
+            return true;
+        }
+        if (i.let_init && expr_contains_propagating_try(*i.let_init)) {
+            return true;
+        }
+        if (i.then_branch && expr_contains_propagating_try(*i.then_branch)) {
+            return true;
+        }
+        if (i.else_branch && expr_contains_propagating_try(*i.else_branch)) {
+            return true;
+        }
+        return false;
+    }
+    case ast::NodeKind::MatchExpr: {
+        const auto& m = static_cast<const ast::MatchExpr&>(e);
+        if (m.scrutinee && expr_contains_propagating_try(*m.scrutinee)) {
+            return true;
+        }
+        for (const auto& arm : m.arms) {
+            if (arm.guard && expr_contains_propagating_try(*arm.guard)) {
+                return true;
+            }
+            if (arm.body && expr_contains_propagating_try(*arm.body)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    case ast::NodeKind::BlockExpr: {
+        const auto& b = static_cast<const ast::BlockExpr&>(e);
+        for (const auto& s : b.stmts) {
+            if (stmt_contains_propagating_try(*s)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    case ast::NodeKind::BinaryExpr: {
+        const auto& b = static_cast<const ast::BinaryExpr&>(e);
+        return (b.lhs && expr_contains_propagating_try(*b.lhs))
+               || (b.rhs && expr_contains_propagating_try(*b.rhs));
+    }
+    case ast::NodeKind::UnaryExpr:
+        return expr_contains_propagating_try(*static_cast<const ast::UnaryExpr&>(e).operand);
+    case ast::NodeKind::CallExpr: {
+        const auto& c = static_cast<const ast::CallExpr&>(e);
+        if (c.callee && expr_contains_propagating_try(*c.callee)) {
+            return true;
+        }
+        for (const auto& a : c.args) {
+            if (a.value && expr_contains_propagating_try(*a.value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    case ast::NodeKind::MemberExpr:
+        return expr_contains_propagating_try(*static_cast<const ast::MemberExpr&>(e).base);
+    case ast::NodeKind::IndexExpr: {
+        const auto& ix = static_cast<const ast::IndexExpr&>(e);
+        if (ix.base && expr_contains_propagating_try(*ix.base)) {
+            return true;
+        }
+        for (const auto& idx : ix.indices) {
+            if (idx && expr_contains_propagating_try(*idx)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    case ast::NodeKind::ParenExpr:
+        return expr_contains_propagating_try(*static_cast<const ast::ParenExpr&>(e).inner);
+    case ast::NodeKind::AsExpr:
+        return expr_contains_propagating_try(*static_cast<const ast::AsExpr&>(e).value);
+    case ast::NodeKind::CopyExpr:
+        return expr_contains_propagating_try(*static_cast<const ast::CopyExpr&>(e).inner);
+    case ast::NodeKind::VectorLitExpr: {
+        const auto& v = static_cast<const ast::VectorLitExpr&>(e);
+        for (const auto& el : v.elements) {
+            if (el && expr_contains_propagating_try(*el)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    case ast::NodeKind::TupleLitExpr: {
+        const auto& tup = static_cast<const ast::TupleLitExpr&>(e);
+        for (const auto& el : tup.elements) {
+            if (el && expr_contains_propagating_try(*el)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    case ast::NodeKind::InterpStringExpr: {
+        const auto& is_ = static_cast<const ast::InterpStringExpr&>(e);
+        for (const auto& seg : is_.segments) {
+            if (seg.expr && expr_contains_propagating_try(*seg.expr)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    default:
+        return false;
+    }
+}
+
+bool CppEmitter::stmt_contains_propagating_try(const ast::Stmt& s) const {
+    switch (s.kind) {
+    case ast::NodeKind::LetStmt:
+        return static_cast<const ast::LetStmt&>(s).value
+               && expr_contains_propagating_try(*static_cast<const ast::LetStmt&>(s).value);
+    case ast::NodeKind::VarStmt:
+        return static_cast<const ast::VarStmt&>(s).value
+               && expr_contains_propagating_try(*static_cast<const ast::VarStmt&>(s).value);
+    case ast::NodeKind::ExprStmt:
+        return expr_contains_propagating_try(*static_cast<const ast::ExprStmt&>(s).expr);
+    case ast::NodeKind::ReturnStmt:
+        return static_cast<const ast::ReturnStmt&>(s).value
+               && expr_contains_propagating_try(*static_cast<const ast::ReturnStmt&>(s).value);
+    case ast::NodeKind::AssignStmt: {
+        const auto& a = static_cast<const ast::AssignStmt&>(s);
+        return (a.target && expr_contains_propagating_try(*a.target))
+               || (a.value && expr_contains_propagating_try(*a.value));
+    }
+    default:
+        return false;
+    }
 }
 
 void CppEmitter::emit_block(std::ostream& os, const ast::BlockExpr& b, int indent) {
@@ -1487,6 +1721,13 @@ void CppEmitter::emit_stmt_expr(std::ostream& os, const ast::Expr& expr, bool re
     }
     case ast::NodeKind::IfExpr: {
         const auto& i = static_cast<const ast::IfExpr&>(expr);
+        // If this IfExpr is the target of a conditional hoist, the
+        // hoist pre-emitted its IIFE-returning-expected and bound the
+        // result. Fall through to the generic tail; emit_expr will
+        // substitute `*<name>` for the IfExpr.
+        if (lookup_try_hoist(&expr) != nullptr) {
+            break;
+        }
         if (!i.let_name.empty()) {
             os << "if (auto __vstr_opt = ";
             emit_expr(os, *i.let_init);
@@ -1524,11 +1765,38 @@ void CppEmitter::emit_stmt_expr(std::ostream& os, const ast::Expr& expr, bool re
     default:
         break;
     }
+    // §9 branch-local hoists: at the trailing-expression position of a
+    // statement-form emission (e.g. inside an IfExpr branch's `{ ... }`),
+    // the parent statement's collect_try_hoists didn't descend into
+    // conditional branches — so any propagating tries here aren't yet
+    // in active_hoists_. Collect them locally, pre-emit at this brace
+    // scope, and extend active_hoists_ so emit_expr substitutes the
+    // names. Exclusion against active_hoists_ avoids duplicating
+    // already-emitted hoists.
+    std::vector<TryHoist> local_hoists;
+    collect_try_hoists(expr, local_hoists, active_hoists_);
+    std::vector<TryHoist> combined;
+    const auto* prev_active = active_hoists_;
+    if (!local_hoists.empty()) {
+        for (const auto& h : local_hoists) {
+            emit_try_hoist(os, h, 0);
+        }
+        if (prev_active != nullptr) {
+            combined = *prev_active;
+        }
+        for (const auto& h : local_hoists) {
+            combined.push_back(h);
+        }
+        active_hoists_ = &combined;
+    }
     if (return_value) {
         os << "return ";
     }
     emit_expr(os, expr);
     os << ";\n";
+    if (!local_hoists.empty()) {
+        active_hoists_ = prev_active;
+    }
 }
 
 void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
@@ -2007,6 +2275,14 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         break;
     case ast::NodeKind::IfExpr: {
         const auto& i = static_cast<const ast::IfExpr&>(e);
+        // §9 conditional hoist: when the parent statement registered
+        // this IfExpr as a hoist (because a propagating try lives in a
+        // branch), the IIFE was pre-emitted and bound to a name —
+        // substitute `*name` here so propagation already happened.
+        if (auto* name = lookup_try_hoist(&e)) {
+            os << "(*" << *name << ")";
+            break;
+        }
         // We can't always lower if-expressions; this works for a statement
         // context but produces invalid code when used in expression position.
         // A future pass should hoist into a temporary + statement.

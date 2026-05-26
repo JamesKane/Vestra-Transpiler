@@ -657,22 +657,83 @@ TEST_CASE("mid-expression try hoists to a stmt-position let-binding") {
     CHECK(out.source.find("f(b).value()") == std::string::npos);
 }
 
-TEST_CASE("try inside an if branch keeps the per-branch lowering (not hoisted)") {
-    // The hoist walk refuses to descend into IfExpr branches, so a try
-    // inside one stays handled by emit_stmt_expr's per-branch recursion.
-    auto out = emit("enum E { case bad }\n"
-                    "func f(_ x: Int32) throws(E) -> Int32 { return x }\n"
-                    "func g(_ a: Int32, _ b: Int32) throws(E) -> Int32 {\n"
-                    "    return if a > 0 { try f(a) } else { try f(b) }\n"
-                    "}\n");
-    // The hoist pass left both tries alone, so there should be NO
-    // top-of-function __vstr_t0 binding before the if.
-    CHECK(out.source.find("auto __vstr_t0 = ") == std::string::npos);
-    // Each branch carries its own canonical escape via the per-branch
-    // emit_stmt_expr fallback.
-    CHECK(
-        out.source.find("if (!__vstr_r.has_value()) { return std::unexpected{__vstr_r.error()}; }")
-        != std::string::npos);
+TEST_CASE("if-expr with try-in-branches hoists to a lambda returning expected") {
+    // An IfExpr whose branches contain a propagating try lifts to a
+    // conditional hoist: a `[&]() -> std::expected<T, E>` lambda whose
+    // body emits the if-else in stmt form, then an outer propagation
+    // check that re-emits the error to the enclosing function.
+    SemaEmitFixture f("enum E { case bad }\n"
+                      "func g(_ x: Int32) throws(E) -> Int32 { return x }\n"
+                      "func h(_ a: Int32, _ b: Int32) throws(E) -> Int32 {\n"
+                      "    return if a > 0 { try g(a) } else { try g(b) }\n"
+                      "}\n");
+    CHECK(f.out.source.find("auto __vstr_c0 = [&]() -> std::expected<std::int32_t, E>")
+          != std::string::npos);
+    // Each branch carries its own canonical escape — the `return
+    // std::unexpected{...}` returns from the lambda, not the function.
+    CHECK(f.out.source.find(
+              "if (!__vstr_r.has_value()) { return std::unexpected{__vstr_r.error()}; }")
+          != std::string::npos);
+    // Outer propagation re-emits the error from the function.
+    CHECK(f.out.source.find(
+              "if (!__vstr_c0.has_value()) { return std::unexpected{__vstr_c0.error()};")
+          != std::string::npos);
+    // The if-expr's use-site substitutes the unwrapped value.
+    CHECK(f.out.source.find("return (*__vstr_c0);") != std::string::npos);
+}
+
+TEST_CASE("let x = if c { try f() } else { try g() } hoists the same way") {
+    // Statement-value position (LetStmt) used to fall back to .value()
+    // because emit_expr(IfExpr) is the IIFE-returning-T form. The
+    // conditional hoist now fires here too.
+    SemaEmitFixture f("enum E { case bad }\n"
+                      "func g() throws(E) -> Int32 { return 1 }\n"
+                      "func h() throws(E) -> Int32 { return 2 }\n"
+                      "func pick(_ c: Bool) throws(E) -> Int32 {\n"
+                      "    let x = if c { try g() } else { try h() }\n"
+                      "    return x\n"
+                      "}\n");
+    CHECK(f.out.source.find("auto __vstr_c0 = [&]() -> std::expected<std::int32_t, E>")
+          != std::string::npos);
+    CHECK(f.out.source.find("auto x = (*__vstr_c0);") != std::string::npos);
+    // No .value() panic fallback anywhere.
+    CHECK(f.out.source.find("g().value()") == std::string::npos);
+    CHECK(f.out.source.find("h().value()") == std::string::npos);
+}
+
+TEST_CASE("if-expr as a sub-expression of a larger expr hoists") {
+    SemaEmitFixture f("enum E { case bad }\n"
+                      "func g() throws(E) -> Int32 { return 1 }\n"
+                      "func h() throws(E) -> Int32 { return 2 }\n"
+                      "func plus_one(_ c: Bool) throws(E) -> Int32 {\n"
+                      "    return (if c { try g() } else { try h() }) + 1\n"
+                      "}\n");
+    CHECK(f.out.source.find("auto __vstr_c0 = [&]() -> std::expected<std::int32_t, E>")
+          != std::string::npos);
+    // The substituted IfExpr appears inside the outer BinaryExpr.
+    CHECK(f.out.source.find("((*__vstr_c0)) + 1") != std::string::npos);
+}
+
+TEST_CASE("try inside a sub-expression of an if branch fires the branch-local hoist") {
+    // The branch body `(try f()) + 1` is a BinaryExpr — emit_stmt_expr's
+    // generic tail now collects local try-hoists and pre-emits them
+    // inside the branch's brace, so the try actually escapes the
+    // enclosing lambda via `return std::unexpected{...}`.
+    SemaEmitFixture f("enum E { case bad }\n"
+                      "func g() throws(E) -> Int32 { return 1 }\n"
+                      "func with_bump(_ c: Bool, _ fallback: Int32) throws(E) -> Int32 {\n"
+                      "    return if c { (try g()) + 1 } else { fallback }\n"
+                      "}\n");
+    // The conditional hoist still fires.
+    CHECK(f.out.source.find("auto __vstr_c0 = [&]() -> std::expected<std::int32_t, E>")
+          != std::string::npos);
+    // Inside the then-branch, the BinaryExpr's try gets its own
+    // local hoist via the canonical 3-line escape.
+    CHECK(f.out.source.find("auto __vstr_t1 = *__vstr_t1_r;") != std::string::npos);
+    // The trailing expression substitutes the hoisted name.
+    CHECK(f.out.source.find("return (__vstr_t1) + 1;") != std::string::npos);
+    // No .value() panic fallback.
+    CHECK(f.out.source.find("g().value()") == std::string::npos);
 }
 
 TEST_CASE("throw inside an if branch lowers as a real return-of-unexpected") {
