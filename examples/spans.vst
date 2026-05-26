@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §10 Span[T] / MutSpan[T] — the borrowed, non-escapable view family.
+// Span[T] is read-only; MutSpan[T] permits writes through the view.
+// Both lower to `std::span<…>`. A function declared with a Span/MutSpan
+// parameter accepts any fixed-length array `[N]T` at the call site —
+// the conversion is implicit at the C++ layer via std::span's
+// std::array-constructible ctor.
+//
+// v0.5 covers the parameter-passing path plus `.count` / `.isEmpty` /
+// indexing. The annex's `MutSpan.raw(at:count:)` raw-pointer constructor
+// is the next phase up.
+
+module examples.spans
+
+// Read-only span sum. `s.count` returns Int (the natural-width type);
+// indexing reads through the view without copying. The loop body uses
+// `total + s[i]` where total is Int32 and s[i] is Int32 — both sized
+// — and `i + 1` where one side is Int (natural-width) and the other
+// flexes to fit the binding's width.
+func sum(_ s: Span[Int32]) -> Int32 {
+    var total: Int32 = 0
+    var i: Int = 0
+    while i < s.count {
+        total = total + s[i]
+        i = i + 1
+    }
+    return total
+}
+
+// `.isEmpty` is the obvious early-out for empty inputs.
+func sumOrZero(_ s: Span[Int32]) -> Int32 {
+    if s.isEmpty {
+        return 0
+    }
+    return sum(s)
+}
+
+// Call site: a fixed-length array slides into a Span[Int32] without
+// any explicit conversion. (The Vestra-side type system treats
+// `[N]Int32 → Span[Int32]` as an admitted coercion at assignable
+// time; C++ does the matching deduction through std::span's ctor.)
+comptime func mkArr() -> [4]Int32 {
+    var t: [4]Int32 = .zero
+    for i in 0 ..< 4 {
+        t[i] = i + 1
+    }
+    return t
+}
+
+const Four: [4]Int32 = comptime { mkArr() }
+
+func computeSum() -> Int32 {
+    return sum(Four)
+}

@@ -621,6 +621,37 @@ set_tests_properties(e2e_panic_run PROPERTIES
     DEPENDS                e2e_panic_compile
     PASS_REGULAR_EXPRESSION "panic OK")
 
+# Span[T] / MutSpan[T]: §10 borrowed, non-escapable view types.
+# Span[T] → std::span<const T>, MutSpan[T] → std::span<T>. A fixed
+# array `[N]T` slides into either at a call site without an explicit
+# cast (TypeArena::assignable accepts the coercion; std::span's
+# std::array-constructible ctor handles the C++ side). `.count` is
+# Int via static_cast<std::intptr_t>(s.size()); `.isEmpty` is .empty();
+# indexing wraps the index in static_cast<std::size_t> for the
+# std::span operator[] convention.
+set(e2e_spans_input  ${CMAKE_SOURCE_DIR}/examples/spans.vst)
+set(e2e_spans_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_spans.cpp)
+
+add_test(
+    NAME    e2e_spans_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_spans_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_spans_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_spans_driver} ${e2e_workdir}/spans.cpp
+            -o ${e2e_workdir}/spans_app)
+set_tests_properties(e2e_spans_compile PROPERTIES DEPENDS e2e_spans_transpile)
+
+add_test(
+    NAME    e2e_spans_run
+    COMMAND ${e2e_workdir}/spans_app)
+set_tests_properties(e2e_spans_run PROPERTIES
+    DEPENDS                e2e_spans_compile
+    PASS_REGULAR_EXPRESSION "spans OK")
+
 # Box[T]: §10 unique-ownership heap pointer. Lowers to
 # std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
 # → *box. Allocation requires the §8 `Alloc` capability. E2E pins

@@ -123,6 +123,10 @@ std::string Type::describe() const {
         return inner_ ? inner_->describe() + "?" : "?";
     case TypeKind::Box:
         return inner_ ? std::format("Box[{}]", inner_->describe()) : std::string{"Box"};
+    case TypeKind::Span:
+        return inner_ ? std::format("Span[{}]", inner_->describe()) : std::string{"Span"};
+    case TypeKind::MutSpan:
+        return inner_ ? std::format("MutSpan[{}]", inner_->describe()) : std::string{"MutSpan"};
     case TypeKind::Result: {
         std::string ok = inner_ ? inner_->describe() : "?";
         std::string err = result_ ? result_->describe() : "?";
@@ -221,6 +225,22 @@ TypePtr TypeArena::make_box(TypePtr inner) {
     return p;
 }
 
+TypePtr TypeArena::make_span(TypePtr inner) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Span));
+    t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_mut_span(TypePtr inner) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::MutSpan));
+    t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
 TypePtr TypeArena::make_result(TypePtr success, TypePtr error) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::Result));
     t->inner_ = success;
@@ -310,6 +330,8 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     switch (a->kind()) {
     case TypeKind::Optional:
     case TypeKind::Box:
+    case TypeKind::Span:
+    case TypeKind::MutSpan:
         return equal(a->inner(), b->inner());
     case TypeKind::Result:
         return equal(a->inner(), b->inner()) && equal(a->result(), b->result());
@@ -355,6 +377,38 @@ bool TypeArena::assignable(TypePtr from, TypePtr to) noexcept {
     if (from->is_never()) {
         return true;
     }  // diverging fits anywhere
+    // §17 `Int` and `UInt` are the platform-natural-width integer
+    // types — the right choice when the developer doesn't care about
+    // exact width (loop counters, sizes, indices). When such a value
+    // flows into a specific-width slot (`Int32`, `UInt64`, …), the
+    // intent is clear and the codegen emits the matching static_cast;
+    // forcing an explicit `Int32(i)` everywhere would be miserable
+    // ergonomics for the most common patterns. Specific-width types
+    // remain *mutually* incompatible — `Int8` does not implicitly
+    // become `Int32` — so the rule narrowly covers the natural-vs-
+    // sized direction without admitting accidental cross-width
+    // assignments. The reverse direction (any specific width → `Int`
+    // / `UInt`) is symmetric: ordinary widening into the natural type.
+    if (from->is_integer() && to->is_integer()) {
+        const bool from_natural = from->kind() == TypeKind::Int || from->kind() == TypeKind::UInt;
+        const bool to_natural = to->kind() == TypeKind::Int || to->kind() == TypeKind::UInt;
+        // Either side is the natural-width type — admit the conversion.
+        // Signedness is still tracked: `Int` doesn't flow into `UInt32`
+        // implicitly (a sign change is a real concern; require the
+        // explicit `UInt32(i)` for that).
+        if (from_natural || to_natural) {
+            const bool from_signed = from->kind() == TypeKind::Int || from->kind() == TypeKind::Int8
+                                     || from->kind() == TypeKind::Int16
+                                     || from->kind() == TypeKind::Int32
+                                     || from->kind() == TypeKind::Int64;
+            const bool to_signed = to->kind() == TypeKind::Int || to->kind() == TypeKind::Int8
+                                   || to->kind() == TypeKind::Int16 || to->kind() == TypeKind::Int32
+                                   || to->kind() == TypeKind::Int64;
+            if (from_signed == to_signed) {
+                return true;
+            }
+        }
+    }
     // §9 Optional ergonomics. Two implicit conversions:
     //   1. `T → Optional<T>` — passing a value where an optional is
     //      expected wraps in `.some(...)`. std::optional's converting
@@ -368,6 +422,24 @@ bool TypeArena::assignable(TypePtr from, TypePtr to) noexcept {
             return true;
         }
         if (from->kind() != TypeKind::Optional && assignable(from, to->inner())) {
+            return true;
+        }
+    }
+    // §10 borrowed views: a fixed-length array `[N]T` is implicitly
+    // viewable as a Span[T] or MutSpan[T] (C++'s std::span has the
+    // matching converting ctor from std::array<T, N>). A MutSpan[T]
+    // also widens to Span[T] (mutable → immutable view), which is the
+    // standard read-only-borrow pattern.
+    if (to->kind() == TypeKind::Span) {
+        if (from->kind() == TypeKind::Vector && equal(from->inner(), to->inner())) {
+            return true;
+        }
+        if (from->kind() == TypeKind::MutSpan && equal(from->inner(), to->inner())) {
+            return true;
+        }
+    }
+    if (to->kind() == TypeKind::MutSpan) {
+        if (from->kind() == TypeKind::Vector && equal(from->inner(), to->inner())) {
             return true;
         }
     }
@@ -390,6 +462,14 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::Box: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_box(inner);
+    }
+    case TypeKind::Span: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_span(inner);
+    }
+    case TypeKind::MutSpan: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_mut_span(inner);
     }
     case TypeKind::Result: {
         auto ok = substitute(t->inner(), bindings);

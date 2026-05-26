@@ -786,7 +786,10 @@ void Resolver::check_stmt(const ast::Stmt& s) {
     case ast::NodeKind::AssignStmt: {
         const auto& a = static_cast<const ast::AssignStmt&>(s);
         auto lhs = check_expr(*a.target);
-        auto rhs = check_expr(*a.value);
+        // Pass the target type as the expected type for the rhs so an
+        // int literal (`i + 1`) adapts to the slot width (Int32 vs Int)
+        // — same propagation as `let x: Int32 = i + 1` already does.
+        auto rhs = check_expr(*a.value, lhs);
         if (lhs != nullptr && rhs != nullptr && !TypeArena::assignable(rhs, lhs)) {
             error_at(a.value->range,
                      std::format("cannot assign value of type {} to target of type {}",
@@ -1174,6 +1177,41 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         t = types_->primitive(TypeKind::String);
         break;
     }
+    case ast::NodeKind::IndexExpr: {
+        // `base[i0, ...]`. v0.5 admits indexing on:
+        //   * `[N]T`         → T
+        //   * `Span[T]` / `MutSpan[T]` → T
+        // Indices must be integer-typed. Other base shapes (struct,
+        // pointer, etc.) are not yet wired; sema falls through to the
+        // error type so downstream consumers don't cascade.
+        const auto& ix = static_cast<const ast::IndexExpr&>(e);
+        TypePtr base_t = ix.base ? check_expr(*ix.base) : nullptr;
+        for (const auto& idx : ix.indices) {
+            if (idx) {
+                auto it = check_expr(*idx);
+                if (it != nullptr && !it->is_error() && !it->is_integer()) {
+                    error_at(idx->range,
+                             std::format("index must be integer-typed, got {}", it->describe()));
+                }
+            }
+        }
+        if (base_t == nullptr || base_t->is_error()) {
+            t = types_->error();
+            break;
+        }
+        switch (base_t->kind()) {
+        case TypeKind::Vector:
+        case TypeKind::Span:
+        case TypeKind::MutSpan:
+            t = base_t->inner();
+            break;
+        default:
+            error_at(e.range, std::format("type {} is not indexable", base_t->describe()));
+            t = types_->error();
+            break;
+        }
+        break;
+    }
     case ast::NodeKind::EmbedExpr: {
         // §12.1 `@embed("path")` types as `[N]UInt8` where N is the file's
         // size at compile time. We ask the folder to read the file now;
@@ -1291,15 +1329,31 @@ TypePtr Resolver::check_binary(const ast::BinaryExpr& b, TypePtr expected) {
         return types_->error();
     }
 
+    // For arithmetic / bitwise / comparison, the operands must share a
+    // numeric type. The §17 natural-width rule (see TypeArena::assignable)
+    // applies symmetrically — `Int + Int32` yields Int32 (the sized side
+    // wins). Two sized widths that disagree (`Int8 + Int32`) are still an
+    // error; only the natural-width side flexes.
     auto require_match = [&] {
-        if (!TypeArena::equal(lhs, rhs)) {
-            error_at(b.range,
-                     std::format("binary operator operands of different types: {} vs {}",
-                                 lhs->describe(),
-                                 rhs->describe()));
-            return false;
+        if (TypeArena::equal(lhs, rhs)) {
+            return true;
         }
-        return true;
+        if (lhs->is_integer() && rhs->is_integer()
+            && (TypeArena::assignable(lhs, rhs) || TypeArena::assignable(rhs, lhs))) {
+            // Pick the sized operand as the result type. If both are
+            // natural-width (Int + Int), assignable returns true both
+            // ways and the result stays Int.
+            const bool lhs_natural = lhs->kind() == TypeKind::Int || lhs->kind() == TypeKind::UInt;
+            if (lhs_natural) {
+                lhs = rhs;
+            }
+            return true;
+        }
+        error_at(b.range,
+                 std::format("binary operator operands of different types: {} vs {}",
+                             lhs->describe(),
+                             rhs->describe()));
+        return false;
     };
 
     switch (b.op) {
@@ -1729,6 +1783,20 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
             if (n.path[0] == "Box" && n.type_args.size() == 1) {
                 return types_->make_box(n.type_args[0] ? resolve_type(*n.type_args[0])
                                                        : types_->error());
+            }
+            // §10 builtin `Span[T]` / `MutSpan[T]` — borrowed,
+            // non-escapable views over a contiguous range of T. Lower
+            // to `std::span<const T>` / `std::span<T>`. The implicit
+            // `[N]T → Span[T]` coercion happens via TypeArena::assignable
+            // (which the C++ side handles through std::span's
+            // std::array-constructible ctor).
+            if (n.path[0] == "Span" && n.type_args.size() == 1) {
+                return types_->make_span(n.type_args[0] ? resolve_type(*n.type_args[0])
+                                                        : types_->error());
+            }
+            if (n.path[0] == "MutSpan" && n.type_args.size() == 1) {
+                return types_->make_mut_span(n.type_args[0] ? resolve_type(*n.type_args[0])
+                                                            : types_->error());
             }
             // Try primitives first (Int32, Bool, ...).
             auto prim_kind = TypeArena::primitive_kind_by_name(n.path[0]);
@@ -2207,6 +2275,19 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
     if (lookup_base->kind() == TypeKind::Box && m.member == "value"
         && lookup_base->inner() != nullptr) {
         return finish(lookup_base->inner());
+    }
+
+    // §10 Span[T] / MutSpan[T]: `.count` returns the element count as
+    // Int; `.isEmpty` returns Bool. Codegen renders these as
+    // `static_cast<std::intptr_t>(s.size())` and `s.empty()`.
+    if ((lookup_base->kind() == TypeKind::Span || lookup_base->kind() == TypeKind::MutSpan)
+        && lookup_base->inner() != nullptr) {
+        if (m.member == "count") {
+            return finish(types_->primitive(TypeKind::Int));
+        }
+        if (m.member == "isEmpty") {
+            return finish(types_->boolean());
+        }
     }
 
     // Field on a struct.

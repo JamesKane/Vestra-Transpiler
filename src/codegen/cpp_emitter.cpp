@@ -176,6 +176,7 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "#include <memory>\n";      // §10 Box[T] lowers to std::unique_ptr
     hdr << "#include <optional>\n";    // §9 T? / nil / if let / ?? / !
     hdr << "#include <print>\n";       // §10 panic shim writes to stderr
+    hdr << "#include <span>\n";        // §10 Span[T] / MutSpan[T] views
     hdr << "#include <string>\n";
     hdr << "#include <string_view>\n";
     hdr << "#include <tuple>\n";        // §6 tuple types / literals
@@ -2548,6 +2549,25 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 break;
             }
         }
+        // §10 Span[T] / MutSpan[T]: `.count` and `.isEmpty` map to
+        // `std::span::size()` (cast to the signed `Int`-equivalent so
+        // the result is comparable to ordinary signed indices without
+        // tripping -Wsign-compare) and `.empty()`.
+        if (resolution_ != nullptr && (m.member == "count" || m.member == "isEmpty")) {
+            auto bt = resolution_->type_of(m.base.get());
+            if (bt != nullptr
+                && (bt->kind() == sema::TypeKind::Span || bt->kind() == sema::TypeKind::MutSpan)) {
+                if (m.member == "count") {
+                    os << "static_cast<std::intptr_t>(";
+                    emit_expr(os, *m.base);
+                    os << ".size())";
+                } else {
+                    emit_expr(os, *m.base);
+                    os << ".empty()";
+                }
+                break;
+            }
+        }
         emit_expr(os, *m.base);
         os << "." << m.member;
         break;
@@ -2556,14 +2576,30 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // C++ subscript is the same shape as Vestra's: `base[i0, i1, ...]`.
         // The Vestra-side type-check already verified the base is indexable
         // (a vector / array / slice); we just pass through.
+        // §10 Span/MutSpan use std::span::operator[] which takes
+        // std::size_t — cast the (signed) Int index to keep
+        // -Wsign-conversion quiet.
         const auto& ix = static_cast<const ast::IndexExpr&>(e);
+        bool span_base = false;
+        if (resolution_ != nullptr && ix.base != nullptr) {
+            auto bt = resolution_->type_of(ix.base.get());
+            span_base =
+                bt != nullptr
+                && (bt->kind() == sema::TypeKind::Span || bt->kind() == sema::TypeKind::MutSpan);
+        }
         emit_expr(os, *ix.base);
         os << "[";
         for (std::size_t i = 0; i < ix.indices.size(); ++i) {
             if (i != 0) {
                 os << ", ";
             }
-            emit_expr(os, *ix.indices[i]);
+            if (span_base) {
+                os << "static_cast<std::size_t>(";
+                emit_expr(os, *ix.indices[i]);
+                os << ")";
+            } else {
+                emit_expr(os, *ix.indices[i]);
+            }
         }
         os << "]";
         break;
@@ -2737,6 +2773,20 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         emit_sema_type(os, t->inner());
         os << ">";
         return;
+    case TypeKind::Span:
+        // Read-only borrowed view → `std::span<const T>`. The const on
+        // the element pins the read-only side of the type system at
+        // the C++ layer; an assignment-through-Span fails to compile.
+        os << "std::span<const ";
+        emit_sema_type(os, t->inner());
+        os << ">";
+        return;
+    case TypeKind::MutSpan:
+        // Mutable borrowed view → `std::span<T>` (no const).
+        os << "std::span<";
+        emit_sema_type(os, t->inner());
+        os << ">";
+        return;
     case TypeKind::Result:
         os << "std::expected<";
         emit_sema_type(os, t->inner());
@@ -2800,6 +2850,20 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
             // §10 `Box[T]` lowers to std::unique_ptr<T>.
             if (n.path[0] == "Box" && n.type_args.size() == 1) {
                 os << "std::unique_ptr<";
+                emit_type(os, *n.type_args[0]);
+                os << ">";
+                return;
+            }
+            // §10 borrowed views: `Span[T]` → `std::span<const T>`,
+            // `MutSpan[T]` → `std::span<T>`.
+            if (n.path[0] == "Span" && n.type_args.size() == 1) {
+                os << "std::span<const ";
+                emit_type(os, *n.type_args[0]);
+                os << ">";
+                return;
+            }
+            if (n.path[0] == "MutSpan" && n.type_args.size() == 1) {
+                os << "std::span<";
                 emit_type(os, *n.type_args[0]);
                 os << ">";
                 return;

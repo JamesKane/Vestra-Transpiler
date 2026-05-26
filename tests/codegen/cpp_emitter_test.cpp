@@ -597,6 +597,45 @@ TEST_CASE("a method returning a struct stays a real call, not a fresh struct lit
     CHECK(f.out.source.find("return Point{};") == std::string::npos);
 }
 
+// ---- §10 Span[T] / MutSpan[T] --------------------------------------------
+
+TEST_CASE("Span[T] lowers to std::span<const T>") {
+    auto out = emit("func sum(_ s: Span[Int32]) -> Int32 { return 0 }\n");
+    CHECK(out.header.find("std::span<const std::int32_t>") != std::string::npos);
+}
+
+TEST_CASE("MutSpan[T] lowers to std::span<T> (no const)") {
+    auto out = emit("func mutate(_ s: MutSpan[Int32]) -> Int32 { return 0 }\n");
+    CHECK(out.header.find("std::span<std::int32_t>") != std::string::npos);
+    CHECK(out.header.find("std::span<const std::int32_t>") == std::string::npos);
+}
+
+TEST_CASE("Span runtime preamble includes <span>") {
+    auto out = emit("func id(_ x: Int32) -> Int32 { return x }\n");
+    CHECK(out.header.find("#include <span>") != std::string::npos);
+}
+
+TEST_CASE("Span .count emits a signed-width cast over std::span::size") {
+    SemaEmitFixture f("func len(_ s: Span[Int32]) -> Int {\n"
+                      "    return s.count\n"
+                      "}\n");
+    CHECK(f.out.source.find("static_cast<std::intptr_t>(s.size())") != std::string::npos);
+}
+
+TEST_CASE("Span .isEmpty emits std::span::empty") {
+    SemaEmitFixture f("func empty(_ s: Span[Int32]) -> Bool {\n"
+                      "    return s.isEmpty\n"
+                      "}\n");
+    CHECK(f.out.source.find("s.empty()") != std::string::npos);
+}
+
+TEST_CASE("Span indexing casts the index to size_t") {
+    SemaEmitFixture f("func first(_ s: Span[Int32]) -> Int32 {\n"
+                      "    return s[0]\n"
+                      "}\n");
+    CHECK(f.out.source.find("s[static_cast<std::size_t>(0)]") != std::string::npos);
+}
+
 // ---- §10 panic / abort / unreachable -------------------------------------
 
 TEST_CASE("panic(msg) lowers to __vstr::panic(...)") {

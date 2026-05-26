@@ -578,6 +578,67 @@ TEST_CASE("derive(Clone) on a bare enum does NOT surface .clone() (no method slo
     CHECK(r.error_count >= 1);
 }
 
+// ---- §10 Span[T] / MutSpan[T] --------------------------------------------
+
+TEST_CASE("Span[T] type resolution + array-to-Span call-site coercion") {
+    CHECK(check_errors("func sum(_ s: Span[Int32]) -> Int32 { return 0 }\n"
+                       "const A: [4]Int32 = comptime { [1, 2, 3, 4] }\n"
+                       "func use() -> Int32 { return sum(A) }\n")
+          == 0);
+}
+
+TEST_CASE("MutSpan[T] widens to Span[T] but not the other way") {
+    // (`read` is a parameter-mode keyword in Vestra — `consume` is the
+    // convention for sink-style test functions.)
+    CHECK(check_errors("func consume(_ s: Span[Int32]) -> Int32 { return 0 }\n"
+                       "func mutate(_ s: MutSpan[Int32]) -> Int32 { return 0 }\n"
+                       "func use(_ m: MutSpan[Int32]) -> Int32 { return consume(m) }\n")
+          == 0);
+    auto r = check_detail("func mutate(_ s: MutSpan[Int32]) -> Int32 { return 0 }\n"
+                          "func use(_ s: Span[Int32]) -> Int32 { return mutate(s) }\n");
+    CHECK(r.error_count >= 1);
+}
+
+TEST_CASE("Span .count returns Int and .isEmpty returns Bool") {
+    CHECK(check_errors("func test(_ s: Span[Int32]) -> Bool {\n"
+                       "    let c: Int = s.count\n"
+                       "    let _ = c\n"
+                       "    return s.isEmpty\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("Span indexing returns the element type") {
+    CHECK(check_errors("func first(_ s: Span[Int32]) -> Int32 {\n"
+                       "    return s[0]\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("non-integer index is rejected") {
+    auto r = check_detail("func bad(_ s: Span[Int32]) -> Int32 {\n"
+                          "    return s[\"oops\"]\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("integer") != std::string::npos);
+}
+
+// ---- §17 natural-width integer flow --------------------------------------
+
+TEST_CASE("Int (natural-width) flows implicitly into Int32 slot and back") {
+    CHECK(check_errors("func use(_ n: Int, _ m: Int32) -> Int32 {\n"
+                       "    let a: Int32 = n\n"
+                       "    let b: Int = m\n"
+                       "    return a + b\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("specific widths do not implicitly cross") {
+    auto r = check_detail("func bad(_ x: Int8) -> Int32 { return x }\n");
+    CHECK(r.error_count >= 1);
+}
+
 // ---- §10 panic / abort / unreachable -------------------------------------
 
 TEST_CASE("panic(msg) type-checks against any return slot (Never is bottom)") {

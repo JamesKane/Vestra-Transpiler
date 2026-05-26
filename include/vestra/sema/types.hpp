@@ -53,6 +53,12 @@ enum class TypeKind : std::uint16_t {
     Vector,
     Function,
     Tuple,
+    // §10 borrowed views. `Span[T]` is read-only, `MutSpan[T]` permits
+    // mutation through the view; both are non-escapable (the type
+    // system v0.5 doesn't yet enforce the escape rule, but `describe()`
+    // names them so callers can see the contract).
+    Span,
+    MutSpan,
     // nominal — point back to an ast::Decl
     Struct,
     Enum,
@@ -136,6 +142,10 @@ public:
     // §10 Box<T> — the unique-ownership heap pointer. Lowers to
     // `std::unique_ptr<T>` (move-only, never null after construction).
     [[nodiscard]] TypePtr make_box(TypePtr inner);
+    // §10 Span[T] / MutSpan[T] — borrowed, non-escapable views.
+    // Lower to `std::span<const T>` and `std::span<T>` respectively.
+    [[nodiscard]] TypePtr make_span(TypePtr inner);
+    [[nodiscard]] TypePtr make_mut_span(TypePtr inner);
     [[nodiscard]] TypePtr make_vector(std::int64_t length, TypePtr element);
     [[nodiscard]] TypePtr make_function(std::vector<TypePtr> params, TypePtr result);
     [[nodiscard]] TypePtr make_tuple(std::vector<TypePtr> elements);
