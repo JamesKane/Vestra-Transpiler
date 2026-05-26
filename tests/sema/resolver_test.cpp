@@ -578,6 +578,47 @@ TEST_CASE("derive(Clone) on a bare enum does NOT surface .clone() (no method slo
     CHECK(r.error_count >= 1);
 }
 
+// ---- §12.3 derive(Default) ------------------------------------------------
+
+TEST_CASE("derive(Default) surfaces a static T.default() with primitive fields") {
+    CHECK(check_errors("struct Point { var x: Int32\n    var y: Int32 }\n"
+                       "derive(Default) for Point\n"
+                       "func zero() -> Point { return Point.default() }\n")
+          == 0);
+}
+
+TEST_CASE("derive(Default) composes through nested struct fields") {
+    CHECK(check_errors("struct Inner { var n: Int32 }\n"
+                       "derive(Default) for Inner\n"
+                       "struct Outer { var a: Int32\n    var b: Inner }\n"
+                       "derive(Default) for Outer\n"
+                       "func z() -> Outer { return Outer.default() }\n")
+          == 0);
+}
+
+TEST_CASE("derive(Default) accepts Optional fields (default is nil)") {
+    CHECK(check_errors("struct Cell { var label: Str?\n    var count: Int32 }\n"
+                       "derive(Default) for Cell\n"
+                       "func empty() -> Cell { return Cell.default() }\n")
+          == 0);
+}
+
+TEST_CASE("derive(Default) rejects a struct with a non-conformant field") {
+    auto r = check_detail("struct Inner { var n: Int32 }\n"
+                          "struct Outer { var a: Int32\n    var b: Inner }\n"
+                          "derive(Default) for Outer\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Default-conformant") != std::string::npos);
+    CHECK(r.first_message.find("Inner") != std::string::npos);
+}
+
+TEST_CASE("without derive(Default), T.default() is rejected") {
+    auto r = check_detail("struct Point { var x: Int32 }\n"
+                          "func zero() -> Point { return Point.default() }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("default") != std::string::npos);
+}
+
 // ---- §9 do / catch inline error handling ---------------------------------
 
 TEST_CASE("do/catch type-checks: catch binding has the annotated error type") {

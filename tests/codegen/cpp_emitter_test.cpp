@@ -592,6 +592,27 @@ TEST_CASE("a method returning a struct stays a real call, not a fresh struct lit
     CHECK(f.out.source.find("return Point{};") == std::string::npos);
 }
 
+// ---- §12.3 derive(Default) -----------------------------------------------
+
+TEST_CASE("derive(Default) lowers T.default() to value-init T{}") {
+    // The codegen intercepts the `MemberExpr(<struct symbol>, "default")`
+    // call shape and emits `T{}` — C++ value-init zeroes every field via
+    // the per-field `{}` brace-init that emit_struct already writes.
+    SemaEmitFixture f("struct Point { var x: Int32\n    var y: Int32 }\n"
+                      "derive(Default) for Point\n"
+                      "func zero() -> Point { return Point.default() }\n");
+    CHECK(f.out.source.find("return Point{};") != std::string::npos);
+}
+
+TEST_CASE("derive(Default) composes for a struct holding a derived inner") {
+    SemaEmitFixture f("struct Inner { var n: Int32 }\n"
+                      "derive(Default) for Inner\n"
+                      "struct Outer { var a: Int32\n    var b: Inner }\n"
+                      "derive(Default) for Outer\n"
+                      "func z() -> Outer { return Outer.default() }\n");
+    CHECK(f.out.source.find("return Outer{};") != std::string::npos);
+}
+
 // ---- §9 do / catch inline error handling ---------------------------------
 
 TEST_CASE("do/catch lowers to nested IIFEs over std::expected") {

@@ -497,6 +497,65 @@ void Resolver::check_decl(const ast::Decl& d) {
         }
         break;
     }
+    case ast::NodeKind::Derive: {
+        // §12.3 derive(Default) validation: every field of the target
+        // struct must itself be Default-conformant. The other derives
+        // (Eq / Hash / Clone / Debug / Display) defer field-conformance
+        // to the C++ compiler since the underlying op is defaulted /
+        // member-wise; Default is the one where the spec is explicit
+        // about field-level checking.
+        const auto& dd = static_cast<const ast::DeriveDecl&>(d);
+        bool derives_default = false;
+        for (const auto& proto : dd.protocols) {
+            if (proto == nullptr || proto->kind != ast::NodeKind::NamedType) {
+                continue;
+            }
+            const auto& nt = static_cast<const ast::NamedType&>(*proto);
+            if (!nt.path.empty() && nt.path.back() == "Default") {
+                derives_default = true;
+                break;
+            }
+        }
+        if (!derives_default || dd.target == nullptr) {
+            break;
+        }
+        // Resolve the target into a Struct decl. Anything else (enum,
+        // protocol, opaque) is rejected with a v0.5 diagnostic.
+        if (dd.target->kind != ast::NodeKind::NamedType) {
+            error_at(dd.target->range, "derive(Default) target must be a struct");
+            break;
+        }
+        const auto& tt = static_cast<const ast::NamedType&>(*dd.target);
+        if (tt.path.empty()) {
+            break;
+        }
+        const auto* sym = scopes_.global().lookup_local(tt.path.back());
+        if (sym == nullptr || sym->kind != SymbolKind::Struct || sym->decl == nullptr) {
+            error_at(
+                dd.target->range,
+                std::format("derive(Default) for '{}' requires a struct target", tt.path.back()));
+            break;
+        }
+        const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
+        for (const auto& f : sd.fields) {
+            if (f.kind == ast::StructDecl::Field::Kind::Embed) {
+                continue;  // embed fields are checked through the embedded struct's own derive
+            }
+            if (f.type == nullptr) {
+                continue;
+            }
+            TypePtr ft = resolve_type(*f.type);
+            if (!is_default_conformant(ft)) {
+                error_at(f.range,
+                         std::format("derive(Default) for '{}': field '{}' of type {} is not "
+                                     "Default-conformant",
+                                     sd.name,
+                                     f.name,
+                                     ft != nullptr ? ft->describe() : "?"));
+            }
+        }
+        break;
+    }
     default:
         break;
     }
@@ -1764,6 +1823,53 @@ bool Resolver::is_display_conformant(TypePtr t) const {
     }
 }
 
+bool Resolver::is_default_conformant(TypePtr t) const {
+    if (t == nullptr || t->is_error()) {
+        return false;
+    }
+    switch (t->kind()) {
+    case TypeKind::Int:
+    case TypeKind::Int8:
+    case TypeKind::Int16:
+    case TypeKind::Int32:
+    case TypeKind::Int64:
+    case TypeKind::UInt:
+    case TypeKind::UInt8:
+    case TypeKind::UInt16:
+    case TypeKind::UInt32:
+    case TypeKind::UInt64:
+    case TypeKind::Float32:
+    case TypeKind::Float64:
+    case TypeKind::Bool:
+    case TypeKind::Char:
+    case TypeKind::Str:
+        return true;
+    case TypeKind::Optional:
+        // `nil` is the zero of every Optional<T>; std::optional<T>{} is
+        // value-init to nullopt, no need for T to itself be conformant.
+        return true;
+    case TypeKind::Vector:
+        // Fixed-length array `[N]T` lowers to `std::array<T, N>`; value-
+        // init zero-initializes every element. Require the element to be
+        // Default-conformant so the chain stays decidable.
+        return is_default_conformant(t->inner());
+    case TypeKind::Tuple:
+        for (const auto& part : t->parts()) {
+            if (!is_default_conformant(part)) {
+                return false;
+            }
+        }
+        return true;
+    case TypeKind::Struct:
+        return decl_derives(t->nominal_decl(), "Default");
+    default:
+        // Box, Result, GenericParam, Enum (bare or sum), Protocol,
+        // Function, Reference — none have a v0.5 default. The kernel
+        // resort is `var x: T? = nil` plus an explicit init.
+        return false;
+    }
+}
+
 void Resolver::bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type) {
     if (value_type == nullptr || value_type->is_error()) {
         return;  // suppress cascading errors
@@ -1994,6 +2100,12 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
                             ? types_->make_nominal(TypeKind::Struct, builtin_field_decl_.get())
                             : types_->error();
                     return types_->make_vector(count, field_type);
+                }
+                // §12.3 derive(Default): expose a static `() -> T` so
+                // `T.default()` is an ordinary CallExpr that the
+                // codegen lowers to `T{}`.
+                if (m.member == "default" && decl_derives(&sd, "Default")) {
+                    return types_->make_function({}, sym->type);
                 }
                 error_at(m.range,
                          std::format("struct '{}' has no static member '{}'", sd.name, m.member));

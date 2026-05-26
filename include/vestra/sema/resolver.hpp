@@ -141,6 +141,14 @@ private:
     // vector is OK iff its element is OK.
     [[nodiscard]] bool is_display_conformant(TypePtr t) const;
 
+    // §12.3 derive(Default): is `t` a type with a known zero / empty
+    // value? Primitives (numerics, Bool, Str) have a natural zero;
+    // Optional<T> has `nil`; a struct that derives Default is itself
+    // Default-conformant (the protocol composes structurally). Box[T]
+    // is *not* — allocation belongs in Box.new. Bare and payloaded
+    // enums are skipped in v0.5 (no obvious default case).
+    [[nodiscard]] bool is_default_conformant(TypePtr t) const;
+
     // Unify a generic parameter type against a concrete arg type, growing the
     // bindings map. A clash (same generic implied to be two different types
     // by different args) is reported at `site`.

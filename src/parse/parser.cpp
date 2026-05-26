@@ -1751,12 +1751,13 @@ ast::ExprPtr Parser::parse_postfix(ast::ExprPtr lhs) {
             m->base = std::move(lhs);
             m->is_optional_chain = is_chain;
             // Member names are usually identifiers, but Vestra reserves
-            // a few words (`type`, `embed`, …) that legitimately serve
-            // as field names — §12.2 reflection exposes `Field.type`,
-            // for instance. Accept those keywords here using their
+            // a few words (`type`, `embed`, `default`, …) that legitimately
+            // serve as field or static-method names — §12.2 reflection
+            // exposes `Field.type`, §12.3 derive(Default) exposes
+            // `T.default()`. Accept those keywords here using their
             // spelled lexeme so we don't force users to escape them.
             if (check(TokenKind::Identifier) || check(TokenKind::KwType)
-                || check(TokenKind::KwEmbed)) {
+                || check(TokenKind::KwEmbed) || check(TokenKind::KwDefault)) {
                 m->member = std::string{advance().lexeme};
             } else {
                 emit_error(peek().range, "expected member name after '.'");

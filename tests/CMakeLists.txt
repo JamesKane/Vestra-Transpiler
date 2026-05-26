@@ -563,6 +563,34 @@ set_tests_properties(e2e_midmatch_run PROPERTIES
     DEPENDS                e2e_midmatch_compile
     PASS_REGULAR_EXPRESSION "midmatch OK")
 
+# derive(Default): §12.3 Default protocol — completes the derive set
+# (Eq / Hash / Clone / Debug / Display). `T.default()` lowers to value-
+# init `T{}` when every field of T is Default-conformant (primitives,
+# Optional, nested struct that also derives Default). Sema rejects a
+# derive on a struct with a non-conformant field.
+set(e2e_derive_default_input  ${CMAKE_SOURCE_DIR}/examples/derive_default.vst)
+set(e2e_derive_default_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_derive_default.cpp)
+
+add_test(
+    NAME    e2e_derive_default_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_derive_default_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_derive_default_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_derive_default_driver} ${e2e_workdir}/derive_default.cpp
+            -o ${e2e_workdir}/derive_default_app)
+set_tests_properties(e2e_derive_default_compile PROPERTIES DEPENDS e2e_derive_default_transpile)
+
+add_test(
+    NAME    e2e_derive_default_run
+    COMMAND ${e2e_workdir}/derive_default_app)
+set_tests_properties(e2e_derive_default_run PROPERTIES
+    DEPENDS                e2e_derive_default_compile
+    PASS_REGULAR_EXPRESSION "derive\\(Default\\) OK")
+
 # Box[T]: §10 unique-ownership heap pointer. Lowers to
 # std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
 # → *box. Allocation requires the §8 `Alloc` capability. E2E pins

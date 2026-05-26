@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §12.3 derive(Default) — the protocol that completes the derive set
+// (Eq / Hash / Clone / Debug / Display already shipped).
+//
+// `derive(Default) for T` surfaces a static `T.default() -> T` that
+// returns the zero-initialised value: each field gets its type's
+// natural zero (primitives → 0, Optional → nil, nested struct that
+// also derives Default → its own default()). Sema rejects the derive
+// if any field is not Default-conformant; codegen lowers the call to
+// C++ value-init `T{}`, which composes with the per-field `{}` brace-
+// init emit_struct already writes — no separate method body required.
+
+module examples.derive_default
+
+// Primitive + Optional fields — both natural zeros.
+struct Cursor {
+    var line:   Int32
+    var column: Int32
+    var label:  Str?
+}
+
+derive(Default) for Cursor
+
+// Inner struct that itself derives Default. The compose-through rule
+// (sema's is_default_conformant recurses through Struct fields)
+// admits this without further annotation.
+struct Span {
+    var start:  Cursor
+    var length: Int32
+}
+
+derive(Default) for Span
+
+// Use sites: the empty / starting state of each value.
+func emptyCursor() -> Cursor {
+    return Cursor.default()
+}
+
+func emptySpan() -> Span {
+    return Span.default()
+}
+
+// Mixed: take a default, then mutate one field. The pattern the test-
+// fixtures and container-init paths reach for.
+func bumpColumn(_ c: Int32) -> Cursor {
+    var out = Cursor.default()
+    out.column = c
+    return out
+}

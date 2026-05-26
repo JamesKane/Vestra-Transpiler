@@ -2272,6 +2272,23 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 break;
             }
         }
+        // §12.3 derive(Default) construction: `T.default()` lowers to
+        // `T{}` (C++ value-init), which zero-initialises every field by
+        // virtue of each field's own brace-init in emit_struct. Sema
+        // gates this on the target deriving Default and on every field
+        // being Default-conformant; the codegen just emits the value.
+        if (resolution_ != nullptr && c.callee && c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            if (mem.base != nullptr && mem.member == "default" && c.args.empty()) {
+                if (const auto* sym = resolution_->symbol_of(mem.base.get());
+                    sym != nullptr && sym->kind == sema::SymbolKind::Struct
+                    && sym->decl != nullptr) {
+                    const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
+                    os << sd.name << "{}";
+                    break;
+                }
+            }
+        }
         // Payloaded-enum case construction: `Shape.circle(radius: 1.0)` →
         // `Shape{Shape::circle_t{1.0}}`. Bare cases on a payloaded enum
         // come through the MemberExpr path above; here we handle the
