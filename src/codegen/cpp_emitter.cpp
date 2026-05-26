@@ -2413,6 +2413,25 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 break;
             }
         }
+        // §9 `result.mapError(f)` lowers to std::expected's
+        // `.transform_error(f)` — the closure runs on the error path
+        // and produces a new Result<T, E'>. Symmetric with the sema
+        // intercept; sema has already verified the closure has the
+        // right `(E) -> E'` shape.
+        if (c.callee && c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            if (mem.member == "mapError" && c.args.size() == 1 && resolution_ != nullptr) {
+                auto base_t = resolution_->type_of(mem.base.get());
+                if (base_t != nullptr && base_t->kind() == sema::TypeKind::Result) {
+                    os << "(";
+                    emit_expr(os, *mem.base);
+                    os << ").transform_error(";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
+                    break;
+                }
+            }
+        }
         // §10 panic primitives — `panic(msg)` / `abort()` / `unreachable()`
         // intercepted by IdentExpr callee name. The Vestra-side type is
         // `Never`, which is assignable to any slot. The C++ shims at the

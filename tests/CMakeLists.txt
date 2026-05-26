@@ -737,6 +737,33 @@ set_tests_properties(e2e_newtype_run PROPERTIES
     DEPENDS                e2e_newtype_compile
     PASS_REGULAR_EXPRESSION "opaque newtype OK")
 
+# Map-error: §9 `.mapError(_ f)` on Result — widens the error type
+# between throws functions by running a closure on the error path.
+# Codegen lowers to std::expected::transform_error, so the runtime
+# cost is one indirect call on error and zero on success.
+set(e2e_map_error_input  ${CMAKE_SOURCE_DIR}/examples/map_error.vst)
+set(e2e_map_error_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_map_error.cpp)
+
+add_test(
+    NAME    e2e_map_error_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_map_error_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_map_error_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_map_error_driver} ${e2e_workdir}/map_error.cpp
+            -o ${e2e_workdir}/map_error_app)
+set_tests_properties(e2e_map_error_compile PROPERTIES DEPENDS e2e_map_error_transpile)
+
+add_test(
+    NAME    e2e_map_error_run
+    COMMAND ${e2e_workdir}/map_error_app)
+set_tests_properties(e2e_map_error_run PROPERTIES
+    DEPENDS                e2e_map_error_compile
+    PASS_REGULAR_EXPRESSION "mapError OK")
+
 # Box[T]: §10 unique-ownership heap pointer. Lowers to
 # std::unique_ptr<T>; Box.new(v) → std::make_unique<T>(v); box.value
 # → *box. Allocation requires the §8 `Alloc` capability. E2E pins

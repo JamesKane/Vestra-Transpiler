@@ -578,6 +578,39 @@ TEST_CASE("derive(Clone) on a bare enum does NOT surface .clone() (no method slo
     CHECK(r.error_count >= 1);
 }
 
+// ---- §9 .mapError(_ f) on Result -----------------------------------------
+
+TEST_CASE("mapError widens the error type via a (E) -> E' function") {
+    CHECK(check_errors("enum A { case bad }\n"
+                       "enum B { case bad }\n"
+                       "func f(_ x: Int32) throws(A) -> Int32 { return x }\n"
+                       "func toB(_ e: A) -> B { return B.bad }\n"
+                       "func g(_ x: Int32) throws(B) -> Int32 {\n"
+                       "    return try f(x).mapError(toB)\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("mapError rejects a closure whose input doesn't match the Result error") {
+    auto r = check_detail("enum A { case bad }\n"
+                          "enum B { case bad }\n"
+                          "func f(_ x: Int32) throws(A) -> Int32 { return x }\n"
+                          "func wrongIn(_ e: B) -> B { return e }\n"
+                          "func bad(_ x: Int32) throws(B) -> Int32 {\n"
+                          "    return try f(x).mapError(wrongIn)\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("mapError function expects") != std::string::npos);
+}
+
+TEST_CASE("mapError requires exactly one argument") {
+    auto r = check_detail("enum A { case bad }\n"
+                          "func f() throws(A) -> Int32 { return 0 }\n"
+                          "func toB(_ e: A) -> A { return e }\n"
+                          "func bad() throws(A) -> Int32 { return try f().mapError(toB, 1) }\n");
+    CHECK(r.error_count >= 1);
+}
+
 // ---- §3 opaque newtype follow-ons ----------------------------------------
 
 TEST_CASE("opaque with derive(Debug) is Display-conformant in an interpolation splice") {

@@ -1498,6 +1498,49 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
+    // §9 `result.mapError(f)` — explicit error-type widening between
+    // throws functions. `result` must be Result<T, E>; `f` must be
+    // a callable `(E) -> E'`. The call types as Result<T, E'>; the
+    // codegen lowers it to std::expected's `.transform_error(f)`.
+    // Recognized as a MemberExpr callee shape (parallel to Box.new).
+    if (c.callee->kind == ast::NodeKind::MemberExpr) {
+        const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+        if (mem.member == "mapError") {
+            auto base_t = check_expr(*mem.base);
+            if (base_t != nullptr && base_t->kind() == TypeKind::Result) {
+                if (c.args.size() != 1) {
+                    for (const auto& a : c.args) {
+                        (void)check_expr(*a.value);
+                    }
+                    error_at(c.range,
+                             ".mapError takes exactly one argument (the mapping function)");
+                    return types_->make_result(base_t->inner(), base_t->result());
+                }
+                if (!c.args[0].label.empty()) {
+                    error_at(c.args[0].value->range, ".mapError argument cannot have a label");
+                }
+                auto arg_t = check_expr(*c.args[0].value);
+                if (arg_t == nullptr || arg_t->is_error()) {
+                    return types_->error();
+                }
+                if (arg_t->kind() != TypeKind::Function || arg_t->parts().size() != 1) {
+                    error_at(c.args[0].value->range,
+                             std::format(".mapError argument must be a function (E) -> E', got {}",
+                                         arg_t->describe()));
+                    return types_->make_result(base_t->inner(), base_t->result());
+                }
+                if (!TypeArena::assignable(base_t->result(), arg_t->parts()[0])) {
+                    error_at(c.args[0].value->range,
+                             std::format(".mapError function expects {} but Result error is {}",
+                                         arg_t->parts()[0]->describe(),
+                                         base_t->result()->describe()));
+                    return types_->make_result(base_t->inner(), base_t->result());
+                }
+                return types_->make_result(base_t->inner(), arg_t->result());
+            }
+        }
+    }
+
     // §10 builtin `Box.new(value)` — the unique-ownership heap pointer
     // constructor. The callee is a `MemberExpr(IdentExpr("Box"), "new")`;
     // sema doesn't have a symbol for the Box "value" so we intercept

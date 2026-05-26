@@ -607,6 +607,23 @@ TEST_CASE("a method returning a struct stays a real call, not a fresh struct lit
     CHECK(f.out.source.find("return Point{};") == std::string::npos);
 }
 
+// ---- §9 .mapError(_ f) on Result -----------------------------------------
+
+TEST_CASE("mapError lowers to std::expected::transform_error") {
+    SemaEmitFixture f("enum A { case bad }\n"
+                      "enum B { case bad }\n"
+                      "func source(_ x: Int32) throws(A) -> Int32 { return x }\n"
+                      "func toB(_ e: A) -> B { return B.bad }\n"
+                      "func wrap(_ x: Int32) throws(B) -> Int32 {\n"
+                      "    return try source(x).mapError(toB)\n"
+                      "}\n");
+    // The mapError call lowers as `(base).transform_error(arg)`, and
+    // the surrounding `try` carries the new error type through the
+    // canonical 3-line escape.
+    CHECK(f.out.source.find("(source(x)).transform_error(toB)") != std::string::npos);
+    CHECK(f.out.source.find("std::expected<std::int32_t, B>") != std::string::npos);
+}
+
 // ---- §3 opaque newtype follow-ons ----------------------------------------
 
 TEST_CASE("derive(Hash) for an opaque newtype emits a delegating std::hash") {

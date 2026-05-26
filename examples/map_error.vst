@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §9 `.mapError(_ f)` on Result — explicit error-type widening
+// between throws functions. Without it, `try parseInt(s)` from
+// `throws(ParseErr)` can't flow into `throws(AppErr)`: the error
+// types don't unify. `.mapError(toAppErr)` runs the closure on the
+// error path and lifts the Result from `Result<T, ParseErr>` to
+// `Result<T, AppErr>`. The codegen lowers to std::expected's
+// `transform_error`, so the runtime cost is one indirect call on
+// the error path and zero on the success path.
+
+module examples.map_error
+
+// Inner error: a leaf-domain failure mode.
+enum ParseErr {
+    case negative
+    case overflow
+}
+
+// Outer error: an application-level wrapper that hides the inner
+// detail behind a unified surface.
+enum AppErr {
+    case badInput
+    case internalFailure
+}
+
+// Inner function — fails on a specific input.
+func parseInt(_ s: Int32) throws(ParseErr) -> Int32 {
+    if s < 0 {
+        throw ParseErr.negative
+    }
+    if s > 1000 {
+        throw ParseErr.overflow
+    }
+    return s
+}
+
+// The mapping function: turns a ParseErr into an AppErr. Discriminates
+// between the inner cases, surfaces them as application-meaningful
+// outcomes.
+func toAppErr(_ e: ParseErr) -> AppErr {
+    return match e {
+        case .negative: AppErr.badInput
+        case .overflow: AppErr.internalFailure
+    }
+}
+
+// Outer function — throws AppErr. The chained `try …mapError(…)`
+// composes naturally: parseInt's Result<Int32, ParseErr> becomes
+// Result<Int32, AppErr>, then `try` unwraps to Int32 or propagates
+// AppErr to the enclosing throws(AppErr).
+func parseOrWrap(_ s: Int32) throws(AppErr) -> Int32 {
+    return try parseInt(s).mapError(toAppErr)
+}
