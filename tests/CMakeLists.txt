@@ -1171,6 +1171,36 @@ set_tests_properties(e2e_mmio_union_run PROPERTIES
     DEPENDS                e2e_mmio_union_compile
     PASS_REGULAR_EXPRESSION "mmio_union OK")
 
+# §A12 follow-up — function-pointer type + `&func` (§14.6.3).
+# Vestra function-pointer spelling `(T1, ...) -> R` lowers to
+# `R(*name)(const T1&, ...)`; `&func` produces the function-
+# pointer value. The runtime exercises the dispatch-table
+# pattern via let-bindings (`let a: (Int32) -> Int32 = &handler_a`)
+# and the by-parameter pattern (`apply(handler_b, ...)`).
+set(e2e_fn_ptr_input  ${CMAKE_SOURCE_DIR}/examples/fn_ptr_table.vst)
+set(e2e_fn_ptr_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_fn_ptr_table.cpp)
+
+add_test(
+    NAME    e2e_fn_ptr_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_fn_ptr_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_fn_ptr_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_fn_ptr_driver} ${e2e_workdir}/fn_ptr_table.cpp
+            -o ${e2e_workdir}/fn_ptr_table_app)
+set_tests_properties(e2e_fn_ptr_compile PROPERTIES
+    DEPENDS e2e_fn_ptr_transpile)
+
+add_test(
+    NAME    e2e_fn_ptr_run
+    COMMAND ${e2e_workdir}/fn_ptr_table_app)
+set_tests_properties(e2e_fn_ptr_run PROPERTIES
+    DEPENDS                e2e_fn_ptr_compile
+    PASS_REGULAR_EXPRESSION "fn_ptr_table OK")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except

@@ -1640,12 +1640,18 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         t = check_expr(*static_cast<const ast::CopyExpr&>(e).inner);
         break;
     case ast::NodeKind::AddressOfExpr: {
-        // §A12 (§14.6.3) `&decl` — address-of a static / func /
-        // vector-table entry. v0.5 supports the static case; the
-        // result type is `Ptr[T]` (the spec calls for `Ptr[T]?`
-        // since a weakly-linked extern can be null, but optional
-        // wrapping is deferred). Func and vector-table forms wait
-        // on first-class function-pointer types.
+        // §A12 (§14.6.3) `&decl` — address-of a static or function.
+        // - Static: result is `Ptr[T]` over the static's value type
+        //   (spec calls for `Ptr[T]?` since a weakly-linked extern can
+        //   be null, but optional wrapping is deferred).
+        // - Func: result is the function-pointer type matching the
+        //   callee's signature `(T1, T2, …) -> R`. Vestra's spelling
+        //   for function pointers is the same as for closures —
+        //   `TypeKind::Function` — so a callee site that expects a
+        //   function-pointer parameter accepts both `&some_func` and
+        //   an inline closure (the C++ compiler enforces the capture-
+        //   less requirement when one of these flows into a function-
+        //   pointer slot).
         const auto& a = static_cast<const ast::AddressOfExpr&>(e);
         if (a.inner != nullptr && a.inner->kind == ast::NodeKind::IdentExpr) {
             const auto& id = static_cast<const ast::IdentExpr&>(*a.inner);
@@ -1659,10 +1665,15 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
                     break;
                 }
                 if (sym->kind == SymbolKind::Func) {
-                    error_at(e.range,
-                             "&func — address-of-function not yet supported in v0.5 "
-                             "(use @symbol(\"name\") + an in-tree extern declaration)");
-                    t = types_->error();
+                    // The Func symbol's type already holds the
+                    // canonical `(params...) -> result` shape that
+                    // collect_func populated via function_type_of(f).
+                    if (sym->type != nullptr) {
+                        resolution_.set_type(a.inner.get(), sym->type);
+                        t = sym->type;
+                    } else {
+                        t = types_->error();
+                    }
                     break;
                 }
                 error_at(a.inner->range,

@@ -1063,25 +1063,41 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
             //   read  → const T&
             //   inout → T&
             //   sink  → T&&
+            // §A12 (§14.6.3) follow-up: function-pointer types pass
+            // by-value. C++ syntax for "ref to function-pointer" is
+            // `R(*const &)(T1)`, which disagrees with the way
+            // emit_type builds the spelling; function pointers are
+            // word-sized so by-value is the natural lowering anyway.
+            // The declarator-name-embedding `emit_type_with_name`
+            // also handles function pointers properly when the type
+            // is used as a parameter (`R(*name)(T1)`).
+            const bool is_fn_ptr = p.type != nullptr && p.type->kind == ast::NodeKind::FunctionType;
+            const std::string pname{param_cpp_name(i, p)};
             switch (p.mode) {
             case ast::ParamMode::Read:
-                os << "const ";
-                if (p.type) {
-                    emit_type(os, *p.type);
+                if (is_fn_ptr) {
+                    if (p.type) {
+                        emit_type_with_name(os, *p.type, pname);
+                    }
+                } else {
+                    os << "const ";
+                    if (p.type) {
+                        emit_type(os, *p.type);
+                    }
+                    os << "& " << pname;
                 }
-                os << "& " << param_cpp_name(i, p);
                 break;
             case ast::ParamMode::Inout:
                 if (p.type) {
                     emit_type(os, *p.type);
                 }
-                os << "& " << param_cpp_name(i, p);
+                os << "& " << pname;
                 break;
             case ast::ParamMode::Sink:
                 if (p.type) {
                     emit_type(os, *p.type);
                 }
-                os << "&& " << param_cpp_name(i, p);
+                os << "&& " << pname;
                 break;
             }
         }
@@ -2413,18 +2429,23 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         // try-hoisting pass above pre-emits the propagation escape, then
         // emit_expr substitutes the hoisted name when it hits the
         // TryExpr — so `auto NAME = __vstr_t0;` is correct.
-        if (l.type) {
-            emit_type(os, *l.type);
-            os << " ";
-        } else {
-            os << "auto ";
-        }
+        // The pattern is an IdentPat / BindPat in the common case;
+        // we materialize the name up front so `emit_type_with_name`
+        // can embed it inside the function-pointer parens. Anything
+        // else (refutable patterns, etc.) falls back to `_bind` per
+        // the prior behavior.
+        std::string bind_name;
         if (l.pattern && l.pattern->kind == ast::NodeKind::IdentPat) {
-            os << static_cast<const ast::IdentPat&>(*l.pattern).name;
+            bind_name = static_cast<const ast::IdentPat&>(*l.pattern).name;
         } else if (l.pattern && l.pattern->kind == ast::NodeKind::BindPat) {
-            os << static_cast<const ast::BindPat&>(*l.pattern).name;
+            bind_name = static_cast<const ast::BindPat&>(*l.pattern).name;
         } else {
-            os << "_bind";
+            bind_name = "_bind";
+        }
+        if (l.type) {
+            emit_type_with_name(os, *l.type, bind_name);
+        } else {
+            os << "auto " << bind_name;
         }
         os << " = ";
         if (l.value) {
@@ -4009,6 +4030,29 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         }
         os << ">";
         return;
+    case TypeKind::Function:
+        // §A12 (§14.6.3) Vestra function-pointer type. The spelling
+        // is `(T1, T2, ...) -> R`; the C++ lowering is the function-
+        // pointer `R(*)(const T1&, const T2&, ...)`. The `const T&`
+        // wrapping mirrors how func decls lower their default `read`
+        // mode parameters, so `&helper` types compatibly with a
+        // `(T) -> R` slot at the C++ ABI level. Sema gives the same
+        // TypeKind::Function to closures, but their codegen path is
+        // a lambda with deduced type — this emit_sema_type branch
+        // fires only on places where the function type is named
+        // (let-bindings, parameters, struct fields, vector tables).
+        emit_sema_type(os, t->result());
+        os << "(*)(";
+        for (std::size_t i = 0; i < t->parts().size(); ++i) {
+            if (i != 0) {
+                os << ", ";
+            }
+            os << "const ";
+            emit_sema_type(os, t->parts()[i]);
+            os << "&";
+        }
+        os << ")";
+        return;
     case TypeKind::Struct:
     case TypeKind::Enum:
     case TypeKind::Protocol:
@@ -4058,6 +4102,45 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         os << "/*type*/";
         return;
     }
+}
+
+void CppEmitter::emit_type_with_name(std::ostream& os,
+                                     const ast::Type& t,
+                                     std::string_view name,
+                                     std::string_view trailing_qual) {
+    // §A12 (§14.6.3). C++ function-pointer declarators need the name
+    // inside the parens (`R(*name)(T1)`). `emit_type` produces the
+    // type-id form (`R(*)(T1)`), which is valid in type-alias and
+    // template-argument positions but not in variable / parameter
+    // declarations. This helper rewrites the function-pointer case
+    // so the declarator is well-formed; every other type falls
+    // through to `emit_type` + " name".
+    if (t.kind == ast::NodeKind::FunctionType) {
+        const auto& fn = static_cast<const ast::FunctionType&>(t);
+        if (fn.result) {
+            emit_type(os, *fn.result);
+        } else {
+            os << "void";
+        }
+        os << "(*" << trailing_qual << name << ")(";
+        for (std::size_t i = 0; i < fn.params.size(); ++i) {
+            if (i != 0) {
+                os << ", ";
+            }
+            if (fn.params[i]) {
+                os << "const ";
+                emit_type(os, *fn.params[i]);
+                os << "&";
+            }
+        }
+        os << ")";
+        return;
+    }
+    emit_type(os, t);
+    if (!trailing_qual.empty()) {
+        os << " " << trailing_qual;
+    }
+    os << " " << name;
 }
 
 void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
@@ -4209,6 +4292,35 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
             }
         }
         os << ">";
+        break;
+    }
+    case ast::NodeKind::FunctionType: {
+        // §A12 (§14.6.3) function-pointer type spelling. Source-level
+        // `(T1, T2) -> R` lowers to the C++ function-pointer
+        // `R(*)(const T1&, const T2&)`. The `const T&` wrapping
+        // mirrors the read-mode lowering of func decl parameters, so
+        // `&helper` types compatibly with a `(T) -> R` slot at the
+        // C++ ABI level. The using-row + throws-row are dropped here
+        // (Vestra effects have no C++ type-level representation in
+        // v0.5; they're audit metadata).
+        const auto& fn = static_cast<const ast::FunctionType&>(t);
+        if (fn.result) {
+            emit_type(os, *fn.result);
+        } else {
+            os << "void";
+        }
+        os << "(*)(";
+        for (std::size_t i = 0; i < fn.params.size(); ++i) {
+            if (i != 0) {
+                os << ", ";
+            }
+            if (fn.params[i]) {
+                os << "const ";
+                emit_type(os, *fn.params[i]);
+                os << "&";
+            }
+        }
+        os << ")";
         break;
     }
     default:

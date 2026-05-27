@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A12 follow-up (§14.6.3) — function-pointer type + `&func`.
+//
+// The Vestra function-pointer spelling is `(InTy, ...) -> OutTy`.
+// `&some_func` produces a value of that type. Function pointers
+// are the kernel's primary mechanism for dispatch tables: ISR
+// vector tables route hardware vectors to per-source handlers;
+// syscall tables route trap numbers to per-call handlers;
+// callback registrations let library code call back into user
+// code without inheritance or virtual dispatch.
+//
+// This example wires the dispatch-table pattern through three
+// candidate handlers — each one a plain Vestra function — and
+// a tiny `dispatch` driver that picks one by index. The bare
+// function name decays to its function-pointer at the C++
+// layer (the parser interprets `&` in a call-arg position as
+// the inout marker), so we pass `handler_a`, not `&handler_a`,
+// when registering. The `&` form works in non-call positions
+// (let-bindings, static initializers).
+
+module examples.fn_ptr_table
+
+// Three candidate handlers. Each one adds a fixed offset to
+// its argument — the runtime can tell which fired by checking
+// the return value.
+func handler_a(_ x: Int32) -> Int32 { return x + 10 }
+func handler_b(_ x: Int32) -> Int32 { return x + 100 }
+func handler_c(_ x: Int32) -> Int32 { return x + 1000 }
+
+// Build the dispatch table via let-binds with explicit
+// function-pointer types — this exercises the `R(*name)(T1)`
+// embedded-name C++ declarator path.
+func pick(_ idx: Int32, _ arg: Int32) -> Int32 {
+    let a: (Int32) -> Int32 = &handler_a
+    let b: (Int32) -> Int32 = &handler_b
+    let c: (Int32) -> Int32 = &handler_c
+    if idx == 0 {
+        return a(arg)
+    } else if idx == 1 {
+        return b(arg)
+    } else {
+        return c(arg)
+    }
+}
+
+// Pass-through: take a function pointer as a parameter and
+// invoke it. Mirrors the kernel pattern of "register this
+// callback for IRQ N" — the called function only knows the
+// signature, not which handler is wired in.
+func apply(_ f: (Int32) -> Int32, _ v: Int32) -> Int32 {
+    return f(v)
+}
+
+// Driver that exercises both shapes.
+func drive(_ idx: Int32, _ arg: Int32) -> Int32 {
+    let direct = pick(idx, arg)
+    let via_param = apply(handler_b, arg)
+    return direct + via_param
+}

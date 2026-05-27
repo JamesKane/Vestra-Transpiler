@@ -398,6 +398,35 @@ TEST_CASE("@repr(union) emits a C++ union with no default member initializers") 
     CHECK(out.header.find("std::uint32_t raw{};") == std::string::npos);
 }
 
+TEST_CASE("function-pointer let-binding lowers to R(*name)(T1) and call-through works") {
+    // §A12 follow-up (§14.6.3) — `(Int32) -> Int32` lowers to a C++
+    // function-pointer spelling with the variable name embedded in
+    // the parens. The param-mode lowering mirrors Vestra's default
+    // read-mode (`const T&`) so `&helper` is ABI-compatible with the
+    // slot. Calls through the slot stay as ordinary call expressions.
+    auto out = emit("func helper(_ x: Int32) -> Int32 { return x + 1 }\n"
+                    "func wire() -> Int32 {\n"
+                    "    let f: (Int32) -> Int32 = &helper\n"
+                    "    return f(7)\n"
+                    "}\n");
+    CHECK(out.source.find("std::int32_t(*f)(const std::int32_t&) = &helper") != std::string::npos);
+    CHECK(out.source.find("return f(7);") != std::string::npos);
+}
+
+TEST_CASE("function-pointer parameter type lowers to R(*name)(T1) on the parameter slot") {
+    auto out = emit("func helper(_ x: Int32) -> Int32 { return x + 1 }\n"
+                    "func apply(_ f: (Int32) -> Int32, _ v: Int32) -> Int32 { return f(v) }\n"
+                    "func wire() -> Int32 { return apply(helper, 41) }\n");
+    // The parameter signature lands as `std::int32_t(*f)(const std::int32_t&)`
+    // — the name embeds inside the parens so the declarator is
+    // well-formed, and the param-mode lowering matches helper's.
+    CHECK(out.source.find("std::int32_t(*f)(const std::int32_t&)") != std::string::npos);
+    // `helper` decays to its function pointer at the C++ layer; no
+    // explicit `&` is needed (and the parser would read `&` in a
+    // call-arg position as the inout marker instead).
+    CHECK(out.source.find("apply(helper, 41)") != std::string::npos);
+}
+
 TEST_CASE("@repr(union) composes with @repr(packed) sub-struct bit-fields") {
     auto out = emit("@repr(packed)\n"
                     "struct Bits {\n"

@@ -98,6 +98,16 @@ private:
     // bindings emitted inside the matching branch.
     void emit_match_value_scrutinee(std::ostream& os, const ast::MatchExpr& m);
     void emit_type(std::ostream& os, const ast::Type& t);
+    // §A12 (§14.6.3) function-pointer-aware "Type name" spelling. C++
+    // requires the variable name to be embedded inside the function-
+    // pointer parens (`R(*name)(T1, T2)`), not after the type-id; for
+    // non-function-pointer types this falls through to `emit_type` +
+    // the name. Used at every site that declares a variable / param
+    // / field of a function-pointer type.
+    void emit_type_with_name(std::ostream& os,
+                             const ast::Type& t,
+                             std::string_view name,
+                             std::string_view trailing_qual = "");
     // Emit the C++ spelling of a resolver-canonicalized type. Used in a
     // handful of places where the AST type isn't reachable (e.g. the
     // success-T slot of `std::expected<T, E>` for `do { ... } catch

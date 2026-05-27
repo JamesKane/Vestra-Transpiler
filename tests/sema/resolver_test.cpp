@@ -819,12 +819,26 @@ TEST_CASE("&decl on a non-static identifier is rejected") {
     CHECK(r.first_message.find("&decl operand must be a static or func") != std::string::npos);
 }
 
-TEST_CASE("&func is diagnosed as not-yet-supported") {
-    auto r = check_detail("func helper() -> Int32 { return 0 }\n"
-                          "func bad() -> Ptr[Int32] { return &helper }\n");
+TEST_CASE("&func types as the callee's function-pointer signature") {
+    // §A12 follow-up (§14.6.3) — `&some_func` has the function-pointer
+    // type matching the callee's signature. The result flows into a
+    // typed slot spelled `(T1, ...) -> R`; mismatched arities or
+    // result types are caught at the assignment site.
+    CHECK(check_errors("func helper(_ x: Int32) -> Int32 { return x }\n"
+                       "func wire() -> Int32 {\n"
+                       "    let f: (Int32) -> Int32 = &helper\n"
+                       "    return f(7)\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("&func with mismatched signature is rejected at the slot") {
+    auto r = check_detail("func helper(_ x: Int32) -> Int32 { return x }\n"
+                          "func bad() -> Int32 {\n"
+                          "    let f: (Int32, Int32) -> Int32 = &helper\n"
+                          "    return f(1, 2)\n"
+                          "}\n");
     CHECK(r.error_count >= 1);
-    CHECK(r.first_message.find("&func — address-of-function not yet supported")
-          != std::string::npos);
 }
 
 TEST_CASE("@extern admits the known calling conventions") {
