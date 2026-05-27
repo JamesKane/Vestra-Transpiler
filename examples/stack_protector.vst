@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A10 follow-up (§15.4 / §15.5) — `@stack_protector(...)` +
+// `--no-libc`.
+//
+// The two pieces cover the rest of §15.5's freestanding
+// profile. Together with the memcpy / memset / memmove
+// intrinsics from §A10's earlier slice, they make "zero
+// references to libc" a build-time guarantee — the marker
+// records the contract; the canary attribute names which
+// functions opt out of the canary check.
+//
+// `@stack_protector(.none | .strong | .all)` decorates an
+// individual function:
+//
+//   .none    Disable canary instrumentation. The C++ side
+//            lands [[gnu::no_stack_protector]] so the host
+//            compiler skips inserting the guard.
+//   .strong  Use the modern "strong" canary heuristic. v0.5
+//            emits no per-function attribute; the toolchain-
+//            wide `-fstack-protector-strong` flag is the
+//            correct place to set this.
+//   .all     Canary every function. Toolchain-wide concern;
+//            same v0.5 emission as .strong.
+//
+// `--no-libc` is the v0.5 form of the manifest flag
+// `profile.freestanding.no_libc = true`. The transpiler
+// writes `// vestra: no_libc = true` at the top of each
+// generated file; downstream link tooling can refuse to
+// satisfy any unlisted external symbol, and the queued
+// `vestra audit --no-libc` enumerator reads the marker to
+// know which builds it should walk.
+
+module examples.stack_protector
+
+// A critical path function the user marked `.none` so the
+// canary won't add a stack frame the kernel can't afford.
+// Common pattern for ISR handlers and atomic-store-only
+// helpers where the canary's read of __stack_chk_guard
+// would itself be a heap touch the regime forbids.
+@stack_protector(.none)
+func critical_path(_ x: Int32) -> Int32 {
+    return x * 2
+}
+
+// An ordinary function that should keep its canary. v0.5
+// emits no per-function attribute since `.strong` is the
+// compiler's default and there's no portable way to "force-
+// on" a canary on one function; the audit names the
+// attribute regardless.
+@stack_protector(.strong)
+func careful_path(_ x: Int32) -> Int32 {
+    return x + 100
+}

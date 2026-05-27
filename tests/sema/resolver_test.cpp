@@ -870,6 +870,27 @@ TEST_CASE("PerCpu[T] with a primitive inner") {
           == 0);
 }
 
+// ---- §A10 follow-up: @stack_protector (§15.4) ----------------------------
+
+TEST_CASE("@stack_protector admits .none / .strong / .all") {
+    CHECK(check_errors("@stack_protector(.none)\nfunc a() -> Int32 { return 0 }\n"
+                       "@stack_protector(.strong)\nfunc b() -> Int32 { return 0 }\n"
+                       "@stack_protector(.all)\nfunc c() -> Int32 { return 0 }\n")
+          == 0);
+}
+
+TEST_CASE("@stack_protector rejects unknown cases") {
+    auto r = check_detail("@stack_protector(.fast)\nfunc bad() -> Int32 { return 0 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@stack_protector(.fast)") != std::string::npos);
+}
+
+TEST_CASE("@stack_protector with no argument is rejected") {
+    auto r = check_detail("@stack_protector\nfunc bad() -> Int32 { return 0 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@stack_protector expects one of") != std::string::npos);
+}
+
 // ---- §A11 Padded[T] (§14.8) ----------------------------------------------
 
 TEST_CASE("Padded[T] resolves and .value returns T") {

@@ -1424,6 +1424,42 @@ set_tests_properties(e2e_mg_run PROPERTIES
     DEPENDS                e2e_mg_compile
     PASS_REGULAR_EXPRESSION "match_guards OK")
 
+# §A10 follow-up — @stack_protector + --no-libc (§15.4 / §15.5).
+# The transpile step passes --no-libc so the generated files
+# carry the freestanding marker; the compile step also greps
+# the header for the marker to verify it survived. Runtime
+# verifies both stack_protector-decorated functions still
+# behave correctly.
+set(e2e_sp_input  ${CMAKE_SOURCE_DIR}/examples/stack_protector.vst)
+set(e2e_sp_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_stack_protector.cpp)
+
+add_test(
+    NAME    e2e_sp_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_sp_input} -o ${e2e_workdir} --no-libc)
+
+add_test(
+    NAME    e2e_sp_marker
+    COMMAND grep -q "vestra: no_libc = true" ${e2e_workdir}/stack_protector.hpp)
+set_tests_properties(e2e_sp_marker PROPERTIES
+    DEPENDS e2e_sp_transpile)
+
+add_test(
+    NAME    e2e_sp_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_sp_driver} ${e2e_workdir}/stack_protector.cpp
+            -o ${e2e_workdir}/stack_protector_app)
+set_tests_properties(e2e_sp_compile PROPERTIES
+    DEPENDS e2e_sp_transpile)
+
+add_test(
+    NAME    e2e_sp_run
+    COMMAND ${e2e_workdir}/stack_protector_app)
+set_tests_properties(e2e_sp_run PROPERTIES
+    DEPENDS                e2e_sp_compile
+    PASS_REGULAR_EXPRESSION "stack_protector OK")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except

@@ -20,6 +20,12 @@ struct BuildOptions {
     bool dump_ast = false;   // print the AST printer's output
     bool dump_tokens = false;
     bool skip_check = false;  // skip sema (debug aid; emitter still runs)
+    // §A10 (§15.5) freestanding profile. `vestra build --no-libc` is
+    // v0.5's equivalent of the manifest flag `profile.freestanding.
+    // no_libc = true`; the emitter writes a marker comment in the
+    // generated header so downstream link / audit tooling sees the
+    // contract.
+    bool no_libc = false;
 };
 
 // Entry points for each `vestra` subcommand. Each returns a process exit code.

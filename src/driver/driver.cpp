@@ -31,9 +31,11 @@ constexpr std::string_view UsageText = R"(usage: vestra <subcommand> [options]
 
 Subcommands:
   build <file.vst> [-o DIR] [--emit-only] [--dump-ast] [--dump-tokens]
-                   [--skip-check]
+                   [--skip-check] [--no-libc]
         Parse, semantically check, then transpile a Vestra source file to
         C++ (.hpp + .cpp) under DIR. --skip-check elides sema (debug aid).
+        --no-libc marks the build as freestanding (§A10 §15.5): the
+        generated header opens with `// vestra: no_libc = true`.
   check <file.vst>
         Parse and run name resolution + type checking; print any diagnostics.
         Exits 0 on a clean check.
@@ -72,6 +74,8 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
                 opts.dump_tokens = true;
             } else if (a == "--skip-check") {
                 opts.skip_check = true;
+            } else if (a == "--no-libc") {
+                opts.no_libc = true;
             } else if (!a.empty() && a[0] != '-') {
                 opts.input = std::string{a};
             } else {
@@ -181,6 +185,7 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
     }
 
     codegen::CppEmitter emitter(rep, opts.skip_check ? nullptr : &resolver.resolution());
+    emitter.set_no_libc(opts.no_libc);
     auto basename = opts.input.stem().string();
     auto em = emitter.emit(unit, basename);
 

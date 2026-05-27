@@ -1032,6 +1032,23 @@ void Resolver::check_link_attributes(const std::vector<ast::Attribute>& attrs) {
                                      "or .protected",
                                      case_name));
             }
+        } else if (a.name == "stack_protector") {
+            // §A10 (§15.4) `@stack_protector(.none | .strong | .all)`
+            // selects canary instrumentation on a per-function basis.
+            // The leading-dot case-name pattern matches @inline /
+            // @visibility; the legal spellings come straight from the
+            // spec.
+            std::string_view case_name;
+            if (a.predicate != nullptr && a.predicate->kind == ast::NodeKind::LeadingDotExpr) {
+                case_name = static_cast<const ast::LeadingDotExpr&>(*a.predicate).name;
+            }
+            if (case_name.empty()) {
+                error_at(a.range, "@stack_protector expects one of .none, .strong, .all");
+            } else if (case_name != "none" && case_name != "strong" && case_name != "all") {
+                error_at(a.range,
+                         std::format("@stack_protector(.{}) — expected .none, .strong, or .all",
+                                     case_name));
+            }
         }
     }
 }

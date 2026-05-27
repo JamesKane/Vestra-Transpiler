@@ -868,6 +868,37 @@ TEST_CASE("PerCpu[T] lowers to __vstr::PerCpu<T> with .mine() accessor") {
           != std::string::npos);
 }
 
+TEST_CASE("--no-libc emits the freestanding profile marker in both files") {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto fid = sm.add_in_memory("<test>", "func id(_ x: Int32) -> Int32 { return x }\n");
+    vestra::lex::Lexer lex(sm, fid, rep);
+    auto tokens = lex.tokenize();
+    vestra::parse::Parser p(tokens, rep);
+    auto unit = p.parse_unit();
+    REQUIRE_FALSE(rep.has_errors());
+    vestra::codegen::CppEmitter em(rep);
+    em.set_no_libc(true);
+    auto out = em.emit(unit, "test");
+    // The marker rides at the top of both header and source so link
+    // tooling and `vestra audit --no-libc` can see the contract on
+    // either artifact alone.
+    CHECK(out.header.find("// vestra: no_libc = true") != std::string::npos);
+    CHECK(out.source.find("// vestra: no_libc = true") != std::string::npos);
+}
+
+TEST_CASE("@stack_protector(.none) emits [[gnu::no_stack_protector]]") {
+    auto out = emit("@stack_protector(.none)\n"
+                    "func crit() -> Int32 { return 42 }\n"
+                    "@stack_protector(.strong)\n"
+                    "func careful() -> Int32 { return 100 }\n");
+    // .none suppresses canary instrumentation on this function.
+    CHECK(out.source.find("[[gnu::no_stack_protector]] std::int32_t crit()") != std::string::npos);
+    // .strong / .all map to compiler default (no per-function attr).
+    CHECK(out.source.find("std::int32_t careful()") != std::string::npos);
+    CHECK(out.source.find("no_stack_protector]] std::int32_t careful") == std::string::npos);
+}
+
 TEST_CASE("Padded[T] lowers to __vstr::Padded<T> with cache-line alignment") {
     auto out = emit("@noinit static slot: Padded[UInt64]\n"
                     "func read_it() -> UInt64 { return slot.value }\n");

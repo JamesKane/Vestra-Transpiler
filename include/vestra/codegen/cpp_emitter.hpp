@@ -39,6 +39,12 @@ public:
                         const sema::Resolution* resolution = nullptr)
         : reporter_(&reporter), resolution_(resolution) {}
 
+    // §A10 (§15.5) freestanding profile marker. When set, the
+    // generated header opens with a `// vestra: no_libc = true`
+    // comment so downstream link checkers (and the v0.6
+    // `vestra audit --no-libc` enumerator) can see the contract.
+    void set_no_libc(bool v) { no_libc_ = v; }
+
     [[nodiscard]] EmittedUnit emit(const ast::CompilationUnit& unit,
                                    std::string_view output_basename);
 
@@ -216,6 +222,7 @@ private:
 
     diag::DiagnosticReporter* reporter_;
     const sema::Resolution* resolution_ = nullptr;
+    bool no_libc_ = false;
 
     // §12.3 derive layer: a target-type-name → derived-protocol-name
     // index built up front from every `derive(...) for T` top-level
