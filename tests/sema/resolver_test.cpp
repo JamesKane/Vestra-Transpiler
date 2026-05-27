@@ -1010,6 +1010,36 @@ TEST_CASE("@bits on a direct @repr(union) member is rejected") {
     CHECK(r.first_message.find("@bits on a direct member of @repr(union)") != std::string::npos);
 }
 
+// ---- §A8 follow-up: typed vector tables (§14.5.3) ------------------------
+
+TEST_CASE("vector-table static of @interrupt(T) accepts ISR-shaped functions") {
+    CHECK(check_errors("struct TrapFrame { var x: UInt64 }\n"
+                       "@interrupt\n"
+                       "func a(_ f: inout TrapFrame) { f.x = 1 }\n"
+                       "@interrupt\n"
+                       "func b(_ f: inout TrapFrame) { f.x = 2 }\n"
+                       "@interrupt\n"
+                       "func c(_ f: inout TrapFrame) { f.x = 3 }\n"
+                       "@interrupt\n"
+                       "func d(_ f: inout TrapFrame) { f.x = 4 }\n"
+                       "static vt: [4]@interrupt(TrapFrame) = [a, b, c, d]\n")
+          == 0);
+}
+
+TEST_CASE("vector-table slot rejects a function with mismatched trap-frame type") {
+    auto r = check_detail("struct TrapFrame { var x: UInt64 }\n"
+                          "struct OtherFrame { var y: UInt64 }\n"
+                          "@interrupt\n"
+                          "func a(_ f: inout OtherFrame) { f.y = 1 }\n"
+                          "static vt: [1]@interrupt(TrapFrame) = [a]\n");
+    CHECK(r.error_count >= 1);
+}
+
+TEST_CASE("@interrupt(T) in a non-type position is rejected") {
+    auto r = check_detail("func bad() -> Int32 { let x: @interrupt = 0; return 0 }\n");
+    CHECK(r.error_count >= 1);
+}
+
 TEST_CASE("derive(Eq) on a @repr(union) struct is rejected") {
     auto r = check_detail("@repr(union)\n"
                           "struct Cell {\n"

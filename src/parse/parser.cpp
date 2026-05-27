@@ -942,6 +942,24 @@ ast::TypePtr Parser::parse_type() {
         d->inner = parse_type();
         d->range = merge(start, last_range());
         base = std::move(d);
+    } else if (check(TokenKind::At)) {
+        // §A8 (§14.5.3) `@interrupt(T)` in type position — vector-table
+        // slot type. Only `@interrupt` is admitted here in v0.5; every
+        // other attribute is a decl-level annotation, not a type form.
+        advance();  // '@'
+        if (!check(TokenKind::Identifier) || peek().lexeme != "interrupt") {
+            emit_error(peek().range,
+                       "expected 'interrupt' after '@' in type position "
+                       "(only @interrupt(T) is admitted as a type)");
+        } else {
+            advance();  // 'interrupt'
+        }
+        expect(TokenKind::LParen, "'(' after @interrupt");
+        auto it = std::make_unique<ast::InterruptType>();
+        it->trap_frame = parse_type();
+        expect(TokenKind::RParen, "')' after @interrupt(T)");
+        it->range = merge(start, last_range());
+        base = std::move(it);
     } else if (match(TokenKind::LBracket)) {
         // [N]T  — fixed vector
         auto v = std::make_unique<ast::VectorType>();

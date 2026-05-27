@@ -1201,6 +1201,39 @@ set_tests_properties(e2e_fn_ptr_run PROPERTIES
     DEPENDS                e2e_fn_ptr_compile
     PASS_REGULAR_EXPRESSION "fn_ptr_table OK")
 
+# §A8 follow-up — typed vector tables (§14.5.3). The Vestra
+# spelling `[N]@interrupt(T)` is a fixed-length array of ISR
+# slots; each slot is an @interrupt-attributed function with
+# shape `(inout T) -> Unit`. Codegen emits a `std::array<void(
+# *)(T&), N>` with a brace-init list of function names that
+# decay to function pointers at the C++ layer. The runtime
+# dispatches manually through the table by index, mimicking
+# what hardware does on a real exception vector entry, and
+# verifies each slot fires the right handler.
+set(e2e_vec_table_input  ${CMAKE_SOURCE_DIR}/examples/vec_table.vst)
+set(e2e_vec_table_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_vec_table.cpp)
+
+add_test(
+    NAME    e2e_vec_table_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_vec_table_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_vec_table_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_vec_table_driver} ${e2e_workdir}/vec_table.cpp
+            -o ${e2e_workdir}/vec_table_app)
+set_tests_properties(e2e_vec_table_compile PROPERTIES
+    DEPENDS e2e_vec_table_transpile)
+
+add_test(
+    NAME    e2e_vec_table_run
+    COMMAND ${e2e_workdir}/vec_table_app)
+set_tests_properties(e2e_vec_table_run PROPERTIES
+    DEPENDS                e2e_vec_table_compile
+    PASS_REGULAR_EXPRESSION "vec_table OK")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except

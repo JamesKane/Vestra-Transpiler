@@ -81,6 +81,14 @@ enum class TypeKind : std::uint16_t {
     // 64-byte-padded slot, the kernel target swaps the storage for
     // `[MAX_HARTS]Padded[T]`.
     PerCpu,
+    // §A8 (§14.5.3) vector-table slot type — `@interrupt(T)` in a
+    // type position. Equivalent at the C++ layer to a function-
+    // pointer with shape `(inout T) -> Unit`, but tracked as a
+    // distinct kind so sema can enforce the ISR-shape rules at
+    // assignment sites (the only valid value is `&fn` where fn is
+    // an @interrupt-attributed function whose first param is `inout
+    // T` and whose return is Unit).
+    InterruptHandler,
     // §9 iterator combinators. `ZipIter[A, B]` yields `(A, B)` tuples;
     // `TakeIter[A]` yields up to N values of A. Both expose a
     // synthetic `next() -> Element?` so the existing iterator-protocol
@@ -195,6 +203,7 @@ public:
     [[nodiscard]] TypePtr make_mmio_view(TypePtr inner);
     [[nodiscard]] TypePtr make_mmio_region(TypePtr inner);
     [[nodiscard]] TypePtr make_mmio_wire_view(TypePtr inner);
+    [[nodiscard]] TypePtr make_interrupt_handler(TypePtr inner);
     // §A11 (§14.8) per-CPU storage over Trivial T.
     [[nodiscard]] TypePtr make_per_cpu(TypePtr inner);
     // §9 iterator-combinator types. ZipIter[A, B] tracks the *element*

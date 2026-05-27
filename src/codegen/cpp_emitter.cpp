@@ -2923,6 +2923,26 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         os << "}";
         break;
     }
+    case ast::NodeKind::VectorLitExpr: {
+        // §13 / §A8 `[e1, e2, …]` lowers to a C++ brace-init list. The
+        // surrounding declaration provides the target type
+        // (`std::array<T, N>` for a `[N]T` decl), so a bare brace-list
+        // suffices — list-initialization picks up the aggregate ctor
+        // and the function-name-decays-to-pointer rule covers the
+        // vector-table case where each element is a bare ISR name.
+        const auto& v = static_cast<const ast::VectorLitExpr&>(e);
+        os << "{";
+        for (std::size_t i = 0; i < v.elements.size(); ++i) {
+            if (i != 0) {
+                os << ", ";
+            }
+            if (v.elements[i]) {
+                emit_expr(os, *v.elements[i]);
+            }
+        }
+        os << "}";
+        break;
+    }
     case ast::NodeKind::UnaryExpr: {
         const auto& u = static_cast<const ast::UnaryExpr&>(e);
         if (u.op == ast::UnaryOp::Unwrap) {
@@ -3998,6 +4018,15 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         emit_sema_type(os, t->inner());
         os << ">";
         return;
+    case TypeKind::InterruptHandler:
+        // §A8 (§14.5.3) vector-table slot — `void(*)(T&)`. Type-id
+        // form; the declarator-name form is emit_type_with_name's
+        // job. This branch fires inside `std::array<…, N>` template
+        // args at the static decl site, where we want the type-id.
+        os << "void(*)(";
+        emit_sema_type(os, t->inner());
+        os << "&)";
+        return;
     case TypeKind::Atomic:
         os << "std::atomic<";
         emit_sema_type(os, t->inner());
@@ -4132,6 +4161,21 @@ void CppEmitter::emit_type_with_name(std::ostream& os,
                 emit_type(os, *fn.params[i]);
                 os << "&";
             }
+        }
+        os << ")";
+        return;
+    }
+    if (t.kind == ast::NodeKind::InterruptType) {
+        // §A8 (§14.5.3) vector-table slot. Lowers to `void(*name)(T&)`
+        // — the trap-frame is passed by mutable reference because
+        // the ISR mutates register state in place. The declarator
+        // embeds the variable name inside the parens, matching the
+        // function-pointer-declarator pattern from §A12.
+        const auto& it = static_cast<const ast::InterruptType&>(t);
+        os << "void(*" << trailing_qual << name << ")(";
+        if (it.trap_frame) {
+            emit_type(os, *it.trap_frame);
+            os << "&";
         }
         os << ")";
         return;
@@ -4319,6 +4363,20 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
                 emit_type(os, *fn.params[i]);
                 os << "&";
             }
+        }
+        os << ")";
+        break;
+    }
+    case ast::NodeKind::InterruptType: {
+        // §A8 (§14.5.3) vector-table slot type — type-id form, no
+        // declarator name (`void(*)(T&)`). Useful for `using` aliases
+        // and template-argument positions like `std::array<...>`.
+        // The declarator form lives in `emit_type_with_name`.
+        const auto& it = static_cast<const ast::InterruptType&>(t);
+        os << "void(*)(";
+        if (it.trap_frame) {
+            emit_type(os, *it.trap_frame);
+            os << "&";
         }
         os << ")";
         break;

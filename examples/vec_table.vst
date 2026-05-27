@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A8 follow-up (§14.5.3) — typed vector tables.
+//
+// A vector table is a fixed-length array of ISR slots. The kernel
+// writes the table's base address to a target-specific register
+// (`VBAR_EL1` on aarch64, the IDT register on x86, `stvec` on
+// RISC-V) at boot; hardware dispatches each exception class to
+// the slot at the matching offset.
+//
+// Vestra spells the table type as `[N]@interrupt(T)`. Each slot
+// is an ISR-shaped function: `@interrupt`-attributed, exactly
+// one `inout T` parameter, no return type, no `using Alloc /
+// Async / Extern` row. The first slice of §A8 validated those
+// shape rules on each ISR; this slice validates the table itself
+// — the array literal is a brace-list of bare ISR names that
+// the type system checks against the slot type.
+//
+// On hosted v0.5 builds the table is plain C++ data with no
+// special layout (the kernel target adds the per-slot stride
+// alignment + sub-section emission from §14.5.3 step 1). The
+// runtime in this example dispatches manually through the
+// table by index, mimicking what hardware does on a real
+// vector entry.
+
+module examples.vec_table
+
+// Fake trap frame. The real aarch64 frame has 31 GPRs + SP +
+// PC + PSTATE; this slim version is enough to demonstrate
+// that an ISR can mutate the frame and the dispatch loop can
+// observe the change.
+struct TrapFrame {
+    var x0: UInt64
+    var which: UInt32
+}
+
+// Four sentinel ISRs. Each writes its own marker into the trap
+// frame so the dispatch loop can verify the right slot fired.
+@interrupt
+func sync_el1(_ frame: inout TrapFrame) {
+    frame.x0 = 0xA1A1A1A1
+    frame.which = 0
+}
+
+@interrupt
+func irq_el1(_ frame: inout TrapFrame) {
+    frame.x0 = 0xB2B2B2B2
+    frame.which = 1
+}
+
+@interrupt
+func fiq_el1(_ frame: inout TrapFrame) {
+    frame.x0 = 0xC3C3C3C3
+    frame.which = 2
+}
+
+@interrupt
+func serror_el1(_ frame: inout TrapFrame) {
+    frame.x0 = 0xD4D4D4D4
+    frame.which = 3
+}
+
+// The vector table. The @section / @align attributes that the
+// kernel target needs (`__VBAR_EL1`-style 2K alignment) are
+// link-time data; the v0.5 hosted build drops them since the
+// host platform's section format differs across darwin / linux
+// and the e2e doesn't need them to validate the dispatch
+// semantics.
+static aarch64VecTable: [4]@interrupt(TrapFrame) = [
+    sync_el1, irq_el1, fiq_el1, serror_el1
+]

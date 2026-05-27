@@ -1548,6 +1548,42 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         t = types_->make_tuple(std::move(parts));
         break;
     }
+    case ast::NodeKind::VectorLitExpr: {
+        // §13 `[e1, e2, ...]` literal. Static decls with `[N]T`
+        // annotations (including §A8's `[N]@interrupt(T)` vector
+        // tables) push T down as the element-type hint so each
+        // element type-checks against the slot type — catching
+        // mismatched ISRs at the assignment site rather than deep
+        // in C++. Without an annotation we fall back to inferring
+        // the element type from the first element.
+        const auto& vl = static_cast<const ast::VectorLitExpr&>(e);
+        TypePtr elem_hint = (expected != nullptr && expected->kind() == TypeKind::Vector)
+                                ? expected->inner()
+                                : nullptr;
+        TypePtr elem_type = elem_hint;
+        for (std::size_t i = 0; i < vl.elements.size(); ++i) {
+            if (vl.elements[i] == nullptr) {
+                continue;
+            }
+            TypePtr et = check_expr(*vl.elements[i], elem_hint);
+            if (elem_type == nullptr) {
+                elem_type = et;
+            }
+            if (elem_hint != nullptr && !TypeArena::assignable(et, elem_hint)) {
+                error_at(vl.elements[i]->range,
+                         std::format("vector element {} of type {} does not match "
+                                     "expected element type {}",
+                                     i,
+                                     et != nullptr ? et->describe() : "?",
+                                     elem_hint->describe()));
+            }
+        }
+        if (elem_type == nullptr) {
+            elem_type = types_->error();
+        }
+        t = types_->make_vector(static_cast<std::int64_t>(vl.elements.size()), elem_type);
+        break;
+    }
     case ast::NodeKind::UnaryExpr:
         t = check_unary(static_cast<const ast::UnaryExpr&>(e), expected);
         break;
@@ -3221,6 +3257,16 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
     case ast::NodeKind::DynType: {
         const auto& d = static_cast<const ast::DynType&>(t);
         return d.inner ? resolve_type(*d.inner) : types_->error();
+    }
+    case ast::NodeKind::InterruptType: {
+        // §A8 (§14.5.3) vector-table slot type. The inner T is the
+        // trap-frame struct passed by `inout` to each ISR. Sema
+        // type-checks assignments to this slot against the @interrupt
+        // ISR-shape rules at the assignment site (see check_expr's
+        // AddressOfExpr / IdentExpr path for the actual matching).
+        const auto& it = static_cast<const ast::InterruptType&>(t);
+        TypePtr T = it.trap_frame ? resolve_type(*it.trap_frame) : types_->error();
+        return types_->make_interrupt_handler(T);
     }
     default:
         return types_->error();

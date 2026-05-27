@@ -141,6 +141,9 @@ std::string Type::describe() const {
                       : std::string{"MmioWireView"};
     case TypeKind::PerCpu:
         return inner_ ? std::format("PerCpu[{}]", inner_->describe()) : std::string{"PerCpu"};
+    case TypeKind::InterruptHandler:
+        return inner_ ? std::format("@interrupt({})", inner_->describe())
+                      : std::string{"@interrupt"};
     case TypeKind::ZipIter: {
         std::string a = (parts_.size() >= 1 && parts_[0]) ? parts_[0]->describe() : "?";
         std::string b = (parts_.size() >= 2 && parts_[1]) ? parts_[1]->describe() : "?";
@@ -314,6 +317,14 @@ TypePtr TypeArena::make_mmio_wire_view(TypePtr inner) {
     return p;
 }
 
+TypePtr TypeArena::make_interrupt_handler(TypePtr inner) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::InterruptHandler));
+    t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
 TypePtr TypeArena::make_per_cpu(TypePtr inner) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::PerCpu));
     t->inner_ = inner;
@@ -472,6 +483,7 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     case TypeKind::MmioRegion:
     case TypeKind::MmioWireView:
     case TypeKind::PerCpu:
+    case TypeKind::InterruptHandler:
     case TypeKind::TakeIter:
     case TypeKind::FilterIter:
     case TypeKind::Atomic:
@@ -602,6 +614,18 @@ bool TypeArena::assignable(TypePtr from, TypePtr to) noexcept {
             return true;
         }
     }
+    // §A8 (§14.5.3) vector-table slot. An InterruptHandler<T> slot
+    // accepts any function whose source type is `(T) -> Unit`. The
+    // @interrupt attribute and inout-param requirement are validated
+    // at the function definition site already; the type system here
+    // is the shape gate so a stray helper with the wrong signature
+    // fails at the array-literal assignment, not deep in codegen.
+    if (to->kind() == TypeKind::InterruptHandler && to->inner() != nullptr
+        && from->kind() == TypeKind::Function && from->parts().size() == 1
+        && from->result() != nullptr && from->result()->kind() == TypeKind::Unit
+        && equal(from->parts()[0], to->inner())) {
+        return true;
+    }
     return equal(from, to);
 }
 
@@ -653,6 +677,10 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::PerCpu: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_per_cpu(inner);
+    }
+    case TypeKind::InterruptHandler: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_interrupt_handler(inner);
     }
     case TypeKind::TakeIter: {
         auto inner = substitute(t->inner(), bindings);

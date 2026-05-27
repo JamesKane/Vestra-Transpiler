@@ -39,6 +39,7 @@ enum class NodeKind : std::uint16_t {
     TupleType,
     SomeType,
     DynType,
+    InterruptType,
     // ---- statements ----
     LetStmt,
     VarStmt,
@@ -287,6 +288,16 @@ struct FunctionType : Type {
     Effects effects;
     TypePtr result;
     FunctionType() : Type(NodeKind::FunctionType) {}
+};
+
+// §A8 (§14.5.3) `@interrupt(T)` in type position — a vector-table
+// slot type. Internally equivalent to a function-pointer with shape
+// `(inout T) -> Unit` plus the audit-track marker that each slot is
+// an ISR. Used in static arrays like
+// `[16]@interrupt(AArch64TrapFrame)`.
+struct InterruptType : Type {
+    TypePtr trap_frame;
+    InterruptType() : Type(NodeKind::InterruptType) {}
 };
 
 struct TupleType : Type {

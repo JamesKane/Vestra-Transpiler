@@ -413,6 +413,32 @@ TEST_CASE("function-pointer let-binding lowers to R(*name)(T1) and call-through 
     CHECK(out.source.find("return f(7);") != std::string::npos);
 }
 
+TEST_CASE("vector-table static lowers to std::array<void(*)(T&), N> with brace-init") {
+    // §A8 (§14.5.3) — `[N]@interrupt(T)` is a typed vector table.
+    // Codegen emits the array type with a `void(*)(T&)` slot and a
+    // brace-init list of bare function names; the names decay to
+    // function pointers at the C++ layer.
+    auto out = emit("struct TrapFrame { var x: UInt64 }\n"
+                    "@interrupt\n"
+                    "func a(_ f: inout TrapFrame) { f.x = 1 }\n"
+                    "@interrupt\n"
+                    "func b(_ f: inout TrapFrame) { f.x = 2 }\n"
+                    "static vt: [2]@interrupt(TrapFrame) = [a, b]\n");
+    CHECK(out.header.find("std::array<void(*)(TrapFrame&), 2> vt = {a, b};") != std::string::npos);
+}
+
+TEST_CASE("vector-table @section + @align attributes attach to the static") {
+    auto out = emit("struct TrapFrame { var x: UInt64 }\n"
+                    "@interrupt\n"
+                    "func a(_ f: inout TrapFrame) { f.x = 1 }\n"
+                    "@section(\"__TEXT,__vt\") @align(128)\n"
+                    "static vt: [1]@interrupt(TrapFrame) = [a]\n");
+    // The link-time attributes ride alongside the static; the slot
+    // shape stays the same.
+    CHECK(out.header.find("gnu::section(\"__TEXT,__vt\")") != std::string::npos);
+    CHECK(out.header.find("std::array<void(*)(TrapFrame&), 1> vt") != std::string::npos);
+}
+
 TEST_CASE("function-pointer parameter type lowers to R(*name)(T1) on the parameter slot") {
     auto out = emit("func helper(_ x: Int32) -> Int32 { return x + 1 }\n"
                     "func apply(_ f: (Int32) -> Int32, _ v: Int32) -> Int32 { return f(v) }\n"
