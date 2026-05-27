@@ -621,15 +621,21 @@ struct WhileStmt : Stmt {
 
 struct WithBinding {
     // §17.4 admits three w-bind shapes:
-    //   `with TYPE { ... }`         — marker capability (no value, no name)
-    //   `with TYPE = EXPR { ... }`  — capability satisfaction with a value
-    //   `with name = EXPR { ... }`  — value binding (no capability)
-    // The parser disambiguates the third shape by the leading
-    // identifier's first letter: lowercase → name binding; uppercase
-    // → capability type. When `name` is non-empty, `cap_type` stays
-    // null and only the value's lexical scope matters.
+    //   `with TYPE { ... }`              — marker capability (no value, no name)
+    //   `with TYPE = EXPR { ... }`       — capability satisfaction with a value
+    //   `with name = EXPR { ... }`       — value binding (no capability)
+    //   `with name: T = EXPR { ... }`    — value binding with type annotation
+    // The parser disambiguates the third / fourth shape by the
+    // leading identifier's first letter: lowercase → name binding;
+    // uppercase → capability type. When `name` is non-empty,
+    // `cap_type` stays null and only the value's lexical scope
+    // matters. `type_annotation` is optional even on the name-
+    // binding shape; when set, sema checks the value's type against
+    // it and codegen emits the annotation in the C++ declarator
+    // instead of `auto&&`.
     std::string name;
     TypePtr cap_type;
+    TypePtr type_annotation;
     ExprPtr value;
 };
 

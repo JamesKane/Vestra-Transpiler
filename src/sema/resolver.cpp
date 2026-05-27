@@ -1544,15 +1544,32 @@ void Resolver::check_stmt(const ast::Stmt& s) {
         const auto& w = static_cast<const ast::WithStmt&>(s);
         ScopeStack::Guard g(scopes_);
         for (const auto& b : w.bindings) {
+            // §17.4 type annotation on a name-binding (`with NAME: T
+            // = EXPR`). When present, push T down as the value
+            // check's expected type so an integer literal adopts the
+            // annotated width, then assignability-check the result.
+            TypePtr annotation = b.type_annotation ? resolve_type(*b.type_annotation) : nullptr;
             TypePtr value_t = nullptr;
             if (b.value) {
-                value_t = check_expr(*b.value);
+                value_t = check_expr(*b.value, annotation);
+            }
+            if (annotation != nullptr && value_t != nullptr
+                && !TypeArena::assignable(value_t, annotation)) {
+                error_at(b.value ? b.value->range : s.range,
+                         std::format("with-binding value of type {} does not match "
+                                     "annotation {}",
+                                     value_t->describe(),
+                                     annotation->describe()));
             }
             if (!b.name.empty()) {
                 Symbol sym;
                 sym.name = b.name;
                 sym.kind = SymbolKind::Local;
-                sym.type = value_t != nullptr ? value_t : types_->error();
+                // Honor the annotation as the binding's declared
+                // type when present; otherwise fall back to the
+                // value's inferred type.
+                sym.type = annotation != nullptr ? annotation
+                                                 : (value_t != nullptr ? value_t : types_->error());
                 sym.definition_range = {};
                 if (auto* prev = g.scope().insert(std::move(sym))) {
                     duplicate_definition(*prev, b.name, {});

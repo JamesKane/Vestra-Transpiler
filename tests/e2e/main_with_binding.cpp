@@ -21,6 +21,12 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // annotated(): size(100) / width(32) = 3 (integer div).
+    if (annotated() != 3) {
+        std::println("annotated wrong: {}", annotated());
+        return EXIT_FAILURE;
+    }
+
     std::println("with binding OK");
     return EXIT_SUCCESS;
 }

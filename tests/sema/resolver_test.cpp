@@ -1609,6 +1609,27 @@ TEST_CASE("with-binding name is visible inside the block body") {
           == 0);
 }
 
+TEST_CASE("with-binding admits a type annotation: `with x: T = expr`") {
+    CHECK(check_errors("func mk() -> Int32 { return 7 }\n"
+                       "func wire() -> Int32 {\n"
+                       "    with x: Int32 = mk() {\n"
+                       "        return x * 2\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("with-binding type annotation rejects a value of the wrong type") {
+    auto r = check_detail("func wire() -> Int32 {\n"
+                          "    with x: Int32 = \"wrong\" {\n"
+                          "        return 0\n"
+                          "    }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("with-binding value of type") != std::string::npos);
+    CHECK(r.first_message.find("does not match annotation Int32") != std::string::npos);
+}
+
 TEST_CASE("with-binding name does not leak past the block") {
     auto r = check_detail("struct R { var x: Int32 }\n"
                           "func mk() -> R { return R(x: 42) }\n"

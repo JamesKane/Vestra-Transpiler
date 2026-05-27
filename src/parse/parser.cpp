@@ -1270,12 +1270,26 @@ ast::StmtPtr Parser::parse_statement() {
         auto w = std::make_unique<ast::WithStmt>();
         do {
             ast::WithBinding b;
+            // §17.4 disambiguator: a lowercase-leading identifier
+            // followed by `=` *or* `:` is the name-binding shape
+            // (with or without an explicit type annotation). Vestra
+            // casing convention pins types PascalCase and identifiers
+            // camelCase, so the leading-letter test is unambiguous.
             const bool name_binding =
-                check(TokenKind::Identifier) && peek(1).kind == TokenKind::Assign
+                check(TokenKind::Identifier)
+                && (peek(1).kind == TokenKind::Assign || peek(1).kind == TokenKind::Colon)
                 && !peek().lexeme.empty()
                 && (peek().lexeme.front() >= 'a' && peek().lexeme.front() <= 'z');
             if (name_binding) {
                 b.name = std::string{advance().lexeme};
+                // §17.4 optional type annotation: `with NAME: T = EXPR`.
+                // The annotation is useful when the user wants the
+                // binding's type spelled out at the source (and at the
+                // C++ layer) instead of `auto&&`'s inferred form. Sema
+                // type-checks the value against the annotation.
+                if (match(TokenKind::Colon)) {
+                    b.type_annotation = parse_type();
+                }
                 expect(TokenKind::Assign, "'=' in `with name = expr` binding");
                 b.value = parse_expr();
             } else {

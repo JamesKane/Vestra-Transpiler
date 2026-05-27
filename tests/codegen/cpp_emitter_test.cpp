@@ -1460,6 +1460,17 @@ TEST_CASE("take(xs, n) lowers via CTAD and casts the count to std::int64_t") {
 
 // ---- §17.4 with name = expr { ... } binding ------------------------------
 
+TEST_CASE("with-binding annotation emits the declared type instead of auto&&") {
+    SemaEmitFixture f("func mk() -> Int32 { return 7 }\n"
+                      "func wire() -> Int32 {\n"
+                      "    with x: Int32 = mk() {\n"
+                      "        return x * 2\n"
+                      "    }\n"
+                      "}\n");
+    CHECK(f.out.source.find("std::int32_t x = mk();") != std::string::npos);
+    CHECK(f.out.source.find("auto&& x =") == std::string::npos);
+}
+
 TEST_CASE("with-binding emits a sub-scope with `auto&& NAME = EXPR;`") {
     SemaEmitFixture f("struct R { var x: Int32 }\n"
                       "func mk() -> R { return R(x: 42) }\n"

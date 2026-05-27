@@ -54,3 +54,21 @@ func nested(_ a: Int32, _ b: Int32) -> Int32 {
         }
     }
 }
+
+// Type-annotated bindings: `with NAME: T = EXPR { ... }`. The
+// annotation pins the binding's declared type at the C++ layer
+// instead of the `auto&&`'s inferred form. Useful when:
+//   - the expression is an integer literal whose width should
+//     match the slot type (annotation pushes the expected type
+//     down so `42` adopts `UInt64` instead of defaulting to `Int`),
+//   - the user wants the binding's type visible at the source
+//     for readability across longer blocks,
+//   - sema should reject a value whose type doesn't match the
+//     intent.
+func annotated() -> Int32 {
+    with size: Int32 = 100 {
+        with width: Int32 = 32 {
+            return size / width
+        }
+    }
+}

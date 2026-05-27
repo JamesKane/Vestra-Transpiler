@@ -2820,7 +2820,18 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         for (const auto& b : w.bindings) {
             if (!b.name.empty() && b.value) {
                 write_indent(os, indent + 1);
-                os << "auto&& " << b.name << " = ";
+                // §17.4 type annotation on a name-binding: emit the
+                // declared type instead of `auto&&` so the user's
+                // intent shows up at the C++ layer. The function-
+                // pointer declarator quirk (where the name embeds
+                // inside the parens) is handled by
+                // emit_type_with_name.
+                if (b.type_annotation) {
+                    emit_type_with_name(os, *b.type_annotation, b.name);
+                    os << " = ";
+                } else {
+                    os << "auto&& " << b.name << " = ";
+                }
                 emit_expr(os, *b.value);
                 os << ";\n";
             }
