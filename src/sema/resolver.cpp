@@ -3691,13 +3691,30 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
     // call's mutating-receiver discipline is handled the same way
     // Atomic gets the inout-on-static exemption — the C++-layer
     // `mine()` returns a reference.
-    // §14.12 SysregHandle: `.read() -> T` and `.write(T) -> Unit`.
-    // Calls discharge Asm at the call site (gated in capability.cpp
-    // via the SysregHandle base type).
+    // §14.12 SysregHandle (RW): `.read() -> T` and `.write(T) ->
+    // Unit`. Both methods discharge Asm at the call site (gated in
+    // capability.cpp via the SysregHandle base type).
     if (owner_type->kind() == TypeKind::SysregHandle && owner_type->inner() != nullptr) {
         if (name == "read") {
             return types_->make_function({}, owner_type->inner());
         }
+        if (name == "write") {
+            return types_->make_function({owner_type->inner()}, types_->unit());
+        }
+    }
+    // §14.12.1 ReadOnlySysreg: only `.read()` admits. A `.write(v)`
+    // call on a RO handle falls through to the no-such-method error
+    // path, which produces a typed diagnostic naming the kind so
+    // the user knows why `Sysreg.midr_el1.write(v)` failed compile.
+    if (owner_type->kind() == TypeKind::SysregHandleRO && owner_type->inner() != nullptr) {
+        if (name == "read") {
+            return types_->make_function({}, owner_type->inner());
+        }
+    }
+    // §14.12.1 WriteOnlySysreg: only `.write(v)` admits. The v0.5
+    // canonical name set has no WO members but the kind is reachable
+    // once the kernel target's table extends the registered set.
+    if (owner_type->kind() == TypeKind::SysregHandleWO && owner_type->inner() != nullptr) {
         if (name == "write") {
             return types_->make_function({owner_type->inner()}, types_->unit());
         }
@@ -3906,15 +3923,30 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
     if (m.base->kind == ast::NodeKind::IdentExpr) {
         const auto& base_ident = static_cast<const ast::IdentExpr&>(*m.base);
         if (base_ident.name == "Sysreg" && scopes_.current().lookup("Sysreg") == nullptr) {
-            static const std::unordered_set<std::string_view> canonical_sysregs = {
+            // v0.5 target-description table. Read-only entries are
+            // identification / clock-frequency reads that have no
+            // architectural write path: MIDR_EL1 carries the CPU
+            // model ID, CNTFRQ_EL0 is the system counter frequency
+            // (firmware-set at boot). The kernel target extends both
+            // sets with the full per-architecture lists; the WO set
+            // is empty in v0.5's canonical subset but the TypeKind
+            // is reachable for the wider name set the kernel needs.
+            static const std::unordered_set<std::string_view> sysregs_ro = {
                 "midr_el1",
+                "cntfrq_el0",
+            };
+            static const std::unordered_set<std::string_view> sysregs_rw = {
                 "daif",
                 "sctlr_el1",
                 "vbar_el1",
                 "ttbr0_el1",
-                "cntfrq_el0",
             };
-            if (!canonical_sysregs.contains(m.member)) {
+            TypeKind kind;
+            if (sysregs_ro.contains(m.member)) {
+                kind = TypeKind::SysregHandleRO;
+            } else if (sysregs_rw.contains(m.member)) {
+                kind = TypeKind::SysregHandle;
+            } else {
                 error_at(m.range,
                          std::format("Sysreg.{} — unknown system register; v0.5 admits "
                                      "midr_el1 / daif / sctlr_el1 / vbar_el1 / ttbr0_el1 / "
@@ -3922,7 +3954,9 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
                                      m.member));
                 return types_->error();
             }
-            return types_->make_sysreg_handle(types_->primitive(TypeKind::UInt64));
+            auto inner = types_->primitive(TypeKind::UInt64);
+            return kind == TypeKind::SysregHandleRO ? types_->make_sysreg_handle_ro(inner)
+                                                    : types_->make_sysreg_handle(inner);
         }
     }
     // If the base is an IdentExpr resolving to a Type symbol (Struct/Enum/...),

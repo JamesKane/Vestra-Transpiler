@@ -147,7 +147,14 @@ std::string Type::describe() const {
     case TypeKind::Padded:
         return inner_ ? std::format("Padded[{}]", inner_->describe()) : std::string{"Padded"};
     case TypeKind::SysregHandle:
-        return inner_ ? std::format("Sysreg[{}]", inner_->describe()) : std::string{"Sysreg"};
+        return inner_ ? std::format("ReadWriteSysreg[{}]", inner_->describe())
+                      : std::string{"ReadWriteSysreg"};
+    case TypeKind::SysregHandleRO:
+        return inner_ ? std::format("ReadOnlySysreg[{}]", inner_->describe())
+                      : std::string{"ReadOnlySysreg"};
+    case TypeKind::SysregHandleWO:
+        return inner_ ? std::format("WriteOnlySysreg[{}]", inner_->describe())
+                      : std::string{"WriteOnlySysreg"};
     case TypeKind::ZipIter: {
         std::string a = (parts_.size() >= 1 && parts_[0]) ? parts_[0]->describe() : "?";
         std::string b = (parts_.size() >= 2 && parts_[1]) ? parts_[1]->describe() : "?";
@@ -345,6 +352,22 @@ TypePtr TypeArena::make_sysreg_handle(TypePtr inner) {
     return p;
 }
 
+TypePtr TypeArena::make_sysreg_handle_ro(TypePtr inner) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::SysregHandleRO));
+    t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_sysreg_handle_wo(TypePtr inner) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::SysregHandleWO));
+    t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
 TypePtr TypeArena::make_per_cpu(TypePtr inner) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::PerCpu));
     t->inner_ = inner;
@@ -506,6 +529,8 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     case TypeKind::InterruptHandler:
     case TypeKind::Padded:
     case TypeKind::SysregHandle:
+    case TypeKind::SysregHandleRO:
+    case TypeKind::SysregHandleWO:
     case TypeKind::TakeIter:
     case TypeKind::FilterIter:
     case TypeKind::Atomic:
@@ -711,6 +736,14 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::SysregHandle: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_sysreg_handle(inner);
+    }
+    case TypeKind::SysregHandleRO: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_sysreg_handle_ro(inner);
+    }
+    case TypeKind::SysregHandleWO: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_sysreg_handle_wo(inner);
     }
     case TypeKind::TakeIter: {
         auto inner = substitute(t->inner(), bindings);

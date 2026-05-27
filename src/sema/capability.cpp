@@ -207,7 +207,10 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
             // recognized handle type.
             if ((mem.member == "read" || mem.member == "write") && resolution_ != nullptr) {
                 if (auto base_t = resolution_->type_of(mem.base.get());
-                    base_t != nullptr && base_t->kind() == sema::TypeKind::SysregHandle
+                    base_t != nullptr
+                    && (base_t->kind() == sema::TypeKind::SysregHandle
+                        || base_t->kind() == sema::TypeKind::SysregHandleRO
+                        || base_t->kind() == sema::TypeKind::SysregHandleWO)
                     && !in_scope("Asm")) {
                     missing_capability("Asm", c.range);
                 }

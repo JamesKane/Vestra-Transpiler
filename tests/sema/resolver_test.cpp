@@ -880,6 +880,34 @@ TEST_CASE("Sysreg.<name>.read / .write type-check under Asm") {
           == 0);
 }
 
+TEST_CASE("Sysreg.midr_el1.write is rejected (read-only handle)") {
+    // §14.12.1 — midr_el1 is the CPU model identification register
+    // with no architectural write path. The RO handle's
+    // lookup_method has no `write` entry, so the call falls
+    // through to the no-such-method error, which names the
+    // ReadOnlySysreg kind so the user knows why.
+    auto r = check_detail("func bad() using Asm {\n"
+                          "    Sysreg.midr_el1.write(0)\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("'write' on type ReadOnlySysreg[UInt64]") != std::string::npos);
+}
+
+TEST_CASE("Sysreg.midr_el1.read type-checks (read-only handle admits read)") {
+    CHECK(check_errors("func cpu_id() using Asm -> UInt64 {\n"
+                       "    return Sysreg.midr_el1.read()\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("Sysreg.daif admits both read and write (RW handle)") {
+    CHECK(check_errors("func wire(_ v: UInt64) using Asm -> UInt64 {\n"
+                       "    Sysreg.daif.write(v)\n"
+                       "    return Sysreg.daif.read()\n"
+                       "}\n")
+          == 0);
+}
+
 TEST_CASE("Sysreg.<unknown> is rejected with the canonical-set diagnostic") {
     auto r = check_detail("func bad() using Asm -> UInt64 {\n"
                           "    return Sysreg.nonsense_reg.read()\n"

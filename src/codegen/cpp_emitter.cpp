@@ -3863,7 +3863,10 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             const auto& bi = static_cast<const ast::IdentExpr&>(*m.base);
             if (bi.name == "Sysreg" && resolution_ != nullptr) {
                 if (auto et = resolution_->type_of(&e);
-                    et != nullptr && et->kind() == sema::TypeKind::SysregHandle) {
+                    et != nullptr
+                    && (et->kind() == sema::TypeKind::SysregHandle
+                        || et->kind() == sema::TypeKind::SysregHandleRO
+                        || et->kind() == sema::TypeKind::SysregHandleWO)) {
                     os << "__vstr::sysreg::" << m.member;
                     break;
                 }
@@ -4305,11 +4308,13 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         os << ">";
         return;
     case TypeKind::SysregHandle:
-        // §14.12 — used when the user names the handle's type (e.g.
-        // `let h: Sysreg = Sysreg.daif` once Vestra's surface
-        // permits the spelling). v0.5 the named-type surface isn't
-        // shipped yet; this branch lets emit_sema_type produce a
-        // valid C++ spelling defensively.
+    case TypeKind::SysregHandleRO:
+    case TypeKind::SysregHandleWO:
+        // §14.12 — all three handle kinds emit the same C++ runtime
+        // template. The read-only / write-only distinction lives at
+        // sema time (methods absent from lookup_method on the wrong
+        // kind); the C++ template carries both operations
+        // structurally so the codegen emission is uniform.
         os << "__vstr::sysreg::Handle<";
         emit_sema_type(os, t->inner());
         os << ">";

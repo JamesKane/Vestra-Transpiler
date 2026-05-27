@@ -96,14 +96,18 @@ enum class TypeKind : std::uint16_t {
     // per-hart array region; also useful standalone for ring-buffer
     // slots and lock-free queue cells.
     Padded,
-    // §14.12 typed system-register handle. `Sysreg.<name>` resolves
-    // to a singleton of this type with the architectural register's
-    // primitive width (always UInt64 in v0.5). `.read() -> T` and
-    // `.write(T) -> Unit` lower to one `mrs` / `msr` (aarch64),
-    // `rdmsr` / `wrmsr` (x86), or `csrr` / `csrw` (RISC-V) per call;
-    // hosted v0.5 uses a static cell so the e2e can verify round-
-    // trips without privileged access. Calls discharge Asm.
+    // §14.12 typed system-register handles. Three flavors per
+    // §14.12.1: read-only (`ReadOnlySysreg[T]`, e.g. midr_el1),
+    // write-only (`WriteOnlySysreg[T]`, no canonical members in the
+    // v0.5 aarch64 EL1 subset but the kernel target uses it for
+    // some MSRs and CSRs), and read-write (`ReadWriteSysreg[T]`,
+    // e.g. daif / sctlr_el1 / vbar_el1 / ttbr0_el1). Sema gates
+    // `.read()` and `.write(T)` per handle kind so a stray
+    // `Sysreg.midr_el1.write(v)` fails compile rather than running
+    // an undefined operation. Calls discharge Asm.
     SysregHandle,
+    SysregHandleRO,
+    SysregHandleWO,
     // §9 iterator combinators. `ZipIter[A, B]` yields `(A, B)` tuples;
     // `TakeIter[A]` yields up to N values of A. Both expose a
     // synthetic `next() -> Element?` so the existing iterator-protocol
@@ -221,6 +225,8 @@ public:
     [[nodiscard]] TypePtr make_interrupt_handler(TypePtr inner);
     [[nodiscard]] TypePtr make_padded(TypePtr inner);
     [[nodiscard]] TypePtr make_sysreg_handle(TypePtr inner);
+    [[nodiscard]] TypePtr make_sysreg_handle_ro(TypePtr inner);
+    [[nodiscard]] TypePtr make_sysreg_handle_wo(TypePtr inner);
     // §A11 (§14.8) per-CPU storage over Trivial T.
     [[nodiscard]] TypePtr make_per_cpu(TypePtr inner);
     // §9 iterator-combinator types. ZipIter[A, B] tracks the *element*
