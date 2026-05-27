@@ -1141,6 +1141,36 @@ set_tests_properties(e2e_mmio_wire_run PROPERTIES
     DEPENDS                e2e_mmio_wire_compile
     PASS_REGULAR_EXPRESSION "mmio_wire OK")
 
+# @repr(union) for bit-field register decoding (§A6 follow-up,
+# §14.11.4). Two structs compose: a @repr(packed) sub-struct
+# holding @bits(N) fields (the bit view) and a @repr(union)
+# outer struct overlaying the raw word and the bit view. The
+# runtime probes the bit ordering with seven crafted words and
+# verifies each field's decode matches the expected mask.
+set(e2e_mmio_union_input  ${CMAKE_SOURCE_DIR}/examples/mmio_union.vst)
+set(e2e_mmio_union_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_mmio_union.cpp)
+
+add_test(
+    NAME    e2e_mmio_union_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_mmio_union_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_mmio_union_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_mmio_union_driver} ${e2e_workdir}/mmio_union.cpp
+            -o ${e2e_workdir}/mmio_union_app)
+set_tests_properties(e2e_mmio_union_compile PROPERTIES
+    DEPENDS e2e_mmio_union_transpile)
+
+add_test(
+    NAME    e2e_mmio_union_run
+    COMMAND ${e2e_workdir}/mmio_union_app)
+set_tests_properties(e2e_mmio_union_run PROPERTIES
+    DEPENDS                e2e_mmio_union_compile
+    PASS_REGULAR_EXPRESSION "mmio_union OK")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except

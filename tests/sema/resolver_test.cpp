@@ -966,6 +966,47 @@ TEST_CASE("MmioWireView[T] requires T to be a primitive") {
           != std::string::npos);
 }
 
+// ---- §A6 follow-up: @repr(union) (§6.8 / §14.11.4) -----------------------
+
+TEST_CASE("@repr(union) struct with overlay members type-checks") {
+    CHECK(check_errors("@repr(packed)\n"
+                       "struct Bits {\n"
+                       "    @bits(1) var rxReady: UInt32\n"
+                       "    @bits(31) var rest:   UInt32\n"
+                       "}\n"
+                       "@repr(union)\n"
+                       "struct Status {\n"
+                       "    var raw:    UInt32\n"
+                       "    var fields: Bits\n"
+                       "}\n"
+                       "func peek() -> UInt32 {\n"
+                       "    let s = Status(raw: 5)\n"
+                       "    return s.raw\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("@bits on a direct @repr(union) member is rejected") {
+    auto r = check_detail("@repr(union)\n"
+                          "struct Bad {\n"
+                          "    @bits(4) var lo: UInt8\n"
+                          "    var raw:         UInt8\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@bits on a direct member of @repr(union)") != std::string::npos);
+}
+
+TEST_CASE("derive(Eq) on a @repr(union) struct is rejected") {
+    auto r = check_detail("@repr(union)\n"
+                          "struct Cell {\n"
+                          "    var raw:    UInt32\n"
+                          "    var halves: UInt32\n"
+                          "}\n"
+                          "derive(Eq) for Cell\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("derive on @repr(union) struct 'Cell'") != std::string::npos);
+}
+
 // ---- §A5 cache + TLB management (§14.10.3, §14.10.4, §14.10.5) -----------
 
 TEST_CASE("cache + TLB builtins type-check with the right argument shapes") {

@@ -19,6 +19,27 @@
 
 namespace vestra::sema {
 
+namespace {
+
+// §A6 (§6.8 / §14.11.4) helper. Scans a struct's attributes for the
+// `@repr(union)` marker so sema validation and (later) derive-target
+// rejection share one detection point. Mirrors the codegen's
+// `LayoutAttrs::is_union` reading.
+bool struct_is_repr_union(const ast::StructDecl& s) {
+    for (const auto& a : s.attributes) {
+        if (a.name != "repr" || a.predicate == nullptr) {
+            continue;
+        }
+        if (a.predicate->kind == ast::NodeKind::IdentExpr
+            && static_cast<const ast::IdentExpr&>(*a.predicate).name == "union") {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
 // ============================================================================
 // Resolution side tables
 // ============================================================================
@@ -769,6 +790,38 @@ void Resolver::check_decl(const ast::Decl& d) {
                 check_func(static_cast<const ast::FuncDecl&>(*m));
             }
         }
+        // §A6 (§6.8 / §14.11.4) `@repr(union)` validation. The struct
+        // is re-emitted as a C++ union — its members overlay one
+        // storage cell. v0.5 enforces two narrow rules:
+        //   (1) at least one field (else the C++ union body is empty
+        //       and the type is useless).
+        //   (2) `@bits(N)` on a direct member is rejected. Bit-fields
+        //       only make sense inside a packed sub-struct, which then
+        //       overlays the integer cell. A bit-field on the union
+        //       itself can't share storage with the integer view, so
+        //       the spec's register-decoding pattern would silently
+        //       break.
+        // Spec also requires transitively Trivial + Copyable; we defer
+        // that to the C++ compiler, which refuses unions whose members
+        // have non-trivial special member functions.
+        if (struct_is_repr_union(s)) {
+            if (s.fields.empty()) {
+                error_at(s.range,
+                         std::format("@repr(union) struct '{}' must declare at least one field",
+                                     s.name));
+            }
+            for (const auto& f : s.fields) {
+                for (const auto& a : f.attributes) {
+                    if (a.name == "bits") {
+                        error_at(a.range,
+                                 std::format("@bits on a direct member of @repr(union) '{}' is "
+                                             "rejected; put bit-fields inside a packed sub-struct "
+                                             "and overlay it",
+                                             s.name));
+                    }
+                }
+            }
+        }
         break;
     }
     case ast::NodeKind::Enum: {
@@ -795,6 +848,29 @@ void Resolver::check_decl(const ast::Decl& d) {
         // member-wise; Default is the one where the spec is explicit
         // about field-level checking.
         const auto& dd = static_cast<const ast::DeriveDecl&>(d);
+        // §A6 (§6.8 / §14.11.4) `@repr(union)` is an untagged overlay
+        // — the compiler can't pick which member to compare or hash
+        // structurally, so the auto-derives don't apply. Reject any
+        // derive targeting a union struct with a clear message rather
+        // than letting the C++ compiler fail on `operator== = default`
+        // for a union type.
+        if (dd.target != nullptr && dd.target->kind == ast::NodeKind::NamedType) {
+            const auto& tt = static_cast<const ast::NamedType&>(*dd.target);
+            if (!tt.path.empty()) {
+                const auto* tsym = scopes_.global().lookup_local(tt.path.back());
+                if (tsym != nullptr && tsym->kind == SymbolKind::Struct && tsym->decl != nullptr) {
+                    const auto& tsd = static_cast<const ast::StructDecl&>(*tsym->decl);
+                    if (struct_is_repr_union(tsd)) {
+                        error_at(dd.target->range,
+                                 std::format("derive on @repr(union) struct '{}' is rejected; "
+                                             "untagged overlays don't have a structural "
+                                             "comparison or hash",
+                                             tsd.name));
+                        break;
+                    }
+                }
+            }
+        }
         bool derives_default = false;
         for (const auto& proto : dd.protocols) {
             if (proto == nullptr || proto->kind != ast::NodeKind::NamedType) {
@@ -2750,6 +2826,19 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
     // the struct's fields rather than treating it as a function call.
     if (callee_type->kind() == TypeKind::Struct && callee_type->nominal_decl() != nullptr) {
         const auto& s_decl = static_cast<const ast::StructDecl&>(*callee_type->nominal_decl());
+        // §A6 (§6.8 / §14.11.4) `@repr(union)`: members overlay one
+        // storage cell, so exactly one labeled argument picks the
+        // active member. Fall through to label/type checks, but the
+        // "missing field" sweep at the end is skipped for unions —
+        // the unseen members are by design, not an error.
+        const bool is_union = struct_is_repr_union(s_decl);
+        if (is_union && c.args.size() != 1) {
+            error_at(c.range,
+                     std::format("@repr(union) struct '{}' constructor requires exactly one "
+                                 "labeled argument naming the active member (got {})",
+                                 s_decl.name,
+                                 c.args.size()));
+        }
         // Build a label → (field, resolved type) index once.
         std::unordered_map<std::string, std::pair<const ast::StructDecl::Field*, TypePtr>> by_label;
         for (const auto& f : s_decl.fields) {
@@ -2794,15 +2883,20 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
             }
         }
         // Missing fields are an error — Vestra has no implicit defaulting.
-        for (std::size_t k = 0; k < s_decl.fields.size(); ++k) {
-            if (s_decl.fields[k].kind == ast::StructDecl::Field::Kind::Embed) {
-                continue;
-            }
-            if (!seen[k]) {
-                error_at(c.range,
-                         std::format("struct '{}' constructor is missing field '{}'",
-                                     s_decl.name,
-                                     s_decl.fields[k].name));
+        // Exception: @repr(union) overlay structs activate exactly one
+        // member per construction, so unmentioned fields are not
+        // missing in any meaningful sense.
+        if (!is_union) {
+            for (std::size_t k = 0; k < s_decl.fields.size(); ++k) {
+                if (s_decl.fields[k].kind == ast::StructDecl::Field::Kind::Embed) {
+                    continue;
+                }
+                if (!seen[k]) {
+                    error_at(c.range,
+                             std::format("struct '{}' constructor is missing field '{}'",
+                                         s_decl.name,
+                                         s_decl.fields[k].name));
+                }
             }
         }
         return callee_type;

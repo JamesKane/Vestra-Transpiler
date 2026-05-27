@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A6 follow-up (§14.11.4) — `@repr(union)` for bit-field
+// register decoding.
+//
+// Real peripherals pack 4–32 status / control fields into one
+// bus word. The driver wants to:
+//
+//   1. Load the whole word in one MMIO transaction (no torn-read
+//      window from per-field reads).
+//   2. Decode the fields off the snapshot (no extra bus traffic).
+//   3. Optionally compose a new word out of fields and write it
+//      back as one transaction.
+//
+// The composition pattern is two structs + a union:
+//
+//   - `@repr(packed)` sub-struct with `@bits(N)` fields, laid out
+//     in declaration order — this is the *bit view*.
+//   - `@repr(union)` outer struct with two members of the same
+//     storage size: the raw integer and the bit view. The C++
+//     `union` keyword gives them shared storage, so writing to
+//     `.raw` and reading from `.fields.rxReady` (or vice versa)
+//     hits the same bytes.
+//
+// Construction takes exactly one labeled argument — the active
+// member. `Status(raw: 5)` activates the raw view; the bit view
+// can be read on the same value because union members alias.
+//
+// `@repr(union)` is gated by these rules:
+//   - at least one field
+//   - no `@bits` on a direct union member (put bit-fields inside
+//     a packed sub-struct)
+//   - no derive(...) — untagged overlays don't have a structural
+//     comparison or hash
+
+module examples.mmio_union
+
+// The bit view. Layout follows the imaginary UART's line-status
+// register: bit 0 is rxReady, bit 1 is rxOverrun, bit 2 is
+// txEmpty, bits 3..31 are reserved. The packed attribute pins
+// declaration order; `@bits(N)` widths sum to 32.
+@repr(packed)
+struct UartLineStatusBits {
+    @bits(1) var rxReady:   UInt32
+    @bits(1) var rxOverrun: UInt32
+    @bits(1) var txEmpty:   UInt32
+    @bits(29) var reserved: UInt32
+}
+
+// The overlay. `raw` and `fields` share one 32-bit cell; writing
+// 0b0000_0101 through `.raw` (rxReady | txEmpty) and reading
+// `.fields.rxReady` / `.fields.txEmpty` should return 1 each.
+@repr(union)
+struct UartLineStatus {
+    var raw:    UInt32
+    var fields: UartLineStatusBits
+}
+
+// Decode the rxReady bit off a snapshot. The driver calls this
+// after a single MMIO load to avoid re-touching the bus.
+func is_rx_ready(_ raw: UInt32) -> Bool {
+    let snapshot = UartLineStatus(raw: raw)
+    return snapshot.fields.rxReady != 0
+}
+
+func is_tx_empty(_ raw: UInt32) -> Bool {
+    let snapshot = UartLineStatus(raw: raw)
+    return snapshot.fields.txEmpty != 0
+}
+
+func is_rx_overrun(_ raw: UInt32) -> Bool {
+    let snapshot = UartLineStatus(raw: raw)
+    return snapshot.fields.rxOverrun != 0
+}

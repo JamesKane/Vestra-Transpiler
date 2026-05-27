@@ -68,6 +68,7 @@ const std::unordered_map<std::string, std::string>& primitive_map() {
 // a single-expression argument; we pattern-match the argument shape.
 struct LayoutAttrs {
     bool packed = false;
+    bool is_union = false;   // §A6 (§6.8 / §14.11.4) `@repr(union)`
     std::int64_t align = 0;  // 0 = no explicit alignment
 };
 
@@ -95,6 +96,11 @@ LayoutAttrs read_layout_attrs(const std::vector<ast::Attribute>& attrs) {
                 const auto& id = static_cast<const ast::IdentExpr&>(*a.predicate).name;
                 if (id == "packed") {
                     out.packed = true;
+                } else if (id == "union") {
+                    // §A6 (§6.8 / §14.11.4) untagged overlay. The
+                    // struct keyword stays in Vestra source; codegen
+                    // re-emits as a C++ `union`.
+                    out.is_union = true;
                 }
                 // `C` and any unknown @repr modes are accepted but
                 // not given a special emission yet.
@@ -1187,11 +1193,14 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
 
 void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
     // §4 layout attributes on the struct itself: @repr(packed) +
-    // @repr(align(N)) / @align(N). C++ accepts `alignas(N)` between
-    // the `struct` keyword and the name; __attribute__((packed)) goes
-    // after the closing brace and before the trailing `;`.
+    // @repr(align(N)) / @align(N) / @repr(union). C++ accepts
+    // `alignas(N)` between the `struct` keyword and the name;
+    // __attribute__((packed)) goes after the closing brace and
+    // before the trailing `;`. `@repr(union)` swaps the `struct`
+    // keyword for `union`, giving a C/C++ untagged overlay where
+    // every member shares one storage cell.
     const auto struct_attrs = read_layout_attrs(s.attributes);
-    hdr << "struct ";
+    hdr << (struct_attrs.is_union ? "union " : "struct ");
     if (struct_attrs.align > 0) {
         hdr << "alignas(" << struct_attrs.align << ") ";
     }
@@ -1212,6 +1221,15 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
             // default value to the zero-init the C++ compiler gives
             // each member when its enclosing struct is default-ctor'd.
             hdr << " : " << bits;
+        } else if (struct_attrs.is_union) {
+            // §A6 (§6.8 / §14.11.4) C++ unions accept at most one
+            // default member initializer (the implicit ctor picks
+            // the first non-static member). Skipping `{}` here means
+            // every union construction lands through the explicit
+            // designated-init the call lowering already emits
+            // (`UartLineStatus{.raw = 0}`), so the user picks the
+            // active member.
+            hdr << "";
         } else {
             hdr << "{}";
         }

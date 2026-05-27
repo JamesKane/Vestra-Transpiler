@@ -377,6 +377,46 @@ TEST_CASE("a bit-field has no brace-init (would fail to compile)") {
     CHECK(out.header.find("v : 3{}") == std::string::npos);
 }
 
+TEST_CASE("@repr(union) emits a C++ union with no default member initializers") {
+    auto out = emit("@repr(packed)\n"
+                    "struct Bits {\n"
+                    "    @bits(1) var rxReady: UInt32\n"
+                    "    @bits(31) var rest:   UInt32\n"
+                    "}\n"
+                    "@repr(union)\n"
+                    "struct Status {\n"
+                    "    var raw:    UInt32\n"
+                    "    var fields: Bits\n"
+                    "}\n");
+    // The struct keyword in source becomes `union` in C++.
+    CHECK(out.header.find("union Status {") != std::string::npos);
+    CHECK(out.header.find("struct Status {") == std::string::npos);
+    // Union members lose the `{}` brace-init the struct path adds —
+    // C++ forbids more than one default member initializer in a union.
+    CHECK(out.header.find("std::uint32_t raw;") != std::string::npos);
+    CHECK(out.header.find("Bits fields;") != std::string::npos);
+    CHECK(out.header.find("std::uint32_t raw{};") == std::string::npos);
+}
+
+TEST_CASE("@repr(union) composes with @repr(packed) sub-struct bit-fields") {
+    auto out = emit("@repr(packed)\n"
+                    "struct Bits {\n"
+                    "    @bits(4) var lo: UInt8\n"
+                    "    @bits(4) var hi: UInt8\n"
+                    "}\n"
+                    "@repr(union)\n"
+                    "struct Cell {\n"
+                    "    var raw:    UInt8\n"
+                    "    var nibbles: Bits\n"
+                    "}\n");
+    // The packed sub-struct still carries its packed attribute and
+    // bit-field syntax; the union overlay sits on top.
+    CHECK(out.header.find("struct Bits {") != std::string::npos);
+    CHECK(out.header.find("std::uint8_t lo : 4;") != std::string::npos);
+    CHECK(out.header.find("} __attribute__((packed));") != std::string::npos);
+    CHECK(out.header.find("union Cell {") != std::string::npos);
+}
+
 // ---- §6 tuple destructuring + literals -----------------------------------
 
 TEST_CASE("tuple literal lowers to std::tuple{...}") {
