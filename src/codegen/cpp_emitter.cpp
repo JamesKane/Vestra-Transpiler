@@ -4561,9 +4561,108 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
     }
 
     if (!has_payload) {
-        // Lower the whole expression as an IIFE returning a switch's value
-        // through a tail `return`. Wildcard patterns map to `default:`;
-        // `case .a | .b:` stacks both labels above one return statement.
+        // §8 bare-enum match: pick between a switch lowering (simple
+        // case, no guards, each case label distinct) and an if-chain
+        // lowering (any arm has a guard, OR multiple arms target the
+        // same case — both situations a switch can't express). The
+        // if-chain mirrors the value-scrutinee path: each arm
+        // contributes one `if (scrutinee == Enum::case && guard) {
+        // return body; }`.
+        bool any_guard = false;
+        std::unordered_set<std::string> seen;
+        bool any_duplicate = false;
+        for (const auto& arm : m.arms) {
+            if (arm.guard) {
+                any_guard = true;
+            }
+            if (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::EnumPat) {
+                const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
+                if (!seen.insert(ep.case_name).second) {
+                    any_duplicate = true;
+                }
+            }
+        }
+        const bool use_if_chain = any_guard || any_duplicate;
+
+        if (use_if_chain) {
+            os << "[&]() -> auto {\n";
+            os << "        auto&& __vstr_m = ";
+            emit_expr(os, *m.scrutinee);
+            os << ";\n";
+            bool first = true;
+            const ast::MatchArm* default_arm_local = nullptr;
+            for (const auto& arm : m.arms) {
+                if (arm.is_default
+                    || (arm.pattern != nullptr
+                        && arm.pattern->kind == ast::NodeKind::WildcardPat)) {
+                    default_arm_local = &arm;
+                    continue;
+                }
+                if (arm.pattern == nullptr
+                    || (arm.pattern->kind != ast::NodeKind::EnumPat
+                        && arm.pattern->kind != ast::NodeKind::OrPat)) {
+                    unsupported(os, "match arm pattern", m.range);
+                    continue;
+                }
+                write_indent(os, 2);
+                os << (first ? "if (" : "else if (");
+                // Build the case predicate: a single EnumPat or an
+                // OrPat folded into a chain of `||`s.
+                if (arm.pattern->kind == ast::NodeKind::EnumPat) {
+                    const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
+                    os << "__vstr_m == " << enum_decl.name << "::" << ep.case_name;
+                } else {
+                    const auto& op = static_cast<const ast::OrPat&>(*arm.pattern);
+                    os << "(";
+                    for (std::size_t i = 0; i < op.alternatives.size(); ++i) {
+                        if (i != 0) {
+                            os << " || ";
+                        }
+                        if (op.alternatives[i] != nullptr
+                            && op.alternatives[i]->kind == ast::NodeKind::EnumPat) {
+                            const auto& ep = static_cast<const ast::EnumPat&>(*op.alternatives[i]);
+                            os << "__vstr_m == " << enum_decl.name << "::" << ep.case_name;
+                        } else {
+                            os << "false";
+                        }
+                    }
+                    os << ")";
+                }
+                if (arm.guard) {
+                    os << " && (";
+                    emit_expr(os, *arm.guard);
+                    os << ")";
+                }
+                os << ") {\n";
+                write_indent(os, 3);
+                os << "return ";
+                if (arm.body) {
+                    emit_expr(os, *arm.body);
+                }
+                os << ";\n";
+                write_indent(os, 2);
+                os << "}\n";
+                first = false;
+            }
+            if (default_arm_local != nullptr) {
+                write_indent(os, 2);
+                os << (first ? "{ " : "else { ");
+                os << "return ";
+                if (default_arm_local->body) {
+                    emit_expr(os, *default_arm_local->body);
+                }
+                os << "; }\n";
+            } else {
+                write_indent(os, 2);
+                os << (first ? "std::unreachable();\n" : "else { std::unreachable(); }\n");
+            }
+            os << "    }()";
+            return;
+        }
+
+        // Plain switch path — simple, no guards, distinct case labels.
+        // Wildcard patterns map to `default:`; `case .a | .b:` stacks
+        // both labels above one return statement.
         os << "[&]{ switch (";
         emit_expr(os, *m.scrutinee);
         os << ") {\n";
@@ -4627,9 +4726,15 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
     os << "std::visit([&](auto&& __vstr_alt) -> auto {\n";
     os << "        using __vstr_alt_t = std::decay_t<decltype(__vstr_alt)>;\n";
 
-    bool first = true;
+    // §8 group arms by case name so multiple arms for one case (the
+    // canonical "guarded arm + unguarded catch" pattern) land in one
+    // constexpr-if branch. C++'s std::visit dispatches on the
+    // variant's active alternative; two separate `if constexpr`
+    // branches for the same case_t leave the second dead. Grouping
+    // up front lets each case's arm list run as an ordinary
+    // if-else chain at runtime.
+    std::vector<std::pair<std::string, std::vector<const ast::MatchArm*>>> groups;
     const ast::MatchArm* default_arm = nullptr;
-
     for (const auto& arm : m.arms) {
         if (arm.is_default
             || (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::WildcardPat)) {
@@ -4641,41 +4746,27 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
             continue;
         }
         const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
-
-        // Locate the case decl so we can resolve positional vs labeled
-        // payload field names (parallels emit_enum's `_{i}` fallback).
-        const ast::EnumDecl::Case* case_decl = nullptr;
-        for (const auto& c : enum_decl.cases) {
-            if (c.name == ep.case_name) {
-                case_decl = &c;
-                break;
-            }
-        }
-        if (case_decl == nullptr) {
-            unsupported(os, "match arm references unknown enum case", arm.pattern->range);
-            continue;
-        }
-
-        if (first) {
-            write_indent(os, 2);
-            os << "if";
+        auto it = std::find_if(
+            groups.begin(), groups.end(), [&](const auto& g) { return g.first == ep.case_name; });
+        if (it == groups.end()) {
+            groups.push_back({ep.case_name, {&arm}});
         } else {
-            os << " else if";  // chained — previous arm ended with bare "}"
+            it->second.push_back(&arm);
         }
-        os << " constexpr (std::is_same_v<__vstr_alt_t, " << enum_decl.name << "::" << ep.case_name
-           << "_t>) {\n";
+    }
 
-        for (std::size_t i = 0; i < ep.children.size() && i < case_decl->payload.size(); ++i) {
+    auto emit_payload_bindings = [&](const ast::EnumPat& ep, const ast::EnumDecl::Case& case_decl) {
+        for (std::size_t i = 0; i < ep.children.size() && i < case_decl.payload.size(); ++i) {
             const auto& child = *ep.children[i];
-            std::string field_name = case_decl->payload[i].first.empty()
+            std::string field_name = case_decl.payload[i].first.empty()
                                          ? std::format("_{}", i)
-                                         : case_decl->payload[i].first;
+                                         : case_decl.payload[i].first;
             if (child.kind == ast::NodeKind::BindPat) {
-                write_indent(os, 3);
+                write_indent(os, 4);
                 os << "auto&& " << static_cast<const ast::BindPat&>(child).name << " = __vstr_alt."
                    << field_name << ";\n";
             } else if (child.kind == ast::NodeKind::IdentPat) {
-                write_indent(os, 3);
+                write_indent(os, 4);
                 os << "auto&& " << static_cast<const ast::IdentPat&>(child).name << " = __vstr_alt."
                    << field_name << ";\n";
             } else if (child.kind == ast::NodeKind::TuplePat) {
@@ -4688,7 +4779,7 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
                 std::vector<std::string> sub_names;
                 std::vector<std::pair<std::string, const ast::TuplePat*>> sub_followons;
                 collect_tuple_pat_names(sub_tp, sub_names, sub_followons);
-                write_indent(os, 3);
+                write_indent(os, 4);
                 os << "auto&& [";
                 for (std::size_t k = 0; k < sub_names.size(); ++k) {
                     if (k != 0) {
@@ -4697,15 +4788,84 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
                     os << sub_names[k];
                 }
                 os << "] = __vstr_alt." << field_name << ";\n";
-                emit_tuple_pat_followons(os, sub_followons, 3);
+                emit_tuple_pat_followons(os, sub_followons, 4);
             }
             // Wildcard: nothing to bind.
         }
+    };
 
-        write_indent(os, 3);
-        os << "return ";
-        emit_expr(os, *arm.body);
-        os << ";\n";
+    bool first = true;
+    for (const auto& [case_name, arms] : groups) {
+        const ast::EnumDecl::Case* case_decl = nullptr;
+        for (const auto& c : enum_decl.cases) {
+            if (c.name == case_name) {
+                case_decl = &c;
+                break;
+            }
+        }
+        if (case_decl == nullptr) {
+            unsupported(os, "match arm references unknown enum case", arms.front()->pattern->range);
+            continue;
+        }
+
+        if (first) {
+            write_indent(os, 2);
+            os << "if";
+        } else {
+            os << " else if";  // chained — previous arm ended with bare "}"
+        }
+        os << " constexpr (std::is_same_v<__vstr_alt_t, " << enum_decl.name << "::" << case_name
+           << "_t>) {\n";
+
+        // §8 multiple arms per case: emit each in source order, scoping
+        // per-arm bindings inside a `{}` block so different arms can
+        // bind different names. A guarded arm wraps its return in
+        // `if (guard) { return body; }`; an unguarded arm fires its
+        // return unconditionally and dominates anything after it.
+        bool seen_unguarded = false;
+        for (const auto* arm : arms) {
+            const auto& ep = static_cast<const ast::EnumPat&>(*arm->pattern);
+            write_indent(os, 3);
+            os << "{\n";
+            emit_payload_bindings(ep, *case_decl);
+            if (arm->guard) {
+                write_indent(os, 4);
+                os << "if (";
+                emit_expr(os, *arm->guard);
+                os << ") {\n";
+                write_indent(os, 5);
+                os << "return ";
+                emit_expr(os, *arm->body);
+                os << ";\n";
+                write_indent(os, 4);
+                os << "}\n";
+            } else {
+                write_indent(os, 4);
+                os << "return ";
+                emit_expr(os, *arm->body);
+                os << ";\n";
+                seen_unguarded = true;
+            }
+            write_indent(os, 3);
+            os << "}\n";
+            if (seen_unguarded) {
+                break;  // anything after an unguarded arm is dead code
+            }
+        }
+        // If every arm in the group was guarded, the constexpr-if
+        // branch can fall off the end without returning — C++ refuses
+        // to compile that. Terminate with the default arm or
+        // std::unreachable so the branch is well-formed.
+        if (!seen_unguarded) {
+            write_indent(os, 3);
+            if (default_arm != nullptr && default_arm->body != nullptr) {
+                os << "return ";
+                emit_expr(os, *default_arm->body);
+                os << ";\n";
+            } else {
+                os << "std::unreachable();\n";
+            }
+        }
         write_indent(os, 2);
         os << "}";
         first = false;

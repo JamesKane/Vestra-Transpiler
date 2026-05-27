@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §8 follow-up — pattern-matching enhancements.
+//
+// This slice closes three match-arm shapes the prior slices
+// left partial:
+//
+//   1. where-guards on enum-payload binds. Sema already
+//      typed the guard expression with the pattern bindings
+//      in scope; codegen now honors it. A guarded arm wraps
+//      its return in `if (guard) { ... }`, and multiple arms
+//      for the same case group into one type-dispatch branch
+//      so the unguarded "catch" arm runs when the guard fails.
+//
+//   2. tuple patterns with wildcards. `case (1, _)` was
+//      always parsed; the value-scrutinee codegen path
+//      already emits the matching predicate. This slice's
+//      e2e verifies the end-to-end behavior.
+//
+//   3. let-pattern + guard combination. `case let .point(x,
+//      y) where x == y` was the spec example for the diagonal
+//      filter; the bindings flow into the guard scope, and the
+//      guard gates the arm's body. Same shape as (1) but with
+//      multiple positional binds.
+
+module examples.match_guards
+
+// Shape with payloaded cases. The dispatch fn uses guards to
+// distinguish positive-radius circles from degenerate ones and
+// to filter diagonal points.
+enum Shape {
+    case circle(radius: Int32)
+    case rect(width: Int32, height: Int32)
+    case point(x: Int32, y: Int32)
+}
+
+// (1) where-guard on a payloaded enum bind. Positive-radius
+// circles return their radius; degenerate ones (radius <= 0)
+// fall to the catch-all `.circle(_)` and return -1.
+func circle_or_invalid(_ s: Shape) -> Int32 {
+    return match s {
+        case .circle(let r) where r > 0: r
+        case .circle(_):                 -1
+        case .rect(_, _):                0
+        case .point(_, _):               0
+    }
+}
+
+// (3) let-pattern + guard combination. The two payload binds
+// flow into the guard's scope; the arm fires only when the
+// point is on the diagonal (x == y).
+func diagonal_only(_ s: Shape) -> Int32 {
+    return match s {
+        case .point(let x, let y) where x == y: x
+        case .point(_, _):                      -1
+        default:                                0
+    }
+}
+
+// (2) tuple patterns with wildcards. The first arm matches
+// any tuple whose first element is 1; the second any tuple
+// whose second is 2; the default catches the rest. Wildcards
+// match anything without binding.
+func tuple_match(_ p: (Int32, Int32)) -> Int32 {
+    return match p {
+        case (1, _): 100
+        case (_, 2): 200
+        default:     0
+    }
+}
+
+// Bare enum + guard. The lowering switches from `switch` to
+// an if-chain so the guard can run on the value rather than
+// at compile time.
+enum Mode {
+    case idle
+    case running
+    case stopped
+}
+
+func tick(_ mode: Mode, _ tick_count: Int32) -> Int32 {
+    return match mode {
+        case .running where tick_count > 0: tick_count + 1
+        case .running:                      1
+        case .idle:                         0
+        case .stopped:                      -1
+    }
+}

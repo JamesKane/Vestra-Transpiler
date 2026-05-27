@@ -1393,6 +1393,37 @@ set_tests_properties(e2e_padded_run PROPERTIES
     DEPENDS                e2e_padded_compile
     PASS_REGULAR_EXPRESSION "padded OK")
 
+# §8 follow-up — pattern-matching enhancements. Three shapes
+# the prior slices left partial: where-guards on enum-payload
+# binds, tuple patterns with wildcards, and let-pattern +
+# guard combination. Runtime exercises payloaded-enum guards,
+# bare-enum guards (forcing the if-chain lowering), and tuple
+# wildcards across both first-match-wins and default fall-
+# through.
+set(e2e_mg_input  ${CMAKE_SOURCE_DIR}/examples/match_guards.vst)
+set(e2e_mg_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_match_guards.cpp)
+
+add_test(
+    NAME    e2e_mg_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_mg_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_mg_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_mg_driver} ${e2e_workdir}/match_guards.cpp
+            -o ${e2e_workdir}/match_guards_app)
+set_tests_properties(e2e_mg_compile PROPERTIES
+    DEPENDS e2e_mg_transpile)
+
+add_test(
+    NAME    e2e_mg_run
+    COMMAND ${e2e_workdir}/match_guards_app)
+set_tests_properties(e2e_mg_run PROPERTIES
+    DEPENDS                e2e_mg_compile
+    PASS_REGULAR_EXPRESSION "match_guards OK")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except

@@ -108,6 +108,53 @@ TEST_CASE("match over a payloaded enum lowers to std::visit") {
     CHECK(f.out.source.find("std::unreachable()") != std::string::npos);
 }
 
+TEST_CASE("where-guard on a payloaded enum arm wraps the body in a runtime if") {
+    SemaEmitFixture f("enum Shape {\n"
+                      "    case circle(radius: Int32)\n"
+                      "    case square(side: Int32)\n"
+                      "}\n"
+                      "func dispatch(_ s: Shape) -> Int32 {\n"
+                      "    return match s {\n"
+                      "        case .circle(let r) where r > 0: r\n"
+                      "        case .circle(_):                 -1\n"
+                      "        case .square(let s):             s\n"
+                      "    }\n"
+                      "}\n");
+    // Multiple arms for one case fold into a single constexpr-if
+    // branch. The guarded arm wraps its return in `if (guard) { ...
+    // }`; the unguarded arm runs unconditionally after it.
+    CHECK(f.out.source.find("if (r > 0) {") != std::string::npos);
+    CHECK(f.out.source.find("return r;") != std::string::npos);
+    // Only ONE constexpr-if branch for circle_t — the second arm
+    // doesn't open a new one.
+    auto src = f.out.source;
+    std::size_t first = src.find("std::is_same_v<__vstr_alt_t, Shape::circle_t>");
+    REQUIRE(first != std::string::npos);
+    CHECK(src.find("std::is_same_v<__vstr_alt_t, Shape::circle_t>", first + 1)
+          == std::string::npos);
+}
+
+TEST_CASE("where-guard on a bare enum arm forces the if-chain lowering") {
+    SemaEmitFixture f("enum Tag {\n"
+                      "    case a\n"
+                      "    case b\n"
+                      "    case c\n"
+                      "}\n"
+                      "func tag_with_guard(_ t: Tag, _ flag: Bool) -> Int32 {\n"
+                      "    return match t {\n"
+                      "        case .a where flag: 1\n"
+                      "        case .a:            10\n"
+                      "        case .b:            2\n"
+                      "        case .c:            3\n"
+                      "    }\n"
+                      "}\n");
+    // A guarded arm (or duplicate case label) flips the lowering
+    // from `switch` to an if-chain so the guard can run.
+    CHECK(f.out.source.find("switch (") == std::string::npos);
+    CHECK(f.out.source.find("__vstr_m == Tag::a && (flag)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr_m == Tag::a)") != std::string::npos);
+}
+
 TEST_CASE("sum-type enum case construction wraps in the variant brace shape") {
     SemaEmitFixture f("enum Shape {\n"
                       "    case circle(radius: Float64)\n"
