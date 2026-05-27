@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A6 (§14.11) — Typed MMIO views.
+//
+// Two compiler-known view types:
+//
+//   MmioView[T]   — single-register handle, .read() / .write(v)
+//   MmioRegion[T] — indexed N-register handle, .index(i) / .count
+//
+// Both are minted via static `.at(_)` constructors that take a
+// MutPtr[T] (and a count, for MmioRegion). The MutPtr typically
+// comes from `MutPtr.unchecked(fromAddress:)` (§A3), so a driver
+// init region nests two discharges:
+//
+//   with RawMemory { with Mmio { … } }
+//
+// `RawMemory` for the pointer mint; `Mmio` for the view constructor.
+// Each is a separate cap so the audit surface
+// (`vestra audit --mmio`) can list every site that crossed the
+// MMIO boundary.
+//
+// T is constrained to a primitive — silicon-bus widths only.
+// The codegen wraps a `volatile T*` so every read/write touches
+// the bus; the C++ compiler must not elide or coalesce them.
+//
+// `MmioWireView[T]` (endianness), `@repr(union)` bit-field
+// composition, and the `@no_auto_barrier` escape are queued for
+// a follow-up slice.
+
+module examples.mmio
+
+// Single-register fake "UART line status" peripheral. Drivers
+// would mint a MutPtr from the physical address; the hosted CI
+// driver feeds the address of a stack-resident UInt32.
+func touch_one(_ addr: UInt64, _ v: UInt32) -> UInt32 {
+    var observed: UInt32 = 0
+    with RawMemory {
+        with Mmio {
+            let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)
+            let view = MmioView.at(p)
+            view.write(v)
+            observed = view.read()
+        }
+    }
+    return observed
+}
+
+// Multi-register fake "GIC distributor". Each .index(i) returns a
+// fresh MmioView over slot i; out-of-range indices panic via the
+// runtime's __vstr::panic. The driver writes a few slots, reads
+// them back, and reports the sum.
+func sum_region(_ addr: UInt64) -> UInt32 {
+    var total: UInt32 = 0
+    with RawMemory {
+        with Mmio {
+            let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)
+            let r = MmioRegion.at(p, 4)
+            r.index(0).write(10)
+            r.index(1).write(20)
+            r.index(2).write(30)
+            r.index(3).write(40)
+            total = r.index(0).read() + r.index(1).read()
+                  + r.index(2).read() + r.index(3).read()
+        }
+    }
+    return total
+}

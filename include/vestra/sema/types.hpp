@@ -65,6 +65,13 @@ enum class TypeKind : std::uint16_t {
     // `RawMemory` discharge.
     Ptr,
     MutPtr,
+    // §A6 (§14.11) typed MMIO views. `MmioView[T]` is a non-escapable
+    // single-register handle minted via `MmioView.at(ptr:)` under
+    // an `Mmio` discharge; `MmioRegion[T]` is the indexed N-register
+    // variant. Both lower to small wrapper structs that thread a
+    // `volatile T*` through the read/write paths.
+    MmioView,
+    MmioRegion,
     // §9 iterator combinators. `ZipIter[A, B]` yields `(A, B)` tuples;
     // `TakeIter[A]` yields up to N values of A. Both expose a
     // synthetic `next() -> Element?` so the existing iterator-protocol
@@ -175,6 +182,9 @@ public:
     // `MutPtr[T]` (mutable). Trivial; lower to const T* / T*.
     [[nodiscard]] TypePtr make_ptr(TypePtr inner);
     [[nodiscard]] TypePtr make_mut_ptr(TypePtr inner);
+    // §A6 (§14.11) typed MMIO views over primitive T.
+    [[nodiscard]] TypePtr make_mmio_view(TypePtr inner);
+    [[nodiscard]] TypePtr make_mmio_region(TypePtr inner);
     // §9 iterator-combinator types. ZipIter[A, B] tracks the *element*
     // types yielded by each side; TakeIter[A] tracks the inner
     // iterator's element type.

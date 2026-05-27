@@ -391,6 +391,29 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    }\n";
     hdr << "};\n";
     hdr << "template <class A, class P> Filter(A, P) -> Filter<A, P>;\n\n";
+    // §A6 (§14.11) MMIO view templates. `MmioView<T>` wraps a
+    // `volatile T*` and exposes read / write. `MmioRegion<T>` adds
+    // an indexed view; the index() bounds-checks via __vstr::panic
+    // so an out-of-range index lands the same way an out-of-range
+    // vector access would. Both are header-local; their `at()` call
+    // sites construct them with the volatile-cast pointer.
+    hdr << "template <class T>\n";
+    hdr << "struct MmioView {\n";
+    hdr << "    T volatile* ptr;\n";
+    hdr << "    [[nodiscard]] T read() const noexcept { return *ptr; }\n";
+    hdr << "    void write(T v) noexcept { *ptr = v; }\n";
+    hdr << "};\n\n";
+    hdr << "template <class T>\n";
+    hdr << "struct MmioRegion {\n";
+    hdr << "    T volatile* base;\n";
+    hdr << "    std::intptr_t count;\n";
+    hdr << "    [[nodiscard]] MmioView<T> index(std::intptr_t i) const noexcept {\n";
+    hdr << "        if (i < 0 || i >= count) {\n";
+    hdr << "            panic(\"MmioRegion.index out of range\");\n";
+    hdr << "        }\n";
+    hdr << "        return MmioView<T>{base + i};\n";
+    hdr << "    }\n";
+    hdr << "};\n\n";
     // §A4 (§14.9.3) CASResult<T> — the strong-CAS return value. Two
     // fields: `succeeded` (bool) and `actual` (T, the value the
     // compare-exchange observed). The atomic call site lowering
@@ -2928,6 +2951,48 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     break;
                 }
             }
+            // §A6 (§14.11) `MmioView.at(ptr)` / `MmioRegion.at(ptr,
+            // count)` — wrap the MutPtr in the matching __vstr
+            // template with a volatile cast on the pointer so every
+            // read/write goes through a `volatile T*` load/store.
+            if (mem.base != nullptr && mem.base->kind == ast::NodeKind::IdentExpr
+                && mem.member == "at") {
+                const auto& bi = static_cast<const ast::IdentExpr&>(*mem.base);
+                const bool is_view = bi.name == "MmioView";
+                const bool is_region = bi.name == "MmioRegion";
+                if ((is_view && c.args.size() == 1) || (is_region && c.args.size() == 2)) {
+                    auto rt = resolution_->type_of(&e);
+                    sema::TypePtr T = rt != nullptr
+                                              && (rt->kind() == sema::TypeKind::MmioView
+                                                  || rt->kind() == sema::TypeKind::MmioRegion)
+                                          ? rt->inner()
+                                          : nullptr;
+                    if (is_view) {
+                        os << "__vstr::MmioView<";
+                    } else {
+                        os << "__vstr::MmioRegion<";
+                    }
+                    if (T != nullptr) {
+                        emit_sema_type(os, T);
+                    } else {
+                        os << "void";
+                    }
+                    os << ">{reinterpret_cast<";
+                    if (T != nullptr) {
+                        emit_sema_type(os, T);
+                    }
+                    os << " volatile*>(";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
+                    if (is_region) {
+                        os << ", static_cast<std::intptr_t>(";
+                        emit_expr(os, *c.args[1].value);
+                        os << ")";
+                    }
+                    os << "}";
+                    break;
+                }
+            }
             if (mem.base != nullptr && mem.base->kind == ast::NodeKind::IdentExpr
                 && mem.member == "raw" && c.args.size() == 2) {
                 const auto& bi = static_cast<const ast::IdentExpr&>(*mem.base);
@@ -3671,6 +3736,16 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         emit_sema_type(os, t->inner());
         os << "*";
         return;
+    case TypeKind::MmioView:
+        os << "__vstr::MmioView<";
+        emit_sema_type(os, t->inner());
+        os << ">";
+        return;
+    case TypeKind::MmioRegion:
+        os << "__vstr::MmioRegion<";
+        emit_sema_type(os, t->inner());
+        os << ">";
+        return;
     case TypeKind::Atomic:
         os << "std::atomic<";
         emit_sema_type(os, t->inner());
@@ -3781,6 +3856,19 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
             if (n.path[0] == "MutPtr" && n.type_args.size() == 1) {
                 emit_type(os, *n.type_args[0]);
                 os << "*";
+                return;
+            }
+            // §A6 MMIO views — `MmioView[T]` and `MmioRegion[T]`.
+            if (n.path[0] == "MmioView" && n.type_args.size() == 1) {
+                os << "__vstr::MmioView<";
+                emit_type(os, *n.type_args[0]);
+                os << ">";
+                return;
+            }
+            if (n.path[0] == "MmioRegion" && n.type_args.size() == 1) {
+                os << "__vstr::MmioRegion<";
+                emit_type(os, *n.type_args[0]);
+                os << ">";
                 return;
             }
             // §A4 (§14.9) `Atomic[T]` lowers to `std::atomic<T>`.

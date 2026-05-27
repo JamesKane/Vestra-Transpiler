@@ -663,6 +663,51 @@ TEST_CASE("zip(a, b) lowers via CTAD on __vstr::Zip and binds tuples in the for-
 
 // ---- §A4 Atomic[T] (§14.9) -----------------------------------------------
 
+// ---- §A6 MMIO views (§14.11) ---------------------------------------------
+
+TEST_CASE("MmioView.at + read/write lower through __vstr::MmioView with a volatile cast") {
+    SemaEmitFixture f("func touch(_ addr: UInt64) -> UInt32 {\n"
+                      "    var observed: UInt32 = 0\n"
+                      "    with RawMemory {\n"
+                      "        with Mmio {\n"
+                      "            let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+                      "            let v = MmioView.at(p)\n"
+                      "            v.write(42)\n"
+                      "            observed = v.read()\n"
+                      "        }\n"
+                      "    }\n"
+                      "    return observed\n"
+                      "}\n");
+    CHECK(f.out.header.find("struct MmioView {") != std::string::npos);
+    // The constructor wraps the MutPtr with a volatile-cast.
+    CHECK(f.out.source.find("__vstr::MmioView<std::uint32_t>{reinterpret_cast<std::uint32_t "
+                            "volatile*>(p)}")
+          != std::string::npos);
+    CHECK(f.out.source.find("v.write(42)") != std::string::npos);
+    CHECK(f.out.source.find("v.read()") != std::string::npos);
+}
+
+TEST_CASE("MmioRegion.at + .index / .count lower through __vstr::MmioRegion") {
+    SemaEmitFixture f("func sum(_ addr: UInt64) -> UInt32 {\n"
+                      "    var total: UInt32 = 0\n"
+                      "    with RawMemory {\n"
+                      "        with Mmio {\n"
+                      "            let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+                      "            let r = MmioRegion.at(p, 4)\n"
+                      "            r.index(0).write(7)\n"
+                      "            total = r.index(0).read()\n"
+                      "        }\n"
+                      "    }\n"
+                      "    return total\n"
+                      "}\n");
+    CHECK(f.out.header.find("struct MmioRegion {") != std::string::npos);
+    CHECK(f.out.source.find(
+              "__vstr::MmioRegion<std::uint32_t>{reinterpret_cast<std::uint32_t volatile*>(p), "
+              "static_cast<std::intptr_t>(4)}")
+          != std::string::npos);
+    CHECK(f.out.source.find("r.index(0).write(7)") != std::string::npos);
+}
+
 // ---- §A5 cache + TLB management (§14.10.3, §14.10.4, §14.10.5) -----------
 
 TEST_CASE("cache + TLB builtins lower to __vstr runtime shims") {

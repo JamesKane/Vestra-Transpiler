@@ -209,6 +209,35 @@ TEST_CASE("cleanData without RawMemory is rejected") {
     CHECK(r.first_message.find("missing capability 'RawMemory'") != std::string::npos);
 }
 
+TEST_CASE("MmioView.at outside Mmio is rejected") {
+    // §A6 (§14.11) view constructors require the Mmio capability.
+    // The MutPtr mint already needs RawMemory; the view construction
+    // needs Mmio on top — the audit lists both discharges.
+    auto r = check("func bad(_ addr: UInt64) {\n"
+                   "    with RawMemory {\n"
+                   "        let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+                   "        let v = MmioView.at(p)\n"
+                   "    }\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("missing capability 'Mmio'") != std::string::npos);
+}
+
+TEST_CASE("MmioRegion.at + MmioView.at under `with RawMemory { with Mmio { ... } }` are clean") {
+    CHECK(check("func ok(_ addr: UInt64) {\n"
+                "    with RawMemory {\n"
+                "        with Mmio {\n"
+                "            let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+                "            let v = MmioView.at(p)\n"
+                "            let r = MmioRegion.at(p, 4)\n"
+                "            v.write(42)\n"
+                "        }\n"
+                "    }\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 TEST_CASE("invalidateAllInstructions + tlb ops don't require RawMemory") {
     // I-cache global + TLB ops act on architectural state alone —
     // no memory range, no RawMemory gate.

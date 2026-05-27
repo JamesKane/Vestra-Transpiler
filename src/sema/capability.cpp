@@ -193,6 +193,15 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                 if ((is_unchecked_mint || is_raw_span) && !in_scope("RawMemory")) {
                     missing_capability("RawMemory", c.range);
                 }
+                // §A6 (§14.11) MMIO view constructors require the
+                // `Mmio` capability. A driver-init region typically
+                // nests `with RawMemory { with Mmio { … } }`:
+                // RawMemory mints the MutPtr; Mmio admits the view.
+                const bool is_mmio_at =
+                    (bi.name == "MmioView" || bi.name == "MmioRegion") && mem.member == "at";
+                if (is_mmio_at && !in_scope("Mmio")) {
+                    missing_capability("Mmio", c.range);
+                }
             }
         }
         // §A5 (§14.10.3, §14.10.4) the data-cache management ops

@@ -719,6 +719,49 @@ TEST_CASE("Atomic[T] surfaces the bitwise fetch ops + compareExchange") {
           == 0);
 }
 
+// ---- §A6 MMIO views (§14.11) ---------------------------------------------
+
+TEST_CASE("MmioView + MmioRegion type-check under RawMemory + Mmio") {
+    CHECK(check_errors("func touch(_ addr: UInt64) -> UInt32 {\n"
+                       "    var observed: UInt32 = 0\n"
+                       "    with RawMemory {\n"
+                       "        with Mmio {\n"
+                       "            let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+                       "            let view = MmioView.at(p)\n"
+                       "            view.write(42)\n"
+                       "            observed = view.read()\n"
+                       "            let r = MmioRegion.at(p, 4)\n"
+                       "            observed = r.index(0).read() + UInt32(0)\n"
+                       "        }\n"
+                       "    }\n"
+                       "    return observed\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("MmioView.at rejects a non-MutPtr argument") {
+    auto r = check_detail("func bad(_ addr: UInt64) {\n"
+                          "    with RawMemory {\n"
+                          "        with Mmio {\n"
+                          "            let view = MmioView.at(addr)\n"
+                          "        }\n"
+                          "    }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("MmioView.at first argument must be MutPtr[T]")
+          != std::string::npos);
+}
+
+TEST_CASE("MmioView[T] requires T to be a primitive") {
+    auto r = check_detail("struct S { var x: Int32 }\n"
+                          "func bad() -> Int32 {\n"
+                          "    let v: MmioView[S] = MmioView.at(MutPtr.unchecked(fromAddress: 0))\n"
+                          "    return 0\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("MmioView[T] requires T to be a primitive") != std::string::npos);
+}
+
 // ---- §A5 cache + TLB management (§14.10.3, §14.10.4, §14.10.5) -----------
 
 TEST_CASE("cache + TLB builtins type-check with the right argument shapes") {

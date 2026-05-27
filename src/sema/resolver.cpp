@@ -2247,6 +2247,48 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                 }
                 return is_ptr ? types_->make_ptr(T) : types_->make_mut_ptr(T);
             }
+            // §A6 (§14.11) MmioView.at(_ ptr: MutPtr[T]) → MmioView[T]
+            // and MmioRegion.at(_ ptr: MutPtr[T], count: Int) →
+            // MmioRegion[T]. Both require the `Mmio` capability,
+            // gated by the capability checker. T comes from the
+            // MutPtr arg, not from the call-site expected type —
+            // unlike .unchecked, this constructor is total over T.
+            if ((bi.name == "MmioView" || bi.name == "MmioRegion") && mem.member == "at"
+                && scopes_.current().lookup(bi.name) == nullptr) {
+                const bool is_view = bi.name == "MmioView";
+                const std::size_t expected_arity = is_view ? 1 : 2;
+                if (c.args.size() != expected_arity) {
+                    for (const auto& a : c.args) {
+                        (void)check_expr(*a.value);
+                    }
+                    error_at(c.range,
+                             std::format("{}.at takes exactly {} argument{}",
+                                         bi.name,
+                                         expected_arity,
+                                         expected_arity == 1 ? "" : "s"));
+                    return is_view ? types_->make_mmio_view(types_->error())
+                                   : types_->make_mmio_region(types_->error());
+                }
+                auto ptr_t = check_expr(*c.args[0].value);
+                if (ptr_t != nullptr && !ptr_t->is_error() && ptr_t->kind() != TypeKind::MutPtr) {
+                    error_at(c.args[0].value->range,
+                             std::format("{}.at first argument must be MutPtr[T], got {}",
+                                         bi.name,
+                                         ptr_t->describe()));
+                }
+                TypePtr T = (ptr_t != nullptr && ptr_t->kind() == TypeKind::MutPtr)
+                                ? ptr_t->inner()
+                                : types_->error();
+                if (!is_view) {
+                    auto ct = check_expr(*c.args[1].value, types_->primitive(TypeKind::Int));
+                    if (ct != nullptr && !ct->is_error() && !ct->is_integer()) {
+                        error_at(c.args[1].value->range,
+                                 std::format("MmioRegion.at count must be an integer, got {}",
+                                             ct->describe()));
+                    }
+                }
+                return is_view ? types_->make_mmio_view(T) : types_->make_mmio_region(T);
+            }
             if ((is_span || is_mut_span) && mem.member == "raw"
                 && scopes_.current().lookup(bi.name) == nullptr) {
                 if (c.args.size() != 2) {
@@ -2644,6 +2686,27 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                 return types_->make_mut_ptr(n.type_args[0] ? resolve_type(*n.type_args[0])
                                                            : types_->error());
             }
+            // §A6 (§14.11) typed MMIO views. T must be primitive.
+            if (n.path[0] == "MmioView" && n.type_args.size() == 1) {
+                TypePtr inner = n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error();
+                if (inner != nullptr && !inner->is_error() && !inner->is_primitive()) {
+                    error_at(t.range,
+                             std::format("MmioView[T] requires T to be a primitive, got {}",
+                                         inner->describe()));
+                    return types_->make_mmio_view(types_->error());
+                }
+                return types_->make_mmio_view(inner);
+            }
+            if (n.path[0] == "MmioRegion" && n.type_args.size() == 1) {
+                TypePtr inner = n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error();
+                if (inner != nullptr && !inner->is_error() && !inner->is_primitive()) {
+                    error_at(t.range,
+                             std::format("MmioRegion[T] requires T to be a primitive, got {}",
+                                         inner->describe()));
+                    return types_->make_mmio_region(types_->error());
+                }
+                return types_->make_mmio_region(inner);
+            }
             // §A4 (§14.9) builtin `Atomic[T]` — compiler-known wrapper
             // over std::atomic<T>. T must be primitive for v0.5;
             // sema enforces that here so codegen never has to think
@@ -2967,6 +3030,27 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
     // (A, B); TakeIter[A]'s element is just A. The codegen runtime
     // provides the matching member function in __vstr::Zip / __vstr::Take
     // (see emit_runtime_preamble), so this is a pure type-level shim.
+    // §A6 (§14.11) MMIO method synthesis. `MmioView[T]` exposes
+    // `.read() -> T` and `.write(T)` (the latter mutates the
+    // underlying register, but the inout receiver doesn't need a
+    // `var` binding — same exemption Atomic gets, since the view
+    // is a thin handle). `MmioRegion[T]` exposes `.index(Int)`
+    // returning the indexed view.
+    if (owner_type->kind() == TypeKind::MmioView && owner_type->inner() != nullptr) {
+        if (name == "read") {
+            return types_->make_function({}, owner_type->inner());
+        }
+        if (name == "write") {
+            return types_->make_function({owner_type->inner()}, types_->unit());
+        }
+    }
+    if (owner_type->kind() == TypeKind::MmioRegion && owner_type->inner() != nullptr) {
+        if (name == "index") {
+            return types_->make_function({types_->primitive(TypeKind::Int)},
+                                         types_->make_mmio_view(owner_type->inner()));
+        }
+    }
+
     // §A4 (§14.9.2) Atomic[T] method synthesis. Every method takes an
     // optional trailing `Ordering` argument; sema models them as a
     // single-required, single-optional shape — the default lives in
@@ -3257,6 +3341,10 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
         if (m.member == "isEmpty") {
             return finish(types_->boolean());
         }
+    }
+    // §A6 (§14.11.2) MmioRegion[T] surfaces `.count: Int` directly.
+    if (lookup_base->kind() == TypeKind::MmioRegion && m.member == "count") {
+        return finish(types_->primitive(TypeKind::Int));
     }
 
     // Field on a struct.

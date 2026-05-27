@@ -931,6 +931,35 @@ set_tests_properties(e2e_display_run PROPERTIES
     DEPENDS                e2e_display_compile
     PASS_REGULAR_EXPRESSION "display OK")
 
+# MMIO views (§A6, §14.11). MmioView[T] / MmioRegion[T] over
+# primitive T; constructors gated on Mmio (with the MutPtr coming
+# from §A3's RawMemory mints). Codegen wraps a volatile T* so every
+# read/write touches the bus. The runtime drives a single-register
+# UInt32 + a 4-slot region.
+set(e2e_mmio_input  ${CMAKE_SOURCE_DIR}/examples/mmio.vst)
+set(e2e_mmio_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_mmio.cpp)
+
+add_test(
+    NAME    e2e_mmio_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_mmio_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_mmio_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_mmio_driver} ${e2e_workdir}/mmio.cpp
+            -o ${e2e_workdir}/mmio_app)
+set_tests_properties(e2e_mmio_compile PROPERTIES
+    DEPENDS e2e_mmio_transpile)
+
+add_test(
+    NAME    e2e_mmio_run
+    COMMAND ${e2e_workdir}/mmio_app)
+set_tests_properties(e2e_mmio_run PROPERTIES
+    DEPENDS                e2e_mmio_compile
+    PASS_REGULAR_EXPRESSION "mmio OK")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except
