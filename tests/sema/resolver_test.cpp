@@ -719,6 +719,54 @@ TEST_CASE("Atomic[T] surfaces the bitwise fetch ops + compareExchange") {
           == 0);
 }
 
+// ---- §A10 @panic_handler (§15.5) -----------------------------------------
+
+TEST_CASE("@panic_handler accepts the canonical signature") {
+    CHECK(check_errors("@panic_handler\n"
+                       "func myPanic(_ msg: Str, _ file: StrConst, _ line: Int) -> Never {\n"
+                       "    abort()\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("@panic_handler rejects a mistyped parameter") {
+    auto r = check_detail("@panic_handler\n"
+                          "func bad(_ msg: Int32, _ file: StrConst, _ line: Int) -> Never {\n"
+                          "    abort()\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("(message: Str, file: StrConst, line: Int) -> Never")
+          != std::string::npos);
+}
+
+TEST_CASE("@panic_handler rejects a non-Never return") {
+    auto r = check_detail("@panic_handler\n"
+                          "func bad(_ msg: Str, _ file: StrConst, _ line: Int) -> Int32 {\n"
+                          "    return 0\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("return type must be `Never`") != std::string::npos);
+}
+
+TEST_CASE("@panic_handler rejects a using row") {
+    auto r =
+        check_detail("@panic_handler\n"
+                     "func bad(_ msg: Str, _ file: StrConst, _ line: Int) using Asm -> Never {\n"
+                     "    abort()\n"
+                     "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("cannot declare a `using` row") != std::string::npos);
+}
+
+TEST_CASE("duplicate @panic_handler in one unit is diagnosed") {
+    auto r = check_detail("@panic_handler\n"
+                          "func first(_ m: Str, _ f: StrConst, _ l: Int) -> Never { abort() }\n"
+                          "@panic_handler\n"
+                          "func second(_ m: Str, _ f: StrConst, _ l: Int) -> Never { abort() }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("duplicate @panic_handler") != std::string::npos);
+}
+
 // ---- §A8 @interrupt handlers (§14.5.2) -----------------------------------
 
 TEST_CASE("@interrupt accepts the canonical inout-TrapFrame shape") {

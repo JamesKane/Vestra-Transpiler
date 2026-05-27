@@ -55,6 +55,10 @@ const std::unordered_map<std::string, std::string>& primitive_map() {
         {"String", "std::string"},
         {"Str", "std::string_view"},
         {"StrConst", "std::string_view"},
+        // §A10 — `-> Never` in source maps to __vstr::Never on the
+        // C++ side. The conversion-op shim handles slotting it into
+        // any slot the surrounding expression expects.
+        {"Never", "__vstr::Never"},
     };
     return m;
 }
@@ -315,7 +319,32 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "        std::unreachable();\n";
     hdr << "    }\n";
     hdr << "};\n\n";
+    // §A10 (§15.5) — `@panic_handler` delegation. The function-
+    // pointer slot is `inline` so multiple translation units agree
+    // on one storage location; when the user declares a
+    // `@panic_handler` func, codegen emits a static-init block at
+    // the end of the unit that writes its address into this slot.
+    // The panic shim consults the slot first, falling back to the
+    // default `std::println` + `std::abort` path if no handler is
+    // registered (the v0.5 hosted CI build never registers one).
+    // The slot's return type is `Never` (not void) so the user's
+    // handler — which Vestra requires to return Never — assigns
+    // through `&handler` without a reinterpret_cast. Per the spec
+    // the handler must not actually return; if it does (UB at the
+    // Vestra layer), control falls through to the std::abort below.
+    // Vestra emits read-mode params as `const T&` on the C++ side,
+    // so the slot's signature mirrors that pattern — assigning the
+    // user's handler address would otherwise hit an incompatible-
+    // function-pointer-type error.
+    hdr << "using PanicHandlerFn = Never(*)(const std::string_view& message, const "
+           "std::string_view& file, const std::intptr_t& line);\n";
+    hdr << "inline PanicHandlerFn panic_handler = nullptr;\n\n";
     hdr << "[[noreturn]] inline Never panic(std::string_view msg) noexcept {\n";
+    hdr << "    if (panic_handler != nullptr) {\n";
+    hdr << "        const std::string_view empty_file{};\n";
+    hdr << "        const std::intptr_t zero_line = 0;\n";
+    hdr << "        (void)panic_handler(msg, empty_file, zero_line);\n";
+    hdr << "    }\n";
     hdr << "    std::println(stderr, \"vestra panic: {}\", msg);\n";
     hdr << "    std::abort();\n";
     hdr << "}\n\n";
@@ -583,6 +612,36 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
             continue;
         }
         emit_decl(hdr, src, *d);
+    }
+
+    // §A10 (§15.5) — if the unit declares a @panic_handler, emit a
+    // static-init block that registers it with the runtime
+    // delegation slot. Goes inside the user's namespace so the
+    // handler name resolves unqualified, before the closing brace.
+    // Per [basic.start.static] the assignment runs before main, so
+    // any panic from user code (or from a static initializer in
+    // another TU) sees the handler installed.
+    const ast::FuncDecl* panic_handler = nullptr;
+    for (const auto& d : unit.decls) {
+        if (d->kind != ast::NodeKind::Func) {
+            continue;
+        }
+        const auto& f = static_cast<const ast::FuncDecl&>(*d);
+        for (const auto& a : f.attributes) {
+            if (a.name == "panic_handler") {
+                panic_handler = &f;
+                break;
+            }
+        }
+        if (panic_handler != nullptr) {
+            break;
+        }
+    }
+    if (panic_handler != nullptr) {
+        src << "\n[[maybe_unused]] static const bool __vstr_register_panic_handler = []{\n";
+        src << "    __vstr::panic_handler = &" << panic_handler->name << ";\n";
+        src << "    return true;\n";
+        src << "}();\n";
     }
 
     if (unit.module) {

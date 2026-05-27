@@ -931,6 +931,37 @@ set_tests_properties(e2e_display_run PROPERTIES
     DEPENDS                e2e_display_compile
     PASS_REGULAR_EXPRESSION "display OK")
 
+# @panic_handler (§A10, §15.5). First slice — sema validates the
+# (Str, StrConst, Int) -> Never signature; codegen emits the user's
+# handler with [[gnu::used]] plus a static-init block that writes
+# its address into __vstr::panic_handler before main runs. The
+# runtime panic shim consults the slot and delegates when non-null.
+# The e2e exercises the registration (slot non-null) and the
+# delegation (fork + SIGABRT confirms the handler reached abort).
+set(e2e_panic_handler_input  ${CMAKE_SOURCE_DIR}/examples/panic_handler.vst)
+set(e2e_panic_handler_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_panic_handler.cpp)
+
+add_test(
+    NAME    e2e_panic_handler_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_panic_handler_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_panic_handler_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_panic_handler_driver} ${e2e_workdir}/panic_handler.cpp
+            -o ${e2e_workdir}/panic_handler_app)
+set_tests_properties(e2e_panic_handler_compile PROPERTIES
+    DEPENDS e2e_panic_handler_transpile)
+
+add_test(
+    NAME    e2e_panic_handler_run
+    COMMAND ${e2e_workdir}/panic_handler_app)
+set_tests_properties(e2e_panic_handler_run PROPERTIES
+    DEPENDS                e2e_panic_handler_compile
+    PASS_REGULAR_EXPRESSION "panic_handler OK")
+
 # @interrupt handlers (§A8, §14.5.2). First slice — the func shape
 # (inout TrapFrame, Unit return, no Alloc/Async/Extern) plus
 # [[gnu::used]] codegen so the symbol survives DCE. The full

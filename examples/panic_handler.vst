@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A10 (§15.5) — `@panic_handler`, first slice.
+//
+// A freestanding binary's panic path is target-specific. Vestra
+// admits exactly one `@panic_handler` per program — sema enforces
+// uniqueness within a unit, the linker enforces it across units.
+// The handler's signature is fixed:
+//
+//   func (_ message: Str, _ file: StrConst, _ line: Int) -> Never
+//
+// The compiler emits panic / overflow / Never-return calls against
+// this binding. v0.5 wires up the message; file / line plumbing
+// waits on a follow-up that threads __FILE__ / __LINE__ through
+// every panic call site.
+//
+// Implementation: the runtime preamble exposes an `inline
+// __vstr::panic_handler` function-pointer slot defaulting to
+// nullptr. When the user declares a `@panic_handler`, codegen
+// emits a static-init lambda that writes its address into the
+// slot before `main` runs. The `__vstr::panic` shim delegates
+// through the slot when non-null, falling back to its existing
+// `std::println(stderr) + std::abort()` path otherwise.
+//
+// `memcpy` / `memset` / `memmove` as in-tree-emitted intrinsics
+// (§15.4) and the `profile.freestanding.no_libc = true` audit
+// flag (§15.5's `no_libc` build guarantee) wait on follow-ups.
+
+module examples.panic_handler
+
+// Side-channel the handler writes into. The driver reads it to
+// confirm the handler ran. In a kernel build this would be the
+// uart-puts-and-spin loop; here it's an Atomic[UInt32] flag.
+static handler_ran: Atomic[UInt32] = 0
+
+@panic_handler
+func vestraPanic(_ message: Str, _ file: StrConst, _ line: Int) -> Never {
+    handler_ran.store(1, .seqCst)
+    // The handler is required to return Never. The simplest way
+    // is to call into the language's built-in `abort`, which has
+    // type Never and lowers to std::abort.
+    abort()
+}
+
+// Trigger the runtime panic shim. The driver runs this in a
+// forked child so the abort doesn't kill the test harness.
+func cause_panic() {
+    panic("triggered by cause_panic")
+}

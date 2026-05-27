@@ -420,6 +420,11 @@ TypeKind TypeArena::primitive_kind_by_name(std::string_view name) noexcept {
         {"String", TypeKind::String},
         {"Str", TypeKind::Str},
         {"StrConst", TypeKind::StrConst},
+        // §10 `Never` is normally inferred from diverging expressions
+        // (panic / throw / unreachable), but `-> Never` is admissible
+        // as an explicit annotation — the §A10 @panic_handler is the
+        // first source-level spelling that needs it.
+        {"Never", TypeKind::Never},
     };
     auto it = m.find(name);
     return it == m.end() ? TypeKind::Error : it->second;

@@ -663,6 +663,24 @@ TEST_CASE("zip(a, b) lowers via CTAD on __vstr::Zip and binds tuples in the for-
 
 // ---- §A4 Atomic[T] (§14.9) -----------------------------------------------
 
+// ---- §A10 @panic_handler (§15.5) -----------------------------------------
+
+TEST_CASE("@panic_handler emits a static-init block that registers the handler") {
+    SemaEmitFixture f("@panic_handler\n"
+                      "func myPanic(_ msg: Str, _ file: StrConst, _ line: Int) -> Never {\n"
+                      "    abort()\n"
+                      "}\n");
+    // The runtime preamble declares the slot.
+    CHECK(f.out.header.find("inline PanicHandlerFn panic_handler = nullptr;") != std::string::npos);
+    // The panic shim delegates through the slot when non-null.
+    CHECK(f.out.header.find("if (panic_handler != nullptr)") != std::string::npos);
+    // The static-init block ends up in the source file inside the
+    // user's namespace.
+    CHECK(f.out.source.find("__vstr::panic_handler = &myPanic;") != std::string::npos);
+    // The handler's signature lowers with `__vstr::Never` return.
+    CHECK(f.out.source.find("__vstr::Never myPanic(") != std::string::npos);
+}
+
 // ---- §A8 @interrupt handlers (§14.5.2) -----------------------------------
 
 TEST_CASE("@interrupt emits [[gnu::used]] on the declaration") {

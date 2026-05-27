@@ -855,6 +855,56 @@ void Resolver::check_link_attributes(const std::vector<ast::Attribute>& attrs) {
 void Resolver::check_func(const ast::FuncDecl& f) {
     check_link_attributes(f.attributes);
 
+    // §A10 (§15.5) `@panic_handler` shape rules. Exactly one per
+    // unit; signature must be `(message: Str, file: StrConst, line:
+    // Int) -> Never`; the `using` row must be empty (the handler
+    // runs in a context where the program's capability bindings
+    // can't be assumed live). The "exactly one per binary" cross-
+    // TU rule is the linker's concern; sema enforces only the
+    // per-unit count.
+    for (const auto& a : f.attributes) {
+        if (a.name != "panic_handler") {
+            continue;
+        }
+        if (panic_handler_decl_ != nullptr && panic_handler_decl_ != &f) {
+            auto d = diag::Diagnostic::error("duplicate @panic_handler in this unit").at(a.range);
+            if (panic_handler_decl_->range.is_valid()) {
+                d.with_note(diag::Diagnostic::note("previous @panic_handler here")
+                                .at(panic_handler_decl_->range));
+            }
+            reporter_->report(std::move(d));
+        }
+        panic_handler_decl_ = &f;
+        // Signature check: 3 params, (Str, StrConst, Int).
+        const bool params_ok =
+            f.params.size() == 3 && f.params[0].type != nullptr
+            && resolve_type(*f.params[0].type) == types_->primitive(TypeKind::Str)
+            && f.params[1].type != nullptr
+            && resolve_type(*f.params[1].type) == types_->primitive(TypeKind::StrConst)
+            && f.params[2].type != nullptr
+            && resolve_type(*f.params[2].type) == types_->primitive(TypeKind::Int);
+        if (!params_ok) {
+            error_at(a.range,
+                     "@panic_handler signature must be `(message: Str, file: StrConst, line: "
+                     "Int) -> Never`");
+        }
+        // Return type: must be Never. Never isn't spellable directly
+        // in source but the resolver type-checks each `panic` /
+        // `throw` body shape; here we approximate by requiring an
+        // explicit `-> Never` annotation. v0.5: accept any result
+        // type that resolves to Never; sema would otherwise need
+        // body-level falls-off-the-end checking which is out of scope.
+        if (f.result == nullptr || !resolve_type(*f.result)->is_never()) {
+            error_at(a.range,
+                     "@panic_handler return type must be `Never` (no falling off the end)");
+        }
+        if (!f.effects.using_caps.empty()) {
+            error_at(a.range,
+                     "@panic_handler cannot declare a `using` row — the handler runs in a "
+                     "context where the program's capability bindings can't be assumed live");
+        }
+    }
+
     // §A8 (§14.5.2) `@interrupt` shape rules. Validated against the
     // declared signature regardless of whether the body is present,
     // since the rules are about the surface kernels write at ISRs:

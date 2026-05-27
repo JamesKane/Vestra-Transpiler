@@ -232,6 +232,11 @@ private:
     // so a do-catch nested inside a function-inside-a-do-catch
     // doesn't capture the outer one's inference.
     std::vector<TypePtr*> do_catch_infer_stack_;
+    // §A10 (§15.5) the single @panic_handler this unit declares, if
+    // any. Tracked at check_func time; the codegen reads it after
+    // sema to decide whether to emit the runtime delegation block.
+    const ast::FuncDecl* panic_handler_decl_ = nullptr;
+
     // §A4 (§14.9.3) `compareExchangeWeak` is admitted only inside one
     // of the recognized retry-loop shapes. We model that by bumping
     // this counter at the top of any while-stmt whose condition
