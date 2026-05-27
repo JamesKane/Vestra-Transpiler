@@ -1111,6 +1111,36 @@ set_tests_properties(e2e_mmio_run PROPERTIES
     DEPENDS                e2e_mmio_compile
     PASS_REGULAR_EXPRESSION "mmio OK")
 
+# MmioWireView (§A6 follow-up, §14.11.3). Endianness-aware MMIO
+# view: the constructor pins the bus endianness; reads/writes
+# byteswap when the device endianness differs from host-native
+# via std::byteswap. The runtime exercises a big-endian wire on
+# a UInt32 cell (the raw bytes after a write reveal the swap on
+# LE hosts) and a native pin (verbatim).
+set(e2e_mmio_wire_input  ${CMAKE_SOURCE_DIR}/examples/mmio_wire.vst)
+set(e2e_mmio_wire_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_mmio_wire.cpp)
+
+add_test(
+    NAME    e2e_mmio_wire_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_mmio_wire_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_mmio_wire_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_mmio_wire_driver} ${e2e_workdir}/mmio_wire.cpp
+            -o ${e2e_workdir}/mmio_wire_app)
+set_tests_properties(e2e_mmio_wire_compile PROPERTIES
+    DEPENDS e2e_mmio_wire_transpile)
+
+add_test(
+    NAME    e2e_mmio_wire_run
+    COMMAND ${e2e_workdir}/mmio_wire_app)
+set_tests_properties(e2e_mmio_wire_run PROPERTIES
+    DEPENDS                e2e_mmio_wire_compile
+    PASS_REGULAR_EXPRESSION "mmio_wire OK")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except

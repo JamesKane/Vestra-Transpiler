@@ -136,6 +136,9 @@ std::string Type::describe() const {
     case TypeKind::MmioRegion:
         return inner_ ? std::format("MmioRegion[{}]", inner_->describe())
                       : std::string{"MmioRegion"};
+    case TypeKind::MmioWireView:
+        return inner_ ? std::format("MmioWireView[{}]", inner_->describe())
+                      : std::string{"MmioWireView"};
     case TypeKind::PerCpu:
         return inner_ ? std::format("PerCpu[{}]", inner_->describe()) : std::string{"PerCpu"};
     case TypeKind::ZipIter: {
@@ -303,6 +306,14 @@ TypePtr TypeArena::make_mmio_region(TypePtr inner) {
     return p;
 }
 
+TypePtr TypeArena::make_mmio_wire_view(TypePtr inner) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::MmioWireView));
+    t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
 TypePtr TypeArena::make_per_cpu(TypePtr inner) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::PerCpu));
     t->inner_ = inner;
@@ -459,6 +470,7 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     case TypeKind::MutPtr:
     case TypeKind::MmioView:
     case TypeKind::MmioRegion:
+    case TypeKind::MmioWireView:
     case TypeKind::PerCpu:
     case TypeKind::TakeIter:
     case TypeKind::FilterIter:
@@ -633,6 +645,10 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::MmioRegion: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_mmio_region(inner);
+    }
+    case TypeKind::MmioWireView: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_mmio_wire_view(inner);
     }
     case TypeKind::PerCpu: {
         auto inner = substitute(t->inner(), bindings);

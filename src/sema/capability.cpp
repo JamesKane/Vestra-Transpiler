@@ -198,7 +198,8 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                 // nests `with RawMemory { with Mmio { … } }`:
                 // RawMemory mints the MutPtr; Mmio admits the view.
                 const bool is_mmio_at =
-                    (bi.name == "MmioView" || bi.name == "MmioRegion") && mem.member == "at";
+                    (bi.name == "MmioView" || bi.name == "MmioRegion" || bi.name == "MmioWireView")
+                    && mem.member == "at";
                 if (is_mmio_at && !in_scope("Mmio")) {
                     missing_capability("Mmio", c.range);
                 }

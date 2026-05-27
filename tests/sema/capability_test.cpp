@@ -238,6 +238,17 @@ TEST_CASE("MmioRegion.at + MmioView.at under `with RawMemory { with Mmio { ... }
           == 0);
 }
 
+TEST_CASE("MmioWireView.at outside Mmio is rejected") {
+    auto r = check("func bad(_ addr: UInt64) {\n"
+                   "    with RawMemory {\n"
+                   "        let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+                   "        let w = MmioWireView.at(p, .big)\n"
+                   "    }\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("missing capability 'Mmio'") != std::string::npos);
+}
+
 // ---- §A7 (§14.13) InterruptsOff region rules ------------------------------
 
 TEST_CASE("waitForInterrupt inside InterruptsOff is rejected") {

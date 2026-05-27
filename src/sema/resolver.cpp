@@ -427,6 +427,30 @@ void Resolver::register_builtin_reflection() {
         (void)scopes_.global().insert(std::move(s));
     }
 
+    // §A6 (§14.11.3) Endianness: three cases for the MmioWireView
+    // constructor. `native` is the no-swap pass-through; `little` /
+    // `big` pin the device's bus endianness so the read/write paths
+    // swap when the host's native endianness doesn't match.
+    {
+        auto decl = std::make_unique<ast::EnumDecl>();
+        decl->name = "Endianness";
+        decl->visibility = ast::Visibility::Public;
+        for (const char* name : {"little", "big", "native"}) {
+            ast::EnumDecl::Case c;
+            c.name = name;
+            decl->cases.push_back(std::move(c));
+        }
+        builtin_endianness_decl_ = std::move(decl);
+
+        Symbol s;
+        s.name = "Endianness";
+        s.kind = SymbolKind::Enum;
+        s.decl = builtin_endianness_decl_.get();
+        s.type = types_->make_nominal(TypeKind::Enum, builtin_endianness_decl_.get());
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
+    }
+
     // §A5 (§14.10.5) TlbScope: four cases for TLB-invalidation
     // breadth. Mirrors the spec's aarch64-shaped names; x86 / RISC-V
     // targets translate them to their analogues at codegen.
@@ -2501,6 +2525,43 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                 }
                 return is_ptr ? types_->make_ptr(T) : types_->make_mut_ptr(T);
             }
+            // §A6 (§14.11) `MmioWireView.at(ptr, endianness)` —
+            // parallel to the bare-view constructor but takes the
+            // device's endianness as a second arg. Capability check
+            // is the same `Mmio` gate.
+            if (bi.name == "MmioWireView" && mem.member == "at"
+                && scopes_.current().lookup(bi.name) == nullptr) {
+                if (c.args.size() != 2) {
+                    for (const auto& a : c.args) {
+                        (void)check_expr(*a.value);
+                    }
+                    error_at(c.range,
+                             "MmioWireView.at takes exactly two arguments "
+                             "(_ ptr: MutPtr[T], endianness: Endianness)");
+                    return types_->make_mmio_wire_view(types_->error());
+                }
+                auto ptr_t = check_expr(*c.args[0].value);
+                TypePtr endian_t =
+                    builtin_endianness_decl_ != nullptr
+                        ? types_->make_nominal(TypeKind::Enum, builtin_endianness_decl_.get())
+                        : types_->error();
+                auto endian_arg_t = check_expr(*c.args[1].value, endian_t);
+                if (ptr_t != nullptr && !ptr_t->is_error() && ptr_t->kind() != TypeKind::MutPtr) {
+                    error_at(c.args[0].value->range,
+                             std::format("MmioWireView.at first argument must be MutPtr[T], got {}",
+                                         ptr_t->describe()));
+                }
+                TypePtr T = (ptr_t != nullptr && ptr_t->kind() == TypeKind::MutPtr)
+                                ? ptr_t->inner()
+                                : types_->error();
+                if (endian_arg_t != nullptr && !endian_arg_t->is_error()
+                    && !TypeArena::equal(endian_arg_t, endian_t)) {
+                    error_at(c.args[1].value->range,
+                             std::format("MmioWireView.at endianness must be Endianness, got {}",
+                                         endian_arg_t->describe()));
+                }
+                return types_->make_mmio_wire_view(T);
+            }
             // §A6 (§14.11) MmioView.at(_ ptr: MutPtr[T]) → MmioView[T]
             // and MmioRegion.at(_ ptr: MutPtr[T], count: Int) →
             // MmioRegion[T]. Both require the `Mmio` capability,
@@ -2961,6 +3022,21 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                 }
                 return types_->make_mmio_region(inner);
             }
+            // §A6 (§14.11.3) `MmioWireView[T]` — endianness-aware
+            // MMIO view. Same T-must-be-primitive constraint as
+            // MmioView; the swap happens at the read/write boundary
+            // when the device's declared endianness differs from
+            // the host's native.
+            if (n.path[0] == "MmioWireView" && n.type_args.size() == 1) {
+                TypePtr inner = n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error();
+                if (inner != nullptr && !inner->is_error() && !inner->is_primitive()) {
+                    error_at(t.range,
+                             std::format("MmioWireView[T] requires T to be a primitive, got {}",
+                                         inner->describe()));
+                    return types_->make_mmio_wire_view(types_->error());
+                }
+                return types_->make_mmio_wire_view(inner);
+            }
             // §A11 (§14.8) `PerCpu[T]` — per-hart slot. The spec
             // requires T: Trivial. v0.5 doesn't have a Trivial
             // protocol but the common kernel pattern is
@@ -3327,6 +3403,17 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
         if (name == "index") {
             return types_->make_function({types_->primitive(TypeKind::Int)},
                                          types_->make_mmio_view(owner_type->inner()));
+        }
+    }
+    // §A6 (§14.11.3) MmioWireView exposes the same `read` / `write`
+    // shape as MmioView; the difference (the conditional byte swap)
+    // lives at the C++ template layer.
+    if (owner_type->kind() == TypeKind::MmioWireView && owner_type->inner() != nullptr) {
+        if (name == "read") {
+            return types_->make_function({}, owner_type->inner());
+        }
+        if (name == "write") {
+            return types_->make_function({owner_type->inner()}, types_->unit());
         }
     }
 

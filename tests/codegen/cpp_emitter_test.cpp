@@ -792,6 +792,29 @@ TEST_CASE("MmioRegion.at + .index / .count lower through __vstr::MmioRegion") {
     CHECK(f.out.source.find("r.index(0).write(7)") != std::string::npos);
 }
 
+TEST_CASE("MmioWireView.at + read/write lower through __vstr::MmioWireView with endianness") {
+    SemaEmitFixture f("func talk(_ addr: UInt64) -> UInt32 {\n"
+                      "    var observed: UInt32 = 0\n"
+                      "    with RawMemory {\n"
+                      "        with Mmio {\n"
+                      "            let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+                      "            let w = MmioWireView.at(p, .big)\n"
+                      "            w.write(42)\n"
+                      "            observed = w.read()\n"
+                      "        }\n"
+                      "    }\n"
+                      "    return observed\n"
+                      "}\n");
+    CHECK(f.out.header.find("enum class Endianness { little, big, native };") != std::string::npos);
+    CHECK(f.out.header.find("struct MmioWireView {") != std::string::npos);
+    CHECK(f.out.header.find("std::byteswap") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::MmioWireView<std::uint32_t>{reinterpret_cast<std::uint32_t "
+                            "volatile*>(p), Endianness::big}")
+          != std::string::npos);
+    CHECK(f.out.source.find("w.write(42)") != std::string::npos);
+    CHECK(f.out.source.find("w.read()") != std::string::npos);
+}
+
 // ---- §A5 cache + TLB management (§14.10.3, §14.10.4, §14.10.5) -----------
 
 TEST_CASE("cache + TLB builtins lower to __vstr runtime shims") {

@@ -274,6 +274,8 @@ private:
     std::unique_ptr<ast::EnumDecl> builtin_barrier_kind_decl_;
     // §A5 (§14.10.5): TlbScope for the TLB-invalidation surface.
     std::unique_ptr<ast::EnumDecl> builtin_tlb_scope_decl_;
+    // §A6 (§14.11.3): Endianness for the MmioWireView constructor.
+    std::unique_ptr<ast::EnumDecl> builtin_endianness_decl_;
     // §A7 (§14.14): Context — the opaque task-saving slot Scheduler
     // swaps between. Registered as a compiler-known struct with no
     // user-visible fields (the layout is the target description's

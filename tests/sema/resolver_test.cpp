@@ -925,6 +925,47 @@ TEST_CASE("MmioView[T] requires T to be a primitive") {
     CHECK(r.first_message.find("MmioView[T] requires T to be a primitive") != std::string::npos);
 }
 
+TEST_CASE("MmioWireView[T].at + .read / .write type-check under RawMemory + Mmio") {
+    CHECK(check_errors("func talk(_ addr: UInt64) -> UInt32 {\n"
+                       "    var observed: UInt32 = 0\n"
+                       "    with RawMemory {\n"
+                       "        with Mmio {\n"
+                       "            let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+                       "            let w = MmioWireView.at(p, .big)\n"
+                       "            w.write(42)\n"
+                       "            observed = w.read()\n"
+                       "        }\n"
+                       "    }\n"
+                       "    return observed\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("MmioWireView.at rejects a non-MutPtr first argument") {
+    auto r = check_detail("func bad(_ addr: UInt64) {\n"
+                          "    with RawMemory {\n"
+                          "        with Mmio {\n"
+                          "            let w = MmioWireView.at(addr, .little)\n"
+                          "        }\n"
+                          "    }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("MmioWireView.at first argument must be MutPtr[T]")
+          != std::string::npos);
+}
+
+TEST_CASE("MmioWireView[T] requires T to be a primitive") {
+    auto r = check_detail(
+        "struct S { var x: Int32 }\n"
+        "func bad() -> Int32 {\n"
+        "    let w: MmioWireView[S] = MmioWireView.at(MutPtr.unchecked(fromAddress: 0), .native)\n"
+        "    return 0\n"
+        "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("MmioWireView[T] requires T to be a primitive")
+          != std::string::npos);
+}
+
 // ---- §A5 cache + TLB management (§14.10.3, §14.10.4, §14.10.5) -----------
 
 TEST_CASE("cache + TLB builtins type-check with the right argument shapes") {

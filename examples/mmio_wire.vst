@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A6 (§14.11.3) — `MmioWireView[T]` endianness-aware MMIO.
+//
+// Many real peripherals (PCIe config registers, BE network MACs,
+// disk controllers) speak a fixed bus endianness that doesn't
+// match the host CPU. The plain `MmioView[T]` from `mmio.vst`
+// reads/writes the raw word; `MmioWireView[T]` adds an explicit
+// endianness pin to the constructor so the runtime byte-swaps
+// when the device endianness differs from host-native.
+//
+// Constructor shape:
+//
+//   MmioWireView.at(ptr: MutPtr[T], endian: Endianness) -> MmioWireView[T]
+//
+// `Endianness` is a compiler-known enum with three cases:
+//
+//   .little   force little-endian on the bus
+//   .big      force big-endian on the bus
+//   .native   match the host (no swap, regardless of host)
+//
+// Reads return the host-order value; writes accept a host-order
+// value and emit it in bus-order. T is constrained to a primitive
+// (the integer widths a real bus carries).
+//
+// Caps: same audit surface as `MmioView` — `RawMemory` to mint
+// the MutPtr, `Mmio` to construct the wire view.
+
+module examples.mmio_wire
+
+// Force big-endian wire. On a little-endian host this means the
+// runtime byteswaps; on a BE host it's a straight load/store.
+func talk_big(_ addr: UInt64, _ v: UInt32) -> UInt32 {
+    var observed: UInt32 = 0
+    with RawMemory {
+        with Mmio {
+            let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)
+            let w = MmioWireView.at(p, .big)
+            w.write(v)
+            observed = w.read()
+        }
+    }
+    return observed
+}
+
+// Native — never swaps, regardless of host. Provides a sanity
+// check that the wrapper itself doesn't corrupt values.
+func talk_native(_ addr: UInt64, _ v: UInt32) -> UInt32 {
+    var observed: UInt32 = 0
+    with RawMemory {
+        with Mmio {
+            let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)
+            let w = MmioWireView.at(p, .native)
+            w.write(v)
+            observed = w.read()
+        }
+    }
+    return observed
+}

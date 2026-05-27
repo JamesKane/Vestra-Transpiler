@@ -72,6 +72,10 @@ enum class TypeKind : std::uint16_t {
     // `volatile T*` through the read/write paths.
     MmioView,
     MmioRegion,
+    // §A6 (§14.11.3) endianness-aware MMIO view. Lowers to a
+    // template that conditionally byte-swaps read/write based on
+    // the device's declared endianness vs the host's native.
+    MmioWireView,
     // §A11 (§14.8) per-CPU storage. `PerCpu[T]` is the compiler-
     // known generic struct over Trivial T; v0.5 hosts a single
     // 64-byte-padded slot, the kernel target swaps the storage for
@@ -190,6 +194,7 @@ public:
     // §A6 (§14.11) typed MMIO views over primitive T.
     [[nodiscard]] TypePtr make_mmio_view(TypePtr inner);
     [[nodiscard]] TypePtr make_mmio_region(TypePtr inner);
+    [[nodiscard]] TypePtr make_mmio_wire_view(TypePtr inner);
     // §A11 (§14.8) per-CPU storage over Trivial T.
     [[nodiscard]] TypePtr make_per_cpu(TypePtr inner);
     // §9 iterator-combinator types. ZipIter[A, B] tracks the *element*
