@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A8 (§14.5.2) — `@interrupt` handlers, first slice.
+//
+// An ISR is an ordinary Vestra function with three shape rules:
+//
+//   1. Exactly one `inout TrapFrame` parameter — mutating it
+//      changes the registers that `eret` / `iretq` restore on
+//      return from the exception level.
+//   2. Return type is Unit (no `-> T`). ISRs can't yield a value.
+//   3. The `using` row may not include `Alloc`, `Async`, or
+//      `Extern`. No heap, no awaiting, no FFI back to userland —
+//      ISRs run with the kernel's own discipline.
+//
+// The `@interrupt(...)` attribute carries class / fromEL1 metadata
+// the kernel target uses to pick the prologue/epilogue shape;
+// v0.5 accepts the metadata but doesn't yet act on it. Codegen
+// emits the function with `[[gnu::used]]` so dead-code elimination
+// doesn't drop it when the only references live in a hand-written
+// vector table or a linker-script symbol assignment. Pairing
+// `@interrupt` with `@symbol("...")` (§A1) pins the linker name —
+// the canonical pattern for an aarch64 EL1 sync handler called
+// from a `VBAR_EL1`-installed vector slot.
+//
+// The full §14.5.3 vector-table lowering (typed @interrupt(T)
+// arrays + per-slot stride alignment) waits on a follow-up phase.
+
+module examples.interrupt_handler
+
+// A minimal aarch64-ish trap frame. The kernel target would pull
+// the canonical `core.systems.trap.AArch64TrapFrame` from the
+// standard library; a hosted CI driver uses its own shape so the
+// runtime can poke fields directly.
+struct TrapFrame {
+    var x0:  UInt64
+    var x1:  UInt64
+    var elr: UInt64
+    var esr: UInt64
+}
+
+// Sync exception handler. Bumps x0 by the syscall result and
+// advances elr past the SVC so the eret returns to the next
+// instruction. The kernel build would call this via the
+// `VBAR_EL1`-installed vector table; the e2e driver invokes it
+// directly to verify the surface. The v0.5 attribute parser
+// takes a single expression argument — labeled-arg attributes
+// (`@interrupt(class: .sync, fromEL1: true)`) wait on a follow-up.
+@interrupt(0)
+@symbol("aarch64_sync_el1") @section("__TEXT,__isr_text")
+func handle_sync_el1(_ frame: inout TrapFrame) {
+    // Pretend the syscall returned (x0 += 1, advance elr by 4).
+    frame.x0 = frame.x0 + 1
+    frame.elr = frame.elr + 4
+}
+
+// IRQ handler. Records the IRQ number in x1 and clears x0 to
+// signal "handled". Same shape rules as above.
+@interrupt @symbol("aarch64_irq_el1")
+func handle_irq_el1(_ frame: inout TrapFrame) {
+    frame.x1 = frame.esr  // pretend ESR holds the IRQ number
+    frame.x0 = 0
+}

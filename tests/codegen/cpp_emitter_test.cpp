@@ -663,6 +663,22 @@ TEST_CASE("zip(a, b) lowers via CTAD on __vstr::Zip and binds tuples in the for-
 
 // ---- §A4 Atomic[T] (§14.9) -----------------------------------------------
 
+// ---- §A8 @interrupt handlers (§14.5.2) -----------------------------------
+
+TEST_CASE("@interrupt emits [[gnu::used]] on the declaration") {
+    SemaEmitFixture f("struct TrapFrame { var x0: UInt64 }\n"
+                      "@interrupt(0) @symbol(\"isr_sym\")\n"
+                      "func isr(_ frame: inout TrapFrame) {\n"
+                      "    frame.x0 = frame.x0 + 1\n"
+                      "}\n");
+    // [[gnu::used]] keeps the symbol alive across dead-code
+    // elimination — required for an ISR whose only references are
+    // in a hand-written vector table or linker script.
+    CHECK(f.out.header.find("[[gnu::used]]") != std::string::npos);
+    // Pairing with @symbol still renames the asm label.
+    CHECK(f.out.header.find("isr(TrapFrame& frame) asm(\"isr_sym\")") != std::string::npos);
+}
+
 // ---- §A6 MMIO views (§14.11) ---------------------------------------------
 
 TEST_CASE("MmioView.at + read/write lower through __vstr::MmioView with a volatile cast") {

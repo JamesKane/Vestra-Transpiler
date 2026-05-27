@@ -719,6 +719,41 @@ TEST_CASE("Atomic[T] surfaces the bitwise fetch ops + compareExchange") {
           == 0);
 }
 
+// ---- §A8 @interrupt handlers (§14.5.2) -----------------------------------
+
+TEST_CASE("@interrupt accepts the canonical inout-TrapFrame shape") {
+    CHECK(check_errors("struct TrapFrame { var x0: UInt64 }\n"
+                       "@interrupt(0)\n"
+                       "func isr(_ frame: inout TrapFrame) {\n"
+                       "    frame.x0 = frame.x0 + 1\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("@interrupt requires the first parameter to be inout") {
+    auto r = check_detail("struct TrapFrame { var x0: UInt64 }\n"
+                          "@interrupt\n"
+                          "func bad(_ frame: TrapFrame) {}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@interrupt requires an `inout TrapFrame`") != std::string::npos);
+}
+
+TEST_CASE("@interrupt rejects a non-Unit return") {
+    auto r = check_detail("struct TrapFrame { var x0: UInt64 }\n"
+                          "@interrupt\n"
+                          "func bad(_ frame: inout TrapFrame) -> Int32 { return 0 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@interrupt functions return Unit") != std::string::npos);
+}
+
+TEST_CASE("@interrupt rejects Alloc / Async / Extern in the using row") {
+    auto r = check_detail("struct TrapFrame { var x0: UInt64 }\n"
+                          "@interrupt\n"
+                          "func bad(_ frame: inout TrapFrame) using Alloc {}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@interrupt cannot declare `using Alloc`") != std::string::npos);
+}
+
 // ---- §A6 MMIO views (§14.11) ---------------------------------------------
 
 TEST_CASE("MmioView + MmioRegion type-check under RawMemory + Mmio") {

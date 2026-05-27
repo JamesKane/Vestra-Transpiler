@@ -854,6 +854,54 @@ void Resolver::check_link_attributes(const std::vector<ast::Attribute>& attrs) {
 
 void Resolver::check_func(const ast::FuncDecl& f) {
     check_link_attributes(f.attributes);
+
+    // §A8 (§14.5.2) `@interrupt` shape rules. Validated against the
+    // declared signature regardless of whether the body is present,
+    // since the rules are about the surface kernels write at ISRs:
+    //   * first parameter must be `inout T` (the trap frame is what
+    //     `eret`/`iretq` write back to);
+    //   * return type must be Unit — ISRs can't fail or yield a value;
+    //   * the using-row must not include `Alloc`, `Async`, or
+    //     `Extern` — those don't make sense inside an interrupt
+    //     handler (no heap, no awaiting, no FFI back to userland).
+    // The attribute-argument shape (`class:` / `fromEL1:`) is left
+    // free in v0.5; later phases will parse the labeled-arg dict.
+    for (const auto& a : f.attributes) {
+        if (a.name != "interrupt") {
+            continue;
+        }
+        if (f.params.empty()
+            || (f.params.size() >= 1 && f.params[0].mode != ast::ParamMode::Inout)) {
+            error_at(a.range,
+                     "@interrupt requires an `inout TrapFrame` first parameter — the prologue / "
+                     "epilogue mutate it to write back the saved registers");
+        }
+        if (f.result != nullptr) {
+            error_at(a.range,
+                     "@interrupt functions return Unit (the body's effect is the mutation of "
+                     "the trap-frame parameter; eret / iretq restores from there)");
+        }
+        for (const auto& cap : f.effects.using_caps) {
+            if (cap == nullptr) {
+                continue;
+            }
+            std::string name;
+            if (cap->kind == ast::NodeKind::NamedType) {
+                const auto& nt = static_cast<const ast::NamedType&>(*cap);
+                if (!nt.path.empty()) {
+                    name = nt.path.back();
+                }
+            }
+            if (name == "Alloc" || name == "Async" || name == "Extern") {
+                error_at(a.range,
+                         std::format("@interrupt cannot declare `using {}` — interrupt handlers "
+                                     "run with the kernel's own discipline (no heap, no awaits, "
+                                     "no FFI back across the boundary)",
+                                     name));
+            }
+        }
+    }
+
     if (!f.body) {
         return;  // protocol requirement / extern stub — nothing to check
     }

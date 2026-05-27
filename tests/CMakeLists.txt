@@ -931,6 +931,36 @@ set_tests_properties(e2e_display_run PROPERTIES
     DEPENDS                e2e_display_compile
     PASS_REGULAR_EXPRESSION "display OK")
 
+# @interrupt handlers (§A8, §14.5.2). First slice — the func shape
+# (inout TrapFrame, Unit return, no Alloc/Async/Extern) plus
+# [[gnu::used]] codegen so the symbol survives DCE. The full
+# §14.5.3 vector-table lowering waits on a follow-up. The runtime
+# invokes the handlers directly with a stack TrapFrame and checks
+# the inout-side mutations.
+set(e2e_interrupt_handler_input  ${CMAKE_SOURCE_DIR}/examples/interrupt_handler.vst)
+set(e2e_interrupt_handler_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_interrupt_handler.cpp)
+
+add_test(
+    NAME    e2e_interrupt_handler_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interrupt_handler_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interrupt_handler_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_interrupt_handler_driver} ${e2e_workdir}/interrupt_handler.cpp
+            -o ${e2e_workdir}/interrupt_handler_app)
+set_tests_properties(e2e_interrupt_handler_compile PROPERTIES
+    DEPENDS e2e_interrupt_handler_transpile)
+
+add_test(
+    NAME    e2e_interrupt_handler_run
+    COMMAND ${e2e_workdir}/interrupt_handler_app)
+set_tests_properties(e2e_interrupt_handler_run PROPERTIES
+    DEPENDS                e2e_interrupt_handler_compile
+    PASS_REGULAR_EXPRESSION "interrupt_handler OK")
+
 # MMIO views (§A6, §14.11). MmioView[T] / MmioRegion[T] over
 # primitive T; constructors gated on Mmio (with the MutPtr coming
 # from §A3's RawMemory mints). Codegen wraps a volatile T* so every

@@ -133,6 +133,14 @@ struct LinkAttrs {
     std::string inline_mode;  // "always" / "never" / "hint"; empty when not set
     bool weak = false;
     bool noinit = false;
+    // §A8 (§14.5.2) — @interrupt marks a function as an ISR. v0.5
+    // emits `[[gnu::used]]` so dead-code elimination doesn't drop a
+    // handler that's only referenced from a hand-written vector
+    // table or boot-time linker symbol assignment. The kernel-target
+    // build replaces this with the matching arch-specific attribute
+    // (`__attribute__((interrupt))` on aarch64/x86, etc.) plus the
+    // prologue/epilogue the spec describes.
+    bool interrupt = false;
 };
 
 std::string string_from_attr_arg(const ast::Expr* arg) {
@@ -155,6 +163,8 @@ LinkAttrs read_link_attrs(const std::vector<ast::Attribute>& attrs) {
             out.weak = true;
         } else if (a.name == "noinit") {
             out.noinit = true;
+        } else if (a.name == "interrupt") {
+            out.interrupt = true;
         } else if (a.name == "visibility" && a.predicate != nullptr
                    && a.predicate->kind == ast::NodeKind::LeadingDotExpr) {
             const auto& d = static_cast<const ast::LeadingDotExpr&>(*a.predicate);
@@ -189,6 +199,13 @@ void emit_link_attr_prefix(std::ostream& os, const LinkAttrs& la) {
     }
     if (!la.visibility.empty()) {
         os << "[[gnu::visibility(\"" << la.visibility << "\")]] ";
+    }
+    // §A8 (§14.5.2) — keep ISR symbols alive across link-time dead-
+    // code elimination. A handler referenced only from a hand-written
+    // vector table or a kernel boot script would otherwise look
+    // unreferenced from the C++ side; `[[gnu::used]]` pins it.
+    if (la.interrupt) {
+        os << "[[gnu::used]] ";
     }
     // §A2 (§7.8) `@inline`. `.always` is a correctness directive —
     // [[gnu::always_inline]] turns failure-to-inline into a compile
