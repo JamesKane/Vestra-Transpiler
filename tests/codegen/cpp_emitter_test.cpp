@@ -663,6 +663,40 @@ TEST_CASE("zip(a, b) lowers via CTAD on __vstr::Zip and binds tuples in the for-
 
 // ---- §A4 Atomic[T] (§14.9) -----------------------------------------------
 
+// ---- §A5 cache + TLB management (§14.10.3, §14.10.4, §14.10.5) -----------
+
+TEST_CASE("cache + TLB builtins lower to __vstr runtime shims") {
+    SemaEmitFixture f("func use(_ addr: UInt64, _ n: Int) {\n"
+                      "    with RawMemory {\n"
+                      "        let mp: MutPtr[UInt8] = MutPtr.unchecked(fromAddress: addr)\n"
+                      "        let m = MutSpan.raw(at: mp, count: n)\n"
+                      "        zeroData(m)\n"
+                      "        let p: Ptr[UInt8] = Ptr.unchecked(fromAddress: addr)\n"
+                      "        let s = Span.raw(at: p, count: n)\n"
+                      "        cleanData(s)\n"
+                      "        publishInstructions(s)\n"
+                      "    }\n"
+                      "    invalidateAllInstructions()\n"
+                      "    tlbInvalidateAll(.innerShareable)\n"
+                      "    tlbInvalidatePage(0x1000, false, .currentEL)\n"
+                      "    tlbInvalidateAsid(7, .innerShareable)\n"
+                      "}\n");
+    // Preamble lands TlbScope at file scope so leading-dot lowering
+    // works without a namespace prefix.
+    CHECK(f.out.header.find("enum class TlbScope {") != std::string::npos);
+    // Each builtin dispatches to its matching shim.
+    CHECK(f.out.source.find("__vstr::zeroData(m)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::cleanData(s)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::publishInstructions(s)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::invalidateAllInstructions()") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::tlbInvalidateAll(TlbScope::innerShareable)")
+          != std::string::npos);
+    CHECK(f.out.source.find("__vstr::tlbInvalidatePage(0x1000, false, TlbScope::currentEL)")
+          != std::string::npos);
+    CHECK(f.out.source.find("__vstr::tlbInvalidateAsid(7, TlbScope::innerShareable)")
+          != std::string::npos);
+}
+
 // ---- §A3 raw-mint primitives (§10.5) -------------------------------------
 
 TEST_CASE("MutPtr.unchecked + MutSpan.raw lower to reinterpret_cast + std::span") {

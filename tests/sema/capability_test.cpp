@@ -194,6 +194,33 @@ TEST_CASE("Ptr.unchecked / Span.raw / MutSpan.raw under `with RawMemory` are cle
           == 0);
 }
 
+TEST_CASE("cleanData without RawMemory is rejected") {
+    // §A5 (§14.10.3) data-cache ops are gated on RawMemory the same
+    // way the §A3 raw mints are.
+    auto r = check("func bad(_ addr: UInt64, _ n: Int) {\n"
+                   "    var p: Ptr[UInt8] = Ptr.unchecked(fromAddress: 0)\n"
+                   "    with RawMemory {\n"
+                   "        p = Ptr.unchecked(fromAddress: addr)\n"
+                   "    }\n"
+                   "    let s = Span.raw(at: p, count: n)\n"  // already RawMemory-gated
+                   "    cleanData(s)\n"                       // and so is this
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("missing capability 'RawMemory'") != std::string::npos);
+}
+
+TEST_CASE("invalidateAllInstructions + tlb ops don't require RawMemory") {
+    // I-cache global + TLB ops act on architectural state alone —
+    // no memory range, no RawMemory gate.
+    CHECK(check("func ok() {\n"
+                "    invalidateAllInstructions()\n"
+                "    tlbInvalidateAll(.innerShareable)\n"
+                "    tlbInvalidatePage(0x1000, false, .currentEL)\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 TEST_CASE("Span.raw without RawMemory is rejected even with a valid Ptr in scope") {
     // Mint the pointer inside RawMemory but try to derive the span
     // outside — the cap check is per-call-site.

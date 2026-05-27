@@ -195,6 +195,26 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                 }
             }
         }
+        // §A5 (§14.10.3, §14.10.4) the data-cache management ops
+        // (clean / invalidate / cleanInvalidate / zero) and
+        // publishInstructions all read or write memory through the
+        // user-supplied Span range, so they're gated on RawMemory
+        // the same way the §A3 mints are. invalidateAllInstructions
+        // and the TLB ops act on architectural state alone, so they
+        // need only Asm (which v0.5 doesn't yet enforce).
+        if (c.callee && c.callee->kind == ast::NodeKind::IdentExpr) {
+            static const std::unordered_set<std::string_view> raw_memory_builtins = {
+                "cleanData",
+                "invalidateData",
+                "cleanInvalidateData",
+                "zeroData",
+                "publishInstructions",
+            };
+            const auto& bi = static_cast<const ast::IdentExpr&>(*c.callee);
+            if (raw_memory_builtins.contains(bi.name) && !in_scope("RawMemory")) {
+                missing_capability("RawMemory", c.range);
+            }
+        }
         check_expr(*c.callee);
         for (const auto& a : c.args) {
             check_expr(*a.value);

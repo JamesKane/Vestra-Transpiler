@@ -719,6 +719,42 @@ TEST_CASE("Atomic[T] surfaces the bitwise fetch ops + compareExchange") {
           == 0);
 }
 
+// ---- §A5 cache + TLB management (§14.10.3, §14.10.4, §14.10.5) -----------
+
+TEST_CASE("cache + TLB builtins type-check with the right argument shapes") {
+    CHECK(check_errors("func use(_ addr: UInt64, _ n: Int) {\n"
+                       "    with RawMemory {\n"
+                       "        let mp: MutPtr[UInt8] = MutPtr.unchecked(fromAddress: addr)\n"
+                       "        let m = MutSpan.raw(at: mp, count: n)\n"
+                       "        zeroData(m)\n"
+                       "        let p: Ptr[UInt8] = Ptr.unchecked(fromAddress: addr)\n"
+                       "        let s = Span.raw(at: p, count: n)\n"
+                       "        cleanData(s)\n"
+                       "        invalidateData(s)\n"
+                       "        cleanInvalidateData(s)\n"
+                       "        publishInstructions(s)\n"
+                       "    }\n"
+                       "    invalidateAllInstructions()\n"
+                       "    tlbInvalidateAll(.innerShareable)\n"
+                       "    tlbInvalidatePage(0x1000, false, .currentEL)\n"
+                       "    tlbInvalidateAsid(7, .innerShareable)\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("zeroData rejects a Span (read-only) argument") {
+    // zeroData mutates; passing a Span[UInt8] (read-only) instead of
+    // MutSpan[UInt8] is an argument-type mismatch.
+    auto r = check_detail("func bad(_ addr: UInt64, _ n: Int) {\n"
+                          "    with RawMemory {\n"
+                          "        let p: Ptr[UInt8] = Ptr.unchecked(fromAddress: addr)\n"
+                          "        let s = Span.raw(at: p, count: n)\n"
+                          "        zeroData(s)\n"
+                          "    }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+}
+
 // ---- §A3 raw-mint primitives (§10.5) -------------------------------------
 
 TEST_CASE("MutPtr.unchecked + MutSpan.raw under RawMemory type-checks") {

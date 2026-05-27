@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A5 follow-up — cache + TLB management (§14.10.3, §14.10.4,
+// §14.10.5).
+//
+// Nine more free-function builtins:
+//
+//   cleanData(range: Span[UInt8])           — DC CVAC / CLFLUSHOPT
+//   invalidateData(range: Span[UInt8])      — DC IVAC / CLFLUSH
+//   cleanInvalidateData(range: Span[UInt8]) — DC CIVAC / CLFLUSH
+//   zeroData(range: MutSpan[UInt8])         — DC ZVA / REP STOSB
+//   publishInstructions(range: Span[UInt8]) — dc cvau ; ic ivau ; …
+//   invalidateAllInstructions()             — IC IALLU / WBINVD
+//   tlbInvalidateAll(scope: TlbScope)       — TLBI VMALLE1
+//   tlbInvalidatePage(va, large, scope)     — TLBI VAE1
+//   tlbInvalidateAsid(asid, scope: TlbScope) — TLBI ASIDE1
+//
+// The data-cache ops + publishInstructions all act on a user-
+// supplied Span[UInt8] / MutSpan[UInt8] range, so they're gated on
+// the §A3 RawMemory capability (the same gate the raw-mint
+// primitives use). invalidateAllInstructions + the TLB ops act
+// only on architectural state, so they're not RawMemory-gated.
+// Every one of them is additionally meant to be gated on `Asm`;
+// v0.5 doesn't enforce that yet, so kernel-targeting and hosted-
+// targeting users see the same surface.
+//
+// On the hosted CI host, the cache shims are no-ops (privileged
+// instructions aren't available to userspace) except `zeroData`
+// which actually zeroes the span — the e2e cross-checks that side
+// effect. The kernel build replaces each shim with its real
+// architectural sequence.
+
+module examples.cache_tlb
+
+// Zero a byte buffer through the raw-mint + zeroData path. This
+// mirrors the kernel's `.bss` clear at boot: open RawMemory, mint
+// the pointer, derive the span, hand it to zeroData.
+func zero_at(_ addr: UInt64, _ n: Int) {
+    with RawMemory {
+        let p: MutPtr[UInt8] = MutPtr.unchecked(fromAddress: addr)
+        let buf = MutSpan.raw(at: p, count: n)
+        zeroData(buf)
+    }
+}
+
+// Drive each of the cache-management ops; the side effects are
+// architectural so the runtime just confirms the calls don't
+// crash. The Span argument is the same one the cache lines would
+// operate on in a kernel build.
+func cycle_cache(_ addr: UInt64, _ n: Int) {
+    with RawMemory {
+        let p: Ptr[UInt8] = Ptr.unchecked(fromAddress: addr)
+        let buf = Span.raw(at: p, count: n)
+        cleanData(buf)
+        invalidateData(buf)
+        cleanInvalidateData(buf)
+        publishInstructions(buf)
+    }
+}
+
+// The TLB + I-cache global ops — no RawMemory required since the
+// architectural state they touch is named, not memory-resident.
+func global_flush() {
+    invalidateAllInstructions()
+    tlbInvalidateAll(.innerShareable)
+    tlbInvalidatePage(0x1000, false, .currentEL)
+    tlbInvalidateAsid(7, .innerShareable)
+}

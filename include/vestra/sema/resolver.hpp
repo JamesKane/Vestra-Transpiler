@@ -267,6 +267,8 @@ private:
     // memoryBarrier surface. Registered the same way as Ordering.
     std::unique_ptr<ast::EnumDecl> builtin_barrier_scope_decl_;
     std::unique_ptr<ast::EnumDecl> builtin_barrier_kind_decl_;
+    // §A5 (§14.10.5): TlbScope for the TLB-invalidation surface.
+    std::unique_ptr<ast::EnumDecl> builtin_tlb_scope_decl_;
 };
 
 }  // namespace vestra::sema

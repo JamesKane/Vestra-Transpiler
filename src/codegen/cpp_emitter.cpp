@@ -460,6 +460,33 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "inline void cpu_nop() noexcept { __asm__ volatile(\"nop\"); }\n\n";
     hdr << "}  // namespace __vstr\n\n";
 
+    // §A5 (§14.10.5) TlbScope: parameter enum for the TLB-
+    // invalidation builtins. Like BarrierScope / BarrierKind this
+    // emits at file scope so leading-dot lowering picks it up
+    // unqualified.
+    hdr << "enum class TlbScope { currentEL, allELs, innerShareable, outerShareable };\n\n";
+
+    // §A5 (§14.10.3 / §14.10.4 / §14.10.5) cache + TLB management
+    // shims. Hosted builds have no privileged-instruction access;
+    // the bodies are no-ops on hosted except `zeroData`, which
+    // actually zeroes the span so the e2e can verify the side
+    // effect. The kernel build replaces each shim with its real
+    // architectural sequence (dc cvac / dc ivac / tlbi vmalle1 /
+    // …).
+    hdr << "namespace __vstr {\n\n";
+    hdr << "inline void cleanData(std::span<const std::uint8_t>) noexcept {}\n";
+    hdr << "inline void invalidateData(std::span<const std::uint8_t>) noexcept {}\n";
+    hdr << "inline void cleanInvalidateData(std::span<const std::uint8_t>) noexcept {}\n";
+    hdr << "inline void zeroData(std::span<std::uint8_t> r) noexcept {\n";
+    hdr << "    for (auto& b : r) { b = 0; }\n";
+    hdr << "}\n";
+    hdr << "inline void publishInstructions(std::span<const std::uint8_t>) noexcept {}\n";
+    hdr << "inline void invalidateAllInstructions() noexcept {}\n";
+    hdr << "inline void tlbInvalidateAll(TlbScope) noexcept {}\n";
+    hdr << "inline void tlbInvalidatePage(std::uint64_t, bool, TlbScope) noexcept {}\n";
+    hdr << "inline void tlbInvalidateAsid(std::uint16_t, TlbScope) noexcept {}\n\n";
+    hdr << "}  // namespace __vstr\n\n";
+
     // §4 Optional in a Display splice. Vestra renders `"\(opt)"` as
     // `nil` for `.none` and delegates to T's formatter for `.some(v)`.
     // libc++ on Apple Clang 21 doesn't yet ship the C++26 P2585
@@ -3047,6 +3074,16 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 {"signalEvent", "signalEvent"},
                 {"relax", "relax"},
                 {"nop", "cpu_nop"},
+                // §A5 (§14.10.3 / §14.10.4 / §14.10.5) cache + TLB ops.
+                {"cleanData", "cleanData"},
+                {"invalidateData", "invalidateData"},
+                {"cleanInvalidateData", "cleanInvalidateData"},
+                {"zeroData", "zeroData"},
+                {"publishInstructions", "publishInstructions"},
+                {"invalidateAllInstructions", "invalidateAllInstructions"},
+                {"tlbInvalidateAll", "tlbInvalidateAll"},
+                {"tlbInvalidatePage", "tlbInvalidatePage"},
+                {"tlbInvalidateAsid", "tlbInvalidateAsid"},
             };
             if (auto it = sync_intrinsics.find(callee_ident.name); it != sync_intrinsics.end()) {
                 os << "__vstr::" << it->second << "(";

@@ -195,6 +195,30 @@ void Resolver::register_builtin_sync() {
     insert("signalEvent", {});
     insert("relax", {});
     insert("nop", {});
+
+    // §A5 (§14.10.3, §14.10.4, §14.10.5) cache + TLB management.
+    // Span / MutSpan over UInt8 ranges for the data/instruction
+    // cache ops; the data-cache ones additionally require
+    // RawMemory (gated in the capability checker, parallel to the
+    // §A3 raw-mint primitives). TLB ops take a TlbScope; some take
+    // a virtual address (UInt64) and a large-page flag (Bool).
+    auto u8_span = types_->make_span(types_->primitive(TypeKind::UInt8));
+    auto u8_mut_span = types_->make_mut_span(types_->primitive(TypeKind::UInt8));
+    auto u64 = types_->primitive(TypeKind::UInt64);
+    auto u16 = types_->primitive(TypeKind::UInt16);
+    auto boolean = types_->boolean();
+    auto tlb_scope = builtin_tlb_scope_decl_ != nullptr
+                         ? types_->make_nominal(TypeKind::Enum, builtin_tlb_scope_decl_.get())
+                         : types_->error();
+    insert("cleanData", {u8_span});
+    insert("invalidateData", {u8_span});
+    insert("cleanInvalidateData", {u8_span});
+    insert("zeroData", {u8_mut_span});
+    insert("publishInstructions", {u8_span});
+    insert("invalidateAllInstructions", {});
+    insert("tlbInvalidateAll", {tlb_scope});
+    insert("tlbInvalidatePage", {u64, boolean, tlb_scope});
+    insert("tlbInvalidateAsid", {u16, tlb_scope});
 }
 
 void Resolver::register_builtin_math() {
@@ -370,6 +394,29 @@ void Resolver::register_builtin_reflection() {
         s.kind = SymbolKind::Enum;
         s.decl = builtin_barrier_kind_decl_.get();
         s.type = types_->make_nominal(TypeKind::Enum, builtin_barrier_kind_decl_.get());
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
+    }
+
+    // §A5 (§14.10.5) TlbScope: four cases for TLB-invalidation
+    // breadth. Mirrors the spec's aarch64-shaped names; x86 / RISC-V
+    // targets translate them to their analogues at codegen.
+    {
+        auto decl = std::make_unique<ast::EnumDecl>();
+        decl->name = "TlbScope";
+        decl->visibility = ast::Visibility::Public;
+        for (const char* name : {"currentEL", "allELs", "innerShareable", "outerShareable"}) {
+            ast::EnumDecl::Case c;
+            c.name = name;
+            decl->cases.push_back(std::move(c));
+        }
+        builtin_tlb_scope_decl_ = std::move(decl);
+
+        Symbol s;
+        s.name = "TlbScope";
+        s.kind = SymbolKind::Enum;
+        s.decl = builtin_tlb_scope_decl_.get();
+        s.type = types_->make_nominal(TypeKind::Enum, builtin_tlb_scope_decl_.get());
         s.visibility = ast::Visibility::Public;
         (void)scopes_.global().insert(std::move(s));
     }
