@@ -1331,6 +1331,38 @@ set_tests_properties(e2e_ptr_deref_run PROPERTIES
     DEPENDS                e2e_ptr_deref_compile
     PASS_REGULAR_EXPRESSION "ptr_deref OK")
 
+# §A9 first slice — @boot + @kernel_init (§14.7). The stage-1
+# entry chain attributes: @boot for pre-MMU code (naked, no
+# heap, no unwinder), @kernel_init for the transitional
+# regime between boot and the scheduler's first swapContext.
+# The runtime exercises the kernel_init -> kernel_main marker
+# round-trip; @boot's body is empty on hosted (real kernels
+# would put an asm block there) but its [[gnu::naked]]
+# attribute survives to link time.
+set(e2e_boot_chain_input  ${CMAKE_SOURCE_DIR}/examples/boot_chain.vst)
+set(e2e_boot_chain_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_boot_chain.cpp)
+
+add_test(
+    NAME    e2e_boot_chain_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_boot_chain_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_boot_chain_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_boot_chain_driver} ${e2e_workdir}/boot_chain.cpp
+            -o ${e2e_workdir}/boot_chain_app)
+set_tests_properties(e2e_boot_chain_compile PROPERTIES
+    DEPENDS e2e_boot_chain_transpile)
+
+add_test(
+    NAME    e2e_boot_chain_run
+    COMMAND ${e2e_workdir}/boot_chain_app)
+set_tests_properties(e2e_boot_chain_run PROPERTIES
+    DEPENDS                e2e_boot_chain_compile
+    PASS_REGULAR_EXPRESSION "boot_chain OK")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except

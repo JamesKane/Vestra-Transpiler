@@ -821,6 +821,19 @@ TEST_CASE("PerCpu[T] lowers to __vstr::PerCpu<T> with .mine() accessor") {
           != std::string::npos);
 }
 
+TEST_CASE("@boot emits [[gnu::naked]]; @kernel_init emits a plain function") {
+    auto out = emit("@boot\nfunc _start() {}\n"
+                    "@kernel_init\nfunc kinit() {}\n");
+    // The naked attribute lands on both the declaration and the
+    // definition so the C++ compiler skips the prologue/epilogue.
+    CHECK(out.header.find("[[gnu::naked]] void _start();") != std::string::npos);
+    CHECK(out.source.find("[[gnu::naked]] void _start()") != std::string::npos);
+    // @kernel_init has no codegen artifact — it's a runtime regime,
+    // not a layout / link-attribute concern.
+    CHECK(out.header.find("void kinit();") != std::string::npos);
+    CHECK(out.header.find("[[gnu::naked]] void kinit") == std::string::npos);
+}
+
 TEST_CASE("Ptr[T].value lowers to (*p) for read; MutPtr[T].value admits write-through") {
     SemaEmitFixture f("func get_val(_ addr: UInt64) -> UInt32 {\n"
                       "    with RawMemory {\n"

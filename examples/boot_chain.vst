@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A9 first slice (§14.7) — `@boot` + `@kernel_init`.
+//
+// The kernel's stage-1 entry chain has three distinct regimes:
+//
+//   @boot         pre-MMU code. Vestra in surface, assembly in
+//                 runtime model. Naked function — no prologue,
+//                 no epilogue, body is exactly the instructions
+//                 the user writes. Tier V's hidden-pointer
+//                 threading can't run here. Seven restrictions:
+//                 no using row except Asm / RawMemory / Mmio,
+//                 no call into ordinary Vestra, no throws,
+//                 no spilled register arguments, no reference
+//                 to non-@boot code except by &decl, comptime
+//                 results must be Trivial, @naked implied.
+//
+//   @kernel_init  transitional regime. Ordinary Vestra surface
+//                 with the full type system, single-threaded
+//                 and pre-scheduler in runtime model. No
+//                 using Async / spawn / await; allocator may
+//                 or may not be live depending on call site;
+//                 the only regime where @no_auto_barrier is
+//                 admitted (§14.12.3). One-way: ordinary code
+//                 may not call back into @kernel_init.
+//
+//   ordinary      everything after the scheduler's first
+//                 swapContext. Full Vestra, multi-threaded,
+//                 every cap available subject to discharge.
+//
+// A typical aarch64 stage-1 entry chain is
+// `@boot func _start → @kernel_init func kernel_init →
+//  ordinary func kernel_main`. The single br from _start to
+// kernel_init is the audit-flagged boundary between boot
+// and runtime; the call from kernel_init to kernel_main is
+// the boundary between init regime and steady-state.
+
+module examples.boot_chain
+
+// Pre-MMU entry. In a real kernel this would be an asm block
+// that sets up the initial stack pointer and `br &kernel_init`.
+// On hosted v0.5 it stays empty — the [[gnu::naked]] attribute
+// lands but there's no instruction sequence to execute (the
+// example demonstrates the codegen shape, not boot semantics).
+@boot
+func _start() using Asm {
+}
+
+// Transitional regime. Brings up subsystems that have to run
+// before the scheduler dispatches: page tables, vector table
+// registration, allocator handoff, first task's context. The
+// `using Alloc` row is admitted by sema; whether Alloc is
+// actually live is an audit-time property of the call site.
+@kernel_init
+func kernel_init(_ marker: UInt64) using Alloc -> UInt64 {
+    // The allocator has returned its @kernel_init initialiser
+    // by this point — Alloc is live. Real kernels would mint a
+    // Box[SchedulerState] here and tail-call swapContext into
+    // it. The marker round-trip stands in for the "init ran"
+    // observable signal we test from the C++ driver.
+    return marker + 1
+}
+
+// Ordinary regime. Anything that runs once the scheduler has
+// dispatched the first task. No @boot / @kernel_init markers.
+func kernel_main(_ marker: UInt64) -> UInt64 {
+    return marker + 100
+}

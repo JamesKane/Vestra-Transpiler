@@ -870,6 +870,40 @@ TEST_CASE("PerCpu[T] with a primitive inner") {
           == 0);
 }
 
+// ---- §A9 @boot + @kernel_init (§14.7) ------------------------------------
+
+TEST_CASE("@boot with Asm/RawMemory/Mmio using row + no throws type-checks") {
+    CHECK(check_errors("@boot\nfunc _start() using Asm {}\n"
+                       "@boot\nfunc _start_raw() using RawMemory {}\n"
+                       "@boot\nfunc _start_mmio() using Mmio {}\n")
+          == 0);
+}
+
+TEST_CASE("@boot rejects `using Alloc`") {
+    auto r = check_detail("@boot\nfunc bad() using Alloc {}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@boot cannot declare `using Alloc`") != std::string::npos);
+}
+
+TEST_CASE("@boot rejects `throws(E)`") {
+    auto r = check_detail("@boot\nfunc bad() throws(Int32) {}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@boot cannot declare `throws(E)`") != std::string::npos);
+}
+
+TEST_CASE("@kernel_init rejects `using Async`") {
+    auto r = check_detail("@kernel_init\nfunc bad() using Async {}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@kernel_init cannot declare `using Async`") != std::string::npos);
+}
+
+TEST_CASE("@kernel_init with `using Alloc` is admitted (audit-time, not static)") {
+    // Spec rule 3 — `using Alloc` is admitted only after the
+    // allocator's @kernel_init initialiser has returned. The compiler
+    // doesn't statically check the order; that's audit-time.
+    CHECK(check_errors("@kernel_init\nfunc ok() using Alloc {}\n") == 0);
+}
+
 TEST_CASE("Ptr[T].value reads through to T (read-only)") {
     // §A3 follow-up (§10.5) deref via .value. Mirrors Box[T].value.
     CHECK(check_errors("func touch(_ addr: UInt64) -> UInt32 {\n"

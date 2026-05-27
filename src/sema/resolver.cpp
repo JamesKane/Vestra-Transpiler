@@ -1136,6 +1136,67 @@ void Resolver::check_func(const ast::FuncDecl& f) {
         }
     }
 
+    // §A9 (§14.7) `@boot` shape rules. Validated independently of
+    // body presence — boot stubs declared as forward references stay
+    // restricted regardless. v0.5 enforces three of the seven rules
+    // here (the others are call-graph / audit-time):
+    //   * `using` row restricted to {Asm, RawMemory, Mmio}. Other
+    //     caps imply runtime services boot can't depend on.
+    //   * No throws / Result. The boot regime has no unwinder.
+    //   * @naked is implied — recorded on the attr, applied at
+    //     codegen time as the C++ `[[gnu::naked]]` prefix.
+    for (const auto& a : f.attributes) {
+        if (a.name != "boot") {
+            continue;
+        }
+        for (const auto& cap : f.effects.using_caps) {
+            if (cap == nullptr || cap->kind != ast::NodeKind::NamedType) {
+                continue;
+            }
+            const auto& nt = static_cast<const ast::NamedType&>(*cap);
+            if (nt.path.empty()) {
+                continue;
+            }
+            const auto& name = nt.path.back();
+            if (name != "Asm" && name != "RawMemory" && name != "Mmio") {
+                error_at(a.range,
+                         std::format("@boot cannot declare `using {}` — the boot regime is "
+                                     "limited to Asm / RawMemory / Mmio (pre-MMU code has no "
+                                     "runtime services)",
+                                     name));
+            }
+        }
+        if (f.effects.throws_type != nullptr) {
+            error_at(a.range,
+                     "@boot cannot declare `throws(E)` — the boot regime has no unwinder, no "
+                     "Result type-layer, and no panic path that could carry the error");
+        }
+    }
+
+    // §A9 (§14.7.1) `@kernel_init` shape rules. v0.5 enforces:
+    //   * No `using Async`. The scheduler hasn't dispatched yet —
+    //     there's no other thread to synchronise with.
+    // The other four rules (call-graph reachability, allocator
+    // initialiser ordering, ordinary-calls-kernel_init rejection)
+    // are audit-time and queue for the call-graph pass.
+    for (const auto& a : f.attributes) {
+        if (a.name != "kernel_init") {
+            continue;
+        }
+        for (const auto& cap : f.effects.using_caps) {
+            if (cap == nullptr || cap->kind != ast::NodeKind::NamedType) {
+                continue;
+            }
+            const auto& nt = static_cast<const ast::NamedType&>(*cap);
+            if (!nt.path.empty() && nt.path.back() == "Async") {
+                error_at(a.range,
+                         "@kernel_init cannot declare `using Async` — the scheduler hasn't "
+                         "dispatched a second task yet, so there's no other thread to "
+                         "synchronise with");
+            }
+        }
+    }
+
     if (!f.body) {
         return;  // protocol requirement / extern stub — nothing to check
     }

@@ -151,6 +151,12 @@ struct LinkAttrs {
     // (`__attribute__((interrupt))` on aarch64/x86, etc.) plus the
     // prologue/epilogue the spec describes.
     bool interrupt = false;
+    // §A9 (§14.7) — @boot is the pre-MMU regime. @naked is implied:
+    // emit `[[gnu::naked]]` so the C++ compiler skips the standard
+    // prologue/epilogue and the body is the literal instructions
+    // (typically a single asm-block that escapes via &decl to the
+    // first ordinary or @kernel_init function).
+    bool boot = false;
 };
 
 std::string string_from_attr_arg(const ast::Expr* arg) {
@@ -175,6 +181,8 @@ LinkAttrs read_link_attrs(const std::vector<ast::Attribute>& attrs) {
             out.noinit = true;
         } else if (a.name == "interrupt") {
             out.interrupt = true;
+        } else if (a.name == "boot") {
+            out.boot = true;
         } else if (a.name == "visibility" && a.predicate != nullptr
                    && a.predicate->kind == ast::NodeKind::LeadingDotExpr) {
             const auto& d = static_cast<const ast::LeadingDotExpr&>(*a.predicate);
@@ -216,6 +224,13 @@ void emit_link_attr_prefix(std::ostream& os, const LinkAttrs& la) {
     // unreferenced from the C++ side; `[[gnu::used]]` pins it.
     if (la.interrupt) {
         os << "[[gnu::used]] ";
+    }
+    // §A9 (§14.7) — @boot implies @naked. The C++ compiler skips
+    // the standard prologue/epilogue; the body is exactly the
+    // instructions the user writes (typically asm + a single `br`
+    // /`jmp` to the next stage's entry point named by &decl).
+    if (la.boot) {
+        os << "[[gnu::naked]] ";
     }
     // §A2 (§7.8) `@inline`. `.always` is a correctness directive —
     // [[gnu::always_inline]] turns failure-to-inline into a compile
