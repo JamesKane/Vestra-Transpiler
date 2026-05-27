@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A12 (§14.6.1 + §14.6.3) — pluggable calling conventions plus
+// the `&decl` address-of operator.
+//
+// `@extern("conv")` accepts any calling convention the target
+// backend names — `"C"`, `"hvc64"`, `"smc64"`, `"sysv64"`,
+// `"win64"`, `"ms_abi"`, `"aapcs"`, `"riscv"`, `"interrupt"`. Each
+// conv pins register usage and the return path. v0.5 hosts validate
+// the conv at sema time but emit no extra C++ attribute (the
+// kernel target replaces with the matching `[[gnu::*_abi]]`).
+//
+// `&decl` on a `static` yields `Ptr[T]` — a Trivial bit-pattern
+// wrapper holding the symbol's address. Address-taking doesn't
+// require `RawMemory` (the spec §14.6.3 carves it out); only
+// dereferencing through the resulting pointer does. The lowering
+// is a plain `&decl` in C++ (the symbol's address) — no
+// reinterpret_cast, no runtime check.
+//
+// `&decl` on a `func` yields a function-type pointer; v0.5 limits
+// this to the static case. The vector-table slot form waits on
+// the §A8 follow-up that lands typed `@interrupt(T)` arrays.
+
+module examples.addr_of
+
+// Plain static — its address is meaningful at link time.
+static config_word: UInt32 = 0xCAFE_BABE
+
+// .bss-resident byte buffer. The kernel reaches it by `&decl`
+// + a `MutSpan.raw` mint under `with RawMemory`.
+@noinit @section("__DATA,__addr_buf")
+static rx_buffer: [16]UInt8
+
+// Helper: hand back the address of `config_word` as a Ptr[UInt32].
+// The Trivial bit-pattern conversion is implicit; sema admits the
+// return type because `&static-T` yields `Ptr[T]`.
+func config_ptr() -> Ptr[UInt32] {
+    return &config_word
+}
+
+// And the buffer-address helper. Returns a Ptr over the whole
+// fixed-length array; the caller would typically wrap it in a
+// MutSpan under RawMemory.
+func buffer_ptr() -> Ptr[[16]UInt8] {
+    return &rx_buffer
+}
+
+// `@extern("C")` declares a function with the host C ABI. v0.5
+// emits no extra attribute (`extern "C"` linkage is implicit at
+// the C++ layer for body-less extern declarations); the kernel
+// target adds the matching gnu::*_abi attribute. Useful for
+// declaring foreign symbols that the user will hand off via
+// `@symbol("...")`.
+@extern("C") @symbol("vestra_helper")
+func helper() -> Int32 {
+    return 42
+}

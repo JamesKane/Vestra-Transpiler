@@ -697,6 +697,17 @@ TEST_CASE("@interrupt emits [[gnu::used]] on the declaration") {
     CHECK(f.out.header.find("isr(TrapFrame& frame) asm(\"isr_sym\")") != std::string::npos);
 }
 
+// ---- §A12 &decl (§14.6.3) ------------------------------------------------
+
+TEST_CASE("&static lowers to a plain `&ident` in C++") {
+    SemaEmitFixture f("static n: Int32 = 42\n"
+                      "func get_addr() -> Ptr[Int32] { return &n }\n");
+    // The function returns `const std::int32_t*` (the Ptr[Int32]
+    // lowering) and the body is `return &n;`.
+    CHECK(f.out.header.find("const std::int32_t* get_addr();") != std::string::npos);
+    CHECK(f.out.source.find("return &n;") != std::string::npos);
+}
+
 // ---- §A11 PerCpu (§14.8) -------------------------------------------------
 
 TEST_CASE("PerCpu[T] lowers to __vstr::PerCpu<T> with .mine() accessor") {

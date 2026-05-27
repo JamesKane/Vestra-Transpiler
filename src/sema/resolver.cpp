@@ -840,6 +840,43 @@ void Resolver::check_link_attributes(const std::vector<ast::Attribute>& attrs) {
             if (a.predicate == nullptr || a.predicate->kind != ast::NodeKind::StringLit) {
                 error_at(a.range, std::format("@{} expects a string literal argument", a.name));
             }
+        } else if (a.name == "extern") {
+            // §A12 (§14.6.1) `@extern("conv")` accepts any calling
+            // convention the target backend names. The set is
+            // target-determined; the spec calls out a baseline
+            // every supported target carries — sema validates
+            // against it, codegen emits the matching gnu::*-abi
+            // attribute or `extern "C"` linkage where available.
+            if (a.predicate == nullptr || a.predicate->kind != ast::NodeKind::StringLit) {
+                error_at(a.range, "@extern expects a string literal argument naming the conv");
+            } else {
+                std::string_view conv = static_cast<const ast::StringLit&>(*a.predicate).text;
+                static constexpr std::array<std::string_view, 9> known_convs = {
+                    "C",
+                    "hvc64",
+                    "smc64",
+                    "sysv64",
+                    "win64",
+                    "ms_abi",
+                    "aapcs",
+                    "riscv",
+                    "interrupt",
+                };
+                bool ok = false;
+                for (auto k : known_convs) {
+                    if (conv == k) {
+                        ok = true;
+                        break;
+                    }
+                }
+                if (!ok) {
+                    error_at(a.range,
+                             std::format("@extern(\"{}\") is not a recognized calling convention; "
+                                         "expected one of: C, hvc64, smc64, sysv64, win64, "
+                                         "ms_abi, aapcs, riscv, interrupt",
+                                         conv));
+                }
+            }
         } else if (a.name == "weak" || a.name == "noinit") {
             if (a.predicate != nullptr) {
                 error_at(a.range, std::format("@{} takes no arguments", a.name));
@@ -1502,6 +1539,48 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
     case ast::NodeKind::CopyExpr:
         t = check_expr(*static_cast<const ast::CopyExpr&>(e).inner);
         break;
+    case ast::NodeKind::AddressOfExpr: {
+        // §A12 (§14.6.3) `&decl` — address-of a static / func /
+        // vector-table entry. v0.5 supports the static case; the
+        // result type is `Ptr[T]` (the spec calls for `Ptr[T]?`
+        // since a weakly-linked extern can be null, but optional
+        // wrapping is deferred). Func and vector-table forms wait
+        // on first-class function-pointer types.
+        const auto& a = static_cast<const ast::AddressOfExpr&>(e);
+        if (a.inner != nullptr && a.inner->kind == ast::NodeKind::IdentExpr) {
+            const auto& id = static_cast<const ast::IdentExpr&>(*a.inner);
+            if (const auto* sym = scopes_.current().lookup(id.name)) {
+                resolution_.set_symbol(a.inner.get(), sym);
+                if (sym->kind == SymbolKind::Static && sym->type != nullptr) {
+                    if (!sym->type->is_error()) {
+                        resolution_.set_type(a.inner.get(), sym->type);
+                    }
+                    t = types_->make_ptr(sym->type != nullptr ? sym->type : types_->error());
+                    break;
+                }
+                if (sym->kind == SymbolKind::Func) {
+                    error_at(e.range,
+                             "&func — address-of-function not yet supported in v0.5 "
+                             "(use @symbol(\"name\") + an in-tree extern declaration)");
+                    t = types_->error();
+                    break;
+                }
+                error_at(a.inner->range,
+                         std::format("&decl operand must be a static or func, got "
+                                     "{} '{}'",
+                                     sym->kind == SymbolKind::Local ? "local" : "name",
+                                     id.name));
+            } else {
+                error_at(a.inner->range,
+                         std::format("undefined name '{}' in &decl operand", id.name));
+            }
+            t = types_->error();
+        } else {
+            error_at(e.range, "&decl operand must be a static or func identifier");
+            t = types_->error();
+        }
+        break;
+    }
     case ast::NodeKind::AwaitExpr:
         t = check_expr(*static_cast<const ast::AwaitExpr&>(e).inner);
         break;

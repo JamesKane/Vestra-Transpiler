@@ -83,6 +83,9 @@ enum class NodeKind : std::uint16_t {
     SpawnExpr,
     CopyExpr,
     ThrowExpr,
+    // §A12 (§14.6.3) `&decl` address-of. Inner is the operand expr
+    // (typically an IdentExpr resolving to a static / func / slot).
+    AddressOfExpr,
     VectorLitExpr,
     TupleLitExpr,
     ParenExpr,
@@ -497,6 +500,15 @@ struct CopyExpr : Expr {
 struct ThrowExpr : Expr {
     ExprPtr inner;
     ThrowExpr() : Expr(NodeKind::ThrowExpr) {}
+};
+
+// §A12 (§14.6.3) `&decl` — address of a static, func, or vector-
+// table entry. The inner is the operand expression (typically an
+// IdentExpr that resolves to a static / func symbol). Sema yields
+// `Ptr[T]` for a static T; func / slot variants wait on follow-ups.
+struct AddressOfExpr : Expr {
+    ExprPtr inner;
+    AddressOfExpr() : Expr(NodeKind::AddressOfExpr) {}
 };
 
 // §9 `do { body } catch (NAME: E) { handler }` — inline error handling.

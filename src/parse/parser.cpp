@@ -1389,6 +1389,16 @@ ast::ExprPtr Parser::parse_prefix() {
         u->range = merge(start, last_range());
         return u;
     }
+    // §A12 (§14.6.3) `&decl` — prefix address-of. Disambiguates
+    // from the binary `&` (bit-and) by position: the binary form
+    // is consumed at parse_binary's BitAnd precedence, so a `&`
+    // landing here is unambiguously the prefix form.
+    if (match(TokenKind::Amp)) {
+        auto a = std::make_unique<ast::AddressOfExpr>();
+        a->inner = parse_prefix();
+        a->range = merge(start, last_range());
+        return a;
+    }
     auto prim = parse_primary();
     return parse_postfix(std::move(prim));
 }

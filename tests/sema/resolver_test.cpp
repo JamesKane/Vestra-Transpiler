@@ -802,6 +802,44 @@ TEST_CASE("@interrupt rejects Alloc / Async / Extern in the using row") {
     CHECK(r.first_message.find("@interrupt cannot declare `using Alloc`") != std::string::npos);
 }
 
+// ---- §A12 &decl + @extern("conv") (§14.6.1 + §14.6.3) --------------------
+
+TEST_CASE("&static yields Ptr[T]") {
+    CHECK(check_errors("static n: Int32 = 42\n"
+                       "func get_addr() -> Ptr[Int32] { return &n }\n")
+          == 0);
+}
+
+TEST_CASE("&decl on a non-static identifier is rejected") {
+    auto r = check_detail("func bad() -> Ptr[Int32] {\n"
+                          "    let x: Int32 = 0\n"
+                          "    return &x\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("&decl operand must be a static or func") != std::string::npos);
+}
+
+TEST_CASE("&func is diagnosed as not-yet-supported") {
+    auto r = check_detail("func helper() -> Int32 { return 0 }\n"
+                          "func bad() -> Ptr[Int32] { return &helper }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("&func — address-of-function not yet supported")
+          != std::string::npos);
+}
+
+TEST_CASE("@extern admits the known calling conventions") {
+    CHECK(check_errors("@extern(\"C\") @symbol(\"a\") func a() -> Int32 { return 0 }\n"
+                       "@extern(\"sysv64\") @symbol(\"b\") func b() -> Int32 { return 0 }\n"
+                       "@extern(\"interrupt\") @symbol(\"c\") func c() -> Int32 { return 0 }\n")
+          == 0);
+}
+
+TEST_CASE("@extern rejects an unknown calling convention") {
+    auto r = check_detail("@extern(\"fastcall\") @symbol(\"f\") func f() -> Int32 { return 0 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@extern(\"fastcall\") is not a recognized") != std::string::npos);
+}
+
 // ---- §A11 PerCpu (§14.8) -------------------------------------------------
 
 TEST_CASE("PerCpu[T] type-checks and .mine() returns T") {

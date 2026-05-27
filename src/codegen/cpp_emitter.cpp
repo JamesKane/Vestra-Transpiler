@@ -2756,9 +2756,19 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         }
     }
     switch (e.kind) {
-    case ast::NodeKind::IntLit:
-        os << static_cast<const ast::IntLit&>(e).text;
+    case ast::NodeKind::IntLit: {
+        // §17.1 admits `_` as a digit separator (`1_000_000`,
+        // `0xCAFE_BABE`); C++ treats `_BABE` as a user-defined
+        // literal suffix, so we strip the underscores when
+        // forwarding the text to the C++ side.
+        const auto& text = static_cast<const ast::IntLit&>(e).text;
+        for (char c : text) {
+            if (c != '_') {
+                os << c;
+            }
+        }
         break;
+    }
     case ast::NodeKind::FloatLit:
         os << static_cast<const ast::FloatLit&>(e).text;
         break;
@@ -2902,6 +2912,16 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         os << "([&]() -> decltype(auto) { (void)(";
         emit_expr(os, *th.inner);
         os << "); std::unreachable(); }())";
+        break;
+    }
+    case ast::NodeKind::AddressOfExpr: {
+        // §A12 (§14.6.3) `&decl` — the C++ side is a plain `&`.
+        // The operand resolves to a global / static identifier so
+        // its address is meaningful at link time without further
+        // qualification.
+        const auto& a = static_cast<const ast::AddressOfExpr&>(e);
+        os << "&";
+        emit_expr(os, *a.inner);
         break;
     }
     case ast::NodeKind::DoCatchExpr: {

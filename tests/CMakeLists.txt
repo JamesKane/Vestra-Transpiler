@@ -931,6 +931,35 @@ set_tests_properties(e2e_display_run PROPERTIES
     DEPENDS                e2e_display_compile
     PASS_REGULAR_EXPRESSION "display OK")
 
+# &decl + @extern("conv") (§A12, §14.6.1 + §14.6.3). Address-of a
+# static yields Ptr[T]; the codegen emits a plain `&` so the
+# symbol's address is meaningful at link time. @extern accepts
+# any of the named convs (C, hvc64, smc64, ..., interrupt); v0.5
+# hosted validates the conv string but emits no extra attribute.
+set(e2e_addr_of_input  ${CMAKE_SOURCE_DIR}/examples/addr_of.vst)
+set(e2e_addr_of_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_addr_of.cpp)
+
+add_test(
+    NAME    e2e_addr_of_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_addr_of_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_addr_of_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_addr_of_driver} ${e2e_workdir}/addr_of.cpp
+            -o ${e2e_workdir}/addr_of_app)
+set_tests_properties(e2e_addr_of_compile PROPERTIES
+    DEPENDS e2e_addr_of_transpile)
+
+add_test(
+    NAME    e2e_addr_of_run
+    COMMAND ${e2e_workdir}/addr_of_app)
+set_tests_properties(e2e_addr_of_run PROPERTIES
+    DEPENDS                e2e_addr_of_compile
+    PASS_REGULAR_EXPRESSION "addr_of OK")
+
 # PerCpu[T] (§A11, §14.8). First slice — type-system surface +
 # .mine() method synth. Single-slot 64-byte-aligned storage on
 # hosted; the kernel target swaps to [MAX_HARTS]Padded<T> indexed
