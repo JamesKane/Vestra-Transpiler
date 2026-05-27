@@ -179,6 +179,26 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                 && mem.member == "new" && !in_scope("Alloc")) {
                 missing_capability("Alloc", c.range);
             }
+            // §A11 (§14.8) `PerCpu.new(value)` heap-allocates the
+            // per-hart slot through __vstr::PerCpu<T>'s ctor +
+            // make_unique — same Alloc gate as Box.new.
+            if (mem.base && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "PerCpu"
+                && mem.member == "new" && !in_scope("Alloc")) {
+                missing_capability("Alloc", c.range);
+            }
+            // §A11 (§14.8) `pc.slot(hartId)` — cross-hart accessor.
+            // The slot() returns a Ptr[T] into another hart's storage
+            // without the borrow-tracking the spec's per-hart view
+            // gives `.mine()`, so it sits on the same RawMemory audit
+            // lane as the raw-mint primitives.
+            if (mem.member == "slot" && c.args.size() == 1 && resolution_ != nullptr) {
+                if (auto base_t = resolution_->type_of(mem.base.get());
+                    base_t != nullptr && base_t->kind() == sema::TypeKind::PerCpu
+                    && !in_scope("RawMemory")) {
+                    missing_capability("RawMemory", c.range);
+                }
+            }
             // §A3 (§10.5) — minting raw pointers and spans-from-raw
             // requires `RawMemory` in scope. We pattern-match all
             // four call shapes here so the audit surface ("every

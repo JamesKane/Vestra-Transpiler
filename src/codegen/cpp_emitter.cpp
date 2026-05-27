@@ -515,6 +515,19 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    T value;\n";
     hdr << "    [[nodiscard]] T& mine() noexcept { return value; }\n";
     hdr << "    [[nodiscard]] const T& mine() const noexcept { return value; }\n";
+    // §A11 (§14.8) `slot(hartId) using RawMemory -> Ptr[T]`. The
+    // spec's layout is `[MAX_HARTS]Padded[T]` indexed by hart;
+    // v0.5 hosts a single slot, so any hartId resolves to the
+    // one and only slot — the unused parameter cast keeps the
+    // compiler quiet without warning suppression. The kernel
+    // target swaps this for an indexed lookup over the per-CPU
+    // array region (the `tpidr_el1` / `gs:[0]` / `tp` register
+    // gives the local hart's index; cross-hart calls index the
+    // raw region directly).
+    hdr << "    [[nodiscard]] T* slot(std::uint16_t hartId) noexcept {\n";
+    hdr << "        (void)hartId;\n";
+    hdr << "        return &value;\n";
+    hdr << "    }\n";
     hdr << "};\n\n";
     // §A4 (§14.9.3) CASResult<T> — the strong-CAS return value. Two
     // fields: `succeeded` (bool) and `actual` (T, the value the
@@ -3307,6 +3320,35 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << ">(";
                 emit_expr(os, *c.args[0].value);
                 os << ")";
+                break;
+            }
+            // §A11 (§14.8) `PerCpu.new(value)` heap-allocates a
+            // 64-byte-aligned __vstr::PerCpu<T> wrapping `value` and
+            // returns a unique_ptr. The brace-init around `value`
+            // matches the runtime template's aggregate shape; the
+            // surrounding make_unique<__vstr::PerCpu<T>>(...) does
+            // the alloc + ctor in one step.
+            if (mem.base && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "PerCpu"
+                && mem.member == "new" && c.args.size() == 1) {
+                sema::TypePtr T = nullptr;
+                if (resolution_ != nullptr) {
+                    auto rt = resolution_->type_of(&e);
+                    if (rt != nullptr && rt->kind() == sema::TypeKind::Box && rt->inner() != nullptr
+                        && rt->inner()->kind() == sema::TypeKind::PerCpu) {
+                        T = rt->inner()->inner();
+                    }
+                    if (T == nullptr) {
+                        T = resolution_->type_of(c.args[0].value.get());
+                    }
+                }
+                os << "std::make_unique<__vstr::PerCpu<";
+                emit_sema_type(os, T);
+                os << ">>(__vstr::PerCpu<";
+                emit_sema_type(os, T);
+                os << ">{";
+                emit_expr(os, *c.args[0].value);
+                os << "})";
                 break;
             }
         }

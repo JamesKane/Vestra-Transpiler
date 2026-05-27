@@ -194,6 +194,29 @@ TEST_CASE("Ptr.unchecked / Span.raw / MutSpan.raw under `with RawMemory` are cle
           == 0);
 }
 
+TEST_CASE("PerCpu.new without Alloc is rejected") {
+    // §A11 (§14.8) the heap factory needs Alloc just like Box.new.
+    auto r = check("func bad() -> UInt32 {\n"
+                   "    let pc: Box[PerCpu[UInt32]] = PerCpu.new(0)\n"
+                   "    return pc.value.mine()\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("missing capability 'Alloc'") != std::string::npos);
+}
+
+TEST_CASE("PerCpu.slot without RawMemory is rejected") {
+    // §A11 (§14.8) the cross-hart accessor needs RawMemory because the
+    // Ptr[T] result aliases another hart's storage without the
+    // borrow-tracking .mine() carries.
+    auto r = check("@noinit static c: PerCpu[UInt32]\n"
+                   "func bad(_ h: UInt16) -> UInt32 {\n"
+                   "    let p: Ptr[UInt32] = c.slot(h)\n"
+                   "    return 0\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("missing capability 'RawMemory'") != std::string::npos);
+}
+
 TEST_CASE("memcpy / memset / memmove without RawMemory are rejected") {
     // §A10 (§15.4) the byte-range intrinsics are gated on RawMemory
     // the same way the §A5 cache ops and §A3 raw mints are.

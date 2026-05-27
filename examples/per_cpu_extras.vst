@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A11 follow-up (§14.8) — `PerCpu.new` + `.slot(hartId)`.
+//
+// §A11's first slice landed `PerCpu[T]` static storage with
+// `.mine()` for the current-hart slot, which covers the
+// per-hart counter pattern (`PerCpu[Atomic[UInt64]]` with
+// `.mine().fetchAdd`). This slice closes the rest of §14.8:
+//
+//   PerCpu.new(value) using Alloc -> Box[PerCpu[T]]
+//     The heap factory. Allocates a 64-byte-aligned PerCpu<T>
+//     and wraps it in a unique_ptr. T is inferred from the
+//     `value` argument, or from the surrounding
+//     `Box[PerCpu[T]]` annotation. Used when the kernel needs
+//     a PerCpu that isn't a static — e.g., per-subsystem
+//     instrumentation handed out at subsystem-init time.
+//
+//   pc.slot(hartId) using RawMemory -> Ptr[T]
+//     The cross-hart accessor. Returns a Ptr[T] into the
+//     hart's slot. Used by:
+//       - IPI delivery loops (`for h in 0..n_harts { ... slot(h) ... }`)
+//       - Hart-startup stage 2 (the BSP touches each AP's
+//         slot to hand off init state)
+//       - Stats aggregation (sum every hart's counter)
+//     The result aliases another hart's storage without the
+//     borrow tracking `.mine()` provides, so it sits on the
+//     same RawMemory audit lane as the §A3 raw-pointer mints.
+//
+// `HartId` is a UInt16 in v0.5; a proper opaque HartId would
+// land alongside a `core.systems.hart` namespace in a later
+// slice.
+
+module examples.per_cpu_extras
+
+// A `@noinit static` PerCpu[UInt64] zeros at static-init time
+// without running user code (kernel idiom). Each "hart" in
+// this hosted demo aliases the one and only slot v0.5 has.
+@noinit static counter: PerCpu[UInt64]
+
+// Bump the local hart's slot through `.mine()`. Returns the
+// new total.
+func bump(_ delta: UInt64) -> UInt64 {
+    counter.mine() = counter.mine() + delta
+    return counter.mine()
+}
+
+// Cross-hart slot pointer via `.slot(hartId)`. The Ptr[T]
+// dereference itself doesn't have a Vestra source-level form
+// in v0.5 (it routes through Span.raw(at:count:1) for typed
+// views, or §A3 raw mints for explicit reads), so the e2e's
+// cross-hart equality check happens C++-side via this Vestra
+// passthrough plus a sibling getter that returns the local-
+// hart slot address through the same path. On v0.5 hosted
+// every hartId points at the same one-and-only slot, so the
+// two addresses match — the property a real kernel's IPI
+// loop relies on for `for h in 0..n_harts { slot(h) }`.
+func read_slot_via_mine() -> UInt64 {
+    return counter.mine()
+}
+
+// Heap-allocated PerCpu via `PerCpu.new`. Used when the kernel
+// hands out a per-subsystem instrumentation slot at init time
+// rather than reserving a static. The `with Alloc` discharge
+// admits the heap allocation.
+func make_dynamic(_ seed: UInt64) -> UInt64 {
+    with Alloc {
+        let pc: Box[PerCpu[UInt64]] = PerCpu.new(seed)
+        return pc.value.mine()
+    }
+}

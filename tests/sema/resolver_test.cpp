@@ -870,6 +870,31 @@ TEST_CASE("PerCpu[T] with a primitive inner") {
           == 0);
 }
 
+TEST_CASE("PerCpu.new(value) returns Box[PerCpu[T]]") {
+    // §A11 (§14.8) heap factory. The Vestra-side call needs Alloc in
+    // scope; the resulting Box wraps a PerCpu[T] whose inner T matches
+    // the value's type.
+    CHECK(check_errors("func make() -> UInt32 {\n"
+                       "    with Alloc {\n"
+                       "        let pc: Box[PerCpu[UInt32]] = PerCpu.new(7)\n"
+                       "        return pc.value.mine()\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("PerCpu[T].slot(hartId) returns Ptr[T] under RawMemory") {
+    // §A11 (§14.8) cross-hart accessor.
+    CHECK(check_errors("@noinit static c: PerCpu[UInt32]\n"
+                       "func at(_ h: UInt16) -> UInt32 {\n"
+                       "    with RawMemory {\n"
+                       "        let p: Ptr[UInt32] = c.slot(h)\n"
+                       "    }\n"
+                       "    return 0\n"
+                       "}\n")
+          == 0);
+}
+
 // ---- §A7 InterruptsOff + Scheduler.swapContext (§14.13, §14.14) ----------
 
 TEST_CASE("`with InterruptsOff { ... }` resolves cleanly") {

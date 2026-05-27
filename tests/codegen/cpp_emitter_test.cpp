@@ -821,6 +821,31 @@ TEST_CASE("PerCpu[T] lowers to __vstr::PerCpu<T> with .mine() accessor") {
           != std::string::npos);
 }
 
+TEST_CASE("PerCpu.new lowers to make_unique<__vstr::PerCpu<T>>") {
+    SemaEmitFixture f("func make(_ v: UInt32) -> UInt32 {\n"
+                      "    with Alloc {\n"
+                      "        let pc = PerCpu.new(v)\n"
+                      "        return pc.value.mine()\n"
+                      "    }\n"
+                      "}\n");
+    CHECK(f.out.source.find("std::make_unique<__vstr::PerCpu<std::uint32_t>>(__vstr::PerCpu"
+                            "<std::uint32_t>{v})")
+          != std::string::npos);
+}
+
+TEST_CASE("PerCpu.slot(hartId) lowers to the runtime slot accessor") {
+    SemaEmitFixture f("@noinit static c: PerCpu[UInt32]\n"
+                      "func at(_ h: UInt16) -> UInt32 {\n"
+                      "    with RawMemory {\n"
+                      "        let p: Ptr[UInt32] = c.slot(h)\n"
+                      "    }\n"
+                      "    return 0\n"
+                      "}\n");
+    // The runtime preamble grows the slot accessor next to mine().
+    CHECK(f.out.header.find("T* slot(std::uint16_t hartId)") != std::string::npos);
+    CHECK(f.out.source.find("c.slot(h)") != std::string::npos);
+}
+
 // ---- §A7 InterruptsOff + Scheduler.swapContext (§14.13, §14.14) ----------
 
 TEST_CASE("InterruptsOff lowers to a brace block; swapContext wraps args in `&`") {

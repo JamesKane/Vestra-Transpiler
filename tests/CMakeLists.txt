@@ -1266,6 +1266,41 @@ set_tests_properties(e2e_mem_intrin_run PROPERTIES
     DEPENDS                e2e_mem_intrin_compile
     PASS_REGULAR_EXPRESSION "mem_intrinsics OK")
 
+# §A11 follow-up — PerCpu.new + slot(hartId) (§14.8). The heap
+# factory `PerCpu.new(value) using Alloc -> Box[PerCpu[T]]`
+# lowers to std::make_unique<__vstr::PerCpu<T>>(...) and is
+# gated on Alloc; the cross-hart accessor `.slot(hartId) using
+# RawMemory -> Ptr[T]` lowers to the runtime PerCpu's `slot()`
+# member (hosted: returns &value; kernel: indexes per-CPU
+# array). The runtime exercises .mine() for the local-hart
+# slot and PerCpu.new for the heap path; the slot() cross-
+# hart accessor is covered by the codegen + capability unit
+# tests (its dereference syntax routes through a higher-
+# level helper that v0.5 doesn't yet ship).
+set(e2e_pce_input  ${CMAKE_SOURCE_DIR}/examples/per_cpu_extras.vst)
+set(e2e_pce_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_per_cpu_extras.cpp)
+
+add_test(
+    NAME    e2e_pce_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_pce_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_pce_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_pce_driver} ${e2e_workdir}/per_cpu_extras.cpp
+            -o ${e2e_workdir}/per_cpu_extras_app)
+set_tests_properties(e2e_pce_compile PROPERTIES
+    DEPENDS e2e_pce_transpile)
+
+add_test(
+    NAME    e2e_pce_run
+    COMMAND ${e2e_workdir}/per_cpu_extras_app)
+set_tests_properties(e2e_pce_run PROPERTIES
+    DEPENDS                e2e_pce_compile
+    PASS_REGULAR_EXPRESSION "per_cpu_extras OK")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except

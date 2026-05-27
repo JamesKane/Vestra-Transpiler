@@ -2812,6 +2812,39 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
+    // §A11 (§14.8) `PerCpu.new(value)` — the heap factory for per-hart
+    // storage. Returns `Box[PerCpu[T]]`; the C++ side allocates a 64-
+    // byte-aligned `__vstr::PerCpu<T>` and wraps it in a unique_ptr.
+    // When the surrounding context names `Box[PerCpu[T]]`, T is pushed
+    // down to the value check so an integer literal adopts the
+    // expected width; otherwise the value's type pins T. Capability
+    // gate is Alloc, parallel to Box.new.
+    if (c.callee->kind == ast::NodeKind::MemberExpr) {
+        const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+        if (mem.base->kind == ast::NodeKind::IdentExpr
+            && static_cast<const ast::IdentExpr&>(*mem.base).name == "PerCpu" && mem.member == "new"
+            && scopes_.current().lookup("PerCpu") == nullptr) {
+            if (c.args.size() != 1) {
+                for (const auto& a : c.args) {
+                    (void)check_expr(*a.value);
+                }
+                error_at(c.range, "PerCpu.new(value) takes exactly one argument");
+                return types_->make_box(types_->make_per_cpu(types_->error()));
+            }
+            if (!c.args[0].label.empty()) {
+                error_at(c.args[0].value->range, "PerCpu.new argument cannot have a label");
+            }
+            TypePtr value_hint = nullptr;
+            if (expected != nullptr && expected->kind() == TypeKind::Box
+                && expected->inner() != nullptr && expected->inner()->kind() == TypeKind::PerCpu) {
+                value_hint = expected->inner()->inner();
+            }
+            auto inner = check_expr(*c.args[0].value, value_hint);
+            return types_->make_box(
+                types_->make_per_cpu(inner != nullptr ? inner : types_->error()));
+        }
+    }
+
     // §3 opaque-type construction: `Q(t)` where Q is a newtype over T —
     // one positional arg, type-checked against T, result is Q. The
     // codegen lowers this to `static_cast<Q>(t)` over the `enum class
@@ -3551,6 +3584,16 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
     if (owner_type->kind() == TypeKind::PerCpu && owner_type->inner() != nullptr) {
         if (name == "mine") {
             return types_->make_function({}, owner_type->inner());
+        }
+        // §A11 (§14.8) `slot(hartId: UInt16) using RawMemory -> Ptr[T]`
+        // — cross-hart accessor for the kernel's IPI / hart-startup /
+        // stats-aggregation loops. v0.5 uses UInt16 as the HartId
+        // surface type (proper opaque HartId would land alongside a
+        // `core.systems.hart` namespace in a later slice). The
+        // RawMemory capability gates the call site.
+        if (name == "slot") {
+            return types_->make_function({types_->primitive(TypeKind::UInt16)},
+                                         types_->make_ptr(owner_type->inner()));
         }
     }
 
