@@ -144,6 +144,8 @@ std::string Type::describe() const {
                       : std::string{"FilterIter"};
     case TypeKind::Atomic:
         return inner_ ? std::format("Atomic[{}]", inner_->describe()) : std::string{"Atomic"};
+    case TypeKind::CasResult:
+        return inner_ ? std::format("CASResult[{}]", inner_->describe()) : std::string{"CASResult"};
     case TypeKind::Result: {
         std::string ok = inner_ ? inner_->describe() : "?";
         std::string err = result_ ? result_->describe() : "?";
@@ -298,6 +300,14 @@ TypePtr TypeArena::make_atomic(TypePtr inner) {
     return p;
 }
 
+TypePtr TypeArena::make_cas_result(TypePtr inner) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::CasResult));
+    t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
 TypePtr TypeArena::make_result(TypePtr success, TypePtr error) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::Result));
     t->inner_ = success;
@@ -392,6 +402,7 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     case TypeKind::TakeIter:
     case TypeKind::FilterIter:
     case TypeKind::Atomic:
+    case TypeKind::CasResult:
         return equal(a->inner(), b->inner());
     case TypeKind::ZipIter:
     case TypeKind::MapIter: {
@@ -557,6 +568,10 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::Atomic: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_atomic(inner);
+    }
+    case TypeKind::CasResult: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_cas_result(inner);
     }
     case TypeKind::ZipIter: {
         if (t->parts().size() != 2) {

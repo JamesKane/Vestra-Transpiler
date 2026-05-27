@@ -704,6 +704,21 @@ TEST_CASE("Atomic[T] rejects a non-primitive T") {
     CHECK(r.first_message.find("Atomic[T] requires T to be a primitive type") != std::string::npos);
 }
 
+TEST_CASE("Atomic[T] surfaces the bitwise fetch ops + compareExchange") {
+    CHECK(check_errors("static c: Atomic[UInt32] = 0\n"
+                       "func use() -> UInt32 {\n"
+                       "    let a = c.fetchAnd(0xFF, .relaxed)\n"
+                       "    let b = c.fetchOr(0x100, .relaxed)\n"
+                       "    let d = c.fetchXor(0xAA, .relaxed)\n"
+                       "    let r = c.compareExchange(a, b, .seqCst, .acquire)\n"
+                       "    if r.succeeded {\n"
+                       "        return r.actual\n"
+                       "    }\n"
+                       "    return r.actual + d\n"
+                       "}\n")
+          == 0);
+}
+
 TEST_CASE("Atomic[T] initial value adopts the inner T from context") {
     // The Int literal `7` would otherwise default to Int and fail
     // assignment to Atomic[UInt32]. The hint-peel through Atomic in

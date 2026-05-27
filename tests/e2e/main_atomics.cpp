@@ -38,6 +38,32 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // §A4 (§14.9.3) compareExchange success: cas_target starts at 0,
+    // CAS(0, 42) succeeds, .actual = 0 (prior value).
+    if (auto v = cas_success(42); v != 0) {
+        std::println("cas_success expected 0, got {}", v);
+        return EXIT_FAILURE;
+    }
+    if (cas_target.load(std::memory_order_seq_cst) != 42) {
+        std::println("cas_target should now be 42");
+        return EXIT_FAILURE;
+    }
+    // CAS(99, 7) with current value 42 → fails. .actual = 42.
+    if (auto v = cas_failure(99, 7); v != 42) {
+        std::println("cas_failure expected actual=42, got {}", v);
+        return EXIT_FAILURE;
+    }
+    if (cas_target.load(std::memory_order_seq_cst) != 42) {
+        std::println("cas_target should still be 42 after failed CAS");
+        return EXIT_FAILURE;
+    }
+
+    // §A4 (§14.9.2) bitwise chain. 0xF0 + 0xFF + 0xFE + 0xFF = 0x3EC.
+    if (auto v = bitwise_chain(); v != 0x3EC) {
+        std::println("bitwise_chain expected 0x3EC, got {:#x}", v);
+        return EXIT_FAILURE;
+    }
+
     std::println("atomics OK");
     return EXIT_SUCCESS;
 }

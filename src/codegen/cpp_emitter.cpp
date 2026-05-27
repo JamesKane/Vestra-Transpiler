@@ -391,6 +391,16 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    }\n";
     hdr << "};\n";
     hdr << "template <class A, class P> Filter(A, P) -> Filter<A, P>;\n\n";
+    // §A4 (§14.9.3) CASResult<T> — the strong-CAS return value. Two
+    // fields: `succeeded` (bool) and `actual` (T, the value the
+    // compare-exchange observed). The atomic call site lowering
+    // (emit_expr / CallExpr branch) packages compare_exchange_strong's
+    // ok-flag + in/out expected into this struct.
+    hdr << "template <class T>\n";
+    hdr << "struct CASResult {\n";
+    hdr << "    bool succeeded;\n";
+    hdr << "    T actual;\n";
+    hdr << "};\n\n";
     hdr << "}  // namespace __vstr\n\n";
 
     // §4 Optional in a Display splice. Vestra renders `"\(opt)"` as
@@ -2826,6 +2836,36 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 break;
             }
         }
+        // §A4 (§14.9.3) `atomic.compareExchange(expected, desired,
+        // success, failure)` lowers to an IIFE that mutates a local
+        // copy of `expected`, calls std::atomic's
+        // `.compare_exchange_strong`, and bundles the ok-flag plus
+        // the post-call `expected` into a `__vstr::CASResult<T>`.
+        // The strong form (not _weak) is what v0.5 ships; the weak
+        // CAS + retry-loop shape rule wait on a follow-up phase.
+        if (c.callee && c.callee->kind == ast::NodeKind::MemberExpr && resolution_ != nullptr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            auto base_t = resolution_->type_of(mem.base.get());
+            if (base_t != nullptr && base_t->kind() == sema::TypeKind::Atomic
+                && mem.member == "compareExchange" && c.args.size() == 4) {
+                os << "([&]{ ";
+                emit_sema_type(os, base_t->inner());
+                os << " __vstr_e = ";
+                emit_expr(os, *c.args[0].value);
+                os << "; bool __vstr_ok = ";
+                emit_expr(os, *mem.base);
+                os << ".compare_exchange_strong(__vstr_e, ";
+                emit_expr(os, *c.args[1].value);
+                os << ", ";
+                emit_expr(os, *c.args[2].value);
+                os << ", ";
+                emit_expr(os, *c.args[3].value);
+                os << "); return __vstr::CASResult<";
+                emit_sema_type(os, base_t->inner());
+                os << ">{__vstr_ok, __vstr_e}; }())";
+                break;
+            }
+        }
         // §9 `result.mapError(f)` lowers to std::expected's
         // `.transform_error(f)` — the closure runs on the error path
         // and produces a new Result<T, E'>. Symmetric with the sema
@@ -3130,21 +3170,27 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 break;
             }
         }
-        // §A4 (§14.9.2) Atomic method renames: `fetchAdd` / `fetchSub`
-        // on an Atomic[T] base lower to std::atomic's snake-case
-        // `fetch_add` / `fetch_sub`. The other names (load / store /
-        // exchange) already match between Vestra and std::atomic.
+        // §A4 (§14.9.2 / §14.9.3) Atomic method renames: the Vestra
+        // camelCase spellings `fetchAdd` / `fetchSub` / `fetchAnd` /
+        // `fetchOr` / `fetchXor` lower to std::atomic's snake_case
+        // names. The compareExchange method needs its own IIFE shape
+        // (handled in the CallExpr branch) so the bare MemberExpr
+        // path here doesn't try to rename it — it falls through to
+        // the default which never fires because the CallExpr branch
+        // intercepts it first.
         if (resolution_ != nullptr) {
             auto bt = resolution_->type_of(m.base.get());
             if (bt != nullptr && bt->kind() == sema::TypeKind::Atomic) {
-                if (m.member == "fetchAdd") {
+                static const std::unordered_map<std::string_view, std::string_view> renames = {
+                    {"fetchAdd", "fetch_add"},
+                    {"fetchSub", "fetch_sub"},
+                    {"fetchAnd", "fetch_and"},
+                    {"fetchOr", "fetch_or"},
+                    {"fetchXor", "fetch_xor"},
+                };
+                if (auto it = renames.find(m.member); it != renames.end()) {
                     emit_expr(os, *m.base);
-                    os << ".fetch_add";
-                    break;
-                }
-                if (m.member == "fetchSub") {
-                    emit_expr(os, *m.base);
-                    os << ".fetch_sub";
+                    os << "." << it->second;
                     break;
                 }
             }
@@ -3428,6 +3474,11 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         return;
     case TypeKind::Atomic:
         os << "std::atomic<";
+        emit_sema_type(os, t->inner());
+        os << ">";
+        return;
+    case TypeKind::CasResult:
+        os << "__vstr::CASResult<";
         emit_sema_type(os, t->inner());
         os << ">";
         return;

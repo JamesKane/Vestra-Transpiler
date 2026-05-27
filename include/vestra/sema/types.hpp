@@ -74,6 +74,10 @@ enum class TypeKind : std::uint16_t {
     // std::atomic<T>. v0.5 supports primitive T only; load/store/
     // exchange/fetchAdd/fetchSub synthesized via lookup_method.
     Atomic,
+    // §A4 (§14.9.3) CASResult[T] — what Atomic[T].compareExchange()
+    // returns. Two fields: `succeeded: Bool`, `actual: T`. Lowers to
+    // the __vstr::CASResult<T> template in the runtime preamble.
+    CasResult,
     // nominal — point back to an ast::Decl
     Struct,
     Enum,
@@ -174,6 +178,8 @@ public:
     [[nodiscard]] TypePtr make_filter_iter(TypePtr elem);
     // §A4 (§14.9) Atomic[T] — wraps primitive T as a std::atomic.
     [[nodiscard]] TypePtr make_atomic(TypePtr inner);
+    // §A4 (§14.9.3) CASResult[T] — returned by Atomic[T].compareExchange.
+    [[nodiscard]] TypePtr make_cas_result(TypePtr inner);
     [[nodiscard]] TypePtr make_vector(std::int64_t length, TypePtr element);
     [[nodiscard]] TypePtr make_function(std::vector<TypePtr> params, TypePtr result);
     [[nodiscard]] TypePtr make_tuple(std::vector<TypePtr> elements);

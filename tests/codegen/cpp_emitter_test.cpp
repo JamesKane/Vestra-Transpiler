@@ -663,6 +663,27 @@ TEST_CASE("zip(a, b) lowers via CTAD on __vstr::Zip and binds tuples in the for-
 
 // ---- §A4 Atomic[T] (§14.9) -----------------------------------------------
 
+TEST_CASE("Atomic[T] bitwise fetch ops rename to snake_case and CAS bundles its result") {
+    SemaEmitFixture f("static c: Atomic[UInt32] = 0\n"
+                      "func use() -> UInt32 {\n"
+                      "    let a = c.fetchAnd(0xFF, .relaxed)\n"
+                      "    let b = c.fetchOr(0x100, .relaxed)\n"
+                      "    let d = c.fetchXor(0xAA, .relaxed)\n"
+                      "    let r = c.compareExchange(0, 7, .seqCst, .acquire)\n"
+                      "    if r.succeeded { return r.actual }\n"
+                      "    return a + b + d + r.actual\n"
+                      "}\n");
+    CHECK(f.out.header.find("struct CASResult {") != std::string::npos);
+    CHECK(f.out.source.find("c.fetch_and(0xFF, std::memory_order_relaxed)") != std::string::npos);
+    CHECK(f.out.source.find("c.fetch_or(0x100, std::memory_order_relaxed)") != std::string::npos);
+    CHECK(f.out.source.find("c.fetch_xor(0xAA, std::memory_order_relaxed)") != std::string::npos);
+    // The CAS IIFE: mutable expected local, compare_exchange_strong,
+    // wrap in __vstr::CASResult.
+    CHECK(f.out.source.find("c.compare_exchange_strong(__vstr_e, 7") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::CASResult<std::uint32_t>{__vstr_ok, __vstr_e}")
+          != std::string::npos);
+}
+
 TEST_CASE("Atomic[T] type lowers to std::atomic<T> and ops dispatch correctly") {
     SemaEmitFixture f("static c: Atomic[UInt32] = 0\n"
                       "func use() -> UInt32 {\n"

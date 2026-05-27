@@ -12,7 +12,8 @@
 // matching C++ name (`.acqRel` → `memory_order_acq_rel`, etc.).
 //
 // The core ops landed in this phase:
-//   load, store, exchange, fetchAdd, fetchSub
+//   load, store, exchange, fetchAdd, fetchSub,
+//   fetchAnd, fetchOr, fetchXor, compareExchange (strong)
 //
 // All take an `Ordering` argument explicitly in v0.5 — the spec's
 // default-`.seqCst` ergonomic waits on synthetic-method default
@@ -20,9 +21,9 @@
 // ordering, every time" reads naturally enough that the missing
 // default doesn't bite for the load-bearing call sites.
 //
-// `compareExchange` / `compareExchangeWeak` / `fetchAnd|Or|Xor` and
-// the `@retry_loop` shape rule are deferred to a follow-up; they
-// need more sema plumbing than fits in this slice.
+// `compareExchangeWeak` + the `@retry_loop` shape rule wait on a
+// follow-up; they need a separate sema pass to enforce the loop
+// shape predicate.
 
 module examples.atomics
 
@@ -61,4 +62,42 @@ func raise() {
 
 func lowered() -> Bool {
     return flag.load(.relaxed) == false
+}
+
+// §A4 (§14.9.3) compareExchange returns CASResult[T] — a struct with
+// `succeeded: Bool` and `actual: T`. The strong form succeeds iff
+// the current value equals `expected`; on success it writes
+// `desired` and `.actual` is the prior value; on failure it leaves
+// the atomic unchanged and `.actual` is the observed current value.
+static cas_target: Atomic[UInt32] = 0
+
+func cas_success(_ desired: UInt32) -> UInt32 {
+    let r = cas_target.compareExchange(0, desired, .seqCst, .acquire)
+    if r.succeeded {
+        return r.actual
+    }
+    return r.actual + 1000  // sentinel: shouldn't trip on success path
+}
+
+func cas_failure(_ wrong: UInt32, _ desired: UInt32) -> UInt32 {
+    let r = cas_target.compareExchange(wrong, desired, .seqCst, .acquire)
+    if r.succeeded {
+        return 0
+    }
+    // On failure, .actual reports the observed value.
+    return r.actual
+}
+
+// §A4 (§14.9.2) bitwise fetch ops. fetchAnd/Or/Xor return the
+// pre-op value; the result is the new value formed by the op.
+// Lowers to std::atomic's fetch_and / fetch_or / fetch_xor.
+static bits: Atomic[UInt32] = 0
+
+func bitwise_chain() -> UInt32 {
+    bits.store(0xF0, .release)
+    let a = bits.fetchOr(0x0F, .acqRel)    // 0xF0 → 0xFF, returns 0xF0
+    let b = bits.fetchAnd(0xFE, .acqRel)   // 0xFF → 0xFE, returns 0xFF
+    let c = bits.fetchXor(0x01, .acqRel)   // 0xFE → 0xFF, returns 0xFE
+    let final = bits.load(.acquire)        // 0xFF
+    return a + b + c + final               // 0xF0 + 0xFF + 0xFE + 0xFF = 0x3EC
 }

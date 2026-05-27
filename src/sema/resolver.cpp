@@ -2424,7 +2424,22 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
 TypePtr Resolver::lookup_field(TypePtr struct_type,
                                std::string_view name,
                                const ast::StructDecl::Field** out_field) {
-    if (struct_type == nullptr || struct_type->kind() != TypeKind::Struct) {
+    if (struct_type == nullptr) {
+        return nullptr;
+    }
+    // §A4 (§14.9.3) CASResult[T] has two synthetic fields. Served
+    // here so the resolver's ordinary `.succeeded` / `.actual`
+    // member-access path types correctly.
+    if (struct_type->kind() == TypeKind::CasResult && struct_type->inner() != nullptr) {
+        if (name == "succeeded") {
+            return types_->boolean();
+        }
+        if (name == "actual") {
+            return struct_type->inner();
+        }
+        return nullptr;
+    }
+    if (struct_type->kind() != TypeKind::Struct) {
         return nullptr;
     }
     const auto* decl = struct_type->nominal_decl();
@@ -2675,8 +2690,19 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
         if (name == "exchange") {
             return types_->make_function({T, ordering_type}, T);
         }
-        if (name == "fetchAdd" || name == "fetchSub") {
+        if (name == "fetchAdd" || name == "fetchSub" || name == "fetchAnd" || name == "fetchOr"
+            || name == "fetchXor") {
             return types_->make_function({T, ordering_type}, T);
+        }
+        // §A4 (§14.9.3) compareExchange (strong). The signature is
+        // (expected, desired, success, failure) — all positional in
+        // v0.5 (default args + labels on synthetic methods wait on
+        // a separate infra phase). The result is CASResult[T], with
+        // `.succeeded: Bool` and `.actual: T` served by lookup_field
+        // on the CasResult type kind.
+        if (name == "compareExchange") {
+            return types_->make_function({T, T, ordering_type, ordering_type},
+                                         types_->make_cas_result(T));
         }
     }
     if (name == "next") {
