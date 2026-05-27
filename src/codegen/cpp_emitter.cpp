@@ -2836,25 +2836,29 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 break;
             }
         }
-        // §A4 (§14.9.3) `atomic.compareExchange(expected, desired,
-        // success, failure)` lowers to an IIFE that mutates a local
-        // copy of `expected`, calls std::atomic's
-        // `.compare_exchange_strong`, and bundles the ok-flag plus
-        // the post-call `expected` into a `__vstr::CASResult<T>`.
-        // The strong form (not _weak) is what v0.5 ships; the weak
-        // CAS + retry-loop shape rule wait on a follow-up phase.
+        // §A4 (§14.9.3) `atomic.compareExchange{,Weak}(expected,
+        // desired, success, failure)` lowers to an IIFE that mutates
+        // a local copy of `expected`, calls std::atomic's
+        // `.compare_exchange_strong` / `.compare_exchange_weak`, and
+        // bundles the ok-flag plus the post-call `expected` into a
+        // `__vstr::CASResult<T>`. Sema gates the weak form to
+        // recognized retry-loop shapes; codegen just dispatches by
+        // name.
         if (c.callee && c.callee->kind == ast::NodeKind::MemberExpr && resolution_ != nullptr) {
             const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
             auto base_t = resolution_->type_of(mem.base.get());
+            const bool is_strong = mem.member == "compareExchange";
+            const bool is_weak = mem.member == "compareExchangeWeak";
             if (base_t != nullptr && base_t->kind() == sema::TypeKind::Atomic
-                && mem.member == "compareExchange" && c.args.size() == 4) {
+                && (is_strong || is_weak) && c.args.size() == 4) {
                 os << "([&]{ ";
                 emit_sema_type(os, base_t->inner());
                 os << " __vstr_e = ";
                 emit_expr(os, *c.args[0].value);
                 os << "; bool __vstr_ok = ";
                 emit_expr(os, *mem.base);
-                os << ".compare_exchange_strong(__vstr_e, ";
+                os << (is_strong ? ".compare_exchange_strong(__vstr_e, "
+                                 : ".compare_exchange_weak(__vstr_e, ");
                 emit_expr(os, *c.args[1].value);
                 os << ", ";
                 emit_expr(os, *c.args[2].value);

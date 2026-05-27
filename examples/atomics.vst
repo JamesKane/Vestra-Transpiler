@@ -21,9 +21,11 @@
 // ordering, every time" reads naturally enough that the missing
 // default doesn't bite for the load-bearing call sites.
 //
-// `compareExchangeWeak` + the `@retry_loop` shape rule wait on a
-// follow-up; they need a separate sema pass to enforce the loop
-// shape predicate.
+// `compareExchangeWeak` is also in — the spec admits it only inside
+// one of two while-shaped retry loops (`while !r.succeeded { … }`
+// or `while true { … if r.succeeded { break } }`); free-standing
+// weak CAS is a hard error suggesting the strong form. The
+// `@retry_loop` function-level escape waits on follow-up phases.
 
 module examples.atomics
 
@@ -92,6 +94,38 @@ func cas_failure(_ wrong: UInt32, _ desired: UInt32) -> UInt32 {
 // pre-op value; the result is the new value formed by the op.
 // Lowers to std::atomic's fetch_and / fetch_or / fetch_xor.
 static bits: Atomic[UInt32] = 0
+
+// §A4 (§14.9.3) compareExchangeWeak inside a `while true` retry
+// loop — the spec's shape 2. Try to flip `weak_target` from `exp`
+// to `desired`; weak CAS may spuriously fail, but the retry loop
+// keeps spinning until it lands. The driver uses this from a
+// single thread so progress is guaranteed.
+static weak_target: Atomic[UInt32] = 0
+
+func retry_loop_set(_ exp: UInt32, _ desired: UInt32) -> UInt32 {
+    while true {
+        let r = weak_target.compareExchangeWeak(exp, desired, .seqCst, .acquire)
+        if r.succeeded { return r.actual }
+        // Single-threaded: a spurious-fail re-enters the loop with
+        // the same `exp`. If the stored value diverges, the weak
+        // CAS will keep failing — the driver only calls this when
+        // weak_target == exp, so we always converge.
+    }
+    return 0
+}
+
+// §A4 (§14.9.3) shape 1: `while !r.succeeded` — the canonical
+// "keep retrying until a CAS sticks" idiom. Note the *first* CAS
+// is the strong form (it seeds `r` outside the loop body); the
+// loop body uses weak. Mixing the two is intentional and matches
+// what the spec example does in §14.9.3.
+func retry_loop_until(_ exp: UInt32, _ desired: UInt32) -> UInt32 {
+    var r = weak_target.compareExchange(exp, desired, .seqCst, .acquire)
+    while !r.succeeded {
+        r = weak_target.compareExchangeWeak(r.actual, desired, .seqCst, .acquire)
+    }
+    return r.actual
+}
 
 func bitwise_chain() -> UInt32 {
     bits.store(0xF0, .release)

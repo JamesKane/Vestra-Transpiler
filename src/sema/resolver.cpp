@@ -932,8 +932,35 @@ void Resolver::check_stmt(const ast::Stmt& s) {
             error_at(w.cond->range,
                      std::format("while condition must be Bool, got {}", cond_type->describe()));
         }
+        // §A4 (§14.9.3) admitted retry-loop detection. The two
+        // while-shaped variants the spec lists are:
+        //   * `while !r.succeeded { … }` — UnaryExpr(Not, MemberExpr("succeeded"))
+        //   * `while true { … }`         — BoolLit(true)
+        // Either shape opens a window where compareExchangeWeak is
+        // admitted; the call-site check below consults this depth.
+        bool admits_weak_cas = false;
+        if (w.cond) {
+            if (w.cond->kind == ast::NodeKind::BoolLit
+                && static_cast<const ast::BoolLit&>(*w.cond).value) {
+                admits_weak_cas = true;
+            } else if (w.cond->kind == ast::NodeKind::UnaryExpr) {
+                const auto& u = static_cast<const ast::UnaryExpr&>(*w.cond);
+                if (u.op == ast::UnaryOp::Not && u.operand != nullptr
+                    && u.operand->kind == ast::NodeKind::MemberExpr) {
+                    if (static_cast<const ast::MemberExpr&>(*u.operand).member == "succeeded") {
+                        admits_weak_cas = true;
+                    }
+                }
+            }
+        }
+        if (admits_weak_cas) {
+            ++weak_cas_loop_depth_;
+        }
         if (w.body) {
             check_expr(*w.body);
+        }
+        if (admits_weak_cas) {
+            --weak_cas_loop_depth_;
         }
         break;
     }
@@ -2102,6 +2129,26 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         return types_->error();
     }
 
+    // §A4 (§14.9.3) free-standing compareExchangeWeak rejection. The
+    // weak form is admitted only inside one of the spec's retry-loop
+    // shapes (tracked via weak_cas_loop_depth_). When we see a weak
+    // CAS call site outside that range, emit a diagnostic pointing
+    // the user at the strong form. Doing the check here — after
+    // callee resolution — keeps the test simple: we know the
+    // synthesized method type and the call's range.
+    if (c.callee->kind == ast::NodeKind::MemberExpr && weak_cas_loop_depth_ == 0) {
+        const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+        if (mem.member == "compareExchangeWeak") {
+            auto base_t = resolution_.type_of(mem.base.get());
+            if (base_t != nullptr && base_t->kind() == TypeKind::Atomic) {
+                error_at(c.range,
+                         "compareExchangeWeak is admitted only inside a recognized retry "
+                         "loop (`while !r.succeeded { … }` or `while true { … if r.succeeded "
+                         "{ break } }`). Use compareExchange for a one-shot CAS.");
+            }
+        }
+    }
+
     // Struct construction: `Point(x: 10, y: 32)` parses as a CallExpr whose
     // callee evaluates to the nominal Struct type. Dispatch by-label against
     // the struct's fields rather than treating it as a function call.
@@ -2694,13 +2741,15 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
             || name == "fetchXor") {
             return types_->make_function({T, ordering_type}, T);
         }
-        // §A4 (§14.9.3) compareExchange (strong). The signature is
-        // (expected, desired, success, failure) — all positional in
-        // v0.5 (default args + labels on synthetic methods wait on
-        // a separate infra phase). The result is CASResult[T], with
-        // `.succeeded: Bool` and `.actual: T` served by lookup_field
-        // on the CasResult type kind.
-        if (name == "compareExchange") {
+        // §A4 (§14.9.3) compareExchange (strong) and compareExchangeWeak
+        // share the same shape — (expected, desired, success, failure)
+        // → CASResult[T]. The strong form is always admitted; the weak
+        // form is admitted only inside one of the §14.9.3 retry-loop
+        // shapes (see check_call below + the weak_cas_loop_depth_
+        // counter incremented in WhileStmt). All four args are
+        // positional in v0.5 (default args + labels on synthetic
+        // methods wait on a separate infra phase).
+        if (name == "compareExchange" || name == "compareExchangeWeak") {
             return types_->make_function({T, T, ordering_type, ordering_type},
                                          types_->make_cas_result(T));
         }

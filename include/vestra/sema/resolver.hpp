@@ -224,6 +224,15 @@ private:
     // so a do-catch nested inside a function-inside-a-do-catch
     // doesn't capture the outer one's inference.
     std::vector<TypePtr*> do_catch_infer_stack_;
+    // §A4 (§14.9.3) `compareExchangeWeak` is admitted only inside one
+    // of the recognized retry-loop shapes. We model that by bumping
+    // this counter at the top of any while-stmt whose condition
+    // matches an admitted shape (`!X.succeeded` or `true`); a weak-
+    // CAS call site outside that range is rejected with a diagnostic
+    // pointing at compareExchange instead. v0.5 doesn't yet handle
+    // the `@retry_loop` function-level escape; users must spell out
+    // the loop at the call site.
+    int weak_cas_loop_depth_ = 0;
     // Comptime folder + the const environment it folds against. The env
     // accumulates name→value pairs as we successfully fold each top-level
     // const, so later consts can reference earlier ones. The folder gets

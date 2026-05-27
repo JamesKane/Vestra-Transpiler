@@ -663,6 +663,20 @@ TEST_CASE("zip(a, b) lowers via CTAD on __vstr::Zip and binds tuples in the for-
 
 // ---- §A4 Atomic[T] (§14.9) -----------------------------------------------
 
+TEST_CASE("compareExchangeWeak lowers to compare_exchange_weak inside a retry loop") {
+    SemaEmitFixture f("static c: Atomic[UInt32] = 0\n"
+                      "func use(_ desired: UInt32) -> UInt32 {\n"
+                      "    while true {\n"
+                      "        let r = c.compareExchangeWeak(0, desired, .seqCst, .acquire)\n"
+                      "        if r.succeeded { return r.actual }\n"
+                      "    }\n"
+                      "    return 0\n"
+                      "}\n");
+    CHECK(f.out.source.find("c.compare_exchange_weak(__vstr_e, desired") != std::string::npos);
+    // The strong-form name shouldn't appear in this function.
+    CHECK(f.out.source.find("c.compare_exchange_strong") == std::string::npos);
+}
+
 TEST_CASE("Atomic[T] bitwise fetch ops rename to snake_case and CAS bundles its result") {
     SemaEmitFixture f("static c: Atomic[UInt32] = 0\n"
                       "func use() -> UInt32 {\n"

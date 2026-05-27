@@ -719,6 +719,59 @@ TEST_CASE("Atomic[T] surfaces the bitwise fetch ops + compareExchange") {
           == 0);
 }
 
+TEST_CASE("compareExchangeWeak admitted inside `while true { ... }`") {
+    CHECK(check_errors("static c: Atomic[UInt32] = 0\n"
+                       "func use(_ desired: UInt32) -> UInt32 {\n"
+                       "    while true {\n"
+                       "        let r = c.compareExchangeWeak(0, desired, .seqCst, .acquire)\n"
+                       "        if r.succeeded { return r.actual }\n"
+                       "    }\n"
+                       "    return 0\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("compareExchangeWeak admitted inside `while !r.succeeded`") {
+    CHECK(check_errors("static c: Atomic[UInt32] = 0\n"
+                       "func use(_ exp: UInt32, _ desired: UInt32) -> UInt32 {\n"
+                       "    var r = c.compareExchange(exp, desired, .seqCst, .acquire)\n"
+                       "    while !r.succeeded {\n"
+                       "        r = c.compareExchangeWeak(r.actual, desired, .seqCst, .acquire)\n"
+                       "    }\n"
+                       "    return r.actual\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("free-standing compareExchangeWeak is rejected with a clear hint") {
+    auto r = check_detail("static c: Atomic[UInt32] = 0\n"
+                          "func bad() -> UInt32 {\n"
+                          "    let r = c.compareExchangeWeak(0, 1, .seqCst, .acquire)\n"
+                          "    return r.actual\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("compareExchangeWeak is admitted only inside") != std::string::npos);
+    CHECK(r.first_message.find("compareExchange") != std::string::npos);
+}
+
+TEST_CASE("compareExchangeWeak in a `while cond { ... }` with a non-admitted cond is rejected") {
+    // `while x > 0 { ... }` isn't one of the two admitted shapes —
+    // the loop doesn't terminate on the CAS's succeeded flag, so
+    // the loop guarantee the spec relies on doesn't hold.
+    auto r = check_detail("static c: Atomic[UInt32] = 0\n"
+                          "func bad(_ x: UInt32) -> UInt32 {\n"
+                          "    var i = x\n"
+                          "    while i > 0 {\n"
+                          "        let r = c.compareExchangeWeak(0, 1, .seqCst, .acquire)\n"
+                          "        if r.succeeded { return r.actual }\n"
+                          "        i = i - 1\n"
+                          "    }\n"
+                          "    return 0\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("compareExchangeWeak is admitted only inside") != std::string::npos);
+}
+
 TEST_CASE("Atomic[T] initial value adopts the inner T from context") {
     // The Int literal `7` would otherwise default to Int and fail
     // assignment to Atomic[UInt32]. The hint-peel through Atomic in

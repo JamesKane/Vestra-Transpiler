@@ -64,6 +64,27 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // §A4 (§14.9.3) compareExchangeWeak inside a while-true retry
+    // loop. Single-threaded, so the weak CAS converges within one
+    // or two spurious-fail iterations on every host.
+    if (auto v = retry_loop_set(0, 17); v != 0) {
+        std::println("retry_loop_set expected actual=0, got {}", v);
+        return EXIT_FAILURE;
+    }
+    if (weak_target.load(std::memory_order_seq_cst) != 17) {
+        std::println("weak_target should be 17 after retry_loop_set");
+        return EXIT_FAILURE;
+    }
+    // Shape 1: while !r.succeeded. Bumps weak_target from 17 → 42.
+    if (auto v = retry_loop_until(17, 42); v != 17) {
+        std::println("retry_loop_until expected actual=17, got {}", v);
+        return EXIT_FAILURE;
+    }
+    if (weak_target.load(std::memory_order_seq_cst) != 42) {
+        std::println("weak_target should be 42 after retry_loop_until");
+        return EXIT_FAILURE;
+    }
+
     std::println("atomics OK");
     return EXIT_SUCCESS;
 }
