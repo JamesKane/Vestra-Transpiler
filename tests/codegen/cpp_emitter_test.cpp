@@ -889,6 +889,7 @@ TEST_CASE("--no-libc emits the freestanding profile marker in both files") {
 
 TEST_CASE("Sysreg.<name> lowers to __vstr::sysreg::<name>") {
     SemaEmitFixture f("@kernel_init\n"
+                      "@no_auto_barrier\n"
                       "func init_mmu(_ ttbr0: UInt64) using Asm {\n"
                       "    Sysreg.ttbr0_el1.write(ttbr0)\n"
                       "}\n"
@@ -901,8 +902,56 @@ TEST_CASE("Sysreg.<name> lowers to __vstr::sysreg::<name>") {
     CHECK(f.out.header.find("inline Handle<std::uint64_t> ttbr0_el1;") != std::string::npos);
     CHECK(f.out.header.find("inline Handle<std::uint64_t> midr_el1;") != std::string::npos);
     // User-facing Sysreg.<name> lowers to the namespaced singleton.
+    // The init_mmu function carries @no_auto_barrier so the write
+    // stays raw; without that attribute it'd route through
+    // write_ttbr0_el1 — the dispatch is covered by a sibling test.
     CHECK(f.out.source.find("__vstr::sysreg::ttbr0_el1.write(ttbr0)") != std::string::npos);
     CHECK(f.out.source.find("return __vstr::sysreg::midr_el1.read();") != std::string::npos);
+}
+
+TEST_CASE("gated Sysreg write routes through the barrier-bearing wrapper") {
+    // §14.12.3 — sctlr_el1 / vbar_el1 / ttbr0_el1 require an ISB on
+    // the trailing edge. Without @no_auto_barrier, the write
+    // dispatches to __vstr::sysreg::write_<name>, which pairs the
+    // cell update with post_write_barrier().
+    SemaEmitFixture f("func wire(_ v: UInt64) using Asm {\n"
+                      "    Sysreg.sctlr_el1.write(v)\n"
+                      "    Sysreg.vbar_el1.write(v)\n"
+                      "}\n");
+    CHECK(f.out.header.find("inline void post_write_barrier()") != std::string::npos);
+    CHECK(f.out.header.find("inline void write_sctlr_el1(") != std::string::npos);
+    CHECK(f.out.header.find("inline void write_vbar_el1(") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::sysreg::write_sctlr_el1(v)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::sysreg::write_vbar_el1(v)") != std::string::npos);
+    // The raw `.write` form should NOT appear for gated registers
+    // in the ordinary-function path.
+    CHECK(f.out.source.find("__vstr::sysreg::sctlr_el1.write(v)") == std::string::npos);
+}
+
+TEST_CASE("@no_auto_barrier on the enclosing function suppresses the wrapper") {
+    // §14.11.5 / §14.12.3 — `@no_auto_barrier` opts the function
+    // out of the auto-barrier policy. The gated writes go through
+    // the raw .write form instead of write_<name>.
+    SemaEmitFixture f("@kernel_init\n"
+                      "@no_auto_barrier\n"
+                      "func mmu_bringup(_ ttbr0: UInt64, _ sctlr: UInt64) using Asm {\n"
+                      "    Sysreg.ttbr0_el1.write(ttbr0)\n"
+                      "    Sysreg.sctlr_el1.write(sctlr)\n"
+                      "}\n");
+    CHECK(f.out.source.find("__vstr::sysreg::ttbr0_el1.write(ttbr0)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::sysreg::sctlr_el1.write(sctlr)") != std::string::npos);
+    CHECK(f.out.source.find("write_ttbr0_el1") == std::string::npos);
+}
+
+TEST_CASE("non-gated Sysreg write stays raw even outside @no_auto_barrier") {
+    // DAIF is intentionally outside the gated set — the mask is a
+    // synchronously-checked bit, not a control register that
+    // changes fetch / decode state.
+    SemaEmitFixture f("func mask() using Asm {\n"
+                      "    Sysreg.daif.write(15)\n"
+                      "}\n");
+    CHECK(f.out.source.find("__vstr::sysreg::daif.write(15)") != std::string::npos);
+    CHECK(f.out.source.find("write_daif") == std::string::npos);
 }
 
 TEST_CASE("@stack_protector(.none) emits [[gnu::no_stack_protector]]") {

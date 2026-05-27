@@ -223,6 +223,11 @@ private:
     diag::DiagnosticReporter* reporter_;
     const sema::Resolution* resolution_ = nullptr;
     bool no_libc_ = false;
+    // §14.12.3 — true while emitting a function attributed
+    // `@no_auto_barrier`. Per-call-site lowering of
+    // `Sysreg.X.write(v)` reads this to decide whether to route
+    // through the barrier-bearing wrapper or the raw write.
+    bool current_no_auto_barrier_ = false;
 
     // §12.3 derive layer: a target-type-name → derived-protocol-name
     // index built up front from every `derive(...) for T` top-level

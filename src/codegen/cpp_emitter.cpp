@@ -632,6 +632,36 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     for (const auto& name : sysreg_names) {
         hdr << "inline Handle<std::uint64_t> " << name << ";\n";
     }
+
+    // §14.12.3 auto-emitted post-write barrier. The aarch64 target
+    // table marks SCTLR_EL1 / VBAR_EL1 / TTBR0_EL1 (and others not
+    // yet in the v0.5 canonical set) as needing an ISB on the
+    // trailing edge so the subsequent instruction stream observes
+    // the new control state. On non-aarch64 hosts the shim falls
+    // back to a seq_cst thread fence — strong enough for hosted
+    // testing without paying the full ISA-specific instruction.
+    // The `write_<name>` wrappers below pair the cell update with
+    // the barrier call; emit_expr dispatches `Sysreg.X.write(v)` to
+    // them when X is in the gated set and the enclosing function
+    // doesn't carry `@no_auto_barrier`.
+    hdr << "inline void post_write_barrier() noexcept {\n";
+    hdr << "#if defined(__aarch64__) || defined(__arm64__)\n";
+    hdr << "    __asm__ volatile(\"isb\" ::: \"memory\");\n";
+    hdr << "#else\n";
+    hdr << "    std::atomic_thread_fence(std::memory_order_seq_cst);\n";
+    hdr << "#endif\n";
+    hdr << "}\n";
+    static const std::array<std::string_view, 3> gated_writes = {
+        "sctlr_el1",
+        "vbar_el1",
+        "ttbr0_el1",
+    };
+    for (const auto& name : gated_writes) {
+        hdr << "inline void write_" << name << "(std::uint64_t v) noexcept {\n";
+        hdr << "    " << name << ".write(v);\n";
+        hdr << "    post_write_barrier();\n";
+        hdr << "}\n";
+    }
     hdr << "}  // namespace sysreg\n\n";
 
     hdr << "}  // namespace __vstr\n\n";
@@ -1094,6 +1124,23 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         const ast::Type* prev;
         ~ThrowsRestore() { self->current_throws_type_ = prev; }
     } _throws_restore{this, prev_throws};
+
+    // §14.12.3 — `@no_auto_barrier` on the enclosing function
+    // suppresses the auto-emitted post-write barrier on gated
+    // sysreg writes inside its body. Tracked as a per-function
+    // flag so emit_expr's `Sysreg.X.write(v)` intercept can
+    // decide between the barrier-bearing wrapper and the raw
+    // write.
+    const bool prev_no_auto_barrier = current_no_auto_barrier_;
+    current_no_auto_barrier_ =
+        std::any_of(f.attributes.begin(), f.attributes.end(), [](const ast::Attribute& a) {
+            return a.name == "no_auto_barrier";
+        });
+    struct NoAutoBarrierRestore {
+        CppEmitter* self;
+        bool prev;
+        ~NoAutoBarrierRestore() { self->current_no_auto_barrier_ = prev; }
+    } _no_auto_barrier_restore{this, prev_no_auto_barrier};
 
     // §7 generics: a Vestra generic function lowers to a C++ template. The
     // host compiler then monomorphizes per instantiation, which is what
@@ -3279,6 +3326,34 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     emit_expr(os, *c.args[0].value);
                     os << ")";
                     break;
+                }
+            }
+            // §14.12.3 auto-emitted post-write barrier on gated
+            // sysreg writes. The callee shape is `MemberExpr(base=
+            // MemberExpr(IdentExpr("Sysreg"), <name>), "write")`;
+            // when <name> is in the gated set and the enclosing
+            // function isn't carrying `@no_auto_barrier`, route the
+            // call to `__vstr::sysreg::write_<name>(v)` which
+            // performs the cell update and then issues the
+            // platform-appropriate barrier (ISB on aarch64, seq_cst
+            // fence elsewhere).
+            if (mem.member == "write" && c.args.size() == 1 && mem.base != nullptr
+                && mem.base->kind == ast::NodeKind::MemberExpr) {
+                const auto& base_mem = static_cast<const ast::MemberExpr&>(*mem.base);
+                if (base_mem.base != nullptr && base_mem.base->kind == ast::NodeKind::IdentExpr) {
+                    const auto& root = static_cast<const ast::IdentExpr&>(*base_mem.base);
+                    static const std::unordered_set<std::string_view> gated_writes = {
+                        "sctlr_el1",
+                        "vbar_el1",
+                        "ttbr0_el1",
+                    };
+                    if (root.name == "Sysreg" && gated_writes.contains(base_mem.member)
+                        && !current_no_auto_barrier_) {
+                        os << "__vstr::sysreg::write_" << base_mem.member << "(";
+                        emit_expr(os, *c.args[0].value);
+                        os << ")";
+                        break;
+                    }
                 }
             }
             // §A6 (§14.11) `MmioView.at(ptr)` / `MmioRegion.at(ptr,
