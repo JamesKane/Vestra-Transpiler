@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A3 follow-up (§10.5) — `Ptr[T].value` / `MutPtr[T].value`
+// dereference.
+//
+// `Ptr[T]` and `MutPtr[T]` came from §A3 as the raw-mint
+// primitive that admits an external integer address into the
+// type system under the `RawMemory` capability. Their first
+// slice typed pointers but didn't ship a Vestra source-level
+// way to read or write through them — code that needed the
+// pointee value had to route through `Span.raw(at: p, count:
+// 1)` and index 0, or hand the pointer off to a foreign
+// function that did the dereference. This slice closes that
+// gap.
+//
+// The spelling is `.value`, the same shape Box[T] already
+// uses for "extract the inner". For Ptr[T] the result is
+// the read-only T; for MutPtr[T] it's a writable T (the
+// `p.value = expr` shape is admitted as an assign-through).
+// Both lower to a plain `(*p)` at the C++ layer — the
+// existing `reinterpret_cast<T*>(addr)` from §A3 mints a
+// pointer with the right type, and `*` reads / writes it.
+//
+// Dereferencing doesn't require an additional capability
+// because the `.unchecked(fromAddress:)` mint already
+// discharged `RawMemory`. The audit lane covering the mint
+// also covers the reads / writes — a `vestra audit
+// --raw-memory` walk lands every `.value`-on-Ptr / MutPtr
+// alongside the mint that produced the pointer.
+
+module examples.ptr_deref
+
+// Read a UInt32 from a raw address.
+func load_word(_ addr: UInt64) -> UInt32 {
+    with RawMemory {
+        let p: Ptr[UInt32] = Ptr.unchecked(fromAddress: addr)
+        return p.value
+    }
+}
+
+// Write a UInt32 to a raw address.
+func store_word(_ addr: UInt64, _ v: UInt32) {
+    with RawMemory {
+        let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)
+        p.value = v
+    }
+}
+
+// Read-modify-write through a single MutPtr — the kernel's
+// "atomic-style" non-atomic update path. The compiler emits
+// two distinct memory operations; if the user needs a real
+// atomic RMW they reach for §A4's Atomic[T] instead.
+func bump_word(_ addr: UInt64, _ delta: UInt32) -> UInt32 {
+    with RawMemory {
+        let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)
+        p.value = p.value + delta
+        return p.value
+    }
+}

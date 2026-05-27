@@ -3748,6 +3748,17 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << ")";
                 break;
             }
+            // §A3 (§10.5) Ptr[T] / MutPtr[T]: `p.value` lowers to
+            // `(*p)` over the raw pointer. The C++ compiler enforces
+            // the read-only side for Ptr[T] (which emits as `const
+            // T*`); MutPtr[T] (`T*`) admits assignment-through.
+            if (bt != nullptr
+                && (bt->kind() == sema::TypeKind::Ptr || bt->kind() == sema::TypeKind::MutPtr)) {
+                os << "(*";
+                emit_expr(os, *m.base);
+                os << ")";
+                break;
+            }
         }
         // §10 Span[T] / MutSpan[T]: `.count` and `.isEmpty` map to
         // `std::span::size()` (cast to the signed `Int`-equivalent so

@@ -3908,6 +3908,20 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
         return finish(lookup_base->inner());
     }
 
+    // §A3 (§10.5) Ptr[T] / MutPtr[T]: `p.value` reads the pointee.
+    // Mirrors Box[T].value at both the sema and codegen layers. The
+    // MutPtr form is assignable through (`p.value = expr`) at the
+    // C++ layer; sema doesn't enforce a separate place-expression
+    // discipline here since the C++ compiler refuses an assign-
+    // through-const-pointer naturally. Dereferencing itself doesn't
+    // require RawMemory — the `.unchecked(fromAddress:)` mint that
+    // produced the pointer already discharged the cap. v0.5 trusts
+    // that audit lane to cover the read/write side too.
+    if ((lookup_base->kind() == TypeKind::Ptr || lookup_base->kind() == TypeKind::MutPtr)
+        && m.member == "value" && lookup_base->inner() != nullptr) {
+        return finish(lookup_base->inner());
+    }
+
     // §10 Span[T] / MutSpan[T]: `.count` returns the element count as
     // Int; `.isEmpty` returns Bool. Codegen renders these as
     // `static_cast<std::intptr_t>(s.size())` and `s.empty()`.

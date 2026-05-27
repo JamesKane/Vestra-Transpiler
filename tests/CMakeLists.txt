@@ -1301,6 +1301,36 @@ set_tests_properties(e2e_pce_run PROPERTIES
     DEPENDS                e2e_pce_compile
     PASS_REGULAR_EXPRESSION "per_cpu_extras OK")
 
+# §A3 follow-up — Ptr / MutPtr `.value` dereference. The
+# spelling mirrors Box[T].value, lowers to (*p) at the C++
+# layer, and unlocks the cross-hart slot() pattern as well
+# as ordinary raw-pointer reads. The runtime stash-and-read
+# verifies the read direction; store_word writes through a
+# MutPtr; bump_word demonstrates the RMW shape.
+set(e2e_ptr_deref_input  ${CMAKE_SOURCE_DIR}/examples/ptr_deref.vst)
+set(e2e_ptr_deref_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_ptr_deref.cpp)
+
+add_test(
+    NAME    e2e_ptr_deref_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_ptr_deref_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_ptr_deref_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_ptr_deref_driver} ${e2e_workdir}/ptr_deref.cpp
+            -o ${e2e_workdir}/ptr_deref_app)
+set_tests_properties(e2e_ptr_deref_compile PROPERTIES
+    DEPENDS e2e_ptr_deref_transpile)
+
+add_test(
+    NAME    e2e_ptr_deref_run
+    COMMAND ${e2e_workdir}/ptr_deref_app)
+set_tests_properties(e2e_ptr_deref_run PROPERTIES
+    DEPENDS                e2e_ptr_deref_compile
+    PASS_REGULAR_EXPRESSION "ptr_deref OK")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except

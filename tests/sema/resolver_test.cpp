@@ -870,6 +870,27 @@ TEST_CASE("PerCpu[T] with a primitive inner") {
           == 0);
 }
 
+TEST_CASE("Ptr[T].value reads through to T (read-only)") {
+    // §A3 follow-up (§10.5) deref via .value. Mirrors Box[T].value.
+    CHECK(check_errors("func touch(_ addr: UInt64) -> UInt32 {\n"
+                       "    with RawMemory {\n"
+                       "        let p: Ptr[UInt32] = Ptr.unchecked(fromAddress: addr)\n"
+                       "        return p.value\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("MutPtr[T].value admits assignment-through") {
+    CHECK(check_errors("func touch(_ addr: UInt64, _ v: UInt32) {\n"
+                       "    with RawMemory {\n"
+                       "        let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+                       "        p.value = v\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
 TEST_CASE("PerCpu.new(value) returns Box[PerCpu[T]]") {
     // §A11 (§14.8) heap factory. The Vestra-side call needs Alloc in
     // scope; the resulting Box wraps a PerCpu[T] whose inner T matches

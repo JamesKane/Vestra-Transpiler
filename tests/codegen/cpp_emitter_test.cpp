@@ -821,6 +821,23 @@ TEST_CASE("PerCpu[T] lowers to __vstr::PerCpu<T> with .mine() accessor") {
           != std::string::npos);
 }
 
+TEST_CASE("Ptr[T].value lowers to (*p) for read; MutPtr[T].value admits write-through") {
+    SemaEmitFixture f("func get_val(_ addr: UInt64) -> UInt32 {\n"
+                      "    with RawMemory {\n"
+                      "        let p: Ptr[UInt32] = Ptr.unchecked(fromAddress: addr)\n"
+                      "        return p.value\n"
+                      "    }\n"
+                      "}\n"
+                      "func set_val(_ addr: UInt64, _ v: UInt32) {\n"
+                      "    with RawMemory {\n"
+                      "        let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+                      "        p.value = v\n"
+                      "    }\n"
+                      "}\n");
+    CHECK(f.out.source.find("return (*p);") != std::string::npos);
+    CHECK(f.out.source.find("(*p) = v;") != std::string::npos);
+}
+
 TEST_CASE("PerCpu.new lowers to make_unique<__vstr::PerCpu<T>>") {
     SemaEmitFixture f("func make(_ v: UInt32) -> UInt32 {\n"
                       "    with Alloc {\n"
