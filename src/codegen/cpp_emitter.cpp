@@ -2868,6 +2868,69 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     }
     case ast::NodeKind::CallExpr: {
         const auto& c = static_cast<const ast::CallExpr&>(e);
+        // §A3 (§10.5) raw-mint builtins. Four shapes, all dispatched
+        // by callee MemberExpr name. T comes from the resolver-typed
+        // result for the pointer mints; from the inner-pointer's T
+        // for the span-from-raw mints.
+        if (c.callee && c.callee->kind == ast::NodeKind::MemberExpr && resolution_ != nullptr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            if (mem.base != nullptr && mem.base->kind == ast::NodeKind::IdentExpr
+                && mem.member == "unchecked" && c.args.size() == 1) {
+                const auto& bi = static_cast<const ast::IdentExpr&>(*mem.base);
+                const bool is_ptr = bi.name == "Ptr";
+                const bool is_mut_ptr = bi.name == "MutPtr";
+                if (is_ptr || is_mut_ptr) {
+                    auto rt = resolution_->type_of(&e);
+                    sema::TypePtr T = rt != nullptr
+                                              && (rt->kind() == sema::TypeKind::Ptr
+                                                  || rt->kind() == sema::TypeKind::MutPtr)
+                                          ? rt->inner()
+                                          : nullptr;
+                    os << "reinterpret_cast<";
+                    if (is_ptr) {
+                        os << "const ";
+                    }
+                    if (T != nullptr) {
+                        emit_sema_type(os, T);
+                    } else {
+                        os << "void";  // defensive: sema would have diagnosed
+                    }
+                    os << "*>(";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
+                    break;
+                }
+            }
+            if (mem.base != nullptr && mem.base->kind == ast::NodeKind::IdentExpr
+                && mem.member == "raw" && c.args.size() == 2) {
+                const auto& bi = static_cast<const ast::IdentExpr&>(*mem.base);
+                const bool is_span = bi.name == "Span";
+                const bool is_mut_span = bi.name == "MutSpan";
+                if (is_span || is_mut_span) {
+                    auto rt = resolution_->type_of(&e);
+                    sema::TypePtr T = rt != nullptr
+                                              && (rt->kind() == sema::TypeKind::Span
+                                                  || rt->kind() == sema::TypeKind::MutSpan)
+                                          ? rt->inner()
+                                          : nullptr;
+                    os << "std::span<";
+                    if (is_span) {
+                        os << "const ";
+                    }
+                    if (T != nullptr) {
+                        emit_sema_type(os, T);
+                    } else {
+                        os << "void";
+                    }
+                    os << ">(";
+                    emit_expr(os, *c.args[0].value);
+                    os << ", static_cast<std::size_t>(";
+                    emit_expr(os, *c.args[1].value);
+                    os << "))";
+                    break;
+                }
+            }
+        }
         // §10 `Box.new(value)` lowers to `std::make_unique<T>(value)`.
         // The element type T comes from the resolver (the type of the
         // CallExpr itself is Box<T>; we peel that to get T).
@@ -3561,6 +3624,16 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         emit_sema_type(os, t->inner());
         os << ">";
         return;
+    case TypeKind::Ptr:
+        // §A3 raw read-only pointer.
+        os << "const ";
+        emit_sema_type(os, t->inner());
+        os << "*";
+        return;
+    case TypeKind::MutPtr:
+        emit_sema_type(os, t->inner());
+        os << "*";
+        return;
     case TypeKind::Atomic:
         os << "std::atomic<";
         emit_sema_type(os, t->inner());
@@ -3659,6 +3732,18 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
                 os << "std::span<";
                 emit_type(os, *n.type_args[0]);
                 os << ">";
+                return;
+            }
+            // §A3 (§10.5) `Ptr[T]` / `MutPtr[T]` lower to const T* / T*.
+            if (n.path[0] == "Ptr" && n.type_args.size() == 1) {
+                os << "const ";
+                emit_type(os, *n.type_args[0]);
+                os << "*";
+                return;
+            }
+            if (n.path[0] == "MutPtr" && n.type_args.size() == 1) {
+                emit_type(os, *n.type_args[0]);
+                os << "*";
                 return;
             }
             // §A4 (§14.9) `Atomic[T]` lowers to `std::atomic<T>`.

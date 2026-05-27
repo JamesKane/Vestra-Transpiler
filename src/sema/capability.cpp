@@ -179,6 +179,21 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                 && mem.member == "new" && !in_scope("Alloc")) {
                 missing_capability("Alloc", c.range);
             }
+            // §A3 (§10.5) — minting raw pointers and spans-from-raw
+            // requires `RawMemory` in scope. We pattern-match all
+            // four call shapes here so the audit surface ("every
+            // `unchecked(fromAddress:)` and the discharge that
+            // admitted it") has the same gating point.
+            if (mem.base && mem.base->kind == ast::NodeKind::IdentExpr) {
+                const auto& bi = static_cast<const ast::IdentExpr&>(*mem.base);
+                const bool is_unchecked_mint =
+                    (bi.name == "Ptr" || bi.name == "MutPtr") && mem.member == "unchecked";
+                const bool is_raw_span =
+                    (bi.name == "Span" || bi.name == "MutSpan") && mem.member == "raw";
+                if ((is_unchecked_mint || is_raw_span) && !in_scope("RawMemory")) {
+                    missing_capability("RawMemory", c.range);
+                }
+            }
         }
         check_expr(*c.callee);
         for (const auto& a : c.args) {

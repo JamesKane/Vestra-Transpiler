@@ -172,6 +172,42 @@ TEST_CASE("Box.new without `using Alloc` is reported by the capability checker")
     CHECK(r.first_message.find("missing capability 'Alloc'") != std::string::npos);
 }
 
+// ---- §A3 raw-mint primitives require RawMemory ----------------------------
+
+TEST_CASE("MutPtr.unchecked outside RawMemory is rejected") {
+    auto r = check("func bad(_ addr: UInt64) {\n"
+                   "    let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("missing capability 'RawMemory'") != std::string::npos);
+}
+
+TEST_CASE("Ptr.unchecked / Span.raw / MutSpan.raw under `with RawMemory` are clean") {
+    CHECK(check("func ok(_ addr: UInt64) {\n"
+                "    with RawMemory {\n"
+                "        let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+                "        let s = MutSpan.raw(at: p, count: 4)\n"
+                "        s[0] = 42\n"
+                "    }\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("Span.raw without RawMemory is rejected even with a valid Ptr in scope") {
+    // Mint the pointer inside RawMemory but try to derive the span
+    // outside — the cap check is per-call-site.
+    auto r = check("func bad(_ addr: UInt64) {\n"
+                   "    var p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: 0)\n"
+                   "    with RawMemory {\n"
+                   "        p = MutPtr.unchecked(fromAddress: addr)\n"
+                   "    }\n"
+                   "    let s = MutSpan.raw(at: p, count: 4)\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("missing capability 'RawMemory'") != std::string::npos);
+}
+
 // ---- existing examples remain clean ----------------------------------------
 
 TEST_CASE("the shapes example checks clean under capabilities") {

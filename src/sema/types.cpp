@@ -127,6 +127,10 @@ std::string Type::describe() const {
         return inner_ ? std::format("Span[{}]", inner_->describe()) : std::string{"Span"};
     case TypeKind::MutSpan:
         return inner_ ? std::format("MutSpan[{}]", inner_->describe()) : std::string{"MutSpan"};
+    case TypeKind::Ptr:
+        return inner_ ? std::format("Ptr[{}]", inner_->describe()) : std::string{"Ptr"};
+    case TypeKind::MutPtr:
+        return inner_ ? std::format("MutPtr[{}]", inner_->describe()) : std::string{"MutPtr"};
     case TypeKind::ZipIter: {
         std::string a = (parts_.size() >= 1 && parts_[0]) ? parts_[0]->describe() : "?";
         std::string b = (parts_.size() >= 2 && parts_[1]) ? parts_[1]->describe() : "?";
@@ -254,6 +258,22 @@ TypePtr TypeArena::make_span(TypePtr inner) {
 
 TypePtr TypeArena::make_mut_span(TypePtr inner) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::MutSpan));
+    t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_ptr(TypePtr inner) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Ptr));
+    t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_mut_ptr(TypePtr inner) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::MutPtr));
     t->inner_ = inner;
     auto* p = t.get();
     owned_.push_back(std::move(t));
@@ -399,6 +419,8 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     case TypeKind::Box:
     case TypeKind::Span:
     case TypeKind::MutSpan:
+    case TypeKind::Ptr:
+    case TypeKind::MutPtr:
     case TypeKind::TakeIter:
     case TypeKind::FilterIter:
     case TypeKind::Atomic:
@@ -556,6 +578,14 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::MutSpan: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_mut_span(inner);
+    }
+    case TypeKind::Ptr: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_ptr(inner);
+    }
+    case TypeKind::MutPtr: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_mut_ptr(inner);
     }
     case TypeKind::TakeIter: {
         auto inner = substitute(t->inner(), bindings);

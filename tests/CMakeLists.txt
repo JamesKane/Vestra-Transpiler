@@ -931,6 +931,35 @@ set_tests_properties(e2e_display_run PROPERTIES
     DEPENDS                e2e_display_compile
     PASS_REGULAR_EXPRESSION "display OK")
 
+# Raw-mint primitives (§A3, §10.5). Ptr / MutPtr / Span.raw /
+# MutSpan.raw — all gated on RawMemory. Lowers to const T* / T*
+# and std::span. The runtime feeds the address of a stack buffer
+# in for hosted determinism, writes through MutSpan, and reads
+# back via Span (the const path).
+set(e2e_raw_mint_input  ${CMAKE_SOURCE_DIR}/examples/raw_mint.vst)
+set(e2e_raw_mint_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_raw_mint.cpp)
+
+add_test(
+    NAME    e2e_raw_mint_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_raw_mint_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_raw_mint_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_raw_mint_driver} ${e2e_workdir}/raw_mint.cpp
+            -o ${e2e_workdir}/raw_mint_app)
+set_tests_properties(e2e_raw_mint_compile PROPERTIES
+    DEPENDS e2e_raw_mint_transpile)
+
+add_test(
+    NAME    e2e_raw_mint_run
+    COMMAND ${e2e_workdir}/raw_mint_app)
+set_tests_properties(e2e_raw_mint_run PROPERTIES
+    DEPENDS                e2e_raw_mint_compile
+    PASS_REGULAR_EXPRESSION "raw_mint OK")
+
 # Sync intrinsics (§A5, §14.10). Nine free-function builtins:
 # compilerFence / memoryBarrier / syncBarrier / instructionBarrier /
 # waitForInterrupt / waitForEvent / signalEvent / relax / nop.

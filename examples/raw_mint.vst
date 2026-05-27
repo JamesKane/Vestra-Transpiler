@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A3 (§10.5) — Minting views from raw memory.
+//
+// Four primitives, all gated on the `RawMemory` capability:
+//
+//   Ptr.unchecked(fromAddress: UInt64)    -> Ptr[T]
+//   MutPtr.unchecked(fromAddress: UInt64) -> MutPtr[T]
+//   Span.raw(at: Ptr[T], count: Int)      -> Span[T]
+//   MutSpan.raw(at: MutPtr[T], count: Int)-> MutSpan[T]
+//
+// The kernel pattern is to open a long-lived `with RawMemory { … }`
+// at boot, mint a typed `MutSpan` from the physical address it
+// computed, and let the rest of the kernel address that region by
+// the span — pointers go through the type-checker like any other
+// `[T]`-backed view.
+//
+// T for the .unchecked forms comes from the expected slot at the
+// call site (the let-binding's annotation or the function's return
+// slot); T for the .raw forms comes from the pointer arg's `Ptr[T]`.
+//
+// In v0.5, `Ptr[T]` / `MutPtr[T]` are escapable but anything derived
+// from them (Span / MutSpan / future MmioView) is non-escapable.
+// The non-escape-rule enforcement waits on §10's escape rule landing.
+
+module examples.raw_mint
+
+// Helper: mint a MutSpan over a caller-supplied UInt64 address +
+// element count, returning the value at index 0 after a single
+// write. Hosted CI feeds it the address of a stack buffer; a kernel
+// would feed it a physical-address frame.
+func touch_first(_ addr: UInt64, _ count: Int) -> UInt32 {
+    var observed: UInt32 = 0
+    with RawMemory {
+        let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)
+        let region = MutSpan.raw(at: p, count: count)
+        region[0] = 42
+        observed = region[0]
+    }
+    return observed
+}
+
+// Two-step read: mint a Ptr (read-only), then a Span (read-only).
+// Verifies that the const-correct path lowers cleanly to
+// `std::span<const UInt32>`.
+func read_first(_ addr: UInt64, _ count: Int) -> UInt32 {
+    var observed: UInt32 = 0
+    with RawMemory {
+        let p: Ptr[UInt32] = Ptr.unchecked(fromAddress: addr)
+        let region = Span.raw(at: p, count: count)
+        observed = region[0]
+    }
+    return observed
+}

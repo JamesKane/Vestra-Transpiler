@@ -2136,6 +2136,113 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
+    // §A3 (§10.5) raw-mint primitives. Four static-call shapes:
+    //   * Ptr.unchecked(fromAddress: addr)    -> Ptr[T]
+    //   * MutPtr.unchecked(fromAddress: addr) -> MutPtr[T]
+    //   * Span.raw(at: ptr, count: n)         -> Span[T]
+    //   * MutSpan.raw(at: ptr, count: n)      -> MutSpan[T]
+    //
+    // T for the .unchecked forms comes from the expected type at the
+    // call site (the let-binding's annotation, the function's
+    // return type, etc.). T for the .raw forms comes from the
+    // pointer argument itself. All four require `RawMemory` in
+    // scope; the capability checker enforces that separately.
+    if (c.callee->kind == ast::NodeKind::MemberExpr) {
+        const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+        if (mem.base != nullptr && mem.base->kind == ast::NodeKind::IdentExpr) {
+            const auto& bi = static_cast<const ast::IdentExpr&>(*mem.base);
+            const bool is_ptr = bi.name == "Ptr";
+            const bool is_mut_ptr = bi.name == "MutPtr";
+            const bool is_span = bi.name == "Span";
+            const bool is_mut_span = bi.name == "MutSpan";
+            if ((is_ptr || is_mut_ptr) && mem.member == "unchecked"
+                && scopes_.current().lookup(bi.name) == nullptr) {
+                if (c.args.size() != 1) {
+                    for (const auto& a : c.args) {
+                        (void)check_expr(*a.value);
+                    }
+                    error_at(c.range,
+                             std::format("{}.unchecked takes exactly one argument "
+                                         "(fromAddress: UInt64)",
+                                         bi.name));
+                    return is_ptr ? types_->make_ptr(types_->error())
+                                  : types_->make_mut_ptr(types_->error());
+                }
+                if (!c.args[0].label.empty() && c.args[0].label != "fromAddress") {
+                    error_at(c.args[0].value->range,
+                             std::format("{}.unchecked expects label 'fromAddress'", bi.name));
+                }
+                auto addr_t = check_expr(*c.args[0].value, types_->primitive(TypeKind::UInt64));
+                if (addr_t != nullptr && !addr_t->is_error() && !addr_t->is_integer()) {
+                    error_at(c.args[0].value->range,
+                             std::format("{}.unchecked address must be an integer, got {}",
+                                         bi.name,
+                                         addr_t->describe()));
+                }
+                // T comes from the expected type. Without it, we
+                // can't infer — surface that as a diagnostic so the
+                // user adds an annotation.
+                TypePtr T = nullptr;
+                if (expected != nullptr) {
+                    if (is_ptr && expected->kind() == TypeKind::Ptr) {
+                        T = expected->inner();
+                    } else if (is_mut_ptr && expected->kind() == TypeKind::MutPtr) {
+                        T = expected->inner();
+                    }
+                }
+                if (T == nullptr) {
+                    error_at(c.range,
+                             std::format("{}.unchecked needs an expected {}[T] type at the call "
+                                         "site (annotate the let-binding or return slot)",
+                                         bi.name,
+                                         bi.name));
+                    T = types_->error();
+                }
+                return is_ptr ? types_->make_ptr(T) : types_->make_mut_ptr(T);
+            }
+            if ((is_span || is_mut_span) && mem.member == "raw"
+                && scopes_.current().lookup(bi.name) == nullptr) {
+                if (c.args.size() != 2) {
+                    for (const auto& a : c.args) {
+                        (void)check_expr(*a.value);
+                    }
+                    error_at(c.range,
+                             std::format("{}.raw takes exactly two arguments (at: ..., count: ...)",
+                                         bi.name));
+                    return is_span ? types_->make_span(types_->error())
+                                   : types_->make_mut_span(types_->error());
+                }
+                auto pt = check_expr(*c.args[0].value);
+                auto ct = check_expr(*c.args[1].value, types_->primitive(TypeKind::Int));
+                TypePtr T = types_->error();
+                if (is_span) {
+                    if (pt != nullptr && pt->kind() == TypeKind::Ptr) {
+                        T = pt->inner();
+                    } else if (pt != nullptr && !pt->is_error()) {
+                        error_at(
+                            c.args[0].value->range,
+                            std::format("Span.raw 'at' must be a Ptr[T], got {}", pt->describe()));
+                    }
+                } else {
+                    if (pt != nullptr && pt->kind() == TypeKind::MutPtr) {
+                        T = pt->inner();
+                    } else if (pt != nullptr && !pt->is_error()) {
+                        error_at(c.args[0].value->range,
+                                 std::format("MutSpan.raw 'at' must be a MutPtr[T], got {}",
+                                             pt->describe()));
+                    }
+                }
+                if (ct != nullptr && !ct->is_error() && !ct->is_integer()) {
+                    error_at(c.args[1].value->range,
+                             std::format("{}.raw count must be an integer, got {}",
+                                         bi.name,
+                                         ct->describe()));
+                }
+                return is_span ? types_->make_span(T) : types_->make_mut_span(T);
+            }
+        }
+    }
+
     // §10 builtin `Box.new(value)` — the unique-ownership heap pointer
     // constructor. The callee is a `MemberExpr(IdentExpr("Box"), "new")`;
     // sema doesn't have a symbol for the Box "value" so we intercept
@@ -2475,6 +2582,20 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
             if (n.path[0] == "MutSpan" && n.type_args.size() == 1) {
                 return types_->make_mut_span(n.type_args[0] ? resolve_type(*n.type_args[0])
                                                             : types_->error());
+            }
+            // §A3 (§10.5) raw pointers `Ptr[T]` / `MutPtr[T]`. Both are
+            // Trivial bit-pattern wrappers. v0.5 doesn't constrain T
+            // — the kernel mints pointers to primitives, structs, and
+            // capability tables alike. Dereferencing is the gated
+            // operation (handled separately via Span.raw); the
+            // pointer itself is freely escapable.
+            if (n.path[0] == "Ptr" && n.type_args.size() == 1) {
+                return types_->make_ptr(n.type_args[0] ? resolve_type(*n.type_args[0])
+                                                       : types_->error());
+            }
+            if (n.path[0] == "MutPtr" && n.type_args.size() == 1) {
+                return types_->make_mut_ptr(n.type_args[0] ? resolve_type(*n.type_args[0])
+                                                           : types_->error());
             }
             // §A4 (§14.9) builtin `Atomic[T]` — compiler-known wrapper
             // over std::atomic<T>. T must be primitive for v0.5;

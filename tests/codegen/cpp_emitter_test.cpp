@@ -663,6 +663,40 @@ TEST_CASE("zip(a, b) lowers via CTAD on __vstr::Zip and binds tuples in the for-
 
 // ---- §A4 Atomic[T] (§14.9) -----------------------------------------------
 
+// ---- §A3 raw-mint primitives (§10.5) -------------------------------------
+
+TEST_CASE("MutPtr.unchecked + MutSpan.raw lower to reinterpret_cast + std::span") {
+    SemaEmitFixture f("func touch(_ addr: UInt64) {\n"
+                      "    with RawMemory {\n"
+                      "        let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+                      "        let s = MutSpan.raw(at: p, count: 4)\n"
+                      "        s[0] = 42\n"
+                      "    }\n"
+                      "}\n");
+    // MutPtr[UInt32] lowers to UInt32*; the mint is a reinterpret_cast.
+    CHECK(f.out.source.find("std::uint32_t* p = reinterpret_cast<std::uint32_t*>(addr)")
+          != std::string::npos);
+    // MutSpan.raw → std::span<UInt32>(ptr, static_cast<size_t>(count)).
+    CHECK(f.out.source.find("std::span<std::uint32_t>(p, static_cast<std::size_t>(4))")
+          != std::string::npos);
+}
+
+TEST_CASE("Ptr.unchecked + Span.raw lower to a const-pointer / const-span pair") {
+    // `read` is reserved (ParamMode::Read keyword); name the func
+    // something else so the parser doesn't take the keyword path.
+    SemaEmitFixture f("func read_back(_ addr: UInt64) -> UInt32 {\n"
+                      "    var out: UInt32 = 0\n"
+                      "    with RawMemory {\n"
+                      "        let p: Ptr[UInt32] = Ptr.unchecked(fromAddress: addr)\n"
+                      "        let s = Span.raw(at: p, count: 4)\n"
+                      "        out = s[0]\n"
+                      "    }\n"
+                      "    return out\n"
+                      "}\n");
+    CHECK(f.out.source.find("reinterpret_cast<const std::uint32_t*>(addr)") != std::string::npos);
+    CHECK(f.out.source.find("std::span<const std::uint32_t>(p,") != std::string::npos);
+}
+
 // ---- §A5 sync intrinsics (§14.10) ----------------------------------------
 
 TEST_CASE("sync-intrinsic builtins lower to __vstr runtime shims") {

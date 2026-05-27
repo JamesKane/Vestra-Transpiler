@@ -719,6 +719,41 @@ TEST_CASE("Atomic[T] surfaces the bitwise fetch ops + compareExchange") {
           == 0);
 }
 
+// ---- §A3 raw-mint primitives (§10.5) -------------------------------------
+
+TEST_CASE("MutPtr.unchecked + MutSpan.raw under RawMemory type-checks") {
+    CHECK(check_errors("func touch(_ addr: UInt64) {\n"
+                       "    with RawMemory {\n"
+                       "        let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+                       "        let s = MutSpan.raw(at: p, count: 4)\n"
+                       "        s[0] = 42\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("Ptr.unchecked needs an expected Ptr[T] at the call site") {
+    auto r = check_detail("func bad(_ addr: UInt64) {\n"
+                          "    with RawMemory {\n"
+                          "        let p = Ptr.unchecked(fromAddress: addr)\n"
+                          "    }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("needs an expected Ptr[T] type") != std::string::npos);
+}
+
+TEST_CASE("Span.raw 'at' arg must be a Ptr[T]") {
+    auto r = check_detail(
+        "func bad(_ addr: UInt64) {\n"
+        "    with RawMemory {\n"
+        "        let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)\n"
+        "        let s: Span[UInt32] = Span.raw(at: p, count: 4)\n"  // MutPtr to Span — mismatch
+        "    }\n"
+        "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Span.raw 'at' must be a Ptr[T]") != std::string::npos);
+}
+
 // ---- §A5 sync intrinsics (§14.10) ----------------------------------------
 
 TEST_CASE("sync-intrinsic builtins are registered and type-check") {

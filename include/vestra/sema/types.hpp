@@ -59,6 +59,12 @@ enum class TypeKind : std::uint16_t {
     // names them so callers can see the contract).
     Span,
     MutSpan,
+    // §A3 (§10.5) raw-mint pointers. `Ptr[T]` / `MutPtr[T]` are
+    // Trivial bit-pattern wrappers; lower to `const T*` / `T*`.
+    // Minted via `Ptr.unchecked(fromAddress:)` etc. under a
+    // `RawMemory` discharge.
+    Ptr,
+    MutPtr,
     // §9 iterator combinators. `ZipIter[A, B]` yields `(A, B)` tuples;
     // `TakeIter[A]` yields up to N values of A. Both expose a
     // synthetic `next() -> Element?` so the existing iterator-protocol
@@ -165,6 +171,10 @@ public:
     // Lower to `std::span<const T>` and `std::span<T>` respectively.
     [[nodiscard]] TypePtr make_span(TypePtr inner);
     [[nodiscard]] TypePtr make_mut_span(TypePtr inner);
+    // §A3 (§10.5) raw pointers — `Ptr[T]` (read-only address) and
+    // `MutPtr[T]` (mutable). Trivial; lower to const T* / T*.
+    [[nodiscard]] TypePtr make_ptr(TypePtr inner);
+    [[nodiscard]] TypePtr make_mut_ptr(TypePtr inner);
     // §9 iterator-combinator types. ZipIter[A, B] tracks the *element*
     // types yielded by each side; TakeIter[A] tracks the inner
     // iterator's element type.
