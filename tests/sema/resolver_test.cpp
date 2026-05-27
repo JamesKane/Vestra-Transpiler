@@ -870,6 +870,24 @@ TEST_CASE("PerCpu[T] with a primitive inner") {
           == 0);
 }
 
+// ---- §A6 last: @no_auto_barrier (§14.11.5 / §14.12.3) --------------------
+
+TEST_CASE("@no_auto_barrier on a @kernel_init function type-checks") {
+    CHECK(check_errors("@kernel_init\n@no_auto_barrier\nfunc mmu_setup() {}\n") == 0);
+}
+
+TEST_CASE("@no_auto_barrier outside @kernel_init is rejected") {
+    auto r = check_detail("@no_auto_barrier\nfunc bad() {}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@no_auto_barrier is admitted only") != std::string::npos);
+}
+
+TEST_CASE("@no_auto_barrier on @boot (without @kernel_init) is rejected") {
+    auto r = check_detail("@boot\n@no_auto_barrier\nfunc bad() {}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("@no_auto_barrier is admitted only") != std::string::npos);
+}
+
 // ---- §A10 follow-up: @stack_protector (§15.4) ----------------------------
 
 TEST_CASE("@stack_protector admits .none / .strong / .all") {

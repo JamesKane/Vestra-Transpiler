@@ -1196,10 +1196,12 @@ void Resolver::check_func(const ast::FuncDecl& f) {
     // The other four rules (call-graph reachability, allocator
     // initialiser ordering, ordinary-calls-kernel_init rejection)
     // are audit-time and queue for the call-graph pass.
+    bool is_kernel_init = false;
     for (const auto& a : f.attributes) {
         if (a.name != "kernel_init") {
             continue;
         }
+        is_kernel_init = true;
         for (const auto& cap : f.effects.using_caps) {
             if (cap == nullptr || cap->kind != ast::NodeKind::NamedType) {
                 continue;
@@ -1211,6 +1213,26 @@ void Resolver::check_func(const ast::FuncDecl& f) {
                          "dispatched a second task yet, so there's no other thread to "
                          "synchronise with");
             }
+        }
+    }
+
+    // §A6 last (§14.11.5 / §14.12.3) `@no_auto_barrier` — the
+    // function-level escape that disables the compiler-inserted
+    // device-barrier / sysreg-post-write barrier auto-emission. The
+    // spec admits this only inside a function also attributed
+    // `@kernel_init`, where the kernel writes a batch of MMU control
+    // sysregs whose final write subsumes the per-write ISB. Anywhere
+    // else (ordinary code, @boot, @interrupt) the attribute rejects
+    // with a clear diagnostic. v0.5 doesn't yet auto-emit barriers
+    // for sysreg writes (the Sysreg namespace itself is queued), so
+    // the codegen effect is just a marker for the audit; the
+    // sema-side gate is what records the contract today.
+    for (const auto& a : f.attributes) {
+        if (a.name == "no_auto_barrier" && !is_kernel_init) {
+            error_at(a.range,
+                     "@no_auto_barrier is admitted only on functions also attributed "
+                     "@kernel_init — that's the boot-path subset where a following sysreg "
+                     "write subsumes the auto-emitted barrier");
         }
     }
 

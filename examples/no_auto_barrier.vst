@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A6 last (§14.11.5 / §14.12.3) — `@no_auto_barrier`.
+//
+// The spec auto-emits a barrier after each sysreg / device-MMIO
+// write so the caller doesn't have to remember which targets
+// need an ISB / DSB / SFENCE.VMA on the trailing edge. That's
+// the right default for ordinary code: it makes correctness
+// the cheapest path.
+//
+// The one place the cost is worth eating is the kernel-init
+// path's batch sysreg write, where the final write in the
+// batch is itself a context-establishing instruction whose
+// retire subsumes every prior barrier. On aarch64 that's the
+// `SCTLR_EL1` write that turns the MMU on:
+//
+//   Sysreg.ttbr0_el1.write(newPgd)        // would auto-emit ISB
+//   Sysreg.sctlr_el1.write(mmuEnable)     // its own ISB covers the prior
+//
+// Without the escape, every sysreg write in the batch carries
+// its own ISB. With `@no_auto_barrier`, the user takes
+// responsibility for the trailing barrier (or, as here, lets
+// the final SCTLR write's implicit one do the job).
+//
+// The spec admits this only inside a function also attributed
+// `@kernel_init` — that's the boot-path subset (post-@boot,
+// pre-scheduler) where MMU bring-up runs. Sema rejects
+// `@no_auto_barrier` anywhere else with a diagnostic pointing
+// at the @kernel_init-only rule.
+//
+// v0.5 doesn't ship the Sysreg auto-barrier machinery yet (the
+// typed Sysreg namespace from §14.12 queues for a later
+// slice), so this attribute is a contract marker — the audit
+// will read it and cross-check against the auto-emission
+// table once that lands. The sema-side gate today records the
+// boot-path-only constraint so misuse fails at compile time,
+// not at audit time when it's harder to fix.
+
+module examples.no_auto_barrier
+
+// Canonical kernel-init MMU-bring-up shape. The @kernel_init
+// attribute admits the function into the pre-scheduler regime;
+// @no_auto_barrier opts out of the per-write barrier policy.
+// v0.5 leaves the body as a stub since Sysreg.* aren't shipped
+// yet; the type system / audit surface is what this slice
+// pins.
+@kernel_init
+@no_auto_barrier
+func enable_mmu_aarch64(_ ttbr0: UInt64, _ sctlr: UInt64) -> UInt64 {
+    // In a real kernel: Sysreg.ttbr0_el1.write(ttbr0), then
+    // Sysreg.sctlr_el1.write(sctlr). The hosted runtime just
+    // returns the values so the e2e can observe the function
+    // executed.
+    return ttbr0 ^ sctlr
+}
+
+// Ordinary kernel-init code without the barrier opt-out keeps
+// the policy. This is the spec's "default": correctness over
+// micro-optimisation.
+@kernel_init
+func install_vector_table(_ vbar: UInt64) -> UInt64 {
+    return vbar + 1
+}

@@ -1460,6 +1460,35 @@ set_tests_properties(e2e_sp_run PROPERTIES
     DEPENDS                e2e_sp_compile
     PASS_REGULAR_EXPRESSION "stack_protector OK")
 
+# §A6 last — @no_auto_barrier (§14.11.5 / §14.12.3). The
+# kernel-init MMU bring-up escape from the per-write auto-
+# barrier policy. Sema rejects the attribute outside a
+# @kernel_init function; codegen accepts it silently (the
+# Sysreg auto-barrier insertion queues for a later slice).
+set(e2e_nab_input  ${CMAKE_SOURCE_DIR}/examples/no_auto_barrier.vst)
+set(e2e_nab_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_no_auto_barrier.cpp)
+
+add_test(
+    NAME    e2e_nab_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_nab_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_nab_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_nab_driver} ${e2e_workdir}/no_auto_barrier.cpp
+            -o ${e2e_workdir}/no_auto_barrier_app)
+set_tests_properties(e2e_nab_compile PROPERTIES
+    DEPENDS e2e_nab_transpile)
+
+add_test(
+    NAME    e2e_nab_run
+    COMMAND ${e2e_workdir}/no_auto_barrier_app)
+set_tests_properties(e2e_nab_run PROPERTIES
+    DEPENDS                e2e_nab_compile
+    PASS_REGULAR_EXPRESSION "no_auto_barrier OK")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except
