@@ -238,6 +238,63 @@ TEST_CASE("MmioRegion.at + MmioView.at under `with RawMemory { with Mmio { ... }
           == 0);
 }
 
+// ---- §A7 (§14.13) InterruptsOff region rules ------------------------------
+
+TEST_CASE("waitForInterrupt inside InterruptsOff is rejected") {
+    auto r = check("func bad() {\n"
+                   "    with InterruptsOff {\n"
+                   "        waitForInterrupt()\n"
+                   "    }\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("`waitForInterrupt` inside `with InterruptsOff`")
+          != std::string::npos);
+}
+
+TEST_CASE("waitForEvent inside InterruptsOff is rejected") {
+    auto r = check("func bad() {\n"
+                   "    with InterruptsOff {\n"
+                   "        waitForEvent()\n"
+                   "    }\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("`waitForEvent` inside `with InterruptsOff`") != std::string::npos);
+}
+
+TEST_CASE("Cpu.relax / nop inside InterruptsOff is admitted") {
+    // Rule 5 names the rejected ops explicitly; everything else
+    // pipeline-related (relax / nop / prefetch) stays admitted.
+    CHECK(check("func ok() {\n"
+                "    with InterruptsOff {\n"
+                "        relax()\n"
+                "        nop()\n"
+                "    }\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("calling a `using Alloc` function inside InterruptsOff is rejected") {
+    auto r = check("func alloc_caller() using Alloc {}\n"
+                   "func bad() using Alloc {\n"
+                   "    with InterruptsOff {\n"
+                   "        alloc_caller()\n"
+                   "    }\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("`using Alloc` inside `with InterruptsOff`") != std::string::npos);
+}
+
+TEST_CASE("InterruptsOff bare scope with no rule violations is clean") {
+    CHECK(check("func ok() {\n"
+                "    with InterruptsOff {\n"
+                "        let x: Int32 = 0\n"
+                "    }\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 TEST_CASE("invalidateAllInstructions + tlb ops don't require RawMemory") {
     // I-cache global + TLB ops act on architectural state alone —
     // no memory range, no RawMemory gate.

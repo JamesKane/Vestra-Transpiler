@@ -99,7 +99,7 @@ void Resolver::resolve() {
 // primitive. We register each as a nominal Protocol-kind symbol with a
 // placeholder type; the capability checker matches them by name.
 void Resolver::register_builtin_capabilities() {
-    static constexpr std::array<std::string_view, 10> Names = {
+    static constexpr std::array<std::string_view, 11> Names = {
         "Alloc",
         "Log",
         "Async",
@@ -110,6 +110,14 @@ void Resolver::register_builtin_capabilities() {
         "Asm",
         "RawMemory",
         "Extern",
+        // §A7 (§14.13) — `InterruptsOff` is a region head, not a
+        // capability you can put in a `using` row, but it's
+        // registered here so `with InterruptsOff { ... }` resolves
+        // through the same markered-with-binding path the existing
+        // caps use. The shape rules (no waitForInterrupt /
+        // waitForEvent / spawn / Alloc-using / Async-using calls
+        // inside) are enforced in check_call.
+        "InterruptsOff",
     };
     for (auto name : Names) {
         Symbol s;
@@ -394,6 +402,27 @@ void Resolver::register_builtin_reflection() {
         s.kind = SymbolKind::Enum;
         s.decl = builtin_barrier_kind_decl_.get();
         s.type = types_->make_nominal(TypeKind::Enum, builtin_barrier_kind_decl_.get());
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
+    }
+
+    // §A7 (§14.14) Context: the opaque task-saving slot Scheduler
+    // swaps between. No user-visible fields — the layout is the
+    // target description's concern. Codegen emits a `__vstr::Context`
+    // wrapper struct with a fixed byte buffer; for v0.5 we just
+    // expose the type so user code can declare static slots and
+    // pass them to swapContext.
+    {
+        auto decl = std::make_unique<ast::StructDecl>();
+        decl->name = "Context";
+        decl->visibility = ast::Visibility::Public;
+        builtin_context_decl_ = std::move(decl);
+
+        Symbol s;
+        s.name = "Context";
+        s.kind = SymbolKind::Struct;
+        s.decl = builtin_context_decl_.get();
+        s.type = types_->make_nominal(TypeKind::Struct, builtin_context_decl_.get());
         s.visibility = ast::Visibility::Public;
         (void)scopes_.global().insert(std::move(s));
     }
@@ -1276,7 +1305,8 @@ void Resolver::check_stmt(const ast::Stmt& s) {
             }
             // Cap-typed bindings don't introduce a Vestra-side
             // identifier — the capability checker handles their
-            // discharge separately.
+            // discharge separately (including §A7's InterruptsOff
+            // region rules — see capability.cpp).
         }
         if (w.body) {
             check_expr(*w.body);
@@ -2277,6 +2307,53 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                 }
                 return types_->make_map_iter(
                     exs, tf->result() != nullptr ? tf->result() : types_->error());
+            }
+        }
+    }
+
+    // §A7 (§14.14) `Scheduler.swapContext(saving:, loading:)` —
+    // the context-switch primitive. The spec signature uses
+    // `MutPtr[Context]` / `Ptr[Context]` arguments derived from
+    // `&decl` (§14.6.3). v0.5 doesn't yet have the `&decl`
+    // address-of operator, so we accept `Context` values directly
+    // — the codegen wraps each argument in `&` when lowering. When
+    // `&decl` lands, this intercept tightens to the pointer form.
+    if (c.callee->kind == ast::NodeKind::MemberExpr) {
+        const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+        if (mem.base != nullptr && mem.base->kind == ast::NodeKind::IdentExpr) {
+            const auto& bi = static_cast<const ast::IdentExpr&>(*mem.base);
+            if (bi.name == "Scheduler" && mem.member == "swapContext"
+                && scopes_.current().lookup("Scheduler") == nullptr) {
+                if (c.args.size() != 2) {
+                    for (const auto& a : c.args) {
+                        (void)check_expr(*a.value);
+                    }
+                    error_at(c.range,
+                             "Scheduler.swapContext takes exactly two arguments "
+                             "(saving: Context, loading: Context)");
+                    return types_->unit();
+                }
+                TypePtr context_t =
+                    builtin_context_decl_ != nullptr
+                        ? types_->make_nominal(TypeKind::Struct, builtin_context_decl_.get())
+                        : types_->error();
+                auto saving_t = check_expr(*c.args[0].value, context_t);
+                auto loading_t = check_expr(*c.args[1].value, context_t);
+                if (saving_t != nullptr && !saving_t->is_error()
+                    && !TypeArena::equal(saving_t, context_t)) {
+                    error_at(c.args[0].value->range,
+                             std::format("Scheduler.swapContext saving argument must be "
+                                         "Context, got {}",
+                                         saving_t->describe()));
+                }
+                if (loading_t != nullptr && !loading_t->is_error()
+                    && !TypeArena::equal(loading_t, context_t)) {
+                    error_at(c.args[1].value->range,
+                             std::format("Scheduler.swapContext loading argument must be "
+                                         "Context, got {}",
+                                         loading_t->describe()));
+                }
+                return types_->unit();
             }
         }
     }

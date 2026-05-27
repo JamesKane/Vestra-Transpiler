@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A7 (§14.13 + §14.14) — InterruptsOff region + Scheduler.swapContext.
+//
+// `with InterruptsOff { ... }` opens an interrupt-disabled region.
+// The compiler emits a target-specific mask-set on entry and the
+// matching restore on every exit path (early return, throw,
+// fall-through). The kernel build emits the real instructions
+// (DAIF on aarch64, CLI on x86, sstatus on RISC-V); the hosted CI
+// build emits a brace block — the discipline is purely static.
+//
+// Five of the §14.13 rules are statically checked here:
+//   1. waitForInterrupt / waitForEvent (rule 5) — deadlock.
+//   2. await (rule 2) — resolves through a masked ISR.
+//   3. spawn (rule 4) — can't synchronise with the masked region.
+//   4. Calls to functions with `using Alloc` or `using Async`
+//      (rule 3) — the allocator and async runtime can't run with
+//      interrupts masked.
+// Nesting is admitted (rule 6); the mask save/restore stacks.
+//
+// `Scheduler.swapContext(saving, loading)` is the context-switch
+// primitive. `Context` is opaque to user code (§14.14 rule 1);
+// a kernel allocates a per-task slot in a `@noinit static array`
+// and calls `swapContext` to bounce between them. v0.5 accepts
+// Context values directly (the spec's MutPtr[Context] / Ptr[Context]
+// shape needs `&decl` from §14.6.3 which isn't yet shipped);
+// codegen wraps each arg in `&` so the runtime shim sees the
+// pointers it expects.
+
+module examples.interrupts_off
+
+// Two task slots. `@noinit` reserves uninitialized .bss storage
+// (no constructor runs on Context — its layout is target-
+// determined per §14.14 rule 1).
+@noinit static slot_a: Context
+@noinit static slot_b: Context
+
+// Shared counter the InterruptsOff region mutates atomically.
+// The atomic is overkill on a single-hart hosted build but
+// matches the kernel pattern.
+static counter: Atomic[UInt32] = 0
+
+// Critical-section bump. The runtime executes the body with
+// interrupts masked; the hosted shim is a no-op so the body runs
+// as a plain brace block.
+func critical_bump() {
+    with InterruptsOff {
+        let v = counter.load(.seqCst)
+        counter.store(v + 1, .seqCst)
+    }
+}
+
+// Nested InterruptsOff regions stack. The inner exit restores to
+// the outer's masked state, not to the globally-unmasked state.
+func nested_bump() {
+    with InterruptsOff {
+        let v = counter.load(.seqCst)
+        with InterruptsOff {
+            counter.store(v + 10, .seqCst)
+        }
+        counter.store(counter.load(.seqCst) + 1, .seqCst)
+    }
+}
+
+// Drive Scheduler.swapContext between two Context slots. The
+// hosted shim is a no-op; the kernel target replaces it with the
+// save/restore sequence.
+func switch_tasks() {
+    Scheduler.swapContext(slot_a, slot_b)
+}

@@ -554,6 +554,20 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "inline void tlbInvalidateAll(TlbScope) noexcept {}\n";
     hdr << "inline void tlbInvalidatePage(std::uint64_t, bool, TlbScope) noexcept {}\n";
     hdr << "inline void tlbInvalidateAsid(std::uint16_t, TlbScope) noexcept {}\n\n";
+    // §A7 (§14.14) — Context + Scheduler.swapContext. `Context` is
+    // an opaque, target-determined task-saving slot; the spec
+    // exposes only `.size` / `.alignment` (via §A2 reflection) and
+    // never the field shape. v0.5 hosts emit a 256-byte buffer,
+    // which is large enough to cover every architecture's
+    // callee-saved register file + interrupt-mask word. The
+    // kernel target replaces the struct + the swapContext shim
+    // with the matching assembly.
+    hdr << "struct alignas(16) Context {\n";
+    hdr << "    std::uint8_t _bytes[256];\n";
+    hdr << "};\n";
+    hdr << "inline void scheduler_swap_context(Context*, const Context*) noexcept {\n";
+    hdr << "    // hosted no-op; kernel target emits the save/restore sequence.\n";
+    hdr << "}\n\n";
     hdr << "}  // namespace __vstr\n\n";
 
     // §4 Optional in a Display splice. Vestra renders `"\(opt)"` as
@@ -3099,6 +3113,24 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 }
             }
         }
+        // §A7 (§14.14) `Scheduler.swapContext(saving, loading)`
+        // lowers to the __vstr runtime shim. v0.5 sema accepts the
+        // arguments as `Context` values (because `&decl` from
+        // §14.6.3 isn't shipped yet); the codegen wraps each arg
+        // in `&` so the shim receives the C++ pointers it expects.
+        if (c.callee && c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            if (mem.base != nullptr && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "Scheduler"
+                && mem.member == "swapContext" && c.args.size() == 2) {
+                os << "__vstr::scheduler_swap_context(&";
+                emit_expr(os, *c.args[0].value);
+                os << ", &";
+                emit_expr(os, *c.args[1].value);
+                os << ")";
+                break;
+            }
+        }
         // §10 `Box.new(value)` lowers to `std::make_unique<T>(value)`.
         // The element type T comes from the resolver (the type of the
         // CallExpr itself is Box<T>; we peel that to get T).
@@ -3860,9 +3892,18 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
     case TypeKind::OpaqueType:
         if (const auto* decl = t->nominal_decl()) {
             switch (decl->kind) {
-            case ast::NodeKind::Struct:
-                os << static_cast<const ast::StructDecl&>(*decl).name;
+            case ast::NodeKind::Struct: {
+                const auto& sd = static_cast<const ast::StructDecl&>(*decl);
+                // §A7 (§14.14) — the builtin Context struct lives in
+                // the runtime namespace (it has no user-visible
+                // fields and its layout is target-determined).
+                if (sd.name == "Context" && sd.fields.empty()) {
+                    os << "__vstr::Context";
+                } else {
+                    os << sd.name;
+                }
                 return;
+            }
             case ast::NodeKind::Enum: {
                 // §A4 (§14.9.1) the builtin Ordering enum lowers to
                 // `std::memory_order` at the C++ layer; cases lower
@@ -3945,6 +3986,13 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
                 os << "__vstr::MmioRegion<";
                 emit_type(os, *n.type_args[0]);
                 os << ">";
+                return;
+            }
+            // §A7 (§14.14) builtin `Context` (no type args) lowers
+            // to __vstr::Context. The user can only spell it bare;
+            // shadowing isn't supported in v0.5.
+            if (n.path[0] == "Context" && n.type_args.empty()) {
+                os << "__vstr::Context";
                 return;
             }
             // §A4 (§14.9) `Atomic[T]` lowers to `std::atomic<T>`.

@@ -224,6 +224,31 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                 missing_capability("RawMemory", c.range);
             }
         }
+        // §A7 (§14.13) — call-shape rules inside an InterruptsOff
+        // region. Five of the seven §14.13 rules are static; the
+        // ones we enforce here are:
+        //   * waitForInterrupt / waitForEvent (rule 5) — deadlock.
+        //     The wake the instruction blocks on is the very
+        //     exception the region masks.
+        //   * Functions whose `using` row names Alloc or Async
+        //     (rule 3) — the allocator and the async runtime can't
+        //     run under a masked exception path.
+        // `spawn` is already rejected because it requires Async,
+        // which doesn't compose with InterruptsOff.
+        if (in_scope("InterruptsOff") && c.callee != nullptr
+            && c.callee->kind == ast::NodeKind::IdentExpr) {
+            const auto& bi = static_cast<const ast::IdentExpr&>(*c.callee);
+            if (bi.name == "waitForInterrupt" || bi.name == "waitForEvent") {
+                reporter_->report(
+                    diag::Diagnostic::error(
+                        std::format("`{}` inside `with InterruptsOff` is a deadlock — the wake "
+                                    "depends on the asynchronous exception the region masks "
+                                    "(§14.13 rule 5)",
+                                    bi.name))
+                        .at(c.range));
+            }
+        }
+
         check_expr(*c.callee);
         for (const auto& a : c.args) {
             check_expr(*a.value);
@@ -236,6 +261,19 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                     if (!in_scope(cap)) {
                         missing_capability(cap, c.range);
                     }
+                    // §A7 (§14.13 rule 3): functions that need
+                    // Alloc or Async are rejected inside the
+                    // InterruptsOff region even when those caps
+                    // *are* in scope of the enclosing function.
+                    // The region is the more restrictive context.
+                    if (in_scope("InterruptsOff") && (cap == "Alloc" || cap == "Async")) {
+                        reporter_->report(
+                            diag::Diagnostic::error(
+                                std::format("call to a function with `using {}` inside `with "
+                                            "InterruptsOff` (§14.13 rule 3)",
+                                            cap))
+                                .at(c.range));
+                    }
                 }
             }
         }
@@ -247,6 +285,15 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
         if (!in_scope(AsyncCap)) {
             missing_capability(AsyncCap, e.range);
         }
+        // §A7 (§14.13 rule 2) — `await` resolves through an ISR
+        // that is now masked. Compile error.
+        if (in_scope("InterruptsOff")) {
+            reporter_->report(
+                diag::Diagnostic::error(
+                    "`await` inside `with InterruptsOff` resolves through an ISR that is now "
+                    "masked (§14.13 rule 2)")
+                    .at(e.range));
+        }
         break;
     }
     case ast::NodeKind::SpawnExpr: {
@@ -254,6 +301,15 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
         check_expr(*s.inner);
         if (!in_scope(AsyncCap)) {
             missing_capability(AsyncCap, e.range);
+        }
+        // §A7 (§14.13 rule 4) — `spawn` can't synchronise with the
+        // masked region.
+        if (in_scope("InterruptsOff")) {
+            reporter_->report(
+                diag::Diagnostic::error(
+                    "`spawn` inside `with InterruptsOff` — the spawned task can't synchronise "
+                    "with the masked region (§14.13 rule 4)")
+                    .at(e.range));
         }
         break;
     }

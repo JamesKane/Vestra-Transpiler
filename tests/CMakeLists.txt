@@ -931,6 +931,37 @@ set_tests_properties(e2e_display_run PROPERTIES
     DEPENDS                e2e_display_compile
     PASS_REGULAR_EXPRESSION "display OK")
 
+# InterruptsOff scope + Scheduler.swapContext (§A7, §14.13 + §14.14).
+# `with InterruptsOff { ... }` is a brace-block on hosted (the
+# capability checker statically enforces the call-shape rules);
+# Context is an opaque __vstr struct with fixed bytes;
+# Scheduler.swapContext lowers to a __vstr no-op shim. The runtime
+# drives critical_bump, nested_bump, switch_tasks plus static_asserts
+# on Context's size/alignment.
+set(e2e_interrupts_off_input  ${CMAKE_SOURCE_DIR}/examples/interrupts_off.vst)
+set(e2e_interrupts_off_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_interrupts_off.cpp)
+
+add_test(
+    NAME    e2e_interrupts_off_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interrupts_off_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interrupts_off_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_interrupts_off_driver} ${e2e_workdir}/interrupts_off.cpp
+            -o ${e2e_workdir}/interrupts_off_app)
+set_tests_properties(e2e_interrupts_off_compile PROPERTIES
+    DEPENDS e2e_interrupts_off_transpile)
+
+add_test(
+    NAME    e2e_interrupts_off_run
+    COMMAND ${e2e_workdir}/interrupts_off_app)
+set_tests_properties(e2e_interrupts_off_run PROPERTIES
+    DEPENDS                e2e_interrupts_off_compile
+    PASS_REGULAR_EXPRESSION "interrupts_off OK")
+
 # @panic_handler (§A10, §15.5). First slice — sema validates the
 # (Str, StrConst, Int) -> Never signature; codegen emits the user's
 # handler with [[gnu::used]] plus a static-init block that writes

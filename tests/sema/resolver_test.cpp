@@ -802,6 +802,32 @@ TEST_CASE("@interrupt rejects Alloc / Async / Extern in the using row") {
     CHECK(r.first_message.find("@interrupt cannot declare `using Alloc`") != std::string::npos);
 }
 
+// ---- §A7 InterruptsOff + Scheduler.swapContext (§14.13, §14.14) ----------
+
+TEST_CASE("`with InterruptsOff { ... }` resolves cleanly") {
+    CHECK(check_errors("func ok() {\n"
+                       "    with InterruptsOff {\n"
+                       "        let x: Int32 = 7\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("Scheduler.swapContext accepts two Context arguments") {
+    CHECK(check_errors("@noinit static a: Context\n"
+                       "@noinit static b: Context\n"
+                       "func ok() { Scheduler.swapContext(a, b) }\n")
+          == 0);
+}
+
+TEST_CASE("Scheduler.swapContext rejects a non-Context argument") {
+    auto r = check_detail("@noinit static a: Context\n"
+                          "func bad(_ x: Int32) { Scheduler.swapContext(a, x) }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Scheduler.swapContext loading argument must be Context")
+          != std::string::npos);
+}
+
 // ---- §A6 MMIO views (§14.11) ---------------------------------------------
 
 TEST_CASE("MmioView + MmioRegion type-check under RawMemory + Mmio") {

@@ -697,6 +697,27 @@ TEST_CASE("@interrupt emits [[gnu::used]] on the declaration") {
     CHECK(f.out.header.find("isr(TrapFrame& frame) asm(\"isr_sym\")") != std::string::npos);
 }
 
+// ---- §A7 InterruptsOff + Scheduler.swapContext (§14.13, §14.14) ----------
+
+TEST_CASE("InterruptsOff lowers to a brace block; swapContext wraps args in `&`") {
+    SemaEmitFixture f("@noinit static a: Context\n"
+                      "@noinit static b: Context\n"
+                      "static counter: Atomic[UInt32] = 0\n"
+                      "func bump() {\n"
+                      "    with InterruptsOff {\n"
+                      "        counter.store(1, .seqCst)\n"
+                      "    }\n"
+                      "    Scheduler.swapContext(a, b)\n"
+                      "}\n");
+    // Context lowers to the opaque __vstr struct.
+    CHECK(f.out.header.find("inline __vstr::Context a;") != std::string::npos);
+    // swapContext takes addresses of both args.
+    CHECK(f.out.source.find("__vstr::scheduler_swap_context(&a, &b)") != std::string::npos);
+    // The runtime preamble declares the opaque Context + shim.
+    CHECK(f.out.header.find("struct alignas(16) Context {") != std::string::npos);
+    CHECK(f.out.header.find("inline void scheduler_swap_context(") != std::string::npos);
+}
+
 // ---- §A6 MMIO views (§14.11) ---------------------------------------------
 
 TEST_CASE("MmioView.at + read/write lower through __vstr::MmioView with a volatile cast") {
