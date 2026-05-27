@@ -697,6 +697,24 @@ TEST_CASE("@interrupt emits [[gnu::used]] on the declaration") {
     CHECK(f.out.header.find("isr(TrapFrame& frame) asm(\"isr_sym\")") != std::string::npos);
 }
 
+// ---- §A11 PerCpu (§14.8) -------------------------------------------------
+
+TEST_CASE("PerCpu[T] lowers to __vstr::PerCpu<T> with .mine() accessor") {
+    SemaEmitFixture f("@noinit static c: PerCpu[Atomic[UInt32]]\n"
+                      "func bump() -> UInt32 {\n"
+                      "    return c.mine().fetchAdd(1, .seqCst)\n"
+                      "}\n");
+    // The runtime preamble defines the 64-byte-aligned template.
+    CHECK(f.out.header.find("struct alignas(64) PerCpu {") != std::string::npos);
+    CHECK(f.out.header.find("inline __vstr::PerCpu<std::atomic<std::uint32_t>> c;")
+          != std::string::npos);
+    // The call chain `c.mine().fetchAdd` lowers naturally — the
+    // .mine() is a plain method call and fetch_add picks up the
+    // Atomic rename.
+    CHECK(f.out.source.find("c.mine().fetch_add(1, std::memory_order_seq_cst)")
+          != std::string::npos);
+}
+
 // ---- §A7 InterruptsOff + Scheduler.swapContext (§14.13, §14.14) ----------
 
 TEST_CASE("InterruptsOff lowers to a brace block; swapContext wraps args in `&`") {

@@ -2882,6 +2882,18 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                 }
                 return types_->make_mmio_region(inner);
             }
+            // §A11 (§14.8) `PerCpu[T]` — per-hart slot. The spec
+            // requires T: Trivial. v0.5 doesn't have a Trivial
+            // protocol but the common kernel pattern is
+            // `PerCpu[Atomic[T]]` for lock-free per-hart counters,
+            // so primitives + Atomic[primitive] are admitted here;
+            // any other shape is accepted defensively (codegen will
+            // catch shapes that don't satisfy C++'s implicit
+            // requirements).
+            if (n.path[0] == "PerCpu" && n.type_args.size() == 1) {
+                TypePtr inner = n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error();
+                return types_->make_per_cpu(inner);
+            }
             // §A4 (§14.9) builtin `Atomic[T]` — compiler-known wrapper
             // over std::atomic<T>. T must be primitive for v0.5;
             // sema enforces that here so codegen never has to think
@@ -3205,6 +3217,19 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
     // (A, B); TakeIter[A]'s element is just A. The codegen runtime
     // provides the matching member function in __vstr::Zip / __vstr::Take
     // (see emit_runtime_preamble), so this is a pure type-level shim.
+    // §A11 (§14.8) `PerCpu[T].mine()` — returns the current hart's
+    // slot. v0.5 hosts a single slot so this is just the inner T;
+    // the kernel target reads a target-specific hart-index
+    // register and indexes the `[MAX_HARTS]Padded[T]` storage. The
+    // call's mutating-receiver discipline is handled the same way
+    // Atomic gets the inout-on-static exemption — the C++-layer
+    // `mine()` returns a reference.
+    if (owner_type->kind() == TypeKind::PerCpu && owner_type->inner() != nullptr) {
+        if (name == "mine") {
+            return types_->make_function({}, owner_type->inner());
+        }
+    }
+
     // §A6 (§14.11) MMIO method synthesis. `MmioView[T]` exposes
     // `.read() -> T` and `.write(T)` (the latter mutates the
     // underlying register, but the inout receiver doesn't need a

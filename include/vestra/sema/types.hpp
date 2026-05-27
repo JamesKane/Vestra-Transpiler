@@ -72,6 +72,11 @@ enum class TypeKind : std::uint16_t {
     // `volatile T*` through the read/write paths.
     MmioView,
     MmioRegion,
+    // §A11 (§14.8) per-CPU storage. `PerCpu[T]` is the compiler-
+    // known generic struct over Trivial T; v0.5 hosts a single
+    // 64-byte-padded slot, the kernel target swaps the storage for
+    // `[MAX_HARTS]Padded[T]`.
+    PerCpu,
     // §9 iterator combinators. `ZipIter[A, B]` yields `(A, B)` tuples;
     // `TakeIter[A]` yields up to N values of A. Both expose a
     // synthetic `next() -> Element?` so the existing iterator-protocol
@@ -185,6 +190,8 @@ public:
     // §A6 (§14.11) typed MMIO views over primitive T.
     [[nodiscard]] TypePtr make_mmio_view(TypePtr inner);
     [[nodiscard]] TypePtr make_mmio_region(TypePtr inner);
+    // §A11 (§14.8) per-CPU storage over Trivial T.
+    [[nodiscard]] TypePtr make_per_cpu(TypePtr inner);
     // §9 iterator-combinator types. ZipIter[A, B] tracks the *element*
     // types yielded by each side; TakeIter[A] tracks the inner
     // iterator's element type.

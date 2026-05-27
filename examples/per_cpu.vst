@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A11 (§14.8) — `PerCpu[T]`, first slice.
+//
+// Per-hart storage with cache-line padding. The kernel's load-
+// bearing use is `PerCpu[Atomic[UInt64]]` for a per-hart counter
+// that never false-shares with another hart's slot.
+//
+// The spec's full surface is `[MAX_HARTS]Padded[T]` indexed by a
+// target-specific current-hart register (`tpidr_el1` on aarch64,
+// `gs:[0]` on x86, `tp` on RISC-V). v0.5 hosts a single 64-byte-
+// aligned slot — the kernel target swaps the storage for the
+// per-hart array and the current-hart read. The Vestra-side
+// surface stays the same: `c.mine()` returns the current slot;
+// composing with Atomic gives lock-free per-CPU counters.
+//
+// `PerCpu.new(value) using Alloc -> Box[PerCpu[T]]` (the heap-
+// allocated factory) and `slot(hartId) using RawMemory -> Ptr[T]`
+// (the cross-hart accessor) wait on follow-up phases — both need
+// HartId + a finalized current-hart register read.
+
+module examples.per_cpu
+
+// Two PerCpu counters. `@noinit` is the canonical kernel idiom —
+// the slot zero-initializes via Atomic's constexpr default ctor
+// without running user code at static-init time.
+@noinit static request_count: PerCpu[Atomic[UInt32]]
+@noinit static error_count:   PerCpu[Atomic[UInt32]]
+
+// Bump the request counter; returns the prior value.
+func record_request() -> UInt32 {
+    return request_count.mine().fetchAdd(1, .seqCst)
+}
+
+// Bump the error counter; returns the prior value.
+func record_error() -> UInt32 {
+    return error_count.mine().fetchAdd(1, .seqCst)
+}
+
+// Snapshot both counters (sum the two for a single number).
+func total_load() -> UInt32 {
+    return request_count.mine().load(.seqCst) + error_count.mine().load(.seqCst)
+}

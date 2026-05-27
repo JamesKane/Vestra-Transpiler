@@ -931,6 +931,36 @@ set_tests_properties(e2e_display_run PROPERTIES
     DEPENDS                e2e_display_compile
     PASS_REGULAR_EXPRESSION "display OK")
 
+# PerCpu[T] (§A11, §14.8). First slice — type-system surface +
+# .mine() method synth. Single-slot 64-byte-aligned storage on
+# hosted; the kernel target swaps to [MAX_HARTS]Padded<T> indexed
+# by a hart register. The runtime drives PerCpu[Atomic[UInt32]]
+# through fetchAdd / load and confirms the no-false-sharing
+# alignment statically.
+set(e2e_per_cpu_input  ${CMAKE_SOURCE_DIR}/examples/per_cpu.vst)
+set(e2e_per_cpu_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_per_cpu.cpp)
+
+add_test(
+    NAME    e2e_per_cpu_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_per_cpu_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_per_cpu_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_per_cpu_driver} ${e2e_workdir}/per_cpu.cpp
+            -o ${e2e_workdir}/per_cpu_app)
+set_tests_properties(e2e_per_cpu_compile PROPERTIES
+    DEPENDS e2e_per_cpu_transpile)
+
+add_test(
+    NAME    e2e_per_cpu_run
+    COMMAND ${e2e_workdir}/per_cpu_app)
+set_tests_properties(e2e_per_cpu_run PROPERTIES
+    DEPENDS                e2e_per_cpu_compile
+    PASS_REGULAR_EXPRESSION "per_cpu OK")
+
 # InterruptsOff scope + Scheduler.swapContext (§A7, §14.13 + §14.14).
 # `with InterruptsOff { ... }` is a brace-block on hosted (the
 # capability checker statically enforces the call-shape rules);

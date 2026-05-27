@@ -460,6 +460,20 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "        return MmioView<T>{base + i};\n";
     hdr << "    }\n";
     hdr << "};\n\n";
+
+    // §A11 (§14.8) `PerCpu<T>` — per-hart storage. v0.5 hosts a
+    // single 64-byte-aligned slot; the kernel target swaps this
+    // for `[MAX_HARTS]Padded<T>` reading the hart index from a
+    // target-specific register. The 64-byte alignment matches the
+    // cache-line convention so adjacent per-CPU values don't share
+    // a line — the "no false sharing" property `PerCpu[Atomic[T]]`
+    // is the kernel's load-bearing pattern for.
+    hdr << "template <class T>\n";
+    hdr << "struct alignas(64) PerCpu {\n";
+    hdr << "    T value;\n";
+    hdr << "    [[nodiscard]] T& mine() noexcept { return value; }\n";
+    hdr << "    [[nodiscard]] const T& mine() const noexcept { return value; }\n";
+    hdr << "};\n\n";
     // §A4 (§14.9.3) CASResult<T> — the strong-CAS return value. Two
     // fields: `succeeded` (bool) and `actual` (T, the value the
     // compare-exchange observed). The atomic call site lowering
@@ -3854,6 +3868,11 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         emit_sema_type(os, t->inner());
         os << ">";
         return;
+    case TypeKind::PerCpu:
+        os << "__vstr::PerCpu<";
+        emit_sema_type(os, t->inner());
+        os << ">";
+        return;
     case TypeKind::Atomic:
         os << "std::atomic<";
         emit_sema_type(os, t->inner());
@@ -3984,6 +4003,13 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
             }
             if (n.path[0] == "MmioRegion" && n.type_args.size() == 1) {
                 os << "__vstr::MmioRegion<";
+                emit_type(os, *n.type_args[0]);
+                os << ">";
+                return;
+            }
+            // §A11 (§14.8) `PerCpu[T]` lowers to __vstr::PerCpu<T>.
+            if (n.path[0] == "PerCpu" && n.type_args.size() == 1) {
+                os << "__vstr::PerCpu<";
                 emit_type(os, *n.type_args[0]);
                 os << ">";
                 return;

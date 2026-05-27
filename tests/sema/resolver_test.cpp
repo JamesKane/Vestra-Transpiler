@@ -802,6 +802,22 @@ TEST_CASE("@interrupt rejects Alloc / Async / Extern in the using row") {
     CHECK(r.first_message.find("@interrupt cannot declare `using Alloc`") != std::string::npos);
 }
 
+// ---- §A11 PerCpu (§14.8) -------------------------------------------------
+
+TEST_CASE("PerCpu[T] type-checks and .mine() returns T") {
+    CHECK(check_errors("@noinit static c: PerCpu[Atomic[UInt32]]\n"
+                       "func bump() -> UInt32 {\n"
+                       "    return c.mine().fetchAdd(1, .seqCst)\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("PerCpu[T] with a primitive inner") {
+    CHECK(check_errors("@noinit static c: PerCpu[UInt32]\n"
+                       "func get() -> UInt32 { return c.mine() }\n")
+          == 0);
+}
+
 // ---- §A7 InterruptsOff + Scheduler.swapContext (§14.13, §14.14) ----------
 
 TEST_CASE("`with InterruptsOff { ... }` resolves cleanly") {
