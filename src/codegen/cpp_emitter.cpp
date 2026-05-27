@@ -525,6 +525,22 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    }\n";
     hdr << "};\n\n";
 
+    // §A11 (§14.8) `Padded<T>` — cache-line-padded wrapper. The
+    // value sits at offset 0 with tail padding bringing sizeof up
+    // to the cache-line width (v0.5 hardcodes 64; the spec routes
+    // this through `cfg.option("cache_line_bytes")`, which lands
+    // in a later slice). The `alignas` ensures the storage starts
+    // on a cache-line boundary so adjacent values can't share
+    // a line — the load-bearing property for per-hart arrays and
+    // lock-free ring slots. The trailing `_pad` field is sized
+    // via a tiny conditional so a T that already exceeds 64 bytes
+    // doesn't get a negative-array-bounds error.
+    hdr << "template <class T>\n";
+    hdr << "struct alignas(64) Padded {\n";
+    hdr << "    T value;\n";
+    hdr << "    std::uint8_t _pad[(64 - sizeof(T) % 64) % 64];\n";
+    hdr << "};\n\n";
+
     hdr << "template <class T>\n";
     hdr << "struct alignas(64) PerCpu {\n";
     hdr << "    T value;\n";
@@ -4126,6 +4142,11 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         emit_sema_type(os, t->inner());
         os << ">";
         return;
+    case TypeKind::Padded:
+        os << "__vstr::Padded<";
+        emit_sema_type(os, t->inner());
+        os << ">";
+        return;
     case TypeKind::InterruptHandler:
         // §A8 (§14.5.3) vector-table slot — `void(*)(T&)`. Type-id
         // form; the declarator-name form is emit_type_with_name's
@@ -4355,6 +4376,13 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
             // §A11 (§14.8) `PerCpu[T]` lowers to __vstr::PerCpu<T>.
             if (n.path[0] == "PerCpu" && n.type_args.size() == 1) {
                 os << "__vstr::PerCpu<";
+                emit_type(os, *n.type_args[0]);
+                os << ">";
+                return;
+            }
+            // §A11 (§14.8) `Padded[T]` lowers to __vstr::Padded<T>.
+            if (n.path[0] == "Padded" && n.type_args.size() == 1) {
+                os << "__vstr::Padded<";
                 emit_type(os, *n.type_args[0]);
                 os << ">";
                 return;

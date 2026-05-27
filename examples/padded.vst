@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A11 follow-on (§14.8) — `Padded[T]` cache-line wrapper.
+//
+// Multi-threaded code that touches adjacent memory cells
+// from different cores pays a *false sharing* penalty: each
+// write invalidates the entire cache line in every other
+// core's L1, so two writes to "unrelated" data still serialise
+// at the cache-coherence layer. The fix is to pad each cell
+// up to a full cache line so two cores' writes land on
+// different lines.
+//
+// `Padded[T]` is the spec's named primitive for this. It
+// wraps a T plus tail padding bringing sizeof up to the
+// configured cache-line width (v0.5 hardcodes 64; the spec
+// routes this through `cfg.option("cache_line_bytes")`,
+// which lands in a later slice). The `alignas` ensures the
+// storage starts on a cache-line boundary so the wrapper
+// itself doesn't straddle two lines.
+//
+// Three load-bearing patterns:
+//
+//   - `[MAX_HARTS]Padded[T]` — the per-hart array region
+//     §14.8 names for PerCpu's kernel-target storage.
+//
+//   - Lock-free queue slots: each Padded cell holds one
+//     `Atomic[T]` so the producer and consumer touch
+//     different cache lines.
+//
+//   - Ring buffer head/tail pointers: a SPSC ring uses two
+//     `Padded[Atomic[Int]]` cells so the producer's tail
+//     update doesn't bounce the consumer's head line and
+//     vice versa.
+
+module examples.padded
+
+// Static `Padded[UInt64]` — the simplest demo. The `.value`
+// accessor reads / writes through the wrapper; the padding
+// sits at the tail and is invisible at the source level.
+@noinit static cell: Padded[UInt64]
+
+func set_cell(_ v: UInt64) {
+    cell.value = v
+}
+
+func get_cell() -> UInt64 {
+    return cell.value
+}
+
+// `Padded[Atomic[UInt32]]` — the lock-free queue slot shape.
+// Adjacent cells in an array would each get a full cache
+// line, so two cores incrementing different cells don't
+// invalidate each other's lines.
+@noinit static counter: Padded[Atomic[UInt32]]
+
+func bump_counter() -> UInt32 {
+    return counter.value.fetchAdd(1, .seqCst)
+}
+
+func read_counter() -> UInt32 {
+    return counter.value.load(.seqCst)
+}

@@ -870,6 +870,23 @@ TEST_CASE("PerCpu[T] with a primitive inner") {
           == 0);
 }
 
+// ---- §A11 Padded[T] (§14.8) ----------------------------------------------
+
+TEST_CASE("Padded[T] resolves and .value returns T") {
+    CHECK(check_errors("@noinit static slot: Padded[UInt64]\n"
+                       "func read_it() -> UInt64 { return slot.value }\n"
+                       "func write_it(_ v: UInt64) { slot.value = v }\n")
+          == 0);
+}
+
+TEST_CASE("Padded[T] composes with Atomic for the per-hart counter shape") {
+    // Padded[Atomic[UInt32]] is the load-bearing shape for a single
+    // cell of the kernel's per-hart array region.
+    CHECK(check_errors("@noinit static c: Padded[Atomic[UInt32]]\n"
+                       "func bump() -> UInt32 { return c.value.fetchAdd(1, .seqCst) }\n")
+          == 0);
+}
+
 // ---- §A9 @boot + @kernel_init (§14.7) ------------------------------------
 
 TEST_CASE("@boot with Asm/RawMemory/Mmio using row + no throws type-checks") {

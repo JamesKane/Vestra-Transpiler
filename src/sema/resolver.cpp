@@ -3302,6 +3302,16 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                 TypePtr inner = n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error();
                 return types_->make_per_cpu(inner);
             }
+            // §A11 (§14.8) `Padded[T]` — cache-line-padded wrapper.
+            // Pads sizeof(T) up to cfg.option("cache_line_bytes")
+            // (v0.5 hardcodes 64) so adjacent values can't share a
+            // cache line. The kernel uses it inside the per-hart
+            // array region (`[MAX_HARTS]Padded[T]`); also useful
+            // standalone for ring-buffer cells.
+            if (n.path[0] == "Padded" && n.type_args.size() == 1) {
+                TypePtr inner = n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error();
+                return types_->make_padded(inner);
+            }
             // §A4 (§14.9) builtin `Atomic[T]` — compiler-known wrapper
             // over std::atomic<T>. T must be primitive for v0.5;
             // sema enforces that here so codegen never has to think
@@ -3980,6 +3990,15 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
     // that audit lane to cover the read/write side too.
     if ((lookup_base->kind() == TypeKind::Ptr || lookup_base->kind() == TypeKind::MutPtr)
         && m.member == "value" && lookup_base->inner() != nullptr) {
+        return finish(lookup_base->inner());
+    }
+
+    // §A11 (§14.8) Padded[T]: `.value` exposes the inner T. The
+    // wrapper holds T plus tail padding to bring sizeof up to a
+    // cache line; reads / writes pass through `.value` so the
+    // padding stays invisible at the source level.
+    if (lookup_base->kind() == TypeKind::Padded && m.member == "value"
+        && lookup_base->inner() != nullptr) {
         return finish(lookup_base->inner());
     }
 

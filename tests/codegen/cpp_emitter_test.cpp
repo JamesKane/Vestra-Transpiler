@@ -821,6 +821,19 @@ TEST_CASE("PerCpu[T] lowers to __vstr::PerCpu<T> with .mine() accessor") {
           != std::string::npos);
 }
 
+TEST_CASE("Padded[T] lowers to __vstr::Padded<T> with cache-line alignment") {
+    auto out = emit("@noinit static slot: Padded[UInt64]\n"
+                    "func read_it() -> UInt64 { return slot.value }\n");
+    // The runtime preamble defines the 64-byte-aligned template
+    // with tail padding bringing sizeof up to a cache line.
+    CHECK(out.header.find("struct alignas(64) Padded {") != std::string::npos);
+    CHECK(out.header.find("std::uint8_t _pad[(64 - sizeof(T) % 64) % 64];") != std::string::npos);
+    // The static decl uses the template at the Vestra-side type.
+    CHECK(out.header.find("inline __vstr::Padded<std::uint64_t> slot") != std::string::npos);
+    // `.value` reads the inner value through the wrapper.
+    CHECK(out.source.find("return slot.value;") != std::string::npos);
+}
+
 TEST_CASE("@boot emits [[gnu::naked]]; @kernel_init emits a plain function") {
     auto out = emit("@boot\nfunc _start() {}\n"
                     "@kernel_init\nfunc kinit() {}\n");

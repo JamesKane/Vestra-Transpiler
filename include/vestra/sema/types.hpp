@@ -89,6 +89,13 @@ enum class TypeKind : std::uint16_t {
     // an @interrupt-attributed function whose first param is `inout
     // T` and whose return is Unit).
     InterruptHandler,
+    // §A11 (§14.8) cache-line-padded wrapper. `Padded[T]` rounds
+    // sizeof(T) up to cfg.option("cache_line_bytes") (v0.5 defaults
+    // to 64) so adjacent values don't share a cache line. The
+    // load-bearing kernel use is `[MAX_HARTS]Padded[T]` for the
+    // per-hart array region; also useful standalone for ring-buffer
+    // slots and lock-free queue cells.
+    Padded,
     // §9 iterator combinators. `ZipIter[A, B]` yields `(A, B)` tuples;
     // `TakeIter[A]` yields up to N values of A. Both expose a
     // synthetic `next() -> Element?` so the existing iterator-protocol
@@ -204,6 +211,7 @@ public:
     [[nodiscard]] TypePtr make_mmio_region(TypePtr inner);
     [[nodiscard]] TypePtr make_mmio_wire_view(TypePtr inner);
     [[nodiscard]] TypePtr make_interrupt_handler(TypePtr inner);
+    [[nodiscard]] TypePtr make_padded(TypePtr inner);
     // §A11 (§14.8) per-CPU storage over Trivial T.
     [[nodiscard]] TypePtr make_per_cpu(TypePtr inner);
     // §9 iterator-combinator types. ZipIter[A, B] tracks the *element*

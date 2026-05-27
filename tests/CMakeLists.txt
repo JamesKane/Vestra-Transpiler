@@ -1363,6 +1363,36 @@ set_tests_properties(e2e_boot_chain_run PROPERTIES
     DEPENDS                e2e_boot_chain_compile
     PASS_REGULAR_EXPRESSION "boot_chain OK")
 
+# §A11 follow-on — Padded[T] cache-line wrapper (§14.8).
+# The wrapper rounds sizeof up to a cache line and aligns
+# storage on a cache-line boundary; the false-sharing-
+# resistance property is enforced via static_assert in the
+# driver. Runtime tests round-trip Padded[UInt64] via .value
+# and bump a Padded[Atomic[UInt32]] counter.
+set(e2e_padded_input  ${CMAKE_SOURCE_DIR}/examples/padded.vst)
+set(e2e_padded_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_padded.cpp)
+
+add_test(
+    NAME    e2e_padded_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_padded_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_padded_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_padded_driver} ${e2e_workdir}/padded.cpp
+            -o ${e2e_workdir}/padded_app)
+set_tests_properties(e2e_padded_compile PROPERTIES
+    DEPENDS e2e_padded_transpile)
+
+add_test(
+    NAME    e2e_padded_run
+    COMMAND ${e2e_workdir}/padded_app)
+set_tests_properties(e2e_padded_run PROPERTIES
+    DEPENDS                e2e_padded_compile
+    PASS_REGULAR_EXPRESSION "padded OK")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except
