@@ -3691,6 +3691,17 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
     // call's mutating-receiver discipline is handled the same way
     // Atomic gets the inout-on-static exemption — the C++-layer
     // `mine()` returns a reference.
+    // §14.12 SysregHandle: `.read() -> T` and `.write(T) -> Unit`.
+    // Calls discharge Asm at the call site (gated in capability.cpp
+    // via the SysregHandle base type).
+    if (owner_type->kind() == TypeKind::SysregHandle && owner_type->inner() != nullptr) {
+        if (name == "read") {
+            return types_->make_function({}, owner_type->inner());
+        }
+        if (name == "write") {
+            return types_->make_function({owner_type->inner()}, types_->unit());
+        }
+    }
     if (owner_type->kind() == TypeKind::PerCpu && owner_type->inner() != nullptr) {
         if (name == "mine") {
             return types_->make_function({}, owner_type->inner());
@@ -3884,6 +3895,36 @@ TypePtr Resolver::enum_case_constructor_type(TypePtr enum_type, const ast::EnumD
 }
 
 TypePtr Resolver::check_member(const ast::MemberExpr& m) {
+    // §14.12 typed system-register access. `Sysreg.<name>` resolves
+    // to a SysregHandle<UInt64> over the architectural register
+    // named by <name>. The set is the v0.5 canonical aarch64 EL1
+    // subset (`midr_el1`, `daif`, `sctlr_el1`, `vbar_el1`,
+    // `ttbr0_el1`, `cntfrq_el0`); the kernel target's build extends
+    // this with the full per-target list. Sema returns a handle
+    // typed `SysregHandle<UInt64>`; `.read()` / `.write(v)` discharge
+    // Asm at the call site.
+    if (m.base->kind == ast::NodeKind::IdentExpr) {
+        const auto& base_ident = static_cast<const ast::IdentExpr&>(*m.base);
+        if (base_ident.name == "Sysreg" && scopes_.current().lookup("Sysreg") == nullptr) {
+            static const std::unordered_set<std::string_view> canonical_sysregs = {
+                "midr_el1",
+                "daif",
+                "sctlr_el1",
+                "vbar_el1",
+                "ttbr0_el1",
+                "cntfrq_el0",
+            };
+            if (!canonical_sysregs.contains(m.member)) {
+                error_at(m.range,
+                         std::format("Sysreg.{} — unknown system register; v0.5 admits "
+                                     "midr_el1 / daif / sctlr_el1 / vbar_el1 / ttbr0_el1 / "
+                                     "cntfrq_el0",
+                                     m.member));
+                return types_->error();
+            }
+            return types_->make_sysreg_handle(types_->primitive(TypeKind::UInt64));
+        }
+    }
     // If the base is an IdentExpr resolving to a Type symbol (Struct/Enum/...),
     // member access is a static lookup (currently: enum case construction).
     if (m.base->kind == ast::NodeKind::IdentExpr) {

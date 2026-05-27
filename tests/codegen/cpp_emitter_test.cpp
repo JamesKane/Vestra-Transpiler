@@ -887,6 +887,24 @@ TEST_CASE("--no-libc emits the freestanding profile marker in both files") {
     CHECK(out.source.find("// vestra: no_libc = true") != std::string::npos);
 }
 
+TEST_CASE("Sysreg.<name> lowers to __vstr::sysreg::<name>") {
+    SemaEmitFixture f("@kernel_init\n"
+                      "func init_mmu(_ ttbr0: UInt64) using Asm {\n"
+                      "    Sysreg.ttbr0_el1.write(ttbr0)\n"
+                      "}\n"
+                      "func cpu_id() using Asm -> UInt64 {\n"
+                      "    return Sysreg.midr_el1.read()\n"
+                      "}\n");
+    // Runtime preamble defines the typed handle + per-name
+    // singletons in `__vstr::sysreg`.
+    CHECK(f.out.header.find("namespace sysreg {") != std::string::npos);
+    CHECK(f.out.header.find("inline Handle<std::uint64_t> ttbr0_el1;") != std::string::npos);
+    CHECK(f.out.header.find("inline Handle<std::uint64_t> midr_el1;") != std::string::npos);
+    // User-facing Sysreg.<name> lowers to the namespaced singleton.
+    CHECK(f.out.source.find("__vstr::sysreg::ttbr0_el1.write(ttbr0)") != std::string::npos);
+    CHECK(f.out.source.find("return __vstr::sysreg::midr_el1.read();") != std::string::npos);
+}
+
 TEST_CASE("@stack_protector(.none) emits [[gnu::no_stack_protector]]") {
     auto out = emit("@stack_protector(.none)\n"
                     "func crit() -> Int32 { return 42 }\n"

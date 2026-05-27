@@ -194,6 +194,16 @@ TEST_CASE("Ptr.unchecked / Span.raw / MutSpan.raw under `with RawMemory` are cle
           == 0);
 }
 
+TEST_CASE("Sysreg.<name>.read/.write without Asm is rejected") {
+    // §14.12 — sysreg access discharges the Asm capability at the
+    // call site, parallel to how MmioView.at discharges Mmio.
+    auto r = check("func bad() -> UInt64 {\n"
+                   "    return Sysreg.midr_el1.read()\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("missing capability 'Asm'") != std::string::npos);
+}
+
 TEST_CASE("PerCpu.new without Alloc is rejected") {
     // §A11 (§14.8) the heap factory needs Alloc just like Box.new.
     auto r = check("func bad() -> UInt32 {\n"

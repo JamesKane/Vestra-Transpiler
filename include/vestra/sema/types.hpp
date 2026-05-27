@@ -96,6 +96,14 @@ enum class TypeKind : std::uint16_t {
     // per-hart array region; also useful standalone for ring-buffer
     // slots and lock-free queue cells.
     Padded,
+    // §14.12 typed system-register handle. `Sysreg.<name>` resolves
+    // to a singleton of this type with the architectural register's
+    // primitive width (always UInt64 in v0.5). `.read() -> T` and
+    // `.write(T) -> Unit` lower to one `mrs` / `msr` (aarch64),
+    // `rdmsr` / `wrmsr` (x86), or `csrr` / `csrw` (RISC-V) per call;
+    // hosted v0.5 uses a static cell so the e2e can verify round-
+    // trips without privileged access. Calls discharge Asm.
+    SysregHandle,
     // §9 iterator combinators. `ZipIter[A, B]` yields `(A, B)` tuples;
     // `TakeIter[A]` yields up to N values of A. Both expose a
     // synthetic `next() -> Element?` so the existing iterator-protocol
@@ -212,6 +220,7 @@ public:
     [[nodiscard]] TypePtr make_mmio_wire_view(TypePtr inner);
     [[nodiscard]] TypePtr make_interrupt_handler(TypePtr inner);
     [[nodiscard]] TypePtr make_padded(TypePtr inner);
+    [[nodiscard]] TypePtr make_sysreg_handle(TypePtr inner);
     // §A11 (§14.8) per-CPU storage over Trivial T.
     [[nodiscard]] TypePtr make_per_cpu(TypePtr inner);
     // §9 iterator-combinator types. ZipIter[A, B] tracks the *element*

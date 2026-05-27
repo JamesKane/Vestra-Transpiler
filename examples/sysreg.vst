@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §14.12 first slice — typed system-register access.
+//
+// `Sysreg.<name>` is a compiler-known singleton that exposes
+// `.read() -> T` and `.write(T) -> Unit`. Each call discharges
+// the `Asm` capability — the kernel target lowers each
+// access to exactly one `mrs` / `msr` (aarch64), `rdmsr` /
+// `wrmsr` (x86), or `csrr` / `csrw` (RISC-V). Hosted v0.5
+// uses a static cell as the backing store so the e2e can
+// verify round-trips without privileged sysreg access.
+//
+// v0.5 admits a canonical subset of the aarch64 EL1 list:
+// `midr_el1`, `daif`, `sctlr_el1`, `vbar_el1`, `ttbr0_el1`,
+// `cntfrq_el0`. The kernel target's build extends this with
+// the full per-architecture list; the auto-emitted post-
+// write barrier table from §14.12.3 queues for the second
+// slice.
+
+module examples.sysreg
+
+// Mask interrupts via the `daif` register. The kernel's
+// `with InterruptsOff { ... }` block lowers to a sequence
+// like this on aarch64 (write daif=0xF for "mask all four
+// interrupt classes", then restore on exit).
+func mask_interrupts(_ mask: UInt64) using Asm {
+    Sysreg.daif.write(mask)
+}
+
+func read_interrupts() using Asm -> UInt64 {
+    return Sysreg.daif.read()
+}
+
+// Install a vector table base. `vbar_el1` is the architectural
+// address VBAR_EL1 of the EL1 exception vector table; writing
+// it points the CPU at the new table for subsequent traps.
+func install_vbar(_ base: UInt64) using Asm {
+    Sysreg.vbar_el1.write(base)
+}
+
+// MMU bring-up batch. `@kernel_init` admits the function into
+// the pre-scheduler regime; `@no_auto_barrier` opts out of
+// the per-write barrier policy (the final SCTLR write's
+// implicit ISB covers the prior TTBR0 write on aarch64).
+@kernel_init
+@no_auto_barrier
+func enable_mmu(_ ttbr0: UInt64, _ sctlr: UInt64) using Asm {
+    Sysreg.ttbr0_el1.write(ttbr0)
+    Sysreg.sctlr_el1.write(sctlr)
+}
+
+// Round-trip helper for the e2e driver.
+func roundtrip_sctlr(_ v: UInt64) using Asm -> UInt64 {
+    Sysreg.sctlr_el1.write(v)
+    return Sysreg.sctlr_el1.read()
+}

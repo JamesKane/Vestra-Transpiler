@@ -1489,6 +1489,35 @@ set_tests_properties(e2e_nab_run PROPERTIES
     DEPENDS                e2e_nab_compile
     PASS_REGULAR_EXPRESSION "no_auto_barrier OK")
 
+# §14.12 first slice — typed Sysreg access. Sysreg.<name>
+# resolves to a singleton in __vstr::sysreg with read/write
+# methods; v0.5 hosted backs each register with a static cell
+# so the runtime can verify round-trips. Auto-emitted post-
+# write barriers from §14.12.3 queue for the second slice.
+set(e2e_sr_input  ${CMAKE_SOURCE_DIR}/examples/sysreg.vst)
+set(e2e_sr_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_sysreg.cpp)
+
+add_test(
+    NAME    e2e_sr_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_sr_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_sr_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_sr_driver} ${e2e_workdir}/sysreg.cpp
+            -o ${e2e_workdir}/sysreg_app)
+set_tests_properties(e2e_sr_compile PROPERTIES
+    DEPENDS e2e_sr_transpile)
+
+add_test(
+    NAME    e2e_sr_run
+    COMMAND ${e2e_workdir}/sysreg_app)
+set_tests_properties(e2e_sr_run PROPERTIES
+    DEPENDS                e2e_sr_compile
+    PASS_REGULAR_EXPRESSION "sysreg OK")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except

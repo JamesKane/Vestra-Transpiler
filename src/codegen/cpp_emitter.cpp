@@ -599,6 +599,41 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    bool succeeded;\n";
     hdr << "    T actual;\n";
     hdr << "};\n\n";
+
+    // §14.12 typed sysreg handles. The runtime template wraps a
+    // single backing cell (per-name `inline` storage below) with
+    // `.read()` / `.write(v)` methods. v0.5 hosted reads/writes the
+    // cell directly so the e2e can verify round-trips without
+    // privileged sysreg access; the kernel target swaps this for one
+    // inline-asm `mrs` / `msr` per call (aarch64), `rdmsr` / `wrmsr`
+    // (x86), or `csrr` / `csrw` (RISC-V). Auto-emitted post-write
+    // barriers from §14.12.3 queue for a later slice; the v0.5
+    // hosted template is just the typed access surface.
+    hdr << "namespace sysreg {\n";
+    hdr << "template <class T>\n";
+    hdr << "struct Handle {\n";
+    hdr << "    T cell;\n";
+    hdr << "    [[nodiscard]] T read() const noexcept { return cell; }\n";
+    hdr << "    void write(T v) noexcept { cell = v; }\n";
+    hdr << "};\n";
+    // Canonical aarch64 EL1 subset for v0.5. Each instance lives at
+    // file scope with `inline` so multi-TU builds share one storage
+    // cell per sysreg. Zero-initialized at static-init; the kernel
+    // target replaces these with the architectural register's own
+    // power-on / reset value.
+    static const std::array<std::string_view, 6> sysreg_names = {
+        "midr_el1",
+        "daif",
+        "sctlr_el1",
+        "vbar_el1",
+        "ttbr0_el1",
+        "cntfrq_el0",
+    };
+    for (const auto& name : sysreg_names) {
+        hdr << "inline Handle<std::uint64_t> " << name << ";\n";
+    }
+    hdr << "}  // namespace sysreg\n\n";
+
     hdr << "}  // namespace __vstr\n\n";
 
     // §A5 (§14.10) sync-intrinsic enums + free-function shims. The
@@ -3744,6 +3779,21 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     }
     case ast::NodeKind::MemberExpr: {
         const auto& m = static_cast<const ast::MemberExpr&>(e);
+        // §14.12 typed sysreg access. `Sysreg.<name>` lowers to the
+        // matching runtime singleton in `__vstr::sysreg::<name>`. The
+        // resolver guarantees the name is in the canonical set
+        // before sema accepts the access, so codegen can route
+        // directly without a fallback check.
+        if (m.base != nullptr && m.base->kind == ast::NodeKind::IdentExpr) {
+            const auto& bi = static_cast<const ast::IdentExpr&>(*m.base);
+            if (bi.name == "Sysreg" && resolution_ != nullptr) {
+                if (auto et = resolution_->type_of(&e);
+                    et != nullptr && et->kind() == sema::TypeKind::SysregHandle) {
+                    os << "__vstr::sysreg::" << m.member;
+                    break;
+                }
+            }
+        }
         // §9 optional chaining: `a?.b` lowers to either
         // std::optional::transform (member yields T) or and_then (member
         // already yields Optional<U>, which we'd otherwise nest). The
@@ -4176,6 +4226,16 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         return;
     case TypeKind::Padded:
         os << "__vstr::Padded<";
+        emit_sema_type(os, t->inner());
+        os << ">";
+        return;
+    case TypeKind::SysregHandle:
+        // §14.12 — used when the user names the handle's type (e.g.
+        // `let h: Sysreg = Sysreg.daif` once Vestra's surface
+        // permits the spelling). v0.5 the named-type surface isn't
+        // shipped yet; this branch lets emit_sema_type produce a
+        // valid C++ spelling defensively.
+        os << "__vstr::sysreg::Handle<";
         emit_sema_type(os, t->inner());
         os << ">";
         return;

@@ -146,6 +146,8 @@ std::string Type::describe() const {
                       : std::string{"@interrupt"};
     case TypeKind::Padded:
         return inner_ ? std::format("Padded[{}]", inner_->describe()) : std::string{"Padded"};
+    case TypeKind::SysregHandle:
+        return inner_ ? std::format("Sysreg[{}]", inner_->describe()) : std::string{"Sysreg"};
     case TypeKind::ZipIter: {
         std::string a = (parts_.size() >= 1 && parts_[0]) ? parts_[0]->describe() : "?";
         std::string b = (parts_.size() >= 2 && parts_[1]) ? parts_[1]->describe() : "?";
@@ -335,6 +337,14 @@ TypePtr TypeArena::make_padded(TypePtr inner) {
     return p;
 }
 
+TypePtr TypeArena::make_sysreg_handle(TypePtr inner) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::SysregHandle));
+    t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
 TypePtr TypeArena::make_per_cpu(TypePtr inner) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::PerCpu));
     t->inner_ = inner;
@@ -495,6 +505,7 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     case TypeKind::PerCpu:
     case TypeKind::InterruptHandler:
     case TypeKind::Padded:
+    case TypeKind::SysregHandle:
     case TypeKind::TakeIter:
     case TypeKind::FilterIter:
     case TypeKind::Atomic:
@@ -696,6 +707,10 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::Padded: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_padded(inner);
+    }
+    case TypeKind::SysregHandle: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_sysreg_handle(inner);
     }
     case TypeKind::TakeIter: {
         auto inner = substitute(t->inner(), bindings);

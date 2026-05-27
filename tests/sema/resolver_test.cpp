@@ -870,6 +870,24 @@ TEST_CASE("PerCpu[T] with a primitive inner") {
           == 0);
 }
 
+// ---- §14.12 typed sysreg access (first slice) ----------------------------
+
+TEST_CASE("Sysreg.<name>.read / .write type-check under Asm") {
+    CHECK(check_errors("func wire(_ v: UInt64) using Asm -> UInt64 {\n"
+                       "    Sysreg.ttbr0_el1.write(v)\n"
+                       "    return Sysreg.midr_el1.read()\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("Sysreg.<unknown> is rejected with the canonical-set diagnostic") {
+    auto r = check_detail("func bad() using Asm -> UInt64 {\n"
+                          "    return Sysreg.nonsense_reg.read()\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Sysreg.nonsense_reg") != std::string::npos);
+}
+
 // ---- §A6 last: @no_auto_barrier (§14.11.5 / §14.12.3) --------------------
 
 TEST_CASE("@no_auto_barrier on a @kernel_init function type-checks") {

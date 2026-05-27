@@ -199,6 +199,19 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                     missing_capability("RawMemory", c.range);
                 }
             }
+            // §14.12 typed sysreg access. `Sysreg.X.read()` /
+            // `.write(v)` issue one `mrs` / `msr` instruction (or
+            // `rdmsr` / `wrmsr`, `csrr` / `csrw`) per call, which
+            // requires the Asm capability. The discharge surface is
+            // the same syntactic shape as MmioView.at: a method on a
+            // recognized handle type.
+            if ((mem.member == "read" || mem.member == "write") && resolution_ != nullptr) {
+                if (auto base_t = resolution_->type_of(mem.base.get());
+                    base_t != nullptr && base_t->kind() == sema::TypeKind::SysregHandle
+                    && !in_scope("Asm")) {
+                    missing_capability("Asm", c.range);
+                }
+            }
             // §A3 (§10.5) — minting raw pointers and spans-from-raw
             // requires `RawMemory` in scope. We pattern-match all
             // four call shapes here so the audit surface ("every
