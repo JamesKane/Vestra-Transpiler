@@ -80,6 +80,14 @@ private:
     // intercepts the three names and lowers to `__vstr_panic` /
     // `std::abort()` / `std::unreachable()` respectively.
     void register_builtin_panic();
+    // §A5 (§14.10) sync-intrinsic builtins: nine free functions
+    // (compilerFence, memoryBarrier, syncBarrier, instructionBarrier,
+    // waitForInterrupt, waitForEvent, signalEvent, relax, nop).
+    // Registered as Func symbols so user calls type-check normally;
+    // codegen intercepts the names and lowers each to the matching
+    // __vstr runtime shim. Depends on the Ordering / BarrierScope /
+    // BarrierKind enums registered in register_builtin_reflection.
+    void register_builtin_sync();
     void collect_top_level();
     void collect_func(const ast::FuncDecl& f);
     void collect_struct(const ast::StructDecl& s);
@@ -255,6 +263,10 @@ private:
     // Registered as a bare enum in global scope so `.relaxed` etc.
     // resolve through the existing leading-dot-case path.
     std::unique_ptr<ast::EnumDecl> builtin_ordering_decl_;
+    // §A5 (§14.10.2): BarrierScope + BarrierKind for the CPU
+    // memoryBarrier surface. Registered the same way as Ordering.
+    std::unique_ptr<ast::EnumDecl> builtin_barrier_scope_decl_;
+    std::unique_ptr<ast::EnumDecl> builtin_barrier_kind_decl_;
 };
 
 }  // namespace vestra::sema

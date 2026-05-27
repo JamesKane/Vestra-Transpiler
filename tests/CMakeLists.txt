@@ -931,6 +931,36 @@ set_tests_properties(e2e_display_run PROPERTIES
     DEPENDS                e2e_display_compile
     PASS_REGULAR_EXPRESSION "display OK")
 
+# Sync intrinsics (§A5, §14.10). Nine free-function builtins:
+# compilerFence / memoryBarrier / syncBarrier / instructionBarrier /
+# waitForInterrupt / waitForEvent / signalEvent / relax / nop.
+# Codegen lowers each to a __vstr runtime shim; the runtime checks
+# the calls don't crash and that a release-store + barrier round-
+# trips correctly.
+set(e2e_sync_intrinsics_input  ${CMAKE_SOURCE_DIR}/examples/sync_intrinsics.vst)
+set(e2e_sync_intrinsics_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_sync_intrinsics.cpp)
+
+add_test(
+    NAME    e2e_sync_intrinsics_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_sync_intrinsics_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_sync_intrinsics_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_sync_intrinsics_driver} ${e2e_workdir}/sync_intrinsics.cpp
+            -o ${e2e_workdir}/sync_intrinsics_app)
+set_tests_properties(e2e_sync_intrinsics_compile PROPERTIES
+    DEPENDS e2e_sync_intrinsics_transpile)
+
+add_test(
+    NAME    e2e_sync_intrinsics_run
+    COMMAND ${e2e_workdir}/sync_intrinsics_app)
+set_tests_properties(e2e_sync_intrinsics_run PROPERTIES
+    DEPENDS                e2e_sync_intrinsics_compile
+    PASS_REGULAR_EXPRESSION "sync_intrinsics OK")
+
 # Atomic[T] (§A4, §14.9). Five orderings, load/store/exchange/
 # fetchAdd/fetchSub. Lowers to std::atomic<T> + std::memory_order.
 # The runtime resets, bumps, drains, and swaps a counter; flips a

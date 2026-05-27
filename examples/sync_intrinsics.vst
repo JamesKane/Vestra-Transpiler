@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A5 (§14.10) — Sync intrinsics, first slice.
+//
+// Nine free-function builtins covering the load-bearing pieces of
+// §14.10:
+//
+//   compilerFence(Ordering)                — optimizer sequence point
+//   memoryBarrier(BarrierScope, BarrierKind) — CPU memory barrier
+//   syncBarrier(BarrierScope)              — strongest CPU barrier
+//   instructionBarrier()                   — ISB / pipeline serialize
+//   waitForInterrupt()                     — wfi / hlt
+//   waitForEvent()                         — wfe / mwait
+//   signalEvent()                          — sev
+//   relax()                                — yield / pause
+//   nop()                                  — single nop instruction
+//
+// All take their barrier-shape arguments via two builtin enums:
+//   BarrierScope { full, inner, outer, nonShareable }
+//   BarrierKind  { loadLoad, storeStore, loadStore, full }
+//
+// The spec also gates each of these on the Asm capability (§14.10).
+// v0.5 doesn't enforce that yet — kernel-targeting builds get the
+// same surface as the hosted CI host. Cache management (§14.10.3),
+// I-cache (§14.10.4), and TLB (§14.10.5) are queued for follow-ups
+// — they need Span[UInt8] + RawMemory + Sysreg infra.
+
+module examples.sync_intrinsics
+
+// A counter we'll touch under explicit barriers. Hosted-CI atomics
+// don't actually need most of these — std::atomic does the right
+// thing automatically — but the kernel pattern is to be explicit
+// about every fence so the audit surface (`vestra audit --barriers`)
+// has something to enumerate.
+static gate: Atomic[UInt32] = 0
+
+// Pair a release-store with an explicit storeStore barrier. The
+// barrier is redundant on the host (atomic .release already
+// implies the matching CPU barrier on every supported ISA) but
+// kernels often double-up under defense-in-depth; we keep the
+// idiom legal and let the runtime fold the duplicate at -O2.
+func release_with_barrier(_ v: UInt32) {
+    gate.store(v, .release)
+    memoryBarrier(.full, .storeStore)
+}
+
+// A compiler fence by itself prevents the optimizer from reordering
+// across the call site without emitting a hardware barrier.
+func reorder_guard() {
+    compilerFence(.acqRel)
+}
+
+// Pipeline-hint smoke test. On a kernel build these emit `wfi`/`yield`/
+// `nop`; on the hosted CI they collapse to no-ops or a pause. The
+// runtime just checks the calls don't crash.
+func hint_chain() -> UInt32 {
+    relax()
+    nop()
+    signalEvent()
+    return gate.load(.acquire)
+}
+
+// instructionBarrier sequences before the next memory access. The
+// driver pattern is: write a sysreg → ISB → read a register that
+// depends on the new state. We model the shape here without the
+// sysreg piece (that lands in a later phase).
+func isb_chain(_ v: UInt32) -> UInt32 {
+    gate.store(v, .release)
+    instructionBarrier()
+    return gate.load(.acquire)
+}

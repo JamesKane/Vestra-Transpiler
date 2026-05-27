@@ -719,6 +719,31 @@ TEST_CASE("Atomic[T] surfaces the bitwise fetch ops + compareExchange") {
           == 0);
 }
 
+// ---- §A5 sync intrinsics (§14.10) ----------------------------------------
+
+TEST_CASE("sync-intrinsic builtins are registered and type-check") {
+    CHECK(check_errors("func use() {\n"
+                       "    compilerFence(.acquire)\n"
+                       "    memoryBarrier(.full, .storeStore)\n"
+                       "    syncBarrier(.inner)\n"
+                       "    instructionBarrier()\n"
+                       "    waitForInterrupt()\n"
+                       "    waitForEvent()\n"
+                       "    signalEvent()\n"
+                       "    relax()\n"
+                       "    nop()\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("memoryBarrier rejects a swap of its enum arguments") {
+    // The first param is BarrierScope, the second BarrierKind. Mixing
+    // them up should fail because the leading-dot resolution flows the
+    // expected enum type from each slot.
+    auto r = check_detail("func bad() { memoryBarrier(.loadLoad, .full) }\n");
+    CHECK(r.error_count >= 1);
+}
+
 TEST_CASE("compareExchangeWeak admitted inside `while true { ... }`") {
     CHECK(check_errors("static c: Atomic[UInt32] = 0\n"
                        "func use(_ desired: UInt32) -> UInt32 {\n"

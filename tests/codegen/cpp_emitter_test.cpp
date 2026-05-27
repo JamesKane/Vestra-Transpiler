@@ -663,6 +663,33 @@ TEST_CASE("zip(a, b) lowers via CTAD on __vstr::Zip and binds tuples in the for-
 
 // ---- §A4 Atomic[T] (§14.9) -----------------------------------------------
 
+// ---- §A5 sync intrinsics (§14.10) ----------------------------------------
+
+TEST_CASE("sync-intrinsic builtins lower to __vstr runtime shims") {
+    SemaEmitFixture f("func use() {\n"
+                      "    compilerFence(.acquire)\n"
+                      "    memoryBarrier(.full, .storeStore)\n"
+                      "    syncBarrier(.inner)\n"
+                      "    instructionBarrier()\n"
+                      "    relax()\n"
+                      "    nop()\n"
+                      "}\n");
+    // Enum decls land at file scope so leading-dot lowering works.
+    CHECK(f.out.header.find("enum class BarrierScope {") != std::string::npos);
+    CHECK(f.out.header.find("enum class BarrierKind {") != std::string::npos);
+    // Each builtin call routes to its matching __vstr shim.
+    CHECK(f.out.source.find("__vstr::compilerFence(std::memory_order_acquire)")
+          != std::string::npos);
+    CHECK(f.out.source.find("__vstr::memoryBarrier(BarrierScope::full, BarrierKind::storeStore)")
+          != std::string::npos);
+    CHECK(f.out.source.find("__vstr::syncBarrier(BarrierScope::inner)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::instructionBarrier()") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::relax()") != std::string::npos);
+    // `nop` renames to cpu_nop so it doesn't collide with common C++
+    // identifiers like preprocessor NaN-handling helpers.
+    CHECK(f.out.source.find("__vstr::cpu_nop()") != std::string::npos);
+}
+
 TEST_CASE("compareExchangeWeak lowers to compare_exchange_weak inside a retry loop") {
     SemaEmitFixture f("static c: Atomic[UInt32] = 0\n"
                       "func use(_ desired: UInt32) -> UInt32 {\n"

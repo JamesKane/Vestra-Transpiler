@@ -78,6 +78,10 @@ void Resolver::resolve() {
     register_builtin_math();
     register_builtin_reflection();
     register_builtin_panic();
+    // §A5 must follow register_builtin_reflection because the sync
+    // intrinsics' signatures reference the Ordering / BarrierScope /
+    // BarrierKind enums registered there.
+    register_builtin_sync();
     collect_top_level();
     for (const auto& d : unit_->decls) {
         // §12.6: same gate as collect_top_level. Skipping here keeps the
@@ -154,6 +158,43 @@ void Resolver::register_builtin_panic() {
     insert("panic", {str_const});
     insert("abort", {});
     insert("unreachable", {});
+}
+
+void Resolver::register_builtin_sync() {
+    // §A5 (§14.10) sync intrinsics. Free-function builtins surfaced
+    // in global scope; codegen recognizes the names and lowers each
+    // to its matching __vstr runtime shim. The Asm capability gate
+    // the spec defines is not yet enforced — kernel-targeting users
+    // get the same surface as hosted-targeting users in v0.5.
+    auto unit = types_->unit();
+    auto ord = builtin_ordering_decl_ != nullptr
+                   ? types_->make_nominal(TypeKind::Enum, builtin_ordering_decl_.get())
+                   : types_->error();
+    auto bscope = builtin_barrier_scope_decl_ != nullptr
+                      ? types_->make_nominal(TypeKind::Enum, builtin_barrier_scope_decl_.get())
+                      : types_->error();
+    auto bkind = builtin_barrier_kind_decl_ != nullptr
+                     ? types_->make_nominal(TypeKind::Enum, builtin_barrier_kind_decl_.get())
+                     : types_->error();
+    auto insert = [&](std::string name, std::vector<TypePtr> params) {
+        Symbol s;
+        s.name = std::move(name);
+        s.kind = SymbolKind::Func;
+        s.decl = nullptr;
+        s.type = types_->make_function(std::move(params), unit);
+        s.definition_range = {};
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
+    };
+    insert("compilerFence", {ord});
+    insert("memoryBarrier", {bscope, bkind});
+    insert("syncBarrier", {bscope});
+    insert("instructionBarrier", {});
+    insert("waitForInterrupt", {});
+    insert("waitForEvent", {});
+    insert("signalEvent", {});
+    insert("relax", {});
+    insert("nop", {});
 }
 
 void Resolver::register_builtin_math() {
@@ -285,6 +326,50 @@ void Resolver::register_builtin_reflection() {
         s.decl = builtin_field_decl_.get();
         s.type = types_->make_nominal(TypeKind::Struct, builtin_field_decl_.get());
         s.definition_range = {};
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
+    }
+
+    // §A5 (§14.10.2) BarrierScope + BarrierKind: the two enums that
+    // parameterize Cpu.memoryBarrier and Cpu.syncBarrier. Both lower
+    // to C++ enum classes that emit at file scope in the runtime
+    // preamble, so `.full` / `.loadLoad` etc. resolve naturally
+    // through the leading-dot-case path.
+    {
+        auto decl = std::make_unique<ast::EnumDecl>();
+        decl->name = "BarrierScope";
+        decl->visibility = ast::Visibility::Public;
+        for (const char* name : {"full", "inner", "outer", "nonShareable"}) {
+            ast::EnumDecl::Case c;
+            c.name = name;
+            decl->cases.push_back(std::move(c));
+        }
+        builtin_barrier_scope_decl_ = std::move(decl);
+
+        Symbol s;
+        s.name = "BarrierScope";
+        s.kind = SymbolKind::Enum;
+        s.decl = builtin_barrier_scope_decl_.get();
+        s.type = types_->make_nominal(TypeKind::Enum, builtin_barrier_scope_decl_.get());
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
+    }
+    {
+        auto decl = std::make_unique<ast::EnumDecl>();
+        decl->name = "BarrierKind";
+        decl->visibility = ast::Visibility::Public;
+        for (const char* name : {"loadLoad", "storeStore", "loadStore", "full"}) {
+            ast::EnumDecl::Case c;
+            c.name = name;
+            decl->cases.push_back(std::move(c));
+        }
+        builtin_barrier_kind_decl_ = std::move(decl);
+
+        Symbol s;
+        s.name = "BarrierKind";
+        s.kind = SymbolKind::Enum;
+        s.decl = builtin_barrier_kind_decl_.get();
+        s.type = types_->make_nominal(TypeKind::Enum, builtin_barrier_kind_decl_.get());
         s.visibility = ast::Visibility::Public;
         (void)scopes_.global().insert(std::move(s));
     }

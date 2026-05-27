@@ -403,6 +403,63 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "};\n\n";
     hdr << "}  // namespace __vstr\n\n";
 
+    // §A5 (§14.10) sync-intrinsic enums + free-function shims. The
+    // two enums live at file scope so leading-dot lowering (`.full`,
+    // `.loadLoad`) emits as `BarrierScope::full` / `BarrierKind::loadLoad`
+    // without needing a namespace prefix. The free-function shims
+    // live in __vstr and lower to portable atomic_thread_fence /
+    // atomic_signal_fence calls; the pipeline-hint ops use inline
+    // asm where the host architecture has a matching instruction and
+    // fall back to a no-op on others.
+    hdr << "enum class BarrierScope { full, inner, outer, nonShareable };\n";
+    hdr << "enum class BarrierKind { loadLoad, storeStore, loadStore, full };\n\n";
+    hdr << "namespace __vstr {\n\n";
+    hdr << "inline void compilerFence(std::memory_order ord) noexcept {\n";
+    hdr << "    std::atomic_signal_fence(ord);\n";
+    hdr << "}\n";
+    hdr << "inline void memoryBarrier(BarrierScope, BarrierKind kind) noexcept {\n";
+    hdr << "    switch (kind) {\n";
+    hdr << "    case BarrierKind::loadLoad:\n";
+    hdr << "        std::atomic_thread_fence(std::memory_order_acquire);\n";
+    hdr << "        break;\n";
+    hdr << "    case BarrierKind::storeStore:\n";
+    hdr << "        std::atomic_thread_fence(std::memory_order_release);\n";
+    hdr << "        break;\n";
+    hdr << "    case BarrierKind::loadStore:\n";
+    hdr << "        std::atomic_thread_fence(std::memory_order_acq_rel);\n";
+    hdr << "        break;\n";
+    hdr << "    case BarrierKind::full:\n";
+    hdr << "        std::atomic_thread_fence(std::memory_order_seq_cst);\n";
+    hdr << "        break;\n";
+    hdr << "    }\n";
+    hdr << "}\n";
+    hdr << "inline void syncBarrier(BarrierScope) noexcept {\n";
+    hdr << "    std::atomic_thread_fence(std::memory_order_seq_cst);\n";
+    hdr << "}\n";
+    hdr << "inline void instructionBarrier() noexcept {\n";
+    // ISB on aarch64; on x86 it's mostly self-serializing — the
+    // strongest portable equivalent is a seq_cst thread fence plus
+    // an asm "memory" clobber so the host compiler treats it as a
+    // hard sequence point.
+    hdr << "#if defined(__aarch64__) || defined(__arm64__)\n";
+    hdr << "    __asm__ volatile(\"isb\" ::: \"memory\");\n";
+    hdr << "#else\n";
+    hdr << "    std::atomic_thread_fence(std::memory_order_seq_cst);\n";
+    hdr << "#endif\n";
+    hdr << "}\n";
+    hdr << "inline void waitForInterrupt() noexcept { /* hosted no-op */ }\n";
+    hdr << "inline void waitForEvent() noexcept { /* hosted no-op */ }\n";
+    hdr << "inline void signalEvent() noexcept { /* hosted no-op */ }\n";
+    hdr << "inline void relax() noexcept {\n";
+    hdr << "#if defined(__x86_64__)\n";
+    hdr << "    __builtin_ia32_pause();\n";
+    hdr << "#elif defined(__aarch64__) || defined(__arm64__)\n";
+    hdr << "    __asm__ volatile(\"yield\" ::: \"memory\");\n";
+    hdr << "#endif\n";
+    hdr << "}\n";
+    hdr << "inline void cpu_nop() noexcept { __asm__ volatile(\"nop\"); }\n\n";
+    hdr << "}  // namespace __vstr\n\n";
+
     // §4 Optional in a Display splice. Vestra renders `"\(opt)"` as
     // `nil` for `.none` and delegates to T's formatter for `.some(v)`.
     // libc++ on Apple Clang 21 doesn't yet ship the C++26 P2585
@@ -2909,6 +2966,34 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             }
             if (callee_ident.name == "unreachable" && c.args.empty()) {
                 os << "__vstr::unreachable_fn()";
+                break;
+            }
+            // §A5 (§14.10) sync-intrinsic builtins. Each one lowers
+            // to its matching __vstr runtime shim. The names match
+            // the Vestra-side spelling 1:1 except `nop` which
+            // collides with NaN literals + a frequent local-variable
+            // name on the C++ side; emit it as `cpu_nop` to keep
+            // host symbols out of the way.
+            static const std::unordered_map<std::string_view, std::string_view> sync_intrinsics = {
+                {"compilerFence", "compilerFence"},
+                {"memoryBarrier", "memoryBarrier"},
+                {"syncBarrier", "syncBarrier"},
+                {"instructionBarrier", "instructionBarrier"},
+                {"waitForInterrupt", "waitForInterrupt"},
+                {"waitForEvent", "waitForEvent"},
+                {"signalEvent", "signalEvent"},
+                {"relax", "relax"},
+                {"nop", "cpu_nop"},
+            };
+            if (auto it = sync_intrinsics.find(callee_ident.name); it != sync_intrinsics.end()) {
+                os << "__vstr::" << it->second << "(";
+                for (std::size_t i = 0; i < c.args.size(); ++i) {
+                    if (i != 0) {
+                        os << ", ";
+                    }
+                    emit_expr(os, *c.args[i].value);
+                }
+                os << ")";
                 break;
             }
             // §9 iterator combinators: `zip(a, b)` / `take(xs, n)`
