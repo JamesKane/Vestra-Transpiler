@@ -194,6 +194,20 @@ TEST_CASE("Ptr.unchecked / Span.raw / MutSpan.raw under `with RawMemory` are cle
           == 0);
 }
 
+TEST_CASE("memcpy / memset / memmove without RawMemory are rejected") {
+    // §A10 (§15.4) the byte-range intrinsics are gated on RawMemory
+    // the same way the §A5 cache ops and §A3 raw mints are.
+    auto r = check("func bad(_ d_addr: UInt64) {\n"
+                   "    var d: MutPtr[UInt8] = MutPtr.unchecked(fromAddress: 0)\n"
+                   "    with RawMemory {\n"
+                   "        d = MutPtr.unchecked(fromAddress: d_addr)\n"
+                   "    }\n"
+                   "    memset(d, 0, 1)\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("missing capability 'RawMemory'") != std::string::npos);
+}
+
 TEST_CASE("cleanData without RawMemory is rejected") {
     // §A5 (§14.10.3) data-cache ops are gated on RawMemory the same
     // way the §A3 raw mints are.

@@ -1053,6 +1053,34 @@ TEST_CASE("derive(Eq) on a @repr(union) struct is rejected") {
 
 // ---- §A5 cache + TLB management (§14.10.3, §14.10.4, §14.10.5) -----------
 
+// ---- §A10 follow-up: memcpy / memset / memmove intrinsics (§15.4) --------
+
+TEST_CASE("memcpy / memset / memmove type-check under RawMemory") {
+    CHECK(check_errors("func use(_ d_addr: UInt64, _ s_addr: UInt64) {\n"
+                       "    with RawMemory {\n"
+                       "        let d: MutPtr[UInt8] = MutPtr.unchecked(fromAddress: d_addr)\n"
+                       "        let s: Ptr[UInt8]    = Ptr.unchecked(fromAddress: s_addr)\n"
+                       "        memcpy(d, s, 4)\n"
+                       "        memset(d, 0xFF, 2)\n"
+                       "        memmove(d, s, 4)\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("memcpy rejects a Ptr[UInt8] as the destination") {
+    // memcpy's destination must be MutPtr[UInt8] — a read-only Ptr is
+    // an argument-type mismatch (mirrors zeroData's read-only-arg
+    // rejection in §A5).
+    auto r = check_detail("func bad(_ a: UInt64) {\n"
+                          "    with RawMemory {\n"
+                          "        let p: Ptr[UInt8] = Ptr.unchecked(fromAddress: a)\n"
+                          "        memcpy(p, p, 4)\n"
+                          "    }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+}
+
 TEST_CASE("cache + TLB builtins type-check with the right argument shapes") {
     CHECK(check_errors("func use(_ addr: UInt64, _ n: Int) {\n"
                        "    with RawMemory {\n"

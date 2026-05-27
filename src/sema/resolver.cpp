@@ -248,6 +248,24 @@ void Resolver::register_builtin_sync() {
     insert("tlbInvalidateAll", {tlb_scope});
     insert("tlbInvalidatePage", {u64, boolean, tlb_scope});
     insert("tlbInvalidateAsid", {u16, tlb_scope});
+
+    // §A10 (§15.4) compiler-emitted intrinsics — `memcpy`, `memset`,
+    // `memmove`. The spec lists them as Vestra-supplied bodies behind
+    // `@symbol`; v0.5 registers them as builtin free functions whose
+    // bodies are the compiler's `__builtin_mem*` shims. A freestanding
+    // profile with `no_libc = true` (§15.5) will eventually require an
+    // in-tree binding for each; today the compiler's intrinsic
+    // expansion is what links, which is also "no libc" on every host
+    // we target. All three need RawMemory — they walk byte ranges
+    // through MutPtr / Ptr without the slice's escape rules
+    // intervening, which is exactly what `RawMemory` gates.
+    auto u8 = types_->primitive(TypeKind::UInt8);
+    auto i_natural = types_->primitive(TypeKind::Int);
+    auto u8_mut_ptr = types_->make_mut_ptr(u8);
+    auto u8_ptr = types_->make_ptr(u8);
+    insert("memcpy", {u8_mut_ptr, u8_ptr, i_natural});
+    insert("memset", {u8_mut_ptr, u8, i_natural});
+    insert("memmove", {u8_mut_ptr, u8_ptr, i_natural});
 }
 
 void Resolver::register_builtin_math() {

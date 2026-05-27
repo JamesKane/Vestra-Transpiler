@@ -910,6 +910,29 @@ TEST_CASE("MmioWireView.at + read/write lower through __vstr::MmioWireView with 
     CHECK(f.out.source.find("w.read()") != std::string::npos);
 }
 
+// ---- §A10 follow-up: memcpy / memset / memmove (§15.4) -------------------
+
+TEST_CASE("memcpy / memset / memmove lower to __builtin_mem* with size_t cast") {
+    SemaEmitFixture f("func go(_ d_addr: UInt64, _ s_addr: UInt64) {\n"
+                      "    with RawMemory {\n"
+                      "        let d: MutPtr[UInt8] = MutPtr.unchecked(fromAddress: d_addr)\n"
+                      "        let s: Ptr[UInt8]    = Ptr.unchecked(fromAddress: s_addr)\n"
+                      "        memcpy(d, s, 16)\n"
+                      "        memset(d, 0xAB, 4)\n"
+                      "        memmove(d, s, 16)\n"
+                      "    }\n"
+                      "}\n");
+    // Each intrinsic routes to its __builtin_* form. The trailing
+    // length argument widens to std::size_t so size_t-typed slots
+    // accept the Vestra-side Int (intptr_t).
+    CHECK(f.out.source.find("__builtin_memcpy(d, s, static_cast<std::size_t>(16))")
+          != std::string::npos);
+    CHECK(f.out.source.find("__builtin_memset(d, 0xAB, static_cast<std::size_t>(4))")
+          != std::string::npos);
+    CHECK(f.out.source.find("__builtin_memmove(d, s, static_cast<std::size_t>(16))")
+          != std::string::npos);
+}
+
 // ---- §A5 cache + TLB management (§14.10.3, §14.10.4, §14.10.5) -----------
 
 TEST_CASE("cache + TLB builtins lower to __vstr runtime shims") {

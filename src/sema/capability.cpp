@@ -219,6 +219,12 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                 "cleanInvalidateData",
                 "zeroData",
                 "publishInstructions",
+                // §A10 (§15.4) memcpy / memset / memmove walk a byte
+                // range through MutPtr / Ptr without the slice escape
+                // rules intervening — same audit shape as cleanData.
+                "memcpy",
+                "memset",
+                "memmove",
             };
             const auto& bi = static_cast<const ast::IdentExpr&>(*c.callee);
             if (raw_memory_builtins.contains(bi.name) && !in_scope("RawMemory")) {

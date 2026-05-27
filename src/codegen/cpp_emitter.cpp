@@ -3423,6 +3423,46 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << ")";
                 break;
             }
+            // §A10 (§15.4) compiler-emitted intrinsics — `memcpy`,
+            // `memset`, `memmove`. Each routes to its `__builtin_*`
+            // form, which the host compiler resolves to an inlined
+            // expansion or a libc-compatible call (no libc reference
+            // is emitted at the freestanding profile when the host
+            // compiler picks the inline path, which is the load-
+            // bearing property §15.5's `no_libc = true` will
+            // eventually enforce). The Vestra-side signature uses
+            // typed pointers (MutPtr[UInt8] / Ptr[UInt8]); the
+            // intrinsics take `void*` / `const void*` so the
+            // implicit C++ pointer decay does the conversion.
+            static const std::unordered_map<std::string_view, std::string_view> mem_intrinsics = {
+                {"memcpy", "__builtin_memcpy"},
+                {"memset", "__builtin_memset"},
+                {"memmove", "__builtin_memmove"},
+            };
+            if (auto it = mem_intrinsics.find(callee_ident.name); it != mem_intrinsics.end()) {
+                os << it->second << "(";
+                for (std::size_t i = 0; i < c.args.size(); ++i) {
+                    if (i != 0) {
+                        os << ", ";
+                    }
+                    // The trailing length argument widens to
+                    // std::size_t so a Vestra `Int` (intptr_t) flows
+                    // through the `size_t` slot without a narrowing
+                    // diagnostic when the user passes a negative
+                    // literal — sema rejected that already, but the
+                    // explicit cast also covers the platform where
+                    // intptr_t and size_t disagree on signedness.
+                    if (i + 1 == c.args.size()) {
+                        os << "static_cast<std::size_t>(";
+                        emit_expr(os, *c.args[i].value);
+                        os << ")";
+                    } else {
+                        emit_expr(os, *c.args[i].value);
+                    }
+                }
+                os << ")";
+                break;
+            }
             // §9 iterator combinators: `zip(a, b)` / `take(xs, n)`
             // recognized by the resolver as builtin types
             // (ZipIter / TakeIter). The lowering uses CTAD so we

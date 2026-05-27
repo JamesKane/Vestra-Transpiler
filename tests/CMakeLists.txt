@@ -1234,6 +1234,38 @@ set_tests_properties(e2e_vec_table_run PROPERTIES
     DEPENDS                e2e_vec_table_compile
     PASS_REGULAR_EXPRESSION "vec_table OK")
 
+# §A10 follow-up — memcpy / memset / memmove (§15.4). Three
+# compiler-emitted intrinsics that route to __builtin_memcpy /
+# __builtin_memset / __builtin_memmove. All three are gated on
+# RawMemory, matching the audit lane the §A3 mints and §A5
+# cache ops carry. The runtime exercises each over a stack-
+# resident byte buffer + an overlapping range to prove memmove
+# handles the in-place shift the kernel queue-compact path
+# depends on.
+set(e2e_mem_intrin_input  ${CMAKE_SOURCE_DIR}/examples/mem_intrinsics.vst)
+set(e2e_mem_intrin_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_mem_intrinsics.cpp)
+
+add_test(
+    NAME    e2e_mem_intrin_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_mem_intrin_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_mem_intrin_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_mem_intrin_driver} ${e2e_workdir}/mem_intrinsics.cpp
+            -o ${e2e_workdir}/mem_intrinsics_app)
+set_tests_properties(e2e_mem_intrin_compile PROPERTIES
+    DEPENDS e2e_mem_intrin_transpile)
+
+add_test(
+    NAME    e2e_mem_intrin_run
+    COMMAND ${e2e_workdir}/mem_intrinsics_app)
+set_tests_properties(e2e_mem_intrin_run PROPERTIES
+    DEPENDS                e2e_mem_intrin_compile
+    PASS_REGULAR_EXPRESSION "mem_intrinsics OK")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except

@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A10 follow-up (§15.4) — `memcpy` / `memset` / `memmove`
+// compiler-emitted intrinsics.
+//
+// These three byte-range primitives are the load-bearing
+// substrate the kernel needs for: struct copies emitted by
+// the compiler at copy-init sites; zeroing freshly mapped
+// pages; reshuffling slice contents for buffer pool
+// compaction. Each one operates on a raw pointer range
+// without the borrow-tracking the §10 Span types provide,
+// which is why they're gated on the `RawMemory` capability —
+// the same audit lane as §A3's `MutPtr.unchecked`.
+//
+// Vestra-side signature:
+//
+//   memcpy(_ dst: MutPtr[UInt8], _ src: Ptr[UInt8], _ n: Int) using RawMemory
+//   memset(_ dst: MutPtr[UInt8], _ v: UInt8,        _ n: Int) using RawMemory
+//   memmove(_ dst: MutPtr[UInt8], _ src: Ptr[UInt8], _ n: Int) using RawMemory
+//
+// The C++ lowering is `__builtin_memcpy` / `__builtin_memset`
+// / `__builtin_memmove`. The host compiler may inline these,
+// or for very large `n` route through a freestanding-safe
+// runtime entry — never libc, which is the property the
+// `no_libc = true` (§15.5) manifest flag will eventually
+// pin at build time.
+
+module examples.mem_intrinsics
+
+// Copy `n` bytes from src to dst. Mirrors what the compiler
+// would emit for a struct-copy at an assignment site.
+func copy_bytes(_ dst_addr: UInt64, _ src_addr: UInt64, _ n: Int) {
+    with RawMemory {
+        let dst: MutPtr[UInt8] = MutPtr.unchecked(fromAddress: dst_addr)
+        let src: Ptr[UInt8]    = Ptr.unchecked(fromAddress: src_addr)
+        memcpy(dst, src, n)
+    }
+}
+
+// Fill `n` bytes at dst with the given value. Used for
+// page zeroing at hand-off from the page allocator and for
+// security-cleared buffer reuse.
+func fill_bytes(_ dst_addr: UInt64, _ value: UInt8, _ n: Int) {
+    with RawMemory {
+        let dst: MutPtr[UInt8] = MutPtr.unchecked(fromAddress: dst_addr)
+        memset(dst, value, n)
+    }
+}
+
+// Overlap-safe copy. The kernel uses this for in-place buffer
+// compaction (shifting a queue's contents up after a dequeue
+// from the middle), where the source and destination ranges
+// may overlap.
+func shift_bytes(_ dst_addr: UInt64, _ src_addr: UInt64, _ n: Int) {
+    with RawMemory {
+        let dst: MutPtr[UInt8] = MutPtr.unchecked(fromAddress: dst_addr)
+        let src: Ptr[UInt8]    = Ptr.unchecked(fromAddress: src_addr)
+        memmove(dst, src, n)
+    }
+}
