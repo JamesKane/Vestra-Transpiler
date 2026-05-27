@@ -931,6 +931,35 @@ set_tests_properties(e2e_display_run PROPERTIES
     DEPENDS                e2e_display_compile
     PASS_REGULAR_EXPRESSION "display OK")
 
+# Atomic[T] (§A4, §14.9). Five orderings, load/store/exchange/
+# fetchAdd/fetchSub. Lowers to std::atomic<T> + std::memory_order.
+# The runtime resets, bumps, drains, and swaps a counter; flips a
+# Bool flag. Cross-checks the final state via the C++ side reading
+# the atomic directly.
+set(e2e_atomics_input  ${CMAKE_SOURCE_DIR}/examples/atomics.vst)
+set(e2e_atomics_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_atomics.cpp)
+
+add_test(
+    NAME    e2e_atomics_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_atomics_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_atomics_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_atomics_driver} ${e2e_workdir}/atomics.cpp
+            -o ${e2e_workdir}/atomics_app)
+set_tests_properties(e2e_atomics_compile PROPERTIES
+    DEPENDS e2e_atomics_transpile)
+
+add_test(
+    NAME    e2e_atomics_run
+    COMMAND ${e2e_workdir}/atomics_app)
+set_tests_properties(e2e_atomics_run PROPERTIES
+    DEPENDS                e2e_atomics_compile
+    PASS_REGULAR_EXPRESSION "atomics OK")
+
 # inline directive + layout reflection (§A2, §6.8 + §7.8).
 # `@inline(.always|.never|.hint)` lowers to `[[gnu::always_inline]]
 # inline` / `[[gnu::noinline]]` / `inline`. `T.size` / `T.alignment`

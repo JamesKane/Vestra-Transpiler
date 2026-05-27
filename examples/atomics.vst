@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §A4 (§14.9) — `Atomic[T]` memory model, first slice.
+//
+// `Atomic[T]` is a compiler-known wrapper that lowers directly to
+// `std::atomic<T>`. v0.5 supports primitive T (Int*/UInt*/Float*/
+// Bool/Char) only — non-primitive payloads belong in Mutex/RwLock.
+//
+// The five orderings come from a builtin `Ordering` enum that
+// lowers to `std::memory_order`; the cases map straight to the
+// matching C++ name (`.acqRel` → `memory_order_acq_rel`, etc.).
+//
+// The core ops landed in this phase:
+//   load, store, exchange, fetchAdd, fetchSub
+//
+// All take an `Ordering` argument explicitly in v0.5 — the spec's
+// default-`.seqCst` ergonomic waits on synthetic-method default
+// args. The kernel pattern of "say what you mean about memory
+// ordering, every time" reads naturally enough that the missing
+// default doesn't bite for the load-bearing call sites.
+//
+// `compareExchange` / `compareExchangeWeak` / `fetchAnd|Or|Xor` and
+// the `@retry_loop` shape rule are deferred to a follow-up; they
+// need more sema plumbing than fits in this slice.
+
+module examples.atomics
+
+static counter: Atomic[UInt32] = 0
+static flag:    Atomic[Bool]   = false
+
+// Reset, bump by 7 (returning the previous value, which should be
+// the post-reset 0), then re-read. The driver checks the final
+// state — both the bump-result and the post-bump load.
+func bump() -> UInt32 {
+    counter.store(0, .release)
+    let prev = counter.fetchAdd(7, .acqRel)
+    let v = counter.load(.acquire)
+    return prev + v
+}
+
+// Decrement back to 0 via fetchSub. Verifies the rename to
+// std::atomic's snake_case `fetch_sub`.
+func drain() -> UInt32 {
+    let prev = counter.fetchSub(7, .release)
+    return prev
+}
+
+// Exchange returns the prior value. .seqCst is the right default
+// when you don't want to think about ordering — write it
+// explicitly here so the call shape is clear in the e2e output.
+func swap(_ v: UInt32) -> UInt32 {
+    return counter.exchange(v, .seqCst)
+}
+
+// Atomic[Bool] exercises the primitive-T constraint with a
+// non-integer; .relaxed is admitted on both load and store.
+func raise() {
+    flag.store(true, .relaxed)
+}
+
+func lowered() -> Bool {
+    return flag.load(.relaxed) == false
+}

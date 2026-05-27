@@ -683,6 +683,34 @@ TEST_CASE("filter rejects a closure whose return type isn't Bool") {
     CHECK(r.first_message.find("Bool") != std::string::npos);
 }
 
+// ---- §A4 Atomic[T] (§14.9) -----------------------------------------------
+
+TEST_CASE("Atomic[T] type-checks for primitive T and exposes the core ops") {
+    CHECK(check_errors("static c: Atomic[UInt32] = 0\n"
+                       "func use() -> UInt32 {\n"
+                       "    c.store(0, .release)\n"
+                       "    let a = c.fetchAdd(1, .acqRel)\n"
+                       "    let b = c.fetchSub(1, .release)\n"
+                       "    let prev = c.exchange(7, .seqCst)\n"
+                       "    return c.load(.acquire) + a + b + prev\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("Atomic[T] rejects a non-primitive T") {
+    auto r = check_detail("struct S { var x: Int32 }\n"
+                          "static c: Atomic[S] = S(x: 0)\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Atomic[T] requires T to be a primitive type") != std::string::npos);
+}
+
+TEST_CASE("Atomic[T] initial value adopts the inner T from context") {
+    // The Int literal `7` would otherwise default to Int and fail
+    // assignment to Atomic[UInt32]. The hint-peel through Atomic in
+    // IntLit makes it type as UInt32.
+    CHECK(check_errors("static c: Atomic[UInt32] = 7\n") == 0);
+}
+
 // ---- §A2 @inline + layout reflection (§6.8, §7.8) ------------------------
 
 TEST_CASE("@inline accepts .always / .never / .hint") {

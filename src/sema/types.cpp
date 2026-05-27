@@ -142,6 +142,8 @@ std::string Type::describe() const {
     case TypeKind::FilterIter:
         return inner_ ? std::format("FilterIter[{}]", inner_->describe())
                       : std::string{"FilterIter"};
+    case TypeKind::Atomic:
+        return inner_ ? std::format("Atomic[{}]", inner_->describe()) : std::string{"Atomic"};
     case TypeKind::Result: {
         std::string ok = inner_ ? inner_->describe() : "?";
         std::string err = result_ ? result_->describe() : "?";
@@ -288,6 +290,14 @@ TypePtr TypeArena::make_filter_iter(TypePtr elem) {
     return p;
 }
 
+TypePtr TypeArena::make_atomic(TypePtr inner) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Atomic));
+    t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
 TypePtr TypeArena::make_result(TypePtr success, TypePtr error) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::Result));
     t->inner_ = success;
@@ -381,6 +391,7 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     case TypeKind::MutSpan:
     case TypeKind::TakeIter:
     case TypeKind::FilterIter:
+    case TypeKind::Atomic:
         return equal(a->inner(), b->inner());
     case TypeKind::ZipIter:
     case TypeKind::MapIter: {
@@ -499,6 +510,14 @@ bool TypeArena::assignable(TypePtr from, TypePtr to) noexcept {
             return true;
         }
     }
+    // §A4 (§14.9) Atomic[T] accepts an initial-value of T at
+    // construction (`static counter: Atomic[UInt32] = 0`). The C++
+    // side already supports this via std::atomic<T>'s implicit ctor.
+    if (to->kind() == TypeKind::Atomic && to->inner() != nullptr) {
+        if (assignable(from, to->inner())) {
+            return true;
+        }
+    }
     return equal(from, to);
 }
 
@@ -534,6 +553,10 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::FilterIter: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_filter_iter(inner);
+    }
+    case TypeKind::Atomic: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_atomic(inner);
     }
     case TypeKind::ZipIter: {
         if (t->parts().size() != 2) {

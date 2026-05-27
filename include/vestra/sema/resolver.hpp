@@ -242,6 +242,10 @@ private:
     // in its ComptimeValue::elements vector ([0]=name, [1]=type).
     std::unique_ptr<ast::StructDecl> builtin_type_decl_;
     std::unique_ptr<ast::StructDecl> builtin_field_decl_;
+    // §A4 (§14.9.1): Ordering carries the five memory-order cases.
+    // Registered as a bare enum in global scope so `.relaxed` etc.
+    // resolve through the existing leading-dot-case path.
+    std::unique_ptr<ast::EnumDecl> builtin_ordering_decl_;
 };
 
 }  // namespace vestra::sema

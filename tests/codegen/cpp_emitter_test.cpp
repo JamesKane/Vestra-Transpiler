@@ -661,6 +661,25 @@ TEST_CASE("zip(a, b) lowers via CTAD on __vstr::Zip and binds tuples in the for-
     CHECK(f.out.source.find("auto [x, y] = std::move(*__vstr_o);") != std::string::npos);
 }
 
+// ---- §A4 Atomic[T] (§14.9) -----------------------------------------------
+
+TEST_CASE("Atomic[T] type lowers to std::atomic<T> and ops dispatch correctly") {
+    SemaEmitFixture f("static c: Atomic[UInt32] = 0\n"
+                      "func use() -> UInt32 {\n"
+                      "    c.store(1, .release)\n"
+                      "    let a = c.fetchAdd(2, .acqRel)\n"
+                      "    let b = c.fetchSub(1, .seqCst)\n"
+                      "    let e = c.exchange(7, .seqCst)\n"
+                      "    return c.load(.acquire) + a + b + e\n"
+                      "}\n");
+    CHECK(f.out.header.find("inline std::atomic<std::uint32_t> c = 0;") != std::string::npos);
+    CHECK(f.out.source.find("c.store(1, std::memory_order_release);") != std::string::npos);
+    CHECK(f.out.source.find("c.fetch_add(2, std::memory_order_acq_rel)") != std::string::npos);
+    CHECK(f.out.source.find("c.fetch_sub(1, std::memory_order_seq_cst)") != std::string::npos);
+    CHECK(f.out.source.find("c.exchange(7, std::memory_order_seq_cst)") != std::string::npos);
+    CHECK(f.out.source.find("c.load(std::memory_order_acquire)") != std::string::npos);
+}
+
 // ---- §A2 @inline + layout reflection (§6.8 + §7.8) -----------------------
 
 TEST_CASE("@inline(.always) lowers to [[gnu::always_inline]] + inline") {

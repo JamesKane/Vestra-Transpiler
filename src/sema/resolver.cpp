@@ -288,6 +288,33 @@ void Resolver::register_builtin_reflection() {
         s.visibility = ast::Visibility::Public;
         (void)scopes_.global().insert(std::move(s));
     }
+
+    // §A4 (§14.9.1) Ordering: a bare enum with five cases. `.relaxed`
+    // etc. resolve through the existing leading-dot-case path; sema's
+    // method synthesis on Atomic[T] uses Ordering as the param type so
+    // `counter.fetchAdd(1, .release)` types automatically. Registered
+    // before the user's code so a user-defined `Ordering` would have
+    // to shadow it (and produce a duplicate-definition diagnostic).
+    {
+        auto decl = std::make_unique<ast::EnumDecl>();
+        decl->name = "Ordering";
+        decl->visibility = ast::Visibility::Public;
+        for (const char* name : {"relaxed", "acquire", "release", "acqRel", "seqCst"}) {
+            ast::EnumDecl::Case c;
+            c.name = name;
+            decl->cases.push_back(std::move(c));
+        }
+        builtin_ordering_decl_ = std::move(decl);
+
+        Symbol s;
+        s.name = "Ordering";
+        s.kind = SymbolKind::Enum;
+        s.decl = builtin_ordering_decl_.get();
+        s.type = types_->make_nominal(TypeKind::Enum, builtin_ordering_decl_.get());
+        s.definition_range = {};
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
+    }
 }
 
 void Resolver::error_at(diag::SourceRange r, std::string msg) {
@@ -1017,9 +1044,14 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         // without an explicit conversion. Without context, default to Int.
         // §9 ergonomic: peel one Optional layer so `let x: Int32? = 42`
         // also adopts Int32 instead of falling back to the Int default.
+        // §A4 same trick for Atomic[T]: `static x: Atomic[UInt32] = 0`
+        // adopts UInt32 for the literal so the initial-value type
+        // matches the inner.
         {
             TypePtr int_hint = expected;
             if (int_hint != nullptr && int_hint->kind() == TypeKind::Optional) {
+                int_hint = int_hint->inner();
+            } else if (int_hint != nullptr && int_hint->kind() == TypeKind::Atomic) {
                 int_hint = int_hint->inner();
             }
             t = (int_hint != nullptr && int_hint->is_integer()) ? int_hint
@@ -2312,6 +2344,20 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                 return types_->make_mut_span(n.type_args[0] ? resolve_type(*n.type_args[0])
                                                             : types_->error());
             }
+            // §A4 (§14.9) builtin `Atomic[T]` — compiler-known wrapper
+            // over std::atomic<T>. T must be primitive for v0.5;
+            // sema enforces that here so codegen never has to think
+            // about a non-trivially-atomic T at the C++ layer.
+            if (n.path[0] == "Atomic" && n.type_args.size() == 1) {
+                TypePtr inner = n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error();
+                if (inner != nullptr && !inner->is_error() && !inner->is_primitive()) {
+                    error_at(t.range,
+                             std::format("Atomic[T] requires T to be a primitive type, got {}",
+                                         inner->describe()));
+                    return types_->make_atomic(types_->error());
+                }
+                return types_->make_atomic(inner);
+            }
             // Try primitives first (Int32, Bool, ...).
             auto prim_kind = TypeArena::primitive_kind_by_name(n.path[0]);
             if (prim_kind != TypeKind::Error) {
@@ -2606,6 +2652,33 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
     // (A, B); TakeIter[A]'s element is just A. The codegen runtime
     // provides the matching member function in __vstr::Zip / __vstr::Take
     // (see emit_runtime_preamble), so this is a pure type-level shim.
+    // §A4 (§14.9.2) Atomic[T] method synthesis. Every method takes an
+    // optional trailing `Ordering` argument; sema models them as a
+    // single-required, single-optional shape — the default lives in
+    // a documentation comment, codegen substitutes .seqCst when the
+    // user omits it. fetchAdd/fetchSub take `(delta: T, ordering)`
+    // and return T; load returns T; store/exchange take a T value;
+    // exchange returns the prior T. The ordering type is the builtin
+    // Ordering enum.
+    if (owner_type->kind() == TypeKind::Atomic && owner_type->inner() != nullptr) {
+        TypePtr T = owner_type->inner();
+        TypePtr ordering_type =
+            builtin_ordering_decl_ != nullptr
+                ? types_->make_nominal(TypeKind::Enum, builtin_ordering_decl_.get())
+                : types_->error();
+        if (name == "load") {
+            return types_->make_function({ordering_type}, T);
+        }
+        if (name == "store") {
+            return types_->make_function({T, ordering_type}, types_->unit());
+        }
+        if (name == "exchange") {
+            return types_->make_function({T, ordering_type}, T);
+        }
+        if (name == "fetchAdd" || name == "fetchSub") {
+            return types_->make_function({T, ordering_type}, T);
+        }
+    }
     if (name == "next") {
         if (owner_type->kind() == TypeKind::ZipIter && owner_type->parts().size() == 2) {
             auto elem = types_->make_tuple({owner_type->parts()[0], owner_type->parts()[1]});
