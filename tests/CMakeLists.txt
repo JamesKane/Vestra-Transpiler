@@ -1540,6 +1540,29 @@ add_test(
 set_tests_properties(audit_sysreg_no_auto_barrier PROPERTIES
     PASS_REGULAR_EXPRESSION "Sysreg\\.ttbr0_el1\\.write \\[barrier:no\\]")
 
+# §15.5 --no-libc enumerator. Walks the unit for @extern +
+# @symbol declarations so the freestanding profile can list
+# every external symbol the build emits. The link_attrs.vst
+# example carries an `@symbol("kernel_entry_symbol")` decl
+# that the enumerator surfaces.
+add_test(
+    NAME    audit_no_libc_lists_externs
+    COMMAND $<TARGET_FILE:vestra> audit ${CMAKE_SOURCE_DIR}/examples/link_attrs.vst --no-libc)
+set_tests_properties(audit_no_libc_lists_externs PROPERTIES
+    PASS_REGULAR_EXPRESSION "extern kernel_entry_symbol")
+
+# Zero-finding pass: the sysreg.vst example carries no @extern
+# / @symbol decls, so --no-libc should produce no output and
+# exit 0. We assert success via PASS_REGULAR_EXPRESSION on the
+# empty-output sentinel: ctest's regex matches against the
+# combined stdout/stderr, and the exit-status check is
+# implicit (any non-zero exit fails the test).
+add_test(
+    NAME    audit_no_libc_clean_pass
+    COMMAND $<TARGET_FILE:vestra> audit ${CMAKE_SOURCE_DIR}/examples/sysreg.vst --no-libc)
+set_tests_properties(audit_no_libc_clean_pass PROPERTIES
+    FAIL_REGULAR_EXPRESSION "extern ")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except

@@ -44,6 +44,7 @@ run_check(const std::filesystem::path& input, std::ostream& out, std::ostream& e
 struct AuditOptions {
     std::filesystem::path input;
     bool sysreg = false;
+    bool no_libc = false;
 };
 [[nodiscard]] int run_audit(const AuditOptions& opts, std::ostream& out, std::ostream& err);
 

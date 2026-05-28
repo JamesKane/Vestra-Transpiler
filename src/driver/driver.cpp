@@ -41,10 +41,17 @@ Subcommands:
         Exits 0 on a clean check.
   fmt <file.vst>
         Pretty-print a Vestra source file to stdout.
-  audit <file.vst> --sysreg
-        Enumerate every Sysreg.<name>.{read|write} access in the
-        unit and whether the write carries an auto-emitted post-
-        write barrier (per §14.12.3). Output is one site per line.
+  audit <file.vst> [--sysreg] [--no-libc]
+        Enumerate every site that crossed a discipline-bearing
+        boundary so a cross-architecture review can verify the
+        build's contracts at the call site.
+        --sysreg : every Sysreg.<name>.{read|write} access plus
+                   whether the write carries an auto-emitted
+                   post-write barrier (§14.12.3).
+        --no-libc: every `@extern + @symbol` declaration so a
+                   zero-finding pass under the freestanding
+                   profile (§15.5) is the build-time proof the
+                   binary is libc-free.
   help
         Show this message.
 
@@ -114,6 +121,8 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
             auto a = argv[i];
             if (a == "--sysreg") {
                 opts.sysreg = true;
+            } else if (a == "--no-libc") {
+                opts.no_libc = true;
             } else if (!a.empty() && a[0] != '-') {
                 opts.input = std::string{a};
             } else {
@@ -126,8 +135,8 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
             print_usage(err);
             return 2;
         }
-        if (!opts.sysreg) {
-            err << "vestra audit: pick an enumerator (--sysreg)\n";
+        if (!opts.sysreg && !opts.no_libc) {
+            err << "vestra audit: pick an enumerator (--sysreg, --no-libc)\n";
             return 2;
         }
         return run_audit(opts, out, err);
@@ -480,6 +489,68 @@ struct SysregAuditor {
     }
 };
 
+// §15.5 no_libc audit walker. Enumerates every `@extern + @symbol`
+// declaration in the unit so a freestanding profile can prove no
+// external symbol slipped in undeclared. Each finding emits one line
+// `<file>:<line>:<col>: extern <symbol-name> [conv:<calling-conv>]`.
+// A zero-finding pass under `profile.freestanding.no_libc = true` is
+// the build-time proof §15.5 calls for.
+struct NoLibcAuditor {
+    const diag::SourceManager& sm;
+    std::ostream& out;
+
+    void walk_unit(const ast::CompilationUnit& unit) {
+        for (const auto& d : unit.decls) {
+            if (d == nullptr) {
+                continue;
+            }
+            if (d->kind == ast::NodeKind::Func) {
+                emit_for_attrs(d->range, static_cast<const ast::FuncDecl&>(*d).attributes);
+            } else if (d->kind == ast::NodeKind::Static) {
+                emit_for_attrs(d->range, static_cast<const ast::StaticDecl&>(*d).attributes);
+            }
+        }
+    }
+
+    void emit_for_attrs(diag::SourceRange decl_range, const std::vector<ast::Attribute>& attrs) {
+        // The audit is interested in declarations that *create* an
+        // external symbol entry: either an `@extern("conv")` that
+        // names the calling convention or a `@symbol("name")` that
+        // pins the link-time name. Either by itself produces an
+        // external symbol; both together is the common kernel
+        // shape (e.g., `@extern("C") @symbol("__stack_chk_guard")`).
+        std::string_view symbol;
+        std::string_view conv;
+        diag::SourceRange site = decl_range;
+        for (const auto& a : attrs) {
+            if (a.name == "symbol" && a.predicate != nullptr
+                && a.predicate->kind == ast::NodeKind::StringLit) {
+                symbol = static_cast<const ast::StringLit&>(*a.predicate).text;
+                site = a.range;
+            } else if (a.name == "extern" && a.predicate != nullptr
+                       && a.predicate->kind == ast::NodeKind::StringLit) {
+                conv = static_cast<const ast::StringLit&>(*a.predicate).text;
+                site = a.range;
+            }
+        }
+        if (symbol.empty() && conv.empty()) {
+            return;
+        }
+        auto lc = sm.line_col(site.begin);
+        auto path = sm.name(site.begin.file);
+        out << path << ":" << lc.line << ":" << lc.col << ": extern ";
+        if (!symbol.empty()) {
+            out << symbol;
+        } else {
+            out << "(unnamed)";
+        }
+        if (!conv.empty()) {
+            out << " [conv:" << conv << "]";
+        }
+        out << "\n";
+    }
+};
+
 }  // namespace
 
 int run_audit(const AuditOptions& opts, std::ostream& out, std::ostream& err) {
@@ -502,6 +573,10 @@ int run_audit(const AuditOptions& opts, std::ostream& out, std::ostream& err) {
     }
     if (opts.sysreg) {
         SysregAuditor a{sm, out};
+        a.walk_unit(unit);
+    }
+    if (opts.no_libc) {
+        NoLibcAuditor a{sm, out};
         a.walk_unit(unit);
     }
     return 0;
