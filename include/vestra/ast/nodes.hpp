@@ -536,9 +536,12 @@ struct DoCatchExpr : Expr {
     TypePtr error_type;
     // §9 optional `where guard` clause between the catch binding and
     // the catch body's `{`. Evaluated with `error_name` in scope; if
-    // false at runtime, the catch arm doesn't apply and the codegen
-    // falls through to a panic (v0.5; the natural propagation
-    // semantic is a follow-on phase).
+    // false at runtime, the bound error propagates to the enclosing
+    // throws context via std::unexpected (sema requires the enclosing
+    // fn's throws(E) to be assignable from the caught E). The
+    // resolver-free codegen path falls back to __vstr::panic — a
+    // defensive shim that only fires in codegen-only tests where no
+    // resolution is available to wire the propagation.
     ExprPtr guard;
     ExprPtr catch_body;
     DoCatchExpr() : Expr(NodeKind::DoCatchExpr) {}

@@ -1579,6 +1579,20 @@ TEST_CASE("where-guard requires an enclosing throws(E) context") {
           != std::string::npos);
 }
 
+TEST_CASE("bare-form catch with a where guard infers E from the do-body's try sites") {
+    // §9 catch binding without `: E` annotation — sema infers the
+    // error type from the do-body's try-expressions and routes it
+    // into the guard's scope. Same propagation semantic as the
+    // annotated form: a failed guard propagates the inferred E to
+    // the enclosing throws(E) context.
+    CHECK(check_errors("enum E { case bad }\n"
+                       "func f() throws(E) -> Int32 { return 1 }\n"
+                       "func go() throws(E) -> Int32 {\n"
+                       "    return do { try f() } catch e where e == E.bad { -1 }\n"
+                       "}\n")
+          == 0);
+}
+
 TEST_CASE("where-guard rejects a throws context whose E differs from the caught E") {
     // The do-catch catches NetErr; the enclosing fn throws DbErr.
     // The fall-through can't propagate NetErr through a DbErr slot,
