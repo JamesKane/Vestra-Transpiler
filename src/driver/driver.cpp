@@ -476,10 +476,13 @@ struct SysregAuditor {
         auto path = sm.name(range.begin.file);
         // The gated set must match the codegen's table — these are the
         // sysregs that need an ISB on the trailing edge per §14.12.3.
-        static const std::array<std::string_view, 3> gated = {
+        static const std::array<std::string_view, 6> gated = {
             "sctlr_el1",
             "vbar_el1",
             "ttbr0_el1",
+            "ttbr1_el1",
+            "tcr_el1",
+            "mair_el1",
         };
         const bool is_gated_write =
             (op == "write") && std::find(gated.begin(), gated.end(), name) != gated.end();

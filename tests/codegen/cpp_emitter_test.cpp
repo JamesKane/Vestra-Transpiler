@@ -909,6 +909,38 @@ TEST_CASE("Sysreg.<name> lowers to __vstr::sysreg::<name>") {
     CHECK(f.out.source.find("return __vstr::sysreg::midr_el1.read();") != std::string::npos);
 }
 
+TEST_CASE("extended aarch64 EL1 MMU sysregs gate barriers on write") {
+    // §14.12.3 — ttbr1_el1 / tcr_el1 / mair_el1 join the gated set
+    // because they all change the MMU's view of mappings or memory
+    // attributes; the runtime must drain the pipeline so subsequent
+    // fetches see the new state.
+    SemaEmitFixture f("func wire(_ v: UInt64) using Asm {\n"
+                      "    Sysreg.tcr_el1.write(v)\n"
+                      "    Sysreg.mair_el1.write(v)\n"
+                      "    Sysreg.ttbr1_el1.write(v)\n"
+                      "}\n");
+    CHECK(f.out.header.find("inline void write_tcr_el1(") != std::string::npos);
+    CHECK(f.out.header.find("inline void write_mair_el1(") != std::string::npos);
+    CHECK(f.out.header.find("inline void write_ttbr1_el1(") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::sysreg::write_tcr_el1(v)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::sysreg::write_mair_el1(v)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::sysreg::write_ttbr1_el1(v)") != std::string::npos);
+}
+
+TEST_CASE("x86_64 MSRs and RISC-V CSRs emit Handle instances + raw .write paths") {
+    SemaEmitFixture f("func wire(_ v: UInt64) using Asm {\n"
+                      "    Sysreg.ia32_efer.write(v)\n"
+                      "    Sysreg.satp.write(v)\n"
+                      "}\n");
+    // Each canonical name has a static Handle backing it.
+    CHECK(f.out.header.find("inline Handle<std::uint64_t> ia32_efer;") != std::string::npos);
+    CHECK(f.out.header.find("inline Handle<std::uint64_t> satp;") != std::string::npos);
+    // Neither is in the v0.5 gated set, so the .write stays raw.
+    CHECK(f.out.source.find("__vstr::sysreg::ia32_efer.write(v)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::sysreg::satp.write(v)") != std::string::npos);
+    CHECK(f.out.source.find("write_ia32_efer") == std::string::npos);
+}
+
 TEST_CASE("gated Sysreg write routes through the barrier-bearing wrapper") {
     // §14.12.3 — sctlr_el1 / vbar_el1 / ttbr0_el1 require an ISB on
     // the trailing edge. Without @no_auto_barrier, the write

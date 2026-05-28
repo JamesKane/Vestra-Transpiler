@@ -631,13 +631,46 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     // cell per sysreg. Zero-initialized at static-init; the kernel
     // target replaces these with the architectural register's own
     // power-on / reset value.
-    static const std::array<std::string_view, 6> sysreg_names = {
+    // §14.12.2 — keep this list in lock-step with the resolver's
+    // sysregs_ro + sysregs_rw sets. Hosted v0.5 backs each register
+    // with a static cell; the kernel target replaces the Handle
+    // template's read/write methods with the architectural
+    // instruction per arch (mrs/msr on aarch64, rdmsr/wrmsr on
+    // x86_64, csrr/csrw on RISC-V).
+    static const std::array<std::string_view, 29> sysreg_names = {
+        // aarch64 EL1 — read-only
         "midr_el1",
+        "mpidr_el1",
+        "cntfrq_el0",
+        "cntpct_el0",
+        "dczid_el0",
+        // aarch64 EL1 — read-write
         "daif",
         "sctlr_el1",
         "vbar_el1",
         "ttbr0_el1",
-        "cntfrq_el0",
+        "ttbr1_el1",
+        "tcr_el1",
+        "mair_el1",
+        "esr_el1",
+        "far_el1",
+        "elr_el1",
+        "spsr_el1",
+        "tpidr_el1",
+        // x86_64 MSRs
+        "ia32_efer",
+        "ia32_lstar",
+        "ia32_apic_base",
+        "ia32_pat",
+        // RISC-V S-mode CSRs
+        "sstatus",
+        "sie",
+        "stvec",
+        "sscratch",
+        "sepc",
+        "scause",
+        "stval",
+        "satp",
     };
     for (const auto& name : sysreg_names) {
         hdr << "inline Handle<std::uint64_t> " << name << ";\n";
@@ -661,10 +694,19 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    std::atomic_thread_fence(std::memory_order_seq_cst);\n";
     hdr << "#endif\n";
     hdr << "}\n";
-    static const std::array<std::string_view, 3> gated_writes = {
+    // §14.12.3 aarch64 EL1 sysregs that require ISB on the trailing
+    // edge — control / TLB / vector-base / memory-attribute sysregs
+    // whose retire affects fetch / decode state. ttbr1_el1 + tcr_el1
+    // + mair_el1 join sctlr_el1 / vbar_el1 / ttbr0_el1 here because
+    // they all change the MMU's view of mappings or attributes;
+    // subsequent fetches need to see the new state, hence the ISB.
+    static const std::array<std::string_view, 6> gated_writes = {
         "sctlr_el1",
         "vbar_el1",
         "ttbr0_el1",
+        "ttbr1_el1",
+        "tcr_el1",
+        "mair_el1",
     };
     for (const auto& name : gated_writes) {
         hdr << "inline void write_" << name << "(std::uint64_t v) noexcept {\n";
@@ -3367,6 +3409,9 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                         "sctlr_el1",
                         "vbar_el1",
                         "ttbr0_el1",
+                        "ttbr1_el1",
+                        "tcr_el1",
+                        "mair_el1",
                     };
                     if (root.name == "Sysreg" && gated_writes.contains(base_mem.member)
                         && !current_no_auto_barrier_) {

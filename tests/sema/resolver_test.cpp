@@ -1049,6 +1049,40 @@ TEST_CASE("Sysreg.midr_el1.read type-checks (read-only handle admits read)") {
           == 0);
 }
 
+TEST_CASE("extended aarch64 EL1 sysregs admit the expected ops") {
+    // §14.12.2 v0.5 per-target table extension. mpidr_el1 / cntpct_el0
+    // / dczid_el0 are read-only; tcr_el1 / mair_el1 / esr_el1 /
+    // far_el1 / elr_el1 / spsr_el1 / tpidr_el1 / ttbr1_el1 admit both.
+    CHECK(check_errors("func use() using Asm {\n"
+                       "    let _ = Sysreg.mpidr_el1.read()\n"
+                       "    let _ = Sysreg.cntpct_el0.read()\n"
+                       "    let _ = Sysreg.dczid_el0.read()\n"
+                       "    Sysreg.tcr_el1.write(0)\n"
+                       "    Sysreg.mair_el1.write(0)\n"
+                       "    Sysreg.esr_el1.write(0)\n"
+                       "    Sysreg.ttbr1_el1.write(0)\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("Sysreg.mpidr_el1.write is rejected (read-only handle)") {
+    auto r = check_detail("func bad() using Asm {\n"
+                          "    Sysreg.mpidr_el1.write(0)\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("'write' on type ReadOnlySysreg[UInt64]") != std::string::npos);
+}
+
+TEST_CASE("x86_64 MSRs + RISC-V CSRs admit read/write as RW handles") {
+    CHECK(check_errors("func use() using Asm {\n"
+                       "    Sysreg.ia32_efer.write(0)\n"
+                       "    let _ = Sysreg.ia32_apic_base.read()\n"
+                       "    Sysreg.satp.write(0)\n"
+                       "    let _ = Sysreg.stvec.read()\n"
+                       "}\n")
+          == 0);
+}
+
 TEST_CASE("Sysreg.daif admits both read and write (RW handle)") {
     CHECK(check_errors("func wire(_ v: UInt64) using Asm -> UInt64 {\n"
                        "    Sysreg.daif.write(v)\n"

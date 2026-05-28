@@ -4082,14 +4082,41 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
             // is empty in v0.5's canonical subset but the TypeKind
             // is reachable for the wider name set the kernel needs.
             static const std::unordered_set<std::string_view> sysregs_ro = {
+                // aarch64 EL1 — read-only
                 "midr_el1",
+                "mpidr_el1",
                 "cntfrq_el0",
+                "cntpct_el0",
+                "dczid_el0",
             };
             static const std::unordered_set<std::string_view> sysregs_rw = {
+                // aarch64 EL1 — read-write
                 "daif",
                 "sctlr_el1",
                 "vbar_el1",
                 "ttbr0_el1",
+                "ttbr1_el1",
+                "tcr_el1",
+                "mair_el1",
+                "esr_el1",
+                "far_el1",
+                "elr_el1",
+                "spsr_el1",
+                "tpidr_el1",
+                // x86_64 MSRs — uniformly read-write at ring 0
+                "ia32_efer",
+                "ia32_lstar",
+                "ia32_apic_base",
+                "ia32_pat",
+                // RISC-V S-mode CSRs — all read-write through csrr / csrw
+                "sstatus",
+                "sie",
+                "stvec",
+                "sscratch",
+                "sepc",
+                "scause",
+                "stval",
+                "satp",
             };
             TypeKind kind;
             if (sysregs_ro.contains(m.member)) {
@@ -4098,9 +4125,9 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
                 kind = TypeKind::SysregHandle;
             } else {
                 error_at(m.range,
-                         std::format("Sysreg.{} — unknown system register; v0.5 admits "
-                                     "midr_el1 / daif / sctlr_el1 / vbar_el1 / ttbr0_el1 / "
-                                     "cntfrq_el0",
+                         std::format("Sysreg.{} — unknown system register; v0.5 admits the "
+                                     "aarch64 EL1 + x86_64 MSR + RISC-V S-mode CSR canonical "
+                                     "set (see §14.12.2)",
                                      m.member));
                 return types_->error();
             }
