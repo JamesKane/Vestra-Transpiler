@@ -1681,6 +1681,23 @@ TEST_CASE("mapError rejects a closure whose input doesn't match the Result error
     CHECK(r.first_message.find("mapError function expects") != std::string::npos);
 }
 
+TEST_CASE("mapError accepts a closure literal whose param adopts the Result's error") {
+    // §9 + §16 — when the .mapError argument is a closure literal,
+    // sema pushes `(E) -> ?` down so the closure's param adopts E
+    // without an explicit annotation. The body's last expression
+    // types the new error E'; the result is Result[T, E'].
+    CHECK(check_errors("enum ParseErr { case bad }\n"
+                       "enum AppErr {\n"
+                       "    case parseFailed\n"
+                       "    case other\n"
+                       "}\n"
+                       "func parse() throws(ParseErr) -> Int32 { throw ParseErr.bad }\n"
+                       "func wrap() throws(AppErr) -> Int32 {\n"
+                       "    return try parse().mapError({ pe => AppErr.parseFailed })\n"
+                       "}\n")
+          == 0);
+}
+
 TEST_CASE("mapError requires exactly one argument") {
     auto r = check_detail("enum A { case bad }\n"
                           "func f() throws(A) -> Int32 { return 0 }\n"

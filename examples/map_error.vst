@@ -53,3 +53,16 @@ func toAppErr(_ e: ParseErr) -> AppErr {
 func parseOrWrap(_ s: Int32) throws(AppErr) -> Int32 {
     return try parseInt(s).mapError(toAppErr)
 }
+
+// Closure-literal form. When the mapping is one expression long,
+// inlining it as a `{ pe => ... }` closure literal keeps the
+// transformation co-located with the call site. Sema pushes the
+// expected Function type `(ParseErr) -> ?` into the closure check
+// so `pe` adopts ParseErr without an explicit annotation; the
+// body's type determines the new error type.
+func parseInlineWrap(_ s: Int32) throws(AppErr) -> Int32 {
+    return try parseInt(s).mapError({ pe => match pe {
+        case .negative: AppErr.badInput
+        case .overflow: AppErr.internalFailure
+    } })
+}

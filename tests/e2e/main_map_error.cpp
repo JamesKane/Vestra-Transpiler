@@ -32,6 +32,26 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // Closure-literal form: same mapping policy as `toAppErr` but
+    // inlined at the call site. Verifies sema pushes the expected
+    // `(ParseErr) -> ?` Function type into the closure so `pe`
+    // adopts ParseErr.
+    auto inline_ok = parseInlineWrap(42);
+    if (!inline_ok.has_value() || inline_ok.value() != 42) {
+        std::println("parseInlineWrap(42) wrong");
+        return EXIT_FAILURE;
+    }
+    auto inline_neg = parseInlineWrap(-5);
+    if (inline_neg.has_value() || inline_neg.error() != AppErr::badInput) {
+        std::println("parseInlineWrap(-5) should be AppErr.badInput");
+        return EXIT_FAILURE;
+    }
+    auto inline_over = parseInlineWrap(2000);
+    if (inline_over.has_value() || inline_over.error() != AppErr::internalFailure) {
+        std::println("parseInlineWrap(2000) should be AppErr.internalFailure");
+        return EXIT_FAILURE;
+    }
+
     std::println("mapError OK");
     return EXIT_SUCCESS;
 }

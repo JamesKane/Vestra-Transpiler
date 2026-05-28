@@ -2479,7 +2479,16 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                 if (!c.args[0].label.empty()) {
                     error_at(c.args[0].value->range, ".mapError argument cannot have a label");
                 }
-                auto arg_t = check_expr(*c.args[0].value);
+                // §9 / §16 — when the argument is a closure literal,
+                // it needs a contextual Function type so its single
+                // param adopts the Result's error type. Push down
+                // `(E) -> ?` (result left unconstrained; the body's
+                // last expression types the new error). For named-
+                // function arguments the expected type is harmless:
+                // function symbols ignore the hint and their types
+                // are checked against the (E) -> E' shape below.
+                auto expected_fn = types_->make_function({base_t->result()}, nullptr);
+                auto arg_t = check_expr(*c.args[0].value, expected_fn);
                 if (arg_t == nullptr || arg_t->is_error()) {
                     return types_->error();
                 }
