@@ -202,6 +202,7 @@ private:
 
     // ---- helpers ---------------------------------------------------------
     void error_at(diag::SourceRange r, std::string msg);
+    void warn_at(diag::SourceRange r, std::string msg);
     void duplicate_definition(const Symbol& existing,
                               std::string_view name,
                               diag::SourceRange new_range);

@@ -545,6 +545,10 @@ void Resolver::error_at(diag::SourceRange r, std::string msg) {
     reporter_->report(diag::Diagnostic::error(std::move(msg)).at(r));
 }
 
+void Resolver::warn_at(diag::SourceRange r, std::string msg) {
+    reporter_->report(diag::Diagnostic::warning(std::move(msg)).at(r));
+}
+
 void Resolver::duplicate_definition(const Symbol& existing,
                                     std::string_view name,
                                     diag::SourceRange new_range) {
@@ -4324,14 +4328,86 @@ TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
         }
     };
 
+    // §8 dead-code arm detection. Two flavors of unreachability we
+    // can pin at compile time:
+    //   - any arm after a default / catch-all wildcard is dead (the
+    //     default fires for everything that didn't match earlier).
+    //   - an enum-pattern arm whose case_name was already closed by
+    //     an earlier *unguarded* arm targeting the same case_name is
+    //     dead; the codegen groups arms by case_name and the
+    //     unguarded arm dominates anything after it in the group.
+    // The warning surfaces the user's mistake at compile time
+    // without failing the build; refactoring patterns where this
+    // happens silently is a footgun the §8 follow-up commit
+    // explicitly flagged for this slice to close.
+    bool seen_catchall = false;
+    std::unordered_set<std::string> closed_cases;
+    auto register_unguarded_cases = [&](const ast::Pattern& p, auto& self) -> void {
+        if (p.kind == ast::NodeKind::EnumPat) {
+            const auto& ep = static_cast<const ast::EnumPat&>(p);
+            closed_cases.insert(ep.case_name);
+            return;
+        }
+        if (p.kind == ast::NodeKind::OrPat) {
+            for (const auto& alt : static_cast<const ast::OrPat&>(p).alternatives) {
+                if (alt) {
+                    self(*alt, self);
+                }
+            }
+        }
+    };
+
     TypePtr result_type = nullptr;
     for (const auto& arm : m.arms) {
         ScopeStack::Guard g(scopes_);
+        // §8 dead-arm warning before processing the arm. A previous
+        // catch-all dominates everything after it regardless of the
+        // current arm's pattern.
+        if (seen_catchall) {
+            // MatchArm itself has no range; anchor the warning on the
+            // best per-arm range available (body, pattern, or the
+            // surrounding match's range as the last resort).
+            diag::SourceRange anchor = arm.pattern ? arm.pattern->range
+                                       : arm.body  ? arm.body->range
+                                                   : m.range;
+            warn_at(anchor,
+                    "match arm is unreachable: a previous default/wildcard arm dominates "
+                    "every following case");
+        } else if (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::EnumPat
+                   && !arm.guard) {
+            const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
+            if (closed_cases.contains(ep.case_name)) {
+                warn_at(arm.pattern->range,
+                        std::format("match arm is unreachable: a previous unguarded arm for "
+                                    "case '.{}' dominates this one",
+                                    ep.case_name));
+            }
+        } else if (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::EnumPat
+                   && arm.guard) {
+            const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
+            if (closed_cases.contains(ep.case_name)) {
+                warn_at(arm.pattern->range,
+                        std::format("match arm is unreachable: a previous unguarded arm for "
+                                    "case '.{}' dominates this one (the guard never runs)",
+                                    ep.case_name));
+            }
+        }
         if (arm.is_default) {
             saw_default = true;
+            seen_catchall = true;
         } else if (arm.pattern) {
             check_pattern(*arm.pattern, scrutinee_type);
             mark_enum_covered(*arm.pattern, mark_enum_covered);
+            // A wildcard arm closes everything (acts as default).
+            if (arm.pattern->kind == ast::NodeKind::WildcardPat) {
+                seen_catchall = true;
+            }
+            // §8 close the case_name(s) when the arm is unguarded.
+            // The closure walks through OrPat so `case .a | .b` closes
+            // both names; a single EnumPat closes its one name.
+            if (!arm.guard) {
+                register_unguarded_cases(*arm.pattern, register_unguarded_cases);
+            }
         }
         if (arm.guard) {
             auto gt = check_expr(*arm.guard, types_->boolean());

@@ -62,6 +62,31 @@ CheckResult check_detail(std::string source) {
     return cr;
 }
 
+// Helper: collect diagnostic messages of a given severity. Used by the
+// §8 dead-arm warning tests so a test can assert on warnings without
+// being thrown off by ordering relative to errors.
+std::vector<std::string> collect_messages(std::string source, vestra::diag::Severity sev) {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto fid = sm.add_in_memory("<test>", std::move(source));
+    vestra::lex::Lexer lex(sm, fid, rep);
+    auto tokens = lex.tokenize();
+    vestra::parse::Parser p(tokens, rep);
+    auto unit = p.parse_unit();
+    if (!rep.has_errors()) {
+        vestra::sema::TypeArena arena;
+        vestra::sema::Resolver res(unit, arena, rep);
+        res.resolve();
+    }
+    std::vector<std::string> out;
+    for (const auto& d : rep.diagnostics()) {
+        if (d.severity == sev) {
+            out.push_back(d.message);
+        }
+    }
+    return out;
+}
+
 }  // namespace
 
 TEST_CASE("a clean program produces no sema errors") {
@@ -868,6 +893,77 @@ TEST_CASE("PerCpu[T] with a primitive inner") {
     CHECK(check_errors("@noinit static c: PerCpu[UInt32]\n"
                        "func get() -> UInt32 { return c.mine() }\n")
           == 0);
+}
+
+// ---- §8 dead-code match-arm warning --------------------------------------
+
+TEST_CASE("dead arm after unguarded case is warned") {
+    auto ws = collect_messages("enum Shape {\n"
+                               "    case circle(radius: Int32)\n"
+                               "    case square(side: Int32)\n"
+                               "}\n"
+                               "func bad(_ s: Shape) -> Int32 {\n"
+                               "    return match s {\n"
+                               "        case .circle(let r) where r > 0: r\n"
+                               "        case .circle(_):                 -1\n"
+                               "        case .circle(let r) where r < 0: r\n"
+                               "        case .square(let s):             s\n"
+                               "    }\n"
+                               "}\n",
+                               vestra::diag::Severity::Warning);
+    REQUIRE(ws.size() == 1);
+    CHECK(ws[0].find("a previous unguarded arm for case '.circle'") != std::string::npos);
+}
+
+TEST_CASE("dead arm after default/wildcard is warned") {
+    auto ws = collect_messages("enum Shape {\n"
+                               "    case circle(radius: Int32)\n"
+                               "    case square(side: Int32)\n"
+                               "}\n"
+                               "func bad(_ s: Shape) -> Int32 {\n"
+                               "    return match s {\n"
+                               "        case .circle(_): 1\n"
+                               "        case _:          0\n"
+                               "        case .square(_): 2\n"
+                               "    }\n"
+                               "}\n",
+                               vestra::diag::Severity::Warning);
+    REQUIRE(ws.size() == 1);
+    CHECK(ws[0].find("default/wildcard arm dominates") != std::string::npos);
+}
+
+TEST_CASE("ordinary multi-arm enum match (no shared case) doesn't warn") {
+    auto ws = collect_messages("enum Shape {\n"
+                               "    case circle(radius: Int32)\n"
+                               "    case square(side: Int32)\n"
+                               "}\n"
+                               "func ok(_ s: Shape) -> Int32 {\n"
+                               "    return match s {\n"
+                               "        case .circle(let r): r\n"
+                               "        case .square(let s): s\n"
+                               "    }\n"
+                               "}\n",
+                               vestra::diag::Severity::Warning);
+    CHECK(ws.empty());
+}
+
+TEST_CASE("guarded arm before unguarded one for the same case doesn't warn") {
+    // The canonical "specific guard then catch-all" shape is fine —
+    // the guarded arm comes first and the unguarded arm follows;
+    // neither dominates the other (the guard might fail).
+    auto ws = collect_messages("enum Shape {\n"
+                               "    case circle(radius: Int32)\n"
+                               "    case square(side: Int32)\n"
+                               "}\n"
+                               "func ok(_ s: Shape) -> Int32 {\n"
+                               "    return match s {\n"
+                               "        case .circle(let r) where r > 0: r\n"
+                               "        case .circle(_):                 -1\n"
+                               "        case .square(let s):             s\n"
+                               "    }\n"
+                               "}\n",
+                               vestra::diag::Severity::Warning);
+    CHECK(ws.empty());
 }
 
 // ---- §14.12.2 &Sysreg.X is a compile error -------------------------------
