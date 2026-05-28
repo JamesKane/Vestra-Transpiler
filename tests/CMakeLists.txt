@@ -1563,6 +1563,31 @@ add_test(
 set_tests_properties(audit_no_libc_clean_pass PROPERTIES
     FAIL_REGULAR_EXPRESSION "extern ")
 
+# §14.9.4 wide-atomic target-feature gate (CLI end-to-end). The
+# atomics.vst example uses Atomic[UInt128] + AtomicTaggedPointer;
+# under --target=aarch64 without --target-features=lse2 the sema
+# gate fires and the build refuses to emit. Conversely, supplying
+# --target-features=lse2 lets the same build go through. The two
+# tests pin the CLI plumbing + the sema feature-set check
+# together so a regression in either layer is caught.
+add_test(
+    NAME    wide_atomic_target_gate_rejects_without_feature
+    COMMAND $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/examples/atomics.vst
+            -o ${e2e_workdir} --target=aarch64)
+# PASS_REGULAR_EXPRESSION already says "the test passes if the
+# pattern matches the output, regardless of exit status" — exactly
+# what we want here, since the sema gate prints the typed
+# diagnostic and exits non-zero.
+set_tests_properties(wide_atomic_target_gate_rejects_without_feature PROPERTIES
+    PASS_REGULAR_EXPRESSION "requires the 'lse2' target feature on aarch64")
+
+add_test(
+    NAME    wide_atomic_target_gate_admits_with_feature
+    COMMAND $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/examples/atomics.vst
+            -o ${e2e_workdir} --target=aarch64 --target-features=lse2)
+set_tests_properties(wide_atomic_target_gate_admits_with_feature PROPERTIES
+    FAIL_REGULAR_EXPRESSION "requires the 'lse2' target feature")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except

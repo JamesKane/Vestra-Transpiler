@@ -26,6 +26,19 @@ struct BuildOptions {
     // generated header so downstream link / audit tooling sees the
     // contract.
     bool no_libc = false;
+    // §A4 (§14.9.4) target-feature gating for wide atomics + lock-
+    // free pointer swaps. v0.5's hosted default keeps `target=host`
+    // so the host C++ compiler decides — `std::atomic<__uint128_t>`
+    // falls back to libatomic locks on hosts without +lse2/+cx16,
+    // which is correctness-equivalent for tests. When the user
+    // specifies a real target (`--target=aarch64` etc.) sema
+    // requires the matching feature in the features set; a missing
+    // feature errors at compile time rather than silently degrading
+    // to a locked implementation. The same gate fires for
+    // AtomicTaggedPointer[T] since it builds on the wide-atomic
+    // primitive.
+    std::string target = "host";
+    std::vector<std::string> target_features;
 };
 
 // Entry points for each `vestra` subcommand. Each returns a process exit code.

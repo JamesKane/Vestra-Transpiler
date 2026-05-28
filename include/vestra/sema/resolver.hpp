@@ -55,12 +55,33 @@ private:
 
 // The resolver. Run `.resolve()` once; afterwards `resolution()` carries the
 // findings and the reporter carries the diagnostics.
+// §A4 (§14.9.4) target-feature context. The resolver consults this
+// at every wide-atomic / AtomicTaggedPointer use site to decide
+// whether to admit the type. `arch == "host"` is the v0.5 hosted
+// default and bypasses the check (the host C++ compiler decides
+// via libatomic fallback); a non-host target requires the matching
+// architectural feature in the features set.
+struct TargetContext {
+    std::string arch = "host";
+    std::vector<std::string> features;
+
+    [[nodiscard]] bool has_feature(std::string_view name) const noexcept {
+        for (const auto& f : features) {
+            if (f == name) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
 class Resolver {
 public:
     Resolver(const ast::CompilationUnit& unit,
              TypeArena& types,
              diag::DiagnosticReporter& reporter,
-             ComptimeFolder::EmbedReader embed_reader = {});
+             ComptimeFolder::EmbedReader embed_reader = {},
+             TargetContext target = {});
 
     Resolver(const Resolver&) = delete;
     Resolver& operator=(const Resolver&) = delete;
@@ -203,6 +224,15 @@ private:
     // ---- helpers ---------------------------------------------------------
     void error_at(diag::SourceRange r, std::string msg);
     void warn_at(diag::SourceRange r, std::string msg);
+    // §A4 (§14.9.4) target-feature gate for wide atomics. Returns
+    // an empty string when the current target admits the use, or a
+    // diagnostic message naming the missing feature otherwise. The
+    // `which` argument is the type spelling that drove the check
+    // (`"Atomic"` for Atomic[UInt128/Int128], `"AtomicTaggedPointer"`
+    // for the lock-free pointer wrapper) so the diagnostic points
+    // at the right surface.
+    [[nodiscard]] std::string check_wide_atomic_feature(diag::SourceRange r,
+                                                        std::string_view which) const;
     void duplicate_definition(const Symbol& existing,
                               std::string_view name,
                               diag::SourceRange new_range);
@@ -282,6 +312,12 @@ private:
     // user-visible fields (the layout is the target description's
     // concern).
     std::unique_ptr<ast::StructDecl> builtin_context_decl_;
+    // §A4 (§14.9.4) target-feature context — consulted at every
+    // wide-atomic / AtomicTaggedPointer use site to decide whether
+    // to admit the type. v0.5 hosted default is arch=host (no
+    // check); a non-host target needs the matching architectural
+    // feature in the features set.
+    TargetContext target_;
 };
 
 }  // namespace vestra::sema

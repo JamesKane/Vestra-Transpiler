@@ -90,9 +90,10 @@ void Resolution::set_do_catch_error_type(const ast::DoCatchExpr* dc, TypePtr t) 
 Resolver::Resolver(const ast::CompilationUnit& unit,
                    TypeArena& types,
                    diag::DiagnosticReporter& reporter,
-                   ComptimeFolder::EmbedReader embed_reader)
+                   ComptimeFolder::EmbedReader embed_reader,
+                   TargetContext target)
     : unit_(&unit), types_(&types), reporter_(&reporter),
-      folder_(&scopes_.global(), std::move(embed_reader)) {}
+      folder_(&scopes_.global(), std::move(embed_reader)), target_(std::move(target)) {}
 
 void Resolver::resolve() {
     register_builtin_capabilities();
@@ -547,6 +548,44 @@ void Resolver::error_at(diag::SourceRange r, std::string msg) {
 
 void Resolver::warn_at(diag::SourceRange r, std::string msg) {
     reporter_->report(diag::Diagnostic::warning(std::move(msg)).at(r));
+}
+
+std::string Resolver::check_wide_atomic_feature(diag::SourceRange /*r*/,
+                                                std::string_view which) const {
+    // §A4 (§14.9.4) — gate wide atomics on the matching architectural
+    // feature. The hosted default (arch="host") bypasses the check
+    // since the host C++ compiler decides via libatomic at link
+    // time; explicit non-host targets need the feature in scope or
+    // the user gets a silent lock-based fallback they didn't ask
+    // for. The pre-architectural targets named here cover the
+    // arches with a 128-bit CAS in v0.5; other arches (RISC-V at
+    // its current ratified ISA, etc.) don't admit wide atomics at
+    // all.
+    if (target_.arch == "host" || target_.arch.empty()) {
+        return {};
+    }
+    if (target_.arch == "aarch64") {
+        if (target_.has_feature("lse2")) {
+            return {};
+        }
+        return std::format(
+            "{}[T] requires the 'lse2' target feature on aarch64 (the architectural 128-bit "
+            "compare-and-swap); pass --target-features=lse2 or pick a target that has it",
+            which);
+    }
+    if (target_.arch == "x86_64") {
+        if (target_.has_feature("cx16")) {
+            return {};
+        }
+        return std::format("{}[T] requires the 'cx16' target feature on x86_64 (CMPXCHG16B); pass "
+                           "--target-features=cx16 or pick a target that has it",
+                           which);
+    }
+    return std::format(
+        "{}[T] is not supported on target '{}'; v0.5 admits wide atomics on aarch64+lse2 "
+        "and x86_64+cx16",
+        which,
+        target_.arch);
 }
 
 void Resolver::duplicate_definition(const Symbol& existing,
@@ -3487,6 +3526,21 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                                          inner->describe()));
                     return types_->make_atomic(types_->error());
                 }
+                // §A4 (§14.9.4) wide-atomic target-feature gate.
+                // Atomic[UInt128] / Atomic[Int128] need a native
+                // 128-bit CAS — aarch64's +lse2 or x86_64's +cx16.
+                // Without the matching feature the host compiler
+                // would silently degrade to libatomic locks, which
+                // changes the contract (no longer lock-free). The
+                // hosted default (arch=host) admits unconditionally
+                // since the host's standard library decides.
+                if (inner != nullptr
+                    && (inner->kind() == TypeKind::UInt128 || inner->kind() == TypeKind::Int128)) {
+                    if (auto diag = check_wide_atomic_feature(t.range, "Atomic"); !diag.empty()) {
+                        error_at(t.range, std::move(diag));
+                        return types_->make_atomic(types_->error());
+                    }
+                }
                 return types_->make_atomic(inner);
             }
             // §A4 (§14.9.5) builtin `AtomicTaggedPointer[T]` — typed
@@ -3507,6 +3561,15 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                              std::format("AtomicTaggedPointer[T] requires T to be a struct or "
                                          "primitive type, got {}",
                                          inner->describe()));
+                    return types_->make_atomic_tagged_pointer(types_->error());
+                }
+                // §A4 (§14.9.4) same target-feature gate as the wide
+                // Atomic[T] above — AtomicTaggedPointer composes a
+                // (T*, uint64_t) into 128 bits and shares the same
+                // ISA-feature constraint.
+                if (auto diag = check_wide_atomic_feature(t.range, "AtomicTaggedPointer");
+                    !diag.empty()) {
+                    error_at(t.range, std::move(diag));
                     return types_->make_atomic_tagged_pointer(types_->error());
                 }
                 return types_->make_atomic_tagged_pointer(inner);

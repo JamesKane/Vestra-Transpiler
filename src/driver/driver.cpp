@@ -32,10 +32,16 @@ constexpr std::string_view UsageText = R"(usage: vestra <subcommand> [options]
 Subcommands:
   build <file.vst> [-o DIR] [--emit-only] [--dump-ast] [--dump-tokens]
                    [--skip-check] [--no-libc]
+                   [--target=ARCH] [--target-features=LIST]
         Parse, semantically check, then transpile a Vestra source file to
         C++ (.hpp + .cpp) under DIR. --skip-check elides sema (debug aid).
         --no-libc marks the build as freestanding (§A10 §15.5): the
         generated header opens with `// vestra: no_libc = true`.
+        --target picks the target architecture (host / aarch64 / x86_64 /
+        riscv64; default host). --target-features takes a comma-list of
+        ISA features (e.g. lse2,cx16). Wide atomics (Atomic[UInt128] /
+        AtomicTaggedPointer[T]) require the matching feature when the
+        target is non-host: lse2 on aarch64, cx16 on x86_64 (§14.9.4).
   check <file.vst>
         Parse and run name resolution + type checking; print any diagnostics.
         Exits 0 on a clean check.
@@ -87,6 +93,27 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
                 opts.skip_check = true;
             } else if (a == "--no-libc") {
                 opts.no_libc = true;
+            } else if (a.starts_with("--target=")) {
+                opts.target = std::string{a.substr(std::string_view{"--target="}.size())};
+            } else if (a.starts_with("--target-features=")) {
+                // §14.9.4 — split the comma-list into the feature
+                // set. Empty trailing entries from a stray comma
+                // are dropped so `lse2,` and `lse2` mean the same.
+                auto list = a.substr(std::string_view{"--target-features="}.size());
+                std::size_t start = 0;
+                while (start <= list.size()) {
+                    auto comma = list.find(',', start);
+                    auto chunk = list.substr(start,
+                                             comma == std::string_view::npos ? list.size() - start
+                                                                             : comma - start);
+                    if (!chunk.empty()) {
+                        opts.target_features.emplace_back(chunk);
+                    }
+                    if (comma == std::string_view::npos) {
+                        break;
+                    }
+                    start = comma + 1;
+                }
             } else if (!a.empty() && a[0] != '-') {
                 opts.input = std::string{a};
             } else {
@@ -202,7 +229,11 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
                                         std::istreambuf_iterator<char>());
         return bytes;
     };
-    sema::Resolver resolver(unit, arena, rep, std::move(embed_reader));
+    // §A4 (§14.9.4) target-feature context flows from BuildOptions
+    // into the resolver so the wide-atomic gate fires at the right
+    // sites.
+    sema::TargetContext target_ctx{opts.target, opts.target_features};
+    sema::Resolver resolver(unit, arena, rep, std::move(embed_reader), std::move(target_ctx));
     if (!opts.skip_check) {
         resolver.resolve();
         if (rep.has_errors()) {

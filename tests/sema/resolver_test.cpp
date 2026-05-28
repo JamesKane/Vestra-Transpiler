@@ -62,6 +62,29 @@ CheckResult check_detail(std::string source) {
     return cr;
 }
 
+// As above, but supplies a TargetContext so wide-atomic + lock-free
+// pointer-swap sites can exercise the §14.9.4 feature gate.
+CheckResult check_detail_target(std::string source, vestra::sema::TargetContext target) {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto fid = sm.add_in_memory("<test>", std::move(source));
+    vestra::lex::Lexer lex(sm, fid, rep);
+    auto tokens = lex.tokenize();
+    vestra::parse::Parser p(tokens, rep);
+    auto unit = p.parse_unit();
+    if (!rep.has_errors()) {
+        vestra::sema::TypeArena arena;
+        vestra::sema::Resolver res(unit, arena, rep, {}, std::move(target));
+        res.resolve();
+    }
+    CheckResult cr;
+    cr.error_count = rep.error_count();
+    if (!rep.diagnostics().empty()) {
+        cr.first_message = rep.diagnostics().front().message;
+    }
+    return cr;
+}
+
 // Helper: collect diagnostic messages of a given severity. Used by the
 // §8 dead-arm warning tests so a test can assert on warnings without
 // being thrown off by ordering relative to errors.
@@ -811,6 +834,64 @@ TEST_CASE("AtomicTaggedPointer[T] rejects a non-struct / non-primitive T") {
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("AtomicTaggedPointer[T] requires T to be a struct or primitive")
           != std::string::npos);
+}
+
+// ---- §A4 wide-atomic target-feature gate (§14.9.4) -----------------------
+
+TEST_CASE("aarch64 without lse2 rejects Atomic[UInt128]") {
+    // §14.9.4 — the spec calls a missing target feature a link
+    // error; the Vestra-side gate moves it to compile time and
+    // names the feature the user needs to add.
+    auto r = check_detail_target("@noinit static c: Atomic[UInt128]\n",
+                                 vestra::sema::TargetContext{"aarch64", {}});
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Atomic[T] requires the 'lse2' target feature on aarch64")
+          != std::string::npos);
+}
+
+TEST_CASE("aarch64 with lse2 admits Atomic[UInt128] + AtomicTaggedPointer") {
+    CHECK(check_detail_target("struct Node { var next: UInt64 }\n"
+                              "@noinit static c: Atomic[UInt128]\n"
+                              "@noinit static p: AtomicTaggedPointer[Node]\n",
+                              vestra::sema::TargetContext{"aarch64", {"lse2"}})
+              .error_count
+          == 0);
+}
+
+TEST_CASE("x86_64 without cx16 rejects AtomicTaggedPointer") {
+    auto r = check_detail_target("struct Node { var next: UInt64 }\n"
+                                 "@noinit static p: AtomicTaggedPointer[Node]\n",
+                                 vestra::sema::TargetContext{"x86_64", {}});
+    CHECK(r.error_count >= 1);
+    CHECK(
+        r.first_message.find("AtomicTaggedPointer[T] requires the 'cx16' target feature on x86_64")
+        != std::string::npos);
+}
+
+TEST_CASE("x86_64 with cx16 admits wide atomics") {
+    CHECK(check_detail_target("@noinit static c: Atomic[Int128]\n",
+                              vestra::sema::TargetContext{"x86_64", {"cx16"}})
+              .error_count
+          == 0);
+}
+
+TEST_CASE("riscv64 rejects wide atomics outright (no 128-bit CAS)") {
+    auto r = check_detail_target("@noinit static c: Atomic[UInt128]\n",
+                                 vestra::sema::TargetContext{"riscv64", {}});
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Atomic[T] is not supported on target 'riscv64'")
+          != std::string::npos);
+}
+
+TEST_CASE("host target admits wide atomics without any features (libatomic fallback)") {
+    // The hosted default is what the existing wide-atomics e2e
+    // relies on; if this regressed, every Atomic[UInt128] use in
+    // the test suite would start erroring.
+    CHECK(check_detail_target("@noinit static c: Atomic[UInt128]\n"
+                              "@noinit static d: Atomic[Int128]\n",
+                              vestra::sema::TargetContext{"host", {}})
+              .error_count
+          == 0);
 }
 
 // ---- §A10 @panic_handler (§15.5) -----------------------------------------
