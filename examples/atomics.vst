@@ -191,3 +191,50 @@ func signed_wide_bump(_ delta: Int128) -> Int128 {
     signed_wide.store(0, .release)
     return signed_wide.fetchAdd(delta, .acqRel)
 }
+
+// §A4 (§14.9.5) AtomicTaggedPointer surface. The lock-free pointer
+// swap composes a `MutPtr[T]` with a 64-bit tag inside a wide atomic;
+// the tag-bump-on-CAS defeats the ABA hazard that free-list reuse
+// otherwise introduces (the canonical Treiber-stack case). v0.5's
+// minimum demo doesn't need contention to exercise the typed
+// surface — single-threaded push / pop / compare-exchange against
+// a stack-resident node is enough to pin the call shapes; the
+// concurrency-stress path lives in the C++ driver.
+struct StackNode { var next: UInt64 }
+
+@noinit static stack_head: AtomicTaggedPointer[StackNode]
+
+func atp_initial_tag() -> UInt64 {
+    let (_, t) = stack_head.load(.acquire)
+    return t
+}
+
+// Single-threaded CAS push: read the current snapshot, install a
+// new top whose `next` pointer is the prior head. Returns the
+// new (post-bump) tag observed via a second load — the C++ side
+// verifies the bump-by-one rule by comparing against the snapshot
+// it captured before the call.
+func atp_push(_ new_top: MutPtr[StackNode]) -> UInt64 {
+    let (cur, cur_tag) = stack_head.load(.acquire)
+    let r = stack_head.compareExchange(cur, cur_tag, new_top, .seqCst, .acquire)
+    if r.succeeded {
+        let (_, new_tag) = stack_head.load(.acquire)
+        return new_tag
+    }
+    // On failure, .actual is the (ptr, tag) the CAS observed.
+    let (_, observed_tag) = r.actual
+    return observed_tag
+}
+
+// Failure-path probe: the expected tag is wrong, so the CAS fails
+// and we read .actual.tag (which is the current observed tag, not
+// the expected one).
+func atp_cas_failure(_ exp_ptr: MutPtr[StackNode], _ wrong_tag: UInt64,
+                     _ des: MutPtr[StackNode]) -> UInt64 {
+    let r = stack_head.compareExchange(exp_ptr, wrong_tag, des, .seqCst, .acquire)
+    if r.succeeded {
+        return 999  // sentinel: the driver passes a wrong tag so this shouldn't fire
+    }
+    let (_, observed_tag) = r.actual
+    return observed_tag
+}

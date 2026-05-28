@@ -1389,6 +1389,36 @@ TEST_CASE("UInt128 / Int128 conversion calls lower to static_cast") {
     CHECK(f.out.source.find("static_cast<std::uint64_t>(y)") != std::string::npos);
 }
 
+TEST_CASE("AtomicTaggedPointer[T] lowers to __vstr template + dispatches the typed ops") {
+    // §A4 (§14.9.5) — the lock-free wide-atomic wrapper lowers to a
+    // __vstr template that internally holds a std::atomic<__uint128_t>;
+    // load returns the (T*, uint64_t) snapshot, compareExchange
+    // dispatches to the template's compare_exchange_strong member
+    // (the auto-tag-bump lives in the template, not the call site).
+    SemaEmitFixture f("struct Node { var next: UInt64 }\n"
+                      "@noinit static head: AtomicTaggedPointer[Node]\n"
+                      "func peek_tag() -> UInt64 {\n"
+                      "    let (_, t) = head.load(.acquire)\n"
+                      "    return t\n"
+                      "}\n"
+                      "func push(_ exp: MutPtr[Node], _ exp_tag: UInt64, _ des: MutPtr[Node]) "
+                      "-> Bool {\n"
+                      "    let r = head.compareExchange(exp, exp_tag, des, .seqCst, .acquire)\n"
+                      "    return r.succeeded\n"
+                      "}\n");
+    // Type lowering — the head static decl uses the wrapped template.
+    CHECK(f.out.header.find("__vstr::AtomicTaggedPointer<Node>") != std::string::npos);
+    // Method dispatch — load goes through `.load(...)` on the template;
+    // compareExchange routes to compare_exchange_strong with the five
+    // positional args.
+    CHECK(f.out.source.find("head.load(std::memory_order_acquire)") != std::string::npos);
+    CHECK(f.out.source.find("head.compare_exchange_strong(exp, exp_tag, des,")
+          != std::string::npos);
+    // The preamble carries the template definition.
+    CHECK(f.out.header.find("struct AtomicTaggedPointer {") != std::string::npos);
+    CHECK(f.out.header.find("std::atomic<__uint128_t> raw_") != std::string::npos);
+}
+
 // ---- §A2 @inline + layout reflection (§6.8 + §7.8) -----------------------
 
 TEST_CASE("@inline(.always) lowers to [[gnu::always_inline]] + inline") {

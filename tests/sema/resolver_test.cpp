@@ -779,6 +779,40 @@ TEST_CASE("Atomic[T] surfaces the bitwise fetch ops + compareExchange") {
           == 0);
 }
 
+// ---- §A4 AtomicTaggedPointer (§14.9.5) -----------------------------------
+
+TEST_CASE("AtomicTaggedPointer[T] admits the typed (Ptr[T], tag) surface") {
+    // §A4 (§14.9.5) lock-free wide-atomic wrapper. Compose with a
+    // nominal Struct (the canonical Treiber-stack node shape). The
+    // synthesized methods are .load(ordering) -> (Ptr[T], UInt64),
+    // .store(ptr, tag, ordering) -> Unit, and .compareExchange(...)
+    // -> CASResult[(Ptr[T], UInt64)] — the CAS auto-bumps the tag,
+    // so callers thread only the pointer through.
+    CHECK(check_errors("struct Node { var next: UInt64 }\n"
+                       "@noinit static head: AtomicTaggedPointer[Node]\n"
+                       "func peek() -> UInt64 {\n"
+                       "    let (p, t) = head.load(.acquire)\n"
+                       "    return t\n"
+                       "}\n"
+                       "func cas_push(_ exp: MutPtr[Node], _ exp_tag: UInt64, _ des: MutPtr[Node]) "
+                       "-> Bool {\n"
+                       "    let r = head.compareExchange(exp, exp_tag, des, .seqCst, .acquire)\n"
+                       "    return r.succeeded\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("AtomicTaggedPointer[T] rejects a non-struct / non-primitive T") {
+    // The tagged-pointer wrapper holds a single T* slot, not a
+    // structural composition; pointer-of-pointer, optional, etc.
+    // don't fit. The diagnostic names the rule + the rejected
+    // type's spelling so the user sees what to use instead.
+    auto r = check_detail("@noinit static head: AtomicTaggedPointer[UInt32?]\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("AtomicTaggedPointer[T] requires T to be a struct or primitive")
+          != std::string::npos);
+}
+
 // ---- §A10 @panic_handler (§15.5) -----------------------------------------
 
 TEST_CASE("@panic_handler accepts the canonical signature") {

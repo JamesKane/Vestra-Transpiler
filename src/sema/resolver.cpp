@@ -3489,6 +3489,28 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                 }
                 return types_->make_atomic(inner);
             }
+            // §A4 (§14.9.5) builtin `AtomicTaggedPointer[T]` — typed
+            // wide-atomic wrapper that builds an ABA-safe (Ptr[T],
+            // tag) pair on top of Atomic[UInt128]. T is the pointee
+            // type; v0.5 admits a nominal Struct (the standard
+            // Treiber-stack node shape) or a primitive. Pointer-to-
+            // pointer, pointer-to-vector, etc. are rejected — the
+            // tagged-pointer wrapper holds a single T* slot, not a
+            // structural composition, so the inner has to be the
+            // pointee directly.
+            if (n.path[0] == "AtomicTaggedPointer" && n.type_args.size() == 1) {
+                TypePtr inner = n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error();
+                const bool ok = inner == nullptr || inner->is_error() || inner->is_primitive()
+                                || inner->kind() == TypeKind::Struct;
+                if (!ok) {
+                    error_at(t.range,
+                             std::format("AtomicTaggedPointer[T] requires T to be a struct or "
+                                         "primitive type, got {}",
+                                         inner->describe()));
+                    return types_->make_atomic_tagged_pointer(types_->error());
+                }
+                return types_->make_atomic_tagged_pointer(inner);
+            }
             // Try primitives first (Int32, Bool, ...).
             auto prim_kind = TypeArena::primitive_kind_by_name(n.path[0]);
             if (prim_kind != TypeKind::Error) {
@@ -3957,6 +3979,40 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
         if (name == "compareExchange" || name == "compareExchangeWeak") {
             return types_->make_function({T, T, ordering_type, ordering_type},
                                          types_->make_cas_result(T));
+        }
+    }
+    // §A4 (§14.9.5) AtomicTaggedPointer[T] method synthesis. The
+    // wrapper hides the wide-atomic plumbing behind a typed
+    // (MutPtr[T], tag) surface:
+    //   .load(ordering) -> (MutPtr[T], UInt64)
+    //   .store(ptr, tag, ordering) -> Unit
+    //   .compareExchange(exp_ptr, exp_tag, des_ptr, success, failure)
+    //       -> CASResult[(MutPtr[T], UInt64)]
+    // The CAS auto-bumps the tag on the desired side (the codegen
+    // does it), so callers thread only the pointer through; the tag
+    // observed on failure threads back via .actual for the retry.
+    // MutPtr is the right spelling since the Treiber-stack node's
+    // link field is mutable and the CAS itself writes the pointer
+    // through the wide-atomic word; users who only want a read-only
+    // view can take a Ptr[T] from the MutPtr at the call site.
+    if (owner_type->kind() == TypeKind::AtomicTaggedPointer && owner_type->inner() != nullptr) {
+        TypePtr T = owner_type->inner();
+        TypePtr ptr_t = types_->make_mut_ptr(T);
+        TypePtr u64 = types_->primitive(TypeKind::UInt64);
+        TypePtr snapshot = types_->make_tuple({ptr_t, u64});
+        TypePtr ordering_type =
+            builtin_ordering_decl_ != nullptr
+                ? types_->make_nominal(TypeKind::Enum, builtin_ordering_decl_.get())
+                : types_->error();
+        if (name == "load") {
+            return types_->make_function({ordering_type}, snapshot);
+        }
+        if (name == "store") {
+            return types_->make_function({ptr_t, u64, ordering_type}, types_->unit());
+        }
+        if (name == "compareExchange") {
+            return types_->make_function({ptr_t, u64, ptr_t, ordering_type, ordering_type},
+                                         types_->make_cas_result(snapshot));
         }
     }
     if (name == "next") {

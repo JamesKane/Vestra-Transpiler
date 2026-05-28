@@ -623,6 +623,60 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    T actual;\n";
     hdr << "};\n\n";
 
+    // §A4 (§14.9.5) AtomicTaggedPointer<T> — ABA-safe pointer swap
+    // built on top of the §A4 wide-atomic primitive. The wrapper
+    // holds a single `std::atomic<__uint128_t>` underneath; the low
+    // 64 bits store the pointer (as a `T*` bit-pattern via
+    // `reinterpret_cast`), the high 64 bits store an unsigned tag
+    // that the compare-exchange auto-bumps on the desired side so a
+    // concurrent observer can detect a swap-and-restore.
+    //
+    // The hosted build relies on libatomic when the target ISA
+    // doesn't provide a native 128-bit CAS (aarch64 needs +lse2,
+    // x86_64 needs +cx16); without those features the operation
+    // falls back to a lock-based implementation that's still
+    // correct, just not lock-free. The kernel target ships with
+    // the required features in its build description so the
+    // generated code lands on the native instruction.
+    //
+    // The load returns a {ptr, tag} snapshot as std::tuple<T*,
+    // std::uint64_t> so the Vestra tuple-destructuring path picks
+    // it up unchanged. compareExchange takes the expected pointer
+    // and tag separately (matches the v0.5 sema shape) and writes
+    // (desired_ptr, exp_tag + 1) on success; on failure the CAS
+    // updates the local `exp` value, which we unpack back into a
+    // snapshot for `CASResult.actual` so the caller can retry.
+    hdr << "template <class T>\n";
+    hdr << "struct AtomicTaggedPointer {\n";
+    hdr << "    std::atomic<__uint128_t> raw_{0};\n";
+    hdr << "    static constexpr __uint128_t pack(T* p, std::uint64_t tag) noexcept {\n";
+    hdr << "        return (static_cast<__uint128_t>(tag) << 64)\n";
+    hdr << "             | static_cast<__uint128_t>(reinterpret_cast<std::uintptr_t>(p));\n";
+    hdr << "    }\n";
+    hdr << "    static constexpr std::tuple<T*, std::uint64_t> unpack(__uint128_t v) noexcept {\n";
+    hdr << "        return {\n";
+    hdr << "            reinterpret_cast<T*>(static_cast<std::uintptr_t>(v)),\n";
+    hdr << "            static_cast<std::uint64_t>(v >> 64),\n";
+    hdr << "        };\n";
+    hdr << "    }\n";
+    hdr << "    [[nodiscard]] std::tuple<T*, std::uint64_t> load(std::memory_order o) const "
+           "noexcept {\n";
+    hdr << "        return unpack(raw_.load(o));\n";
+    hdr << "    }\n";
+    hdr << "    void store(T* p, std::uint64_t tag, std::memory_order o) noexcept {\n";
+    hdr << "        raw_.store(pack(p, tag), o);\n";
+    hdr << "    }\n";
+    hdr << "    [[nodiscard]] CASResult<std::tuple<T*, std::uint64_t>>\n";
+    hdr << "    compare_exchange_strong(T* exp_ptr, std::uint64_t exp_tag, T* des_ptr,\n";
+    hdr << "                            std::memory_order success,\n";
+    hdr << "                            std::memory_order failure) noexcept {\n";
+    hdr << "        __uint128_t exp = pack(exp_ptr, exp_tag);\n";
+    hdr << "        __uint128_t des = pack(des_ptr, exp_tag + 1);\n";
+    hdr << "        bool ok = raw_.compare_exchange_strong(exp, des, success, failure);\n";
+    hdr << "        return {ok, unpack(exp)};\n";
+    hdr << "    }\n";
+    hdr << "};\n\n";
+
     // §14.12 typed sysreg handles. The runtime template wraps a
     // single backing cell (per-name `inline` storage below) with
     // `.read()` / `.write(v)` methods. v0.5 hosted reads/writes the
@@ -1295,6 +1349,20 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
             // also handles function pointers properly when the type
             // is used as a parameter (`R(*name)(T1)`).
             const bool is_fn_ptr = p.type != nullptr && p.type->kind == ast::NodeKind::FunctionType;
+            // §A3 (§10.5) raw pointers are word-sized Trivial values;
+            // passing them by `const T&` is the canonical Vestra
+            // read-mode lowering, but the C++ spelling `const Node*&`
+            // would mean "reference to pointer-to-const-Node" — the
+            // const binds to the pointee, not the pointer. The right
+            // fix is to pass pointer types by value, since they have
+            // a single-word bit-pattern and can't be reassigned in
+            // C++ from a read-mode caller's perspective either way.
+            const bool is_raw_ptr =
+                p.type != nullptr
+                && (p.type->kind == ast::NodeKind::NamedType
+                    && !static_cast<const ast::NamedType&>(*p.type).path.empty()
+                    && (static_cast<const ast::NamedType&>(*p.type).path[0] == "Ptr"
+                        || static_cast<const ast::NamedType&>(*p.type).path[0] == "MutPtr"));
             const std::string pname{param_cpp_name(i, p)};
             switch (p.mode) {
             case ast::ParamMode::Read:
@@ -1302,6 +1370,11 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
                     if (p.type) {
                         emit_type_with_name(os, *p.type, pname);
                     }
+                } else if (is_raw_ptr) {
+                    if (p.type) {
+                        emit_type(os, *p.type);
+                    }
+                    os << " " << pname;
                 } else {
                     os << "const ";
                     if (p.type) {
@@ -3637,6 +3710,23 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << ">{__vstr_ok, __vstr_e}; }())";
                 break;
             }
+            // §A4 (§14.9.5) AtomicTaggedPointer compareExchange — the
+            // template's member already returns CASResult<std::tuple<T*,
+            // uint64_t>> and auto-bumps the tag, so the lowering is a
+            // direct member-method call rather than an IIFE.
+            if (base_t != nullptr && base_t->kind() == sema::TypeKind::AtomicTaggedPointer
+                && is_strong && c.args.size() == 5) {
+                emit_expr(os, *mem.base);
+                os << ".compare_exchange_strong(";
+                for (std::size_t i = 0; i < c.args.size(); ++i) {
+                    if (i != 0) {
+                        os << ", ";
+                    }
+                    emit_expr(os, *c.args[i].value);
+                }
+                os << ")";
+                break;
+            }
         }
         // §9 `result.mapError(f)` lowers to std::expected's
         // `.transform_error(f)` — the closure runs on the error path
@@ -4423,6 +4513,11 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         emit_sema_type(os, t->inner());
         os << ">";
         return;
+    case TypeKind::AtomicTaggedPointer:
+        os << "__vstr::AtomicTaggedPointer<";
+        emit_sema_type(os, t->inner());
+        os << ">";
+        return;
     case TypeKind::Result:
         os << "std::expected<";
         emit_sema_type(os, t->inner());
@@ -4654,6 +4749,16 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
             // §A4 (§14.9) `Atomic[T]` lowers to `std::atomic<T>`.
             if (n.path[0] == "Atomic" && n.type_args.size() == 1) {
                 os << "std::atomic<";
+                emit_type(os, *n.type_args[0]);
+                os << ">";
+                return;
+            }
+            // §A4 (§14.9.5) `AtomicTaggedPointer[T]` lowers to the
+            // runtime template. The template holds an
+            // `std::atomic<__uint128_t>` underneath and exposes a
+            // typed (T*, uint64_t) load / compareExchange surface.
+            if (n.path[0] == "AtomicTaggedPointer" && n.type_args.size() == 1) {
+                os << "__vstr::AtomicTaggedPointer<";
                 emit_type(os, *n.type_args[0]);
                 os << ">";
                 return;

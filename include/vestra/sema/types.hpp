@@ -137,6 +137,17 @@ enum class TypeKind : std::uint16_t {
     // returns. Two fields: `succeeded: Bool`, `actual: T`. Lowers to
     // the __vstr::CASResult<T> template in the runtime preamble.
     CasResult,
+    // §A4 (§14.9.5) AtomicTaggedPointer[T] — lock-free ABA-safe
+    // pointer swap built on top of §A4 wide atomics. Wraps an
+    // `Atomic[UInt128]` underneath but presents a typed surface:
+    // `.load(ordering) -> (Ptr[T], UInt64)` returns the (pointer,
+    // tag) snapshot; `.compareExchange(exp_ptr, exp_tag, des_ptr,
+    // success, failure) -> CASResult[(Ptr[T], UInt64)]` auto-bumps
+    // the tag on the desired side so a concurrent observer can
+    // detect a swap-and-restore. The classic load-bearing use is
+    // Treiber-stack push/pop where ABA via free-list reuse would
+    // otherwise allow a stale pointer to look fresh.
+    AtomicTaggedPointer,
     // nominal — point back to an ast::Decl
     Struct,
     Enum,
@@ -254,6 +265,10 @@ public:
     [[nodiscard]] TypePtr make_atomic(TypePtr inner);
     // §A4 (§14.9.3) CASResult[T] — returned by Atomic[T].compareExchange.
     [[nodiscard]] TypePtr make_cas_result(TypePtr inner);
+    // §A4 (§14.9.5) AtomicTaggedPointer[T] — typed wide-atomic
+    // tagged-pointer wrapper. Inner is the pointee T; the wrapper
+    // composes (Ptr[T], UInt64) tag inside an Atomic[UInt128].
+    [[nodiscard]] TypePtr make_atomic_tagged_pointer(TypePtr inner);
     [[nodiscard]] TypePtr make_vector(std::int64_t length, TypePtr element);
     [[nodiscard]] TypePtr make_function(std::vector<TypePtr> params, TypePtr result);
     [[nodiscard]] TypePtr make_tuple(std::vector<TypePtr> elements);

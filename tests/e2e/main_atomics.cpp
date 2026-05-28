@@ -138,6 +138,40 @@ int main() {
         }
     }
 
+    // §A4 (§14.9.5) AtomicTaggedPointer surface. Single-threaded
+    // exercises pin the call shape; the tag auto-bumps by one on
+    // every successful CAS, the failure path reports the observed
+    // (ptr, tag) via .actual.
+    {
+        StackNode n1{};
+        n1.next = 0;
+        StackNode n2{};
+        n2.next = 0;
+        if (atp_initial_tag() != 0) {
+            std::println("atp_initial_tag should be 0");
+            return EXIT_FAILURE;
+        }
+        if (auto t = atp_push(&n1); t != 1) {
+            std::println("atp_push first call: tag should be 1, got {}", t);
+            return EXIT_FAILURE;
+        }
+        auto [cur1, cur1_tag] = stack_head.load(std::memory_order_acquire);
+        if (cur1 != &n1 || cur1_tag != 1) {
+            std::println("stack_head should be (&n1, 1) after first push");
+            return EXIT_FAILURE;
+        }
+        if (auto t = atp_push(&n2); t != 2) {
+            std::println("atp_push second call: tag should be 2, got {}", t);
+            return EXIT_FAILURE;
+        }
+        // Failure path: wrong tag, CAS observes the current (2) and
+        // returns it via .actual.
+        if (auto t = atp_cas_failure(&n2, 999, &n1); t != 2) {
+            std::println("atp_cas_failure should report observed tag 2, got {}", t);
+            return EXIT_FAILURE;
+        }
+    }
+
     std::println("atomics OK");
     return EXIT_SUCCESS;
 }
