@@ -987,10 +987,17 @@ TEST_CASE("cfg.option(\"cache_line_bytes\") lowers to the folded integer literal
 TEST_CASE("Padded[T] lowers to __vstr::Padded<T> with cache-line alignment") {
     auto out = emit("@noinit static slot: Padded[UInt64]\n"
                     "func read_it() -> UInt64 { return slot.value }\n");
-    // The runtime preamble defines the 64-byte-aligned template
-    // with tail padding bringing sizeof up to a cache line.
-    CHECK(out.header.find("struct alignas(64) Padded {") != std::string::npos);
-    CHECK(out.header.find("std::uint8_t _pad[(64 - sizeof(T) % 64) % 64];") != std::string::npos);
+    // §14.8 / §12.6 — the preamble defines a single comptime-known
+    // cache_line_bytes constant; the Padded template and its tail-
+    // pad expression both reference it, so one source of truth
+    // drives the alignas + sizeof rounding. v0.5 hardcodes 64; the
+    // build-time override hook lives in the cfg dispatch table.
+    CHECK(out.header.find("inline constexpr std::size_t cache_line_bytes = 64;")
+          != std::string::npos);
+    CHECK(out.header.find("struct alignas(cache_line_bytes) Padded {") != std::string::npos);
+    CHECK(out.header.find("std::uint8_t _pad[(cache_line_bytes - sizeof(T) % cache_line_bytes) "
+                          "% cache_line_bytes];")
+          != std::string::npos);
     // The static decl uses the template at the Vestra-side type.
     CHECK(out.header.find("inline __vstr::Padded<std::uint64_t> slot") != std::string::npos);
     // `.value` reads the inner value through the wrapper.

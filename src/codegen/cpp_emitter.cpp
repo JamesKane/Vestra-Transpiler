@@ -554,20 +554,30 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    }\n";
     hdr << "};\n\n";
 
+    // §14.8 / §12.6 — the cache-line width is exposed at the C++
+    // layer as a named comptime constant so user code that needs
+    // the value (and the Padded template below) reference one
+    // source of truth. The Vestra-side spelling `cfg.option(
+    // "cache_line_bytes")` folds to the same number via the
+    // existing comptime accessor. v0.5 hardcodes 64; a future
+    // build-time override of the option becomes a one-line change
+    // to the dispatch table here + in `cfg_option` (sema/resolver
+    // intercept).
+    hdr << "inline constexpr std::size_t cache_line_bytes = 64;\n\n";
+
     // §A11 (§14.8) `Padded<T>` — cache-line-padded wrapper. The
     // value sits at offset 0 with tail padding bringing sizeof up
-    // to the cache-line width (v0.5 hardcodes 64; the spec routes
-    // this through `cfg.option("cache_line_bytes")`, which lands
-    // in a later slice). The `alignas` ensures the storage starts
-    // on a cache-line boundary so adjacent values can't share
-    // a line — the load-bearing property for per-hart arrays and
-    // lock-free ring slots. The trailing `_pad` field is sized
-    // via a tiny conditional so a T that already exceeds 64 bytes
-    // doesn't get a negative-array-bounds error.
+    // to the cache-line width. The `alignas` ensures the storage
+    // starts on a cache-line boundary so adjacent values can't
+    // share a line — the load-bearing property for per-hart arrays
+    // and lock-free ring slots. The trailing `_pad` field is sized
+    // via a tiny conditional so a T that already exceeds the line
+    // width doesn't get a negative-array-bounds error.
     hdr << "template <class T>\n";
-    hdr << "struct alignas(64) Padded {\n";
+    hdr << "struct alignas(cache_line_bytes) Padded {\n";
     hdr << "    T value;\n";
-    hdr << "    std::uint8_t _pad[(64 - sizeof(T) % 64) % 64];\n";
+    hdr << "    std::uint8_t _pad[(cache_line_bytes - sizeof(T) % cache_line_bytes) "
+           "% cache_line_bytes];\n";
     hdr << "};\n\n";
 
     hdr << "template <class T>\n";
