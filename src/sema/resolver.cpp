@@ -1883,6 +1883,27 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
                          std::format("undefined name '{}' in &decl operand", id.name));
             }
             t = types_->error();
+        } else if (a.inner != nullptr && a.inner->kind == ast::NodeKind::MemberExpr) {
+            // §14.12.2 `&Sysreg.X` is rejected by spec: a sysreg is
+            // an architectural cell accessed via `mrs` / `msr`, not a
+            // memory cell with a linkage symbol. The generic
+            // "must be a static or func identifier" diagnostic doesn't
+            // make that distinction clear, so we name Sysreg
+            // specifically here. Other MemberExpr operands (struct
+            // field access, etc.) fall through to the generic message.
+            const auto& mem = static_cast<const ast::MemberExpr&>(*a.inner);
+            if (mem.base != nullptr && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "Sysreg"
+                && scopes_.current().lookup("Sysreg") == nullptr) {
+                error_at(e.range,
+                         std::format("&Sysreg.{} is rejected: sysregs are architectural "
+                                     "cells, not memory cells with a linkage symbol "
+                                     "(§14.12.2)",
+                                     mem.member));
+            } else {
+                error_at(e.range, "&decl operand must be a static or func identifier");
+            }
+            t = types_->error();
         } else {
             error_at(e.range, "&decl operand must be a static or func identifier");
             t = types_->error();

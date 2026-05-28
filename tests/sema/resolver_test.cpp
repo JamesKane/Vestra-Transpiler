@@ -870,6 +870,34 @@ TEST_CASE("PerCpu[T] with a primitive inner") {
           == 0);
 }
 
+// ---- §14.12.2 &Sysreg.X is a compile error -------------------------------
+
+TEST_CASE("&Sysreg.X is rejected with a targeted spec-rule diagnostic") {
+    // §14.12.2: "&Sysreg.daif is a compile error (a sysreg is not a
+    // memory cell with a linkage symbol)." The diagnostic names
+    // Sysreg specifically + the spec section so the user sees it's
+    // a rule about architectural cells, not a parser quirk.
+    auto r = check_detail("func bad() -> Int32 {\n"
+                          "    let p = &Sysreg.daif\n"
+                          "    return 0\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("&Sysreg.daif is rejected") != std::string::npos);
+    CHECK(r.first_message.find("§14.12.2") != std::string::npos);
+}
+
+TEST_CASE("&otherStruct.field still gets the generic non-identifier diagnostic") {
+    // Other MemberExpr operands (a field access, etc.) fall through
+    // to the generic "must be a static or func identifier" rejection.
+    auto r = check_detail("struct Foo { var x: Int32 }\n"
+                          "func bad(_ f: Foo) -> Int32 {\n"
+                          "    let p = &f.x\n"
+                          "    return 0\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("must be a static or func identifier") != std::string::npos);
+}
+
 // ---- §14.12 typed sysreg access (first slice) ----------------------------
 
 TEST_CASE("Sysreg.<name>.read / .write type-check under Asm") {
