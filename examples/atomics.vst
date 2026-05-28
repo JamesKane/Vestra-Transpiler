@@ -135,3 +135,59 @@ func bitwise_chain() -> UInt32 {
     let final = bits.load(.acquire)        // 0xFF
     return a + b + c + final               // 0xF0 + 0xFF + 0xFE + 0xFF = 0x3EC
 }
+
+// §A4 (§14.9.4) wide-atomic surface. Atomic[UInt128] / Atomic[Int128]
+// back the load-bearing tagged-pointer + seqlock patterns the
+// kernel needs. UInt128 / Int128 are the Vestra-level spellings;
+// they lower to GCC / Clang's `__uint128_t` / `__int128_t` so
+// `std::atomic<__uint128_t>` is the right C++ shape. Hosts with
+// aarch64 +lse2 / x86_64 +cx16 get a native lock-free
+// instruction; without those features libatomic falls back to a
+// lock, but the C++-level contract stays the same.
+static wide_counter: Atomic[UInt128] = 0
+
+func wide_bump(_ delta: UInt128) -> UInt128 {
+    wide_counter.store(0, .release)
+    let prev = wide_counter.fetchAdd(delta, .acqRel)
+    return prev + wide_counter.load(.acquire)
+}
+
+func wide_swap(_ v: UInt128) -> UInt128 {
+    return wide_counter.exchange(v, .seqCst)
+}
+
+func wide_widen(_ x: UInt64) -> UInt128 {
+    return UInt128(x)
+}
+
+// Compare-exchange shape gates the typed seqlock; mirror the
+// 32-bit cas_success / cas_failure shape so the e2e cross-checks
+// the wide path.
+static wide_cas: Atomic[UInt128] = 0
+
+func wide_cas_success(_ desired: UInt128) -> UInt128 {
+    let r = wide_cas.compareExchange(0, desired, .seqCst, .acquire)
+    if r.succeeded {
+        return r.actual
+    }
+    return r.actual + 1000
+}
+
+func wide_cas_failure(_ wrong: UInt128, _ desired: UInt128) -> UInt128 {
+    let r = wide_cas.compareExchange(wrong, desired, .seqCst, .acquire)
+    if r.succeeded {
+        return 0
+    }
+    return r.actual
+}
+
+// Signed-128 sanity. The architectures admit Atomic[Int128] with
+// the same instruction; sema separately tracks the signedness so
+// downstream code that cares about overflow semantics sees the
+// right type.
+static signed_wide: Atomic[Int128] = 0
+
+func signed_wide_bump(_ delta: Int128) -> Int128 {
+    signed_wide.store(0, .release)
+    return signed_wide.fetchAdd(delta, .acqRel)
+}

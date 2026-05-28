@@ -27,6 +27,8 @@ bool Type::is_primitive() const noexcept {
     case TypeKind::UInt32:
     case TypeKind::UInt64:
     case TypeKind::UInt:
+    case TypeKind::Int128:
+    case TypeKind::UInt128:
     case TypeKind::Float32:
     case TypeKind::Float64:
     case TypeKind::Bool:
@@ -53,6 +55,8 @@ bool Type::is_integer() const noexcept {
     case TypeKind::UInt32:
     case TypeKind::UInt64:
     case TypeKind::UInt:
+    case TypeKind::Int128:
+    case TypeKind::UInt128:
         return true;
     default:
         return false;
@@ -87,6 +91,10 @@ std::string_view primitive_spelling(TypeKind k) noexcept {
         return "UInt64";
     case TypeKind::UInt:
         return "UInt";
+    case TypeKind::Int128:
+        return "Int128";
+    case TypeKind::UInt128:
+        return "UInt128";
     case TypeKind::Float32:
         return "Float32";
     case TypeKind::Float64:
@@ -239,11 +247,12 @@ std::string Type::describe() const {
 
 TypeArena::TypeArena() {
     // Pre-intern every primitive so calls to primitive(...) are O(1) hash hits.
-    for (auto k : {TypeKind::Int8,   TypeKind::Int16,    TypeKind::Int32,   TypeKind::Int64,
-                   TypeKind::Int,    TypeKind::UInt8,    TypeKind::UInt16,  TypeKind::UInt32,
-                   TypeKind::UInt64, TypeKind::UInt,     TypeKind::Float32, TypeKind::Float64,
-                   TypeKind::Bool,   TypeKind::Char,     TypeKind::Unit,    TypeKind::String,
-                   TypeKind::Str,    TypeKind::StrConst, TypeKind::Never,   TypeKind::Error}) {
+    for (auto k : {TypeKind::Int8,    TypeKind::Int16,   TypeKind::Int32,  TypeKind::Int64,
+                   TypeKind::Int,     TypeKind::UInt8,   TypeKind::UInt16, TypeKind::UInt32,
+                   TypeKind::UInt64,  TypeKind::UInt,    TypeKind::Int128, TypeKind::UInt128,
+                   TypeKind::Float32, TypeKind::Float64, TypeKind::Bool,   TypeKind::Char,
+                   TypeKind::Unit,    TypeKind::String,  TypeKind::Str,    TypeKind::StrConst,
+                   TypeKind::Never,   TypeKind::Error}) {
         auto t = std::unique_ptr<Type>(new Type(k));
         primitives_.emplace(k, t.get());
         owned_.push_back(std::move(t));
@@ -487,6 +496,8 @@ TypeKind TypeArena::primitive_kind_by_name(std::string_view name) noexcept {
         {"UInt32", TypeKind::UInt32},
         {"UInt64", TypeKind::UInt64},
         {"UInt", TypeKind::UInt},
+        {"Int128", TypeKind::Int128},
+        {"UInt128", TypeKind::UInt128},
         {"Float32", TypeKind::Float32},
         {"Float64", TypeKind::Float64},
         {"Bool", TypeKind::Bool},
@@ -607,13 +618,14 @@ bool TypeArena::assignable(TypePtr from, TypePtr to) noexcept {
         // implicitly (a sign change is a real concern; require the
         // explicit `UInt32(i)` for that).
         if (from_natural || to_natural) {
-            const bool from_signed = from->kind() == TypeKind::Int || from->kind() == TypeKind::Int8
-                                     || from->kind() == TypeKind::Int16
-                                     || from->kind() == TypeKind::Int32
-                                     || from->kind() == TypeKind::Int64;
+            const bool from_signed =
+                from->kind() == TypeKind::Int || from->kind() == TypeKind::Int8
+                || from->kind() == TypeKind::Int16 || from->kind() == TypeKind::Int32
+                || from->kind() == TypeKind::Int64 || from->kind() == TypeKind::Int128;
             const bool to_signed = to->kind() == TypeKind::Int || to->kind() == TypeKind::Int8
                                    || to->kind() == TypeKind::Int16 || to->kind() == TypeKind::Int32
-                                   || to->kind() == TypeKind::Int64;
+                                   || to->kind() == TypeKind::Int64
+                                   || to->kind() == TypeKind::Int128;
             if (from_signed == to_signed) {
                 return true;
             }

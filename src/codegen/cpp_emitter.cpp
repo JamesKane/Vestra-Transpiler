@@ -47,6 +47,19 @@ const std::unordered_map<std::string, std::string>& primitive_map() {
         {"UInt64", "std::uint64_t"},
         {"Int", "std::intptr_t"},
         {"UInt", "std::uintptr_t"},
+        // §A4 (§14.9.4) wide integers. GCC / Clang provide
+        // `__int128_t` / `__uint128_t` as compiler intrinsics on
+        // every target we care about (aarch64, x86_64, RISC-V at
+        // 64-bit). The standard library doesn't have a portable
+        // spelling yet — these are intentionally unportable, but
+        // they're the platform-blessed way to express the 128-bit
+        // integer the §A4 atomic surface needs. The atomic
+        // architectures (aarch64 +lse2, x86_64 +cx16) handle
+        // `std::atomic<__uint128_t>` natively; on hosts without
+        // those features libatomic falls back to a lock-based
+        // implementation, which is fine for v0.5 hosted testing.
+        {"Int128", "__int128_t"},
+        {"UInt128", "__uint128_t"},
         {"Float32", "float"},
         {"Float64", "double"},
         {"Bool", "bool"},
@@ -4291,6 +4304,12 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         return;
     case TypeKind::UInt:
         os << "std::uintptr_t";
+        return;
+    case TypeKind::Int128:
+        os << "__int128_t";
+        return;
+    case TypeKind::UInt128:
+        os << "__uint128_t";
         return;
     case TypeKind::Float32:
         os << "float";

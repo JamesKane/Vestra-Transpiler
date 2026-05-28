@@ -3659,6 +3659,8 @@ bool Resolver::is_default_conformant(TypePtr t) const {
     case TypeKind::UInt16:
     case TypeKind::UInt32:
     case TypeKind::UInt64:
+    case TypeKind::Int128:
+    case TypeKind::UInt128:
     case TypeKind::Float32:
     case TypeKind::Float64:
     case TypeKind::Bool:

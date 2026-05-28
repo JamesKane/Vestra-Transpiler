@@ -1350,6 +1350,45 @@ TEST_CASE("Atomic[T] type lowers to std::atomic<T> and ops dispatch correctly") 
     CHECK(f.out.source.find("c.load(std::memory_order_acquire)") != std::string::npos);
 }
 
+TEST_CASE("Atomic[UInt128] / Atomic[Int128] lower to std::atomic over __*int128_t") {
+    // §A4 (§14.9.4) wide-atomic codegen. The Vestra-level UInt128 /
+    // Int128 primitives lower to the GCC / Clang `__uint128_t` /
+    // `__int128_t` intrinsics; wrapping them in std::atomic gives the
+    // 128-bit atomic surface the kernel needs for tagged-pointer
+    // and seqlock patterns. The synthesized method names follow the
+    // same .load / .fetch_add / .compare_exchange lowering as the
+    // 32-bit case below.
+    SemaEmitFixture f("static p: Atomic[UInt128] = 0\n"
+                      "static q: Atomic[Int128] = 0\n"
+                      "func use() -> UInt128 {\n"
+                      "    p.store(0, .release)\n"
+                      "    let _e = p.exchange(7, .seqCst)\n"
+                      "    let _a = p.fetchAdd(1, .acqRel)\n"
+                      "    return p.load(.acquire)\n"
+                      "}\n"
+                      "func cas() -> Bool {\n"
+                      "    let r = q.compareExchange(0, 1, .seqCst, .acquire)\n"
+                      "    return r.succeeded\n"
+                      "}\n");
+    CHECK(f.out.header.find("inline std::atomic<__uint128_t> p = 0;") != std::string::npos);
+    CHECK(f.out.header.find("inline std::atomic<__int128_t> q = 0;") != std::string::npos);
+    CHECK(f.out.source.find("p.fetch_add(1, std::memory_order_acq_rel)") != std::string::npos);
+    CHECK(f.out.source.find("p.exchange(7, std::memory_order_seq_cst)") != std::string::npos);
+    CHECK(f.out.source.find("p.load(std::memory_order_acquire)") != std::string::npos);
+    CHECK(f.out.source.find("q.compare_exchange_strong") != std::string::npos);
+}
+
+TEST_CASE("UInt128 / Int128 conversion calls lower to static_cast") {
+    SemaEmitFixture f("func widen(_ x: UInt64) -> UInt128 {\n"
+                      "    return UInt128(x)\n"
+                      "}\n"
+                      "func narrow(_ y: UInt128) -> UInt64 {\n"
+                      "    return UInt64(y)\n"
+                      "}\n");
+    CHECK(f.out.source.find("static_cast<__uint128_t>(x)") != std::string::npos);
+    CHECK(f.out.source.find("static_cast<std::uint64_t>(y)") != std::string::npos);
+}
+
 // ---- §A2 @inline + layout reflection (§6.8 + §7.8) -----------------------
 
 TEST_CASE("@inline(.always) lowers to [[gnu::always_inline]] + inline") {

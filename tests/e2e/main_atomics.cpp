@@ -85,6 +85,59 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // §A4 (§14.9.4) wide-atomic surface. Cross-check via direct
+    // reads against std::atomic<__uint128_t> / std::atomic<__int128_t>.
+    // __uint128_t doesn't have a std::print formatter, so cast the
+    // low 64 bits when reporting mismatches.
+    {
+        __uint128_t delta = wide_widen(0x100);  // explicit widening
+        if (auto v = wide_bump(delta); v != delta) {
+            std::println("wide_bump expected delta low={:#x}, got low={:#x}",
+                         static_cast<std::uint64_t>(delta),
+                         static_cast<std::uint64_t>(v));
+            return EXIT_FAILURE;
+        }
+        if (auto v = wide_swap(0); v != delta) {
+            std::println("wide_swap expected prior={:#x} low, got low={:#x}",
+                         static_cast<std::uint64_t>(delta),
+                         static_cast<std::uint64_t>(v));
+            return EXIT_FAILURE;
+        }
+        if (wide_counter.load(std::memory_order_seq_cst) != 0) {
+            std::println("wide_counter should be 0 after swap");
+            return EXIT_FAILURE;
+        }
+    }
+    {
+        // wide_cas starts at 0; success path mirrors the 32-bit case.
+        if (auto v = wide_cas_success(0x42); v != 0) {
+            std::println("wide_cas_success expected 0, got low={:#x}",
+                         static_cast<std::uint64_t>(v));
+            return EXIT_FAILURE;
+        }
+        if (wide_cas.load(std::memory_order_seq_cst) != 0x42U) {
+            std::println("wide_cas should be 0x42 after success path");
+            return EXIT_FAILURE;
+        }
+        if (auto v = wide_cas_failure(0x99, 0x7); v != 0x42U) {
+            std::println("wide_cas_failure expected actual=0x42, got low={:#x}",
+                         static_cast<std::uint64_t>(v));
+            return EXIT_FAILURE;
+        }
+    }
+    {
+        // Signed wide: fetchAdd of +5 returns the pre-op 0.
+        if (auto v = signed_wide_bump(static_cast<__int128_t>(5)); v != 0) {
+            std::println("signed_wide_bump expected prior=0, got low={:#x}",
+                         static_cast<std::uint64_t>(v));
+            return EXIT_FAILURE;
+        }
+        if (signed_wide.load(std::memory_order_seq_cst) != 5) {
+            std::println("signed_wide should be 5 after fetchAdd");
+            return EXIT_FAILURE;
+        }
+    }
+
     std::println("atomics OK");
     return EXIT_SUCCESS;
 }

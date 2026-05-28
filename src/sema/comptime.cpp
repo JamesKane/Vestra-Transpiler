@@ -100,6 +100,8 @@ bool is_integer_kind(TypeKind k) noexcept {
     case TypeKind::UInt32:
     case TypeKind::UInt64:
     case TypeKind::UInt:
+    case TypeKind::Int128:
+    case TypeKind::UInt128:
         return true;
     default:
         return false;
@@ -113,6 +115,7 @@ bool is_unsigned_kind(TypeKind k) noexcept {
     case TypeKind::UInt32:
     case TypeKind::UInt64:
     case TypeKind::UInt:
+    case TypeKind::UInt128:
         return true;
     default:
         return false;
@@ -348,6 +351,12 @@ PrimLayout primitive_layout(TypeKind k) {
     case TypeKind::Int:
     case TypeKind::Float64:
         return {8, 8};
+    case TypeKind::UInt128:
+    case TypeKind::Int128:
+        // GCC / Clang both align __int128 to 16 on the targets v0.5
+        // builds for; sizeof is 16. This is the de-facto layout
+        // every libatomic / libstdc++ build assumes.
+        return {16, 16};
     case TypeKind::Str:
     case TypeKind::StrConst:
         // Str / StrConst lower to std::string_view. The C++ Standard

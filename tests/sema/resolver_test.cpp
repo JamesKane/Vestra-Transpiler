@@ -729,6 +729,41 @@ TEST_CASE("Atomic[T] rejects a non-primitive T") {
     CHECK(r.first_message.find("Atomic[T] requires T to be a primitive type") != std::string::npos);
 }
 
+TEST_CASE("Atomic[UInt128] / Atomic[Int128] admit the core ops") {
+    // §A4 (§14.9.4) wide-atomic surface. The load-bearing kernel use is
+    // 128-bit tagged-pointer CAS; UInt128 + Int128 are admitted as
+    // primitive T for Atomic, so the existing method-synthesis path
+    // hands out load / store / exchange / fetchAdd / compareExchange
+    // typed at the wide width.
+    CHECK(check_errors("static p: Atomic[UInt128] = 0\n"
+                       "func use() -> UInt128 {\n"
+                       "    p.store(0, .release)\n"
+                       "    let prev = p.exchange(7, .seqCst)\n"
+                       "    let added = p.fetchAdd(1, .acqRel)\n"
+                       "    return p.load(.acquire) + prev + added\n"
+                       "}\n")
+          == 0);
+    CHECK(check_errors("static q: Atomic[Int128] = 0\n"
+                       "func use() -> Int128 {\n"
+                       "    let cas = q.compareExchange(0, 1, .seqCst, .acquire)\n"
+                       "    if cas.succeeded {\n"
+                       "        return cas.actual\n"
+                       "    }\n"
+                       "    return q.load(.acquire)\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("UInt128 / Int128 admit primitive conversions") {
+    CHECK(check_errors("func widen(_ x: UInt64) -> UInt128 {\n"
+                       "    return UInt128(x)\n"
+                       "}\n"
+                       "func narrow(_ y: UInt128) -> UInt64 {\n"
+                       "    return UInt64(y)\n"
+                       "}\n")
+          == 0);
+}
+
 TEST_CASE("Atomic[T] surfaces the bitwise fetch ops + compareExchange") {
     CHECK(check_errors("static c: Atomic[UInt32] = 0\n"
                        "func use() -> UInt32 {\n"

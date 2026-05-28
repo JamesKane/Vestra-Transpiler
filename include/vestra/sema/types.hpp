@@ -35,6 +35,16 @@ enum class TypeKind : std::uint16_t {
     UInt32,
     UInt64,
     UInt,
+    // §A4 (§14.9.4) wide-integer primitives. The load-bearing purpose is
+    // backing `Atomic[UInt128]` / `Atomic[Int128]` for tagged-pointer
+    // and seqlock patterns the kernel needs; the underlying integer
+    // types also lower to GCC/Clang's `__uint128_t` / `__int128_t` so
+    // user code can manipulate them outside the atomic wrapper. The
+    // architectures that admit `Atomic[Int128]` (aarch64 +lse2, x86_64
+    // +cx16) are gated at the build-feature layer; the primitive
+    // itself is universally available.
+    Int128,
+    UInt128,
     Float32,
     Float64,
     Bool,
