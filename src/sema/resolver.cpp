@@ -903,8 +903,34 @@ void Resolver::check_decl(const ast::Decl& d) {
         if (!derives_default || dd.target == nullptr) {
             break;
         }
+        // §3 follow-on: an opaque newtype is admissible as a
+        // derive(Default) target. The check is "is the underlying
+        // type Default-conformant" — the opaque's `enum class T :
+        // Underlying {}` C++ form gives `T()` = `T{0}` automatically,
+        // so no codegen change is needed.
+        if (dd.target->kind == ast::NodeKind::NamedType) {
+            const auto& tt = static_cast<const ast::NamedType&>(*dd.target);
+            if (!tt.path.empty()) {
+                const auto* osym = scopes_.global().lookup_local(tt.path.back());
+                if (osym != nullptr && osym->kind == SymbolKind::OpaqueType
+                    && osym->decl != nullptr) {
+                    const auto& od = static_cast<const ast::OpaqueDecl&>(*osym->decl);
+                    if (od.underlying != nullptr) {
+                        auto under = resolve_type(*od.underlying);
+                        if (!is_default_conformant(under)) {
+                            error_at(dd.target->range,
+                                     std::format("derive(Default) for opaque '{}': underlying "
+                                                 "type {} is not Default-conformant",
+                                                 od.name,
+                                                 under != nullptr ? under->describe() : "?"));
+                        }
+                    }
+                    break;
+                }
+            }
+        }
         // Resolve the target into a Struct decl. Anything else (enum,
-        // protocol, opaque) is rejected with a v0.5 diagnostic.
+        // protocol) is rejected with a v0.5 diagnostic.
         if (dd.target->kind != ast::NodeKind::NamedType) {
             error_at(dd.target->range, "derive(Default) target must be a struct");
             break;
@@ -3585,6 +3611,32 @@ bool Resolver::is_default_conformant(TypePtr t) const {
         return true;
     case TypeKind::Struct:
         return decl_derives(t->nominal_decl(), "Default");
+    case TypeKind::OpaqueType: {
+        // §3 newtype follow-on: an opaque is Default-conformant iff
+        // the user has written `derive(Default) for Q` AND the
+        // underlying type is itself Default-conformant. The
+        // `enum class Q : Underlying {}` C++ form gives `Q{}` = the
+        // underlying's zero value automatically, so no codegen
+        // change is needed — the conformance check is what gates
+        // use of `Q()` as a default-init slot.
+        if (!decl_derives(t->nominal_decl(), "Default")) {
+            return false;
+        }
+        if (t->nominal_decl() == nullptr || t->nominal_decl()->kind != ast::NodeKind::Opaque) {
+            return false;
+        }
+        const auto& od = static_cast<const ast::OpaqueDecl&>(*t->nominal_decl());
+        if (od.underlying == nullptr) {
+            return false;
+        }
+        // The mutable_this-style const_cast is unavoidable here: the
+        // helper signature is const but resolve_type isn't (it
+        // memoizes named types into the arena). The check is
+        // logically const; the lookup just needs the arena's
+        // identity-preserving make_X paths.
+        auto under = const_cast<Resolver*>(this)->resolve_type(*od.underlying);
+        return is_default_conformant(under);
+    }
     default:
         // Box, Result, GenericParam, Enum (bare or sum), Protocol,
         // Function, Reference — none have a v0.5 default. The kernel

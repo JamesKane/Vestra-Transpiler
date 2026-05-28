@@ -1715,6 +1715,27 @@ TEST_CASE("opaque with derive(Debug) is Display-conformant in an interpolation s
           == 0);
 }
 
+TEST_CASE("derive(Default) admits an opaque whose underlying is Default-conformant") {
+    // §3 follow-on: an opaque wrapping a primitive (which is always
+    // Default-conformant) becomes Default-conformant itself, so
+    // `derive(Default) for UserId` is admitted. The C++ side's
+    // `enum class UserId : UInt32 {}` already provides `UserId{}`
+    // = `UserId(0)` for free, so no codegen change was needed.
+    CHECK(check_errors("opaque type UserId = UInt32\n"
+                       "derive(Default) for UserId\n"
+                       "func mk() -> UserId { return UserId(0) }\n")
+          == 0);
+}
+
+TEST_CASE("derive(Default) for opaque rejects a non-Default-conformant underlying") {
+    auto r = check_detail("struct NoDefault { var f: Int32 }\n"
+                          "opaque type Wrap = NoDefault\n"
+                          "derive(Default) for Wrap\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("derive(Default) for opaque 'Wrap'") != std::string::npos);
+    CHECK(r.first_message.find("not Default-conformant") != std::string::npos);
+}
+
 TEST_CASE("opaque without derive(Debug|Display) is still rejected in a splice") {
     auto r = check_detail("opaque type UserId = UInt32\n"
                           "func render(_ u: UserId) -> String { return \"u=\\(u)\" }\n");
