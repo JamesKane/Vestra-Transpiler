@@ -36,4 +36,15 @@ struct BuildOptions {
 run_check(const std::filesystem::path& input, std::ostream& out, std::ostream& err);
 [[nodiscard]] int run_fmt(const std::filesystem::path& input, std::ostream& out, std::ostream& err);
 
+// §14.12.3 / §15.5 audit surface. `vestra audit <file.vst>` enumerates
+// every site that crossed a discipline-bearing boundary so a cross-
+// architecture review can verify the build's contracts at the call-
+// site level. v0.5 first slice ships --sysreg; --no-libc and the
+// cross-architecture barrier-table verification queue for follow-up.
+struct AuditOptions {
+    std::filesystem::path input;
+    bool sysreg = false;
+};
+[[nodiscard]] int run_audit(const AuditOptions& opts, std::ostream& out, std::ostream& err);
+
 }  // namespace vestra::driver

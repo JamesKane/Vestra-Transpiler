@@ -1518,6 +1518,28 @@ set_tests_properties(e2e_sr_run PROPERTIES
     DEPENDS                e2e_sr_compile
     PASS_REGULAR_EXPRESSION "sysreg OK")
 
+# §14.12.3 / §15.5 audit surface (first slice). `vestra audit
+# <file.vst> --sysreg` walks every Sysreg.<name>.{read|write}
+# access in the unit and prints one site per line with the
+# barrier-emission flag. The check verifies a representative
+# call site from the existing sysreg.vst example — the gated
+# vbar_el1 write outside @no_auto_barrier records [barrier:yes].
+add_test(
+    NAME    audit_sysreg_enumerator
+    COMMAND $<TARGET_FILE:vestra> audit ${CMAKE_SOURCE_DIR}/examples/sysreg.vst --sysreg)
+set_tests_properties(audit_sysreg_enumerator PROPERTIES
+    PASS_REGULAR_EXPRESSION "Sysreg\\.vbar_el1\\.write \\[barrier:yes\\]")
+
+# A second check confirms the @no_auto_barrier opt-out shows up
+# as [barrier:no] on the same gated names. The enable_mmu fn
+# in sysreg.vst carries @kernel_init @no_auto_barrier; its
+# ttbr0_el1 + sctlr_el1 writes should report no barrier.
+add_test(
+    NAME    audit_sysreg_no_auto_barrier
+    COMMAND $<TARGET_FILE:vestra> audit ${CMAKE_SOURCE_DIR}/examples/sysreg.vst --sysreg)
+set_tests_properties(audit_sysreg_no_auto_barrier PROPERTIES
+    PASS_REGULAR_EXPRESSION "Sysreg\\.ttbr0_el1\\.write \\[barrier:no\\]")
+
 # Cache + TLB management (§A5 follow-up, §14.10.3, §14.10.4,
 # §14.10.5). Nine free-function builtins for the data-cache /
 # I-cache / TLB-invalidation ops. Hosted shims are no-ops except
