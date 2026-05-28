@@ -2965,6 +2965,53 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
+    // §14.8 / §12.6 `cfg.option("name")` — comptime-folded build
+    // option accessor. v0.5 admits one name: "cache_line_bytes"
+    // (returns 64 — the default that §A11's Padded[T] template
+    // hardcodes today). Other names error with the admitted set
+    // listed so the user sees v0.5's scope. The folded value lands
+    // via Resolution::set_folded_value so codegen emits the integer
+    // literal directly without re-folding.
+    if (c.callee->kind == ast::NodeKind::MemberExpr) {
+        const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+        if (mem.base->kind == ast::NodeKind::IdentExpr
+            && static_cast<const ast::IdentExpr&>(*mem.base).name == "cfg" && mem.member == "option"
+            && scopes_.current().lookup("cfg") == nullptr) {
+            if (c.args.size() != 1) {
+                for (const auto& a : c.args) {
+                    (void)check_expr(*a.value);
+                }
+                error_at(c.range, "cfg.option(name) takes exactly one string-literal argument");
+                return types_->primitive(TypeKind::Int);
+            }
+            if (!c.args[0].label.empty()) {
+                error_at(c.args[0].value->range, "cfg.option argument cannot have a label");
+            }
+            if (c.args[0].value == nullptr || c.args[0].value->kind != ast::NodeKind::StringLit) {
+                (void)check_expr(*c.args[0].value);
+                error_at(c.range, "cfg.option argument must be a literal string");
+                return types_->primitive(TypeKind::Int);
+            }
+            const auto& arg = static_cast<const ast::StringLit&>(*c.args[0].value);
+            std::int64_t value = 0;
+            if (arg.text == "cache_line_bytes") {
+                value = 64;
+            } else {
+                error_at(arg.range,
+                         std::format("cfg.option({:?}) — unknown option; v0.5 admits "
+                                     "\"cache_line_bytes\"",
+                                     std::string{arg.text}));
+                return types_->primitive(TypeKind::Int);
+            }
+            ComptimeValue folded;
+            folded.kind = ComptimeValue::Kind::Int;
+            folded.i = value;
+            folded.type = TypeKind::Int;
+            resolution_.set_folded_value(&c, std::move(folded));
+            return types_->primitive(TypeKind::Int);
+        }
+    }
+
     // §10 builtin `Box.new(value)` — the unique-ownership heap pointer
     // constructor. The callee is a `MemberExpr(IdentExpr("Box"), "new")`;
     // sema doesn't have a symbol for the Box "value" so we intercept

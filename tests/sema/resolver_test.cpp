@@ -895,6 +895,31 @@ TEST_CASE("PerCpu[T] with a primitive inner") {
           == 0);
 }
 
+// ---- §14.8 / §12.6 cfg.option(name) --------------------------------------
+
+TEST_CASE("cfg.option(\"cache_line_bytes\") types as Int and folds to 64") {
+    CHECK(check_errors("const lineBytes: Int = cfg.option(\"cache_line_bytes\")\n") == 0);
+}
+
+TEST_CASE("cfg.option with an unknown name is rejected") {
+    auto r = check_detail("const x: Int = cfg.option(\"not_a_real_option\")\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("unknown option") != std::string::npos);
+    CHECK(r.first_message.find("cache_line_bytes") != std::string::npos);
+}
+
+TEST_CASE("cfg.option with a non-literal argument is rejected") {
+    // The argument must be a literal at compile time so sema can
+    // fold the value; binding a name and passing the variable
+    // through fails the check.
+    auto r = check_detail("func f() -> Int {\n"
+                          "    let name = \"cache_line_bytes\"\n"
+                          "    return cfg.option(name)\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("must be a literal string") != std::string::npos);
+}
+
 // ---- §8 dead-code match-arm warning --------------------------------------
 
 TEST_CASE("dead arm after unguarded case is warned") {

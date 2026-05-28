@@ -966,6 +966,24 @@ TEST_CASE("@stack_protector(.none) emits [[gnu::no_stack_protector]]") {
     CHECK(out.source.find("no_stack_protector]] std::int32_t careful") == std::string::npos);
 }
 
+TEST_CASE("cfg.option(\"cache_line_bytes\") lowers to the folded integer literal") {
+    // §14.8 / §12.6 — the option name pins a single integer value
+    // (64 in v0.5); sema stashes the fold via Resolution::set_folded_
+    // _value, and the existing codegen consults that side table so
+    // the call site emits the literal directly instead of a runtime
+    // function call. This is the v0.5 path that lets `Padded[T]`
+    // and adjacent code drop the magic-number 64 in favor of a
+    // named comptime constant. SemaEmitFixture runs the resolver so
+    // the folded side table is populated; emit() alone doesn't.
+    SemaEmitFixture f("const lineBytes: Int = cfg.option(\"cache_line_bytes\")\n"
+                      "func get_it() -> Int { return cfg.option(\"cache_line_bytes\") }\n");
+    CHECK(f.out.header.find("inline constexpr std::intptr_t lineBytes = 64;") != std::string::npos);
+    CHECK(f.out.source.find("return 64;") != std::string::npos);
+    // The runtime callee is never spelled — the fold replaces it
+    // with a literal at the call site.
+    CHECK(f.out.source.find("cfg.option") == std::string::npos);
+}
+
 TEST_CASE("Padded[T] lowers to __vstr::Padded<T> with cache-line alignment") {
     auto out = emit("@noinit static slot: Padded[UInt64]\n"
                     "func read_it() -> UInt64 { return slot.value }\n");
