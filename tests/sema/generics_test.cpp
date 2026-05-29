@@ -198,3 +198,79 @@ TEST_CASE("conflicting type-argument inference in construction is reported") {
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("conflicting bindings for generic 'T'") != std::string::npos);
 }
+
+// ---- §7 generics phase 2: user-defined generic enums -----------------------
+
+TEST_CASE("generic enum match binds the payload at the instance argument type") {
+    // `.just(let x)` over a `Maybe[Int32]` binds x as Int32, so returning x
+    // from an Int32 function type-checks.
+    CHECK(check("enum Maybe[T] { case just(T)  case nothing }\n"
+                "func unwrap(_ m: Maybe[Int32], _ d: Int32) -> Int32 {\n"
+                "    return match m {\n"
+                "        case .just(let x): x\n"
+                "        case .nothing:     d\n"
+                "    }\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("generic enum payloaded case construction infers the type argument") {
+    CHECK(check("enum Maybe[T] { case just(T)  case nothing }\n"
+                "func mk(_ v: Int32) -> Maybe[Int32] { return Maybe.just(v) }\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("generic enum no-payload case resolves against the expected instance") {
+    CHECK(check("enum Maybe[T] { case just(T)  case nothing }\n"
+                "func none() -> Maybe[Int32] { return Maybe.nothing }\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("two-parameter generic enum matches both arms") {
+    CHECK(check("enum Either[L, R] { case left(L)  case right(R) }\n"
+                "func pick(_ e: Either[Int32, Bool], _ d: Int32) -> Int32 {\n"
+                "    return match e {\n"
+                "        case .left(let n):  n\n"
+                "        case .right(let b): if b { d } else { 0 }\n"
+                "    }\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("generic enum with the wrong type-argument arity is reported") {
+    auto r = check("enum Maybe[T] { case just(T)  case nothing }\n"
+                   "func f(_ m: Maybe[Int32, Bool]) -> Int32 { return 0 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("expects 1 type argument") != std::string::npos);
+}
+
+TEST_CASE("a generic enum used without type arguments is reported") {
+    auto r = check("enum Maybe[T] { case just(T)  case nothing }\n"
+                   "func f(_ m: Maybe) -> Int32 { return 0 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("requires 1 type argument") != std::string::npos);
+}
+
+TEST_CASE("a generic enum no-payload case with no context is reported") {
+    auto r = check("enum Maybe[T] { case just(T)  case nothing }\n"
+                   "func f() -> Int32 {\n"
+                   "    let x = Maybe.nothing\n"
+                   "    return 0\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("cannot infer type argument") != std::string::npos);
+}
+
+TEST_CASE("conflicting type-argument inference across an enum payload is reported") {
+    auto r = check("enum Pairish[T] { case two(T, T) }\n"
+                   "func f() -> Int32 {\n"
+                   "    let p = Pairish.two(true, 5)\n"
+                   "    return 0\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("conflicting bindings for generic 'T'") != std::string::npos);
+}

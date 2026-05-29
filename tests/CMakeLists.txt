@@ -2012,3 +2012,27 @@ add_test(
 set_tests_properties(e2e_generic_struct_run PROPERTIES
     DEPENDS                e2e_generic_struct_compile
     PASS_REGULAR_EXPRESSION "generic_struct OK")
+
+# §7 generics phase 2 (second slice): user-defined generic enums.
+set(e2e_genenum_input  ${CMAKE_SOURCE_DIR}/examples/generic_enum.vst)
+set(e2e_genenum_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_generic_enum.cpp)
+
+add_test(
+    NAME    e2e_generic_enum_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_genenum_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_generic_enum_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_genenum_driver} ${e2e_workdir}/generic_enum.cpp
+            -o ${e2e_workdir}/generic_enum_app)
+set_tests_properties(e2e_generic_enum_compile PROPERTIES DEPENDS e2e_generic_enum_transpile)
+
+add_test(
+    NAME    e2e_generic_enum_run
+    COMMAND ${e2e_workdir}/generic_enum_app)
+set_tests_properties(e2e_generic_enum_run PROPERTIES
+    DEPENDS                e2e_generic_enum_compile
+    PASS_REGULAR_EXPRESSION "generic_enum OK")

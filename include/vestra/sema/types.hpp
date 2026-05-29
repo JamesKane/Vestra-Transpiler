@@ -280,6 +280,11 @@ public:
     // construction can substitute them for the struct's generic params.
     // An empty `args` is equivalent to make_nominal(Struct, decl).
     [[nodiscard]] TypePtr make_struct_instance(const ast::Decl* decl, std::vector<TypePtr> args);
+    // §7 generics phase 2 — a use-site instantiation of a generic enum,
+    // e.g. `Option[Int32]`. Same nominal decl as the bare enum, with the
+    // resolved type arguments in parts_. An empty `args` is equivalent to
+    // make_nominal(Enum, decl).
+    [[nodiscard]] TypePtr make_enum_instance(const ast::Decl* decl, std::vector<TypePtr> args);
     [[nodiscard]] TypePtr make_generic_param(std::string name);
 
     // Look up a primitive by its Vestra spelling — used by the resolver when

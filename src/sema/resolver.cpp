@@ -38,12 +38,13 @@ bool struct_is_repr_union(const ast::StructDecl& s) {
     return false;
 }
 
-// §7 generics phase 2 — count a struct's type parameters (the named,
-// non-const generics). Const generics (`[const N: Int]`) are deferred
-// to a later slice and don't participate in the type-argument arity.
-std::size_t struct_type_param_count(const ast::StructDecl& s) {
+// §7 generics phase 2 — count the named type parameters (the non-const
+// generics) of a struct or enum. Const generics (`[const N: Int]`) are
+// deferred to a later slice and don't participate in the type-argument
+// arity.
+std::size_t named_type_param_count(const std::vector<ast::GenericParam>& gens) {
     std::size_t n = 0;
-    for (const auto& g : s.generics) {
+    for (const auto& g : gens) {
         if (!g.is_const && !g.name.empty()) {
             ++n;
         }
@@ -917,6 +918,21 @@ void Resolver::check_decl(const ast::Decl& d) {
     }
     case ast::NodeKind::Enum: {
         const auto& e = static_cast<const ast::EnumDecl&>(d);
+        // §7 generics phase 2 — bind the enum's type parameters as opaque
+        // placeholders for the duration of decl checking so a method
+        // signature referencing `T` resolves. No-op for a non-generic enum.
+        ScopeStack::Guard enum_generics_g(scopes_);
+        for (const auto& gp : e.generics) {
+            if (gp.is_const || gp.name.empty()) {
+                continue;
+            }
+            Symbol gs;
+            gs.name = gp.name;
+            gs.kind = SymbolKind::GenericParam;
+            gs.type = types_->make_generic_param(gp.name);
+            gs.definition_range = gp.range;
+            (void)enum_generics_g.scope().insert(std::move(gs));
+        }
         for (const auto& m : e.methods) {
             if (m->kind == ast::NodeKind::Func) {
                 check_func(static_cast<const ast::FuncDecl&>(*m));
@@ -2221,7 +2237,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         break;
     }
     case ast::NodeKind::MemberExpr:
-        t = check_member(static_cast<const ast::MemberExpr&>(e));
+        t = check_member(static_cast<const ast::MemberExpr&>(e), expected);
         break;
     case ast::NodeKind::LeadingDotExpr:
         t = check_leading_dot(static_cast<const ast::LeadingDotExpr&>(e), expected);
@@ -3233,11 +3249,11 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         // §7 generics phase 2 — a generic struct infers its type
         // parameters from the labeled arguments, exactly like a generic
         // function call. The field types are resolved with the params as
-        // opaque placeholders (`resolve_struct_member_type(.., {})`);
+        // opaque placeholders (`resolve_member_type_with_generics(.., {})`);
         // unifying each against its argument's type builds the binding map.
         // The expected type, when it's an instance of this same struct,
         // seeds the map so an annotated binding pins the width.
-        const bool is_generic = struct_type_param_count(s_decl) > 0;
+        const bool is_generic = named_type_param_count(s_decl.generics) > 0;
         std::unordered_map<std::string, TypePtr> gbindings;
         if (is_generic && expected != nullptr && expected->kind() == TypeKind::Struct
             && expected->nominal_decl() == &s_decl) {
@@ -3261,7 +3277,8 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
             }
             by_label.emplace(f.name,
                              std::make_pair(&f,
-                                            f.type ? resolve_struct_member_type(s_decl, *f.type, {})
+                                            f.type ? resolve_member_type_with_generics(
+                                                         s_decl.generics, *f.type, {})
                                                    : types_->error()));
         }
         std::vector<bool> seen(s_decl.fields.size(), false);
@@ -3673,7 +3690,7 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                     if (sym->type->kind() == TypeKind::Struct && sym->decl != nullptr
                         && sym->decl->kind == ast::NodeKind::Struct) {
                         const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
-                        const std::size_t arity = struct_type_param_count(sd);
+                        const std::size_t arity = named_type_param_count(sd.generics);
                         if (arity == 0) {
                             if (n.has_generics) {
                                 error_at(t.range,
@@ -3705,6 +3722,44 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                         }
                         return types_->make_struct_instance(sym->type->nominal_decl(),
                                                             std::move(args));
+                    }
+                    // §7 generics phase 2 — same shape for a user-defined
+                    // generic enum: `Option[Int32]` is an enum instance.
+                    if (sym->type->kind() == TypeKind::Enum && sym->decl != nullptr
+                        && sym->decl->kind == ast::NodeKind::Enum) {
+                        const auto& ed = static_cast<const ast::EnumDecl&>(*sym->decl);
+                        const std::size_t arity = named_type_param_count(ed.generics);
+                        if (arity == 0) {
+                            if (n.has_generics) {
+                                error_at(t.range,
+                                         std::format("'{}' is not a generic type", ed.name));
+                            }
+                            return sym->type;
+                        }
+                        if (!n.has_generics || n.type_args.empty()) {
+                            error_at(t.range,
+                                     std::format("generic enum '{}' requires {} type "
+                                                 "argument(s) written as '{}[...]'",
+                                                 ed.name,
+                                                 arity,
+                                                 ed.name));
+                            return sym->type;
+                        }
+                        if (n.type_args.size() != arity) {
+                            error_at(t.range,
+                                     std::format("generic enum '{}' expects {} type "
+                                                 "argument(s), got {}",
+                                                 ed.name,
+                                                 arity,
+                                                 n.type_args.size()));
+                        }
+                        std::vector<TypePtr> args;
+                        args.reserve(n.type_args.size());
+                        for (const auto& ta : n.type_args) {
+                            args.push_back(ta ? resolve_type(*ta) : types_->error());
+                        }
+                        return types_->make_enum_instance(sym->type->nominal_decl(),
+                                                          std::move(args));
                     }
                     return sym->type;
                 }
@@ -3809,7 +3864,8 @@ TypePtr Resolver::lookup_field(TypePtr struct_type,
             // §7 generics phase 2 — substitute the instance's type
             // arguments (struct_type->parts()) for the struct's generic
             // params so `Pair[Int32].first` resolves to Int32, not T.
-            return f.type ? resolve_struct_member_type(s, *f.type, struct_type->parts())
+            return f.type ? resolve_member_type_with_generics(
+                                s.generics, *f.type, struct_type->parts())
                           : types_->error();
         }
     }
@@ -3817,7 +3873,8 @@ TypePtr Resolver::lookup_field(TypePtr struct_type,
     // `entity.transform.position` per §6.
     for (const auto& f : s.fields) {
         if (f.kind == ast::StructDecl::Field::Kind::Embed && f.type) {
-            auto embed_type = resolve_struct_member_type(s, *f.type, struct_type->parts());
+            auto embed_type =
+                resolve_member_type_with_generics(s.generics, *f.type, struct_type->parts());
             if (auto t = lookup_field(embed_type, name, out_field)) {
                 return t;
             }
@@ -3826,10 +3883,10 @@ TypePtr Resolver::lookup_field(TypePtr struct_type,
     return nullptr;
 }
 
-TypePtr Resolver::resolve_struct_member_type(const ast::StructDecl& decl,
-                                             const ast::Type& member_type,
-                                             const std::vector<TypePtr>& args) {
-    if (struct_type_param_count(decl) == 0) {
+TypePtr Resolver::resolve_member_type_with_generics(const std::vector<ast::GenericParam>& generics,
+                                                    const ast::Type& member_type,
+                                                    const std::vector<TypePtr>& args) {
+    if (named_type_param_count(generics) == 0) {
         return resolve_type(member_type);
     }
     // Bind each type parameter for the duration of this resolution. With
@@ -3837,7 +3894,7 @@ TypePtr Resolver::resolve_struct_member_type(const ast::StructDecl& decl,
     // none, each binds to an opaque GenericParam placeholder.
     ScopeStack::Guard g(scopes_);
     std::size_t idx = 0;
-    for (const auto& gp : decl.generics) {
+    for (const auto& gp : generics) {
         if (gp.is_const || gp.name.empty()) {
             continue;
         }
@@ -4326,18 +4383,47 @@ const ast::EnumDecl::Case* Resolver::lookup_enum_case(const ast::EnumDecl& e,
 }
 
 TypePtr Resolver::enum_case_constructor_type(TypePtr enum_type, const ast::EnumDecl::Case& c) {
+    const auto* decl = enum_type->nominal_decl();
+    const auto& ed = static_cast<const ast::EnumDecl&>(*decl);
+    const std::size_t arity = named_type_param_count(ed.generics);
+
+    // §7 generics phase 2 — work out the instance arguments and the
+    // constructor's result type. For a non-generic enum (arity 0) the
+    // result is the bare nominal and payload types resolve plainly. For a
+    // generic enum that already carries arguments (enum_type is an
+    // instance, e.g. from an expected type or a leading-dot context) the
+    // payload types resolve against those concrete arguments. For a generic
+    // enum with no arguments yet (an explicit `Enum.case(...)` with no
+    // context) the result is a placeholder instance `Enum[T, ...]` and the
+    // payload types carry the same placeholders, so the generic-call path
+    // in check_call infers the parameters from the argument types.
+    std::vector<TypePtr> args = enum_type->parts();
+    TypePtr result_type = enum_type;
+    if (arity > 0 && args.empty()) {
+        std::vector<TypePtr> placeholders;
+        for (const auto& gp : ed.generics) {
+            if (gp.is_const || gp.name.empty()) {
+                continue;
+            }
+            placeholders.push_back(types_->make_generic_param(gp.name));
+        }
+        result_type = types_->make_enum_instance(decl, placeholders);
+        // args stays empty so payload types resolve to the placeholders.
+    }
+
     if (c.payload.empty()) {
-        return enum_type;  // bare case is a value of the enum
+        return result_type;  // bare case is a value of the enum
     }
     std::vector<TypePtr> params;
     params.reserve(c.payload.size());
     for (const auto& p : c.payload) {
-        params.push_back(p.second ? resolve_type(*p.second) : types_->error());
+        params.push_back(p.second ? resolve_member_type_with_generics(ed.generics, *p.second, args)
+                                  : types_->error());
     }
-    return types_->make_function(std::move(params), enum_type);
+    return types_->make_function(std::move(params), result_type);
 }
 
-TypePtr Resolver::check_member(const ast::MemberExpr& m) {
+TypePtr Resolver::check_member(const ast::MemberExpr& m, TypePtr expected) {
     // §14.12 typed system-register access. `Sysreg.<name>` resolves
     // to a SysregHandle<UInt64> over the architectural register
     // named by <name>. The set is the v0.5 canonical aarch64 EL1
@@ -4422,7 +4508,31 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m) {
                 check_visibility(*sym, m.base->range);
                 const auto& enum_decl = static_cast<const ast::EnumDecl&>(*sym->decl);
                 if (const auto* c = lookup_enum_case(enum_decl, m.member)) {
-                    auto t = enum_case_constructor_type(sym->type, *c);
+                    // §7 generics phase 2 — if the surrounding context
+                    // expects a concrete instance of this same enum, build
+                    // the constructor against that instance so the type
+                    // arguments are pinned (e.g. `let o: Option[Int32] =
+                    // Option.none`). Otherwise use the bare nominal: a
+                    // payloaded case infers its arguments from the call, and
+                    // a no-payload case with no context is reported below.
+                    TypePtr enum_t = sym->type;
+                    if (expected != nullptr && expected->kind() == TypeKind::Enum
+                        && expected->nominal_decl() == sym->decl && !expected->parts().empty()) {
+                        enum_t = expected;
+                    }
+                    if (named_type_param_count(enum_decl.generics) > 0 && c->payload.empty()
+                        && enum_t->parts().empty()) {
+                        error_at(m.range,
+                                 std::format("cannot infer type argument(s) for generic enum '{}' "
+                                             "case '{}'; use it in a typed context (e.g. the "
+                                             "leading-dot form `.{}` against a `{}[...]`)",
+                                             enum_decl.name,
+                                             m.member,
+                                             m.member,
+                                             enum_decl.name));
+                        return types_->error();
+                    }
+                    auto t = enum_case_constructor_type(enum_t, *c);
                     return t;
                 }
                 error_at(m.range,
@@ -4914,8 +5024,14 @@ void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
             return;
         }
         for (std::size_t i = 0; i < ep.children.size(); ++i) {
-            TypePtr payload_type =
-                c->payload[i].second ? resolve_type(*c->payload[i].second) : types_->error();
+            // §7 generics phase 2 — substitute the scrutinee instance's
+            // type arguments (scrutinee->parts()) for the enum's params so
+            // `case .some(let x):` over an `Option[Int32]` binds x as Int32.
+            TypePtr payload_type = c->payload[i].second
+                                       ? resolve_member_type_with_generics(enum_decl.generics,
+                                                                           *c->payload[i].second,
+                                                                           scrutinee->parts())
+                                       : types_->error();
             check_pattern(*ep.children[i], payload_type);
         }
         break;
@@ -4977,6 +5093,19 @@ void Resolver::unify_generic(TypePtr ptype,
         return;
     }
     if (ptype->kind() == TypeKind::Tuple && atype->kind() == TypeKind::Tuple
+        && ptype->parts().size() == atype->parts().size()) {
+        for (std::size_t k = 0; k < ptype->parts().size(); ++k) {
+            unify_generic(ptype->parts()[k], atype->parts()[k], bindings, site);
+        }
+        return;
+    }
+    // §7 generics phase 2 — a struct or enum instance unifies argument-wise
+    // when both sides share a decl. This is what lets expected-type seeding
+    // bind a parameter: unifying `Option[T]` (the case-constructor result)
+    // against the expected `Option[Int32]` records T = Int32 before the
+    // payload arguments are even checked.
+    if ((ptype->kind() == TypeKind::Struct || ptype->kind() == TypeKind::Enum)
+        && ptype->kind() == atype->kind() && ptype->nominal_decl() == atype->nominal_decl()
         && ptype->parts().size() == atype->parts().size()) {
         for (std::size_t k = 0; k < ptype->parts().size(); ++k) {
             unify_generic(ptype->parts()[k], atype->parts()[k], bindings, site);

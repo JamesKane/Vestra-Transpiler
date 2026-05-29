@@ -36,20 +36,22 @@ first slice.
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
 types, unification with `expected` propagation, emit as C++
-templates). The first phase-2 slice shipped user-defined generic
-*structs* (`struct Pair[T] { ... }`, used as `Pair[Int32]`,
-monomorphized to C++ class templates with construction inference; see
-the HANDOFF top entry). Remaining pieces: user-defined generic *enums*
-(`enum Option[T] { case some(T) case none }`); const generics
-(`[const N: Int]`); where-clause refinement
-(`func f[T](x: T) where T: Eq -> Bool`); protocol-bound enforcement at
-the call site; explicit type-args at a construction site
+templates). Two phase-2 slices shipped: user-defined generic *structs* (`e74f1ad`,
+`struct Pair[T] { ... }`) and generic *enums* (`struct`-of-variant
+templates, `enum Maybe[T] { case just(T) ... }`), both monomorphized to
+C++ templates with construction inference; see the HANDOFF top entries.
+Remaining pieces: const generics (`[const N: Int]`); where-clause
+refinement (`func f[T](x: T) where T: Eq -> Bool`); protocol-bound
+enforcement at the call site; explicit type-args at a construction site
 (`Pair[Int32](...)`, where the callee currently parses as an index
-expression); and derive / `std::hash` / `std::formatter` emission for
-generic structs (partial specializations over `template <class T>`).
-The highest-leverage open swing, since it moves `Span[T]` / `PerCpu[T]`
-/ `Padded[T]` toward ordinary library types instead of compiler-known
-shapes. Generic enums are the natural next slice.
+expression); leading-dot *construction* of a payloaded enum
+(`return .just(x)` / `.nothing`, a pre-existing codegen gap that non-
+generic enums share); and derive / `std::hash` / `std::formatter`
+emission for generic types (partial specializations over
+`template <class T>`). The highest-leverage open swing, since it moves
+`Span[T]` / `PerCpu[T]` / `Padded[T]` toward ordinary library types
+instead of compiler-known shapes. Const generics or the leading-dot
+construction fix are the natural next slices.
 
 ### 2. `async` / `spawn` / `select` / `parallel` (§11) (multi-session)
 

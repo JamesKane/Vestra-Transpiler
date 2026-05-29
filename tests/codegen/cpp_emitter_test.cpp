@@ -2120,3 +2120,41 @@ TEST_CASE("two-parameter generic struct emits a two-parameter template") {
     CHECK(f.out.source.find("KeyValue<std::int32_t, bool>{.key = k, .value = v}")
           != std::string::npos);
 }
+
+// ---- §7 generics phase 2: user-defined generic enums ----------------------
+
+TEST_CASE("generic enum lowers to a C++ class template over the variant shape") {
+    SemaEmitFixture f("enum Maybe[T] { case just(T)  case nothing }\n"
+                      "func unwrap(_ m: Maybe[Int32], _ d: Int32) -> Int32 {\n"
+                      "    return match m {\n"
+                      "        case .just(let x): x\n"
+                      "        case .nothing:     d\n"
+                      "    }\n"
+                      "}\n");
+    CHECK(f.out.header.find("template <class T>") != std::string::npos);
+    CHECK(f.out.header.find("struct Maybe {") != std::string::npos);
+    CHECK(f.out.header.find("struct just_t {T _0{}; }") != std::string::npos);
+    CHECK(f.out.header.find("std::variant<just_t, nothing_t>") != std::string::npos);
+    // The match dispatch qualifies the case_t with the instance args.
+    CHECK(f.out.source.find("std::is_same_v<__vstr_alt_t, Maybe<std::int32_t>::just_t>")
+          != std::string::npos);
+}
+
+TEST_CASE("generic enum case construction emits the inferred specialization") {
+    SemaEmitFixture f("enum Maybe[T] { case just(T)  case nothing }\n"
+                      "func mk(_ v: Int32) -> Maybe[Int32] { return Maybe.just(v) }\n"
+                      "func none() -> Maybe[Int32] { return Maybe.nothing }\n");
+    CHECK(f.out.source.find("Maybe<std::int32_t>{Maybe<std::int32_t>::just_t{v}}")
+          != std::string::npos);
+    CHECK(f.out.source.find("Maybe<std::int32_t>{Maybe<std::int32_t>::nothing_t{}}")
+          != std::string::npos);
+}
+
+TEST_CASE("two-parameter generic enum emits a two-parameter template") {
+    SemaEmitFixture f("enum Either[L, R] { case left(L)  case right(R) }\n"
+                      "func mk(_ n: Int32) -> Either[Int32, Bool] { return Either.left(n) }\n");
+    CHECK(f.out.header.find("template <class L, class R>") != std::string::npos);
+    CHECK(f.out.header.find("struct Either {") != std::string::npos);
+    CHECK(f.out.source.find("Either<std::int32_t, bool>{Either<std::int32_t, bool>::left_t{n}}")
+          != std::string::npos);
+}

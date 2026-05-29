@@ -242,8 +242,22 @@ std::string Type::describe() const {
                 }
                 return s;
             }
-            case ast::NodeKind::Enum:
-                return static_cast<const ast::EnumDecl&>(*decl_).name;
+            case ast::NodeKind::Enum: {
+                std::string s = static_cast<const ast::EnumDecl&>(*decl_).name;
+                // §7 generics phase 2 — render `Option[Int32]` for an
+                // enum instance carrying resolved type arguments.
+                if (!parts_.empty()) {
+                    s += "[";
+                    for (std::size_t i = 0; i < parts_.size(); ++i) {
+                        if (i != 0) {
+                            s += ", ";
+                        }
+                        s += parts_[i] ? parts_[i]->describe() : "?";
+                    }
+                    s += "]";
+                }
+                return s;
+            }
             case ast::NodeKind::Protocol:
                 return static_cast<const ast::ProtocolDecl&>(*decl_).name;
             case ast::NodeKind::Opaque:
@@ -510,6 +524,15 @@ TypePtr TypeArena::make_struct_instance(const ast::Decl* decl, std::vector<TypeP
     return p;
 }
 
+TypePtr TypeArena::make_enum_instance(const ast::Decl* decl, std::vector<TypePtr> args) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Enum));
+    t->decl_ = decl;
+    t->parts_ = std::move(args);
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
 TypePtr TypeArena::make_generic_param(std::string name) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::GenericParam));
     t->name_ = std::move(name);
@@ -630,7 +653,24 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
         }
         return true;
     }
-    case TypeKind::Enum:
+    case TypeKind::Enum: {
+        // §7 generics phase 2 — like Struct, an enum instance compares
+        // equal only when the decl AND the recorded type arguments match.
+        if (a->nominal_decl() != b->nominal_decl()) {
+            return false;
+        }
+        const auto& pa = a->parts();
+        const auto& pb = b->parts();
+        if (pa.size() != pb.size()) {
+            return false;
+        }
+        for (std::size_t i = 0; i < pa.size(); ++i) {
+            if (!equal(pa[i], pb[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
     case TypeKind::Protocol:
     case TypeKind::OpaqueType:
         return a->nominal_decl() == b->nominal_decl();
@@ -897,6 +937,24 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
             args.push_back(s);
         }
         return changed ? make_struct_instance(t->nominal_decl(), std::move(args)) : t;
+    }
+    case TypeKind::Enum: {
+        // §7 generics phase 2 — substitute through an enum instance's type
+        // arguments (the enum-case-constructor return type is built with
+        // the params as placeholders, so this is what specializes
+        // `Option[T]` to `Option[Int]` during call inference).
+        if (t->parts().empty()) {
+            return t;
+        }
+        std::vector<TypePtr> args;
+        args.reserve(t->parts().size());
+        bool changed = false;
+        for (auto* p : t->parts()) {
+            auto s = substitute(p, bindings);
+            changed = changed || s != p;
+            args.push_back(s);
+        }
+        return changed ? make_enum_instance(t->nominal_decl(), std::move(args)) : t;
     }
     default:
         // Primitives, nominals, Never, Error — no generic params inside.

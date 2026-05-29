@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §7 generics phase 2, second slice: user-defined generic enums.
+//
+// `enum Maybe[T] { case just(T)  case nothing }` is an enum parameterized
+// over T. A use-site `Maybe[Int32]` is an instantiation; the case payload
+// types substitute T, so matching `.just(let x)` binds x as Int32. Case
+// construction infers the type arguments from the payload (and from the
+// expected type for a no-payload case via the leading-dot form). Each
+// instantiation lowers to a C++ class template over the struct-of-variant
+// shape payloaded enums already use, so monomorphization is the C++
+// compiler's job.
+
+module examples.generic_enum
+
+// One type parameter; an optional-like enum.
+enum Maybe[T] {
+    case just(T)
+    case nothing
+}
+
+// Two type parameters; an either-like enum.
+enum Either[L, R] {
+    case left(L)
+    case right(R)
+}
+
+// Match over a generic instantiation; the payload binds at the argument type.
+func unwrapOr(_ m: Maybe[Int32], _ fallback: Int32) -> Int32 {
+    return match m {
+        case .just(let x): x
+        case .nothing:     fallback
+    }
+}
+
+// Payloaded construction infers T = Int32 from the argument.
+func someInt(_ v: Int32) -> Maybe[Int32] {
+    return Maybe.just(v)
+}
+
+// No-payload construction: the explicit `Maybe.nothing` resolves against
+// the return type's `Maybe[Int32]` (leading-dot construction of a
+// payloaded enum is a separate, pre-existing codegen gap).
+func noneInt() -> Maybe[Int32] {
+    return Maybe.nothing
+}
+
+// Two-parameter match, both arms.
+func leftOr(_ e: Either[Int32, Bool], _ fallback: Int32) -> Int32 {
+    return match e {
+        case .left(let n):  n
+        case .right(let b): if b { fallback } else { 0 }
+    }
+}
+
+func makeLeft(_ n: Int32) -> Either[Int32, Bool] {
+    return Either.left(n)
+}
+
+func makeRight(_ b: Bool) -> Either[Int32, Bool] {
+    return Either.right(b)
+}

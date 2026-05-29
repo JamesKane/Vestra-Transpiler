@@ -140,7 +140,7 @@ private:
     TypePtr check_if(const ast::IfExpr& i, TypePtr expected);
     TypePtr check_match(const ast::MatchExpr& m, TypePtr expected);
     TypePtr check_block_expr(const ast::BlockExpr& b, TypePtr expected);
-    TypePtr check_member(const ast::MemberExpr& m);
+    TypePtr check_member(const ast::MemberExpr& m, TypePtr expected = nullptr);
     TypePtr check_leading_dot(const ast::LeadingDotExpr& d, TypePtr expected);
 
     // Resolve an `ast::Type` node into a `sema::TypePtr`.
@@ -156,17 +156,18 @@ private:
                                        std::string_view name,
                                        const ast::StructDecl::Field** out_field = nullptr);
 
-    // §7 generics phase 2 — resolve a generic struct member type (a field
-    // or method-signature type) with the struct's type parameters bound.
-    // When `args` is non-empty each parameter binds to the corresponding
-    // instance argument, so a member typed `T` resolves to the concrete
-    // argument. When `args` is empty each parameter binds to an opaque
-    // GenericParam placeholder, so a member typed `T` resolves to
-    // GenericParam("T") (used during decl checking and construction
-    // inference). A non-generic struct routes through plain resolve_type.
-    [[nodiscard]] TypePtr resolve_struct_member_type(const ast::StructDecl& decl,
-                                                     const ast::Type& member_type,
-                                                     const std::vector<TypePtr>& args);
+    // §7 generics phase 2 — resolve a generic struct field or enum-case
+    // payload type with the declaring type's parameters bound. When `args`
+    // is non-empty each parameter binds to the corresponding instance
+    // argument, so a member typed `T` resolves to the concrete argument.
+    // When `args` is empty each parameter binds to an opaque GenericParam
+    // placeholder, so a member typed `T` resolves to GenericParam("T")
+    // (used during decl checking and construction inference). With an empty
+    // `generics` this is just plain resolve_type.
+    [[nodiscard]] TypePtr
+    resolve_member_type_with_generics(const std::vector<ast::GenericParam>& generics,
+                                      const ast::Type& member_type,
+                                      const std::vector<TypePtr>& args);
 
     // Look up a method by name on a struct/enum type. Returns the method's
     // full function type. `out_method` is set to the resolved FuncDecl.

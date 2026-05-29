@@ -1864,7 +1864,18 @@ void CppEmitter::emit_debug_spec_enum(std::ostream& os,
 void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
     // A Vestra enum with payloads maps cleanly to std::variant; bare enums to
     // a C++ enum class. We detect "all bare" cheaply.
-    bool all_bare = true;
+    // §7 generics phase 2 — a generic enum lowers to a C++ class template
+    // over the struct-of-variant shape (a C++ `enum class` can't be a
+    // template), so a generic enum never takes the bare path even when all
+    // its cases happen to be payload-free.
+    bool is_generic = false;
+    for (const auto& g : e.generics) {
+        if (!g.is_const && !g.name.empty()) {
+            is_generic = true;
+            break;
+        }
+    }
+    bool all_bare = !is_generic;
     for (const auto& c : e.cases) {
         if (!c.payload.empty()) {
             all_bare = false;
@@ -1894,6 +1905,26 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
     // member compares).
     const bool wants_eq =
         derives_by_target_.contains(e.name) && derives_by_target_.at(e.name).contains("Eq");
+    // §7 generics phase 2 — `template <class T, ...>` ahead of the wrapper
+    // struct. The per-case `*_t` structs are nested inside it, so a payload
+    // field typed T refers to the enclosing template's parameter; no inner
+    // template prefix is needed.
+    bool enum_first_generic = true;
+    for (const auto& g : e.generics) {
+        if (g.is_const || g.name.empty()) {
+            continue;
+        }
+        if (enum_first_generic) {
+            hdr << "template <";
+            enum_first_generic = false;
+        } else {
+            hdr << ", ";
+        }
+        hdr << "class " << g.name;
+    }
+    if (!enum_first_generic) {
+        hdr << ">\n";
+    }
     hdr << "struct " << e.name << " {\n";
     for (const auto& c : e.cases) {
         write_indent(hdr, 1);
@@ -3944,7 +3975,25 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     if (sym->kind == sema::SymbolKind::Enum && sym->decl != nullptr) {
                         const auto& ed = static_cast<const ast::EnumDecl&>(*sym->decl);
                         if (enum_is_sum_type(ed)) {
-                            os << ed.name << "{" << ed.name << "::" << mem.member << "_t{";
+                            // §7 generics phase 2 — for a generic enum the
+                            // wrapper and the `::case_t` qualifier both need
+                            // the `<args>` from the call's resolved instance
+                            // type (`Option<Int32>{Option<Int32>::some_t{…}}`).
+                            auto inst = resolution_->type_of(&c);
+                            const bool generic_inst = inst != nullptr
+                                                      && inst->kind() == sema::TypeKind::Enum
+                                                      && !inst->parts().empty();
+                            auto emit_enum_name = [&]() {
+                                if (generic_inst) {
+                                    emit_sema_type(os, inst);
+                                } else {
+                                    os << ed.name;
+                                }
+                            };
+                            emit_enum_name();
+                            os << "{";
+                            emit_enum_name();
+                            os << "::" << mem.member << "_t{";
                             for (std::size_t i = 0; i < c.args.size(); ++i) {
                                 if (i != 0) {
                                     os << ", ";
@@ -4118,7 +4167,24 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 && base_sym->decl != nullptr) {
                 const auto& enum_decl = static_cast<const ast::EnumDecl&>(*base_sym->decl);
                 if (enum_is_sum_type(enum_decl)) {
-                    os << enum_decl.name << "{" << enum_decl.name << "::" << m.member << "_t{}}";
+                    // §7 generics phase 2 — qualify with the resolved
+                    // instance args for a generic enum's no-payload case
+                    // (`Option<Int32>{Option<Int32>::none_t{}}`).
+                    auto inst = resolution_->type_of(&m);
+                    const bool generic_inst = inst != nullptr
+                                              && inst->kind() == sema::TypeKind::Enum
+                                              && !inst->parts().empty();
+                    auto emit_enum_name = [&]() {
+                        if (generic_inst) {
+                            emit_sema_type(os, inst);
+                        } else {
+                            os << enum_decl.name;
+                        }
+                    };
+                    emit_enum_name();
+                    os << "{";
+                    emit_enum_name();
+                    os << "::" << m.member << "_t{}}";
                 } else {
                     os << enum_decl.name << "::" << m.member;
                 }
@@ -4643,6 +4709,18 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
                     os << "std::memory_order";
                 } else {
                     os << ed.name;
+                    // §7 generics phase 2 — append `<args>` for a generic
+                    // enum instance so the template name matches the decl.
+                    if (!t->parts().empty()) {
+                        os << "<";
+                        for (std::size_t i = 0; i < t->parts().size(); ++i) {
+                            if (i != 0) {
+                                os << ", ";
+                            }
+                            emit_sema_type(os, t->parts()[i]);
+                        }
+                        os << ">";
+                    }
                 }
                 return;
             }
@@ -5229,8 +5307,16 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
         } else {
             os << " else if";  // chained — previous arm ended with bare "}"
         }
-        os << " constexpr (std::is_same_v<__vstr_alt_t, " << enum_decl.name << "::" << case_name
-           << "_t>) {\n";
+        // §7 generics phase 2 — for a generic enum the alternative type is
+        // `Option<Int32>::some_t`, so qualify with the scrutinee instance's
+        // type arguments rather than the bare decl name.
+        os << " constexpr (std::is_same_v<__vstr_alt_t, ";
+        if (!scrutinee_type->parts().empty()) {
+            emit_sema_type(os, scrutinee_type);
+        } else {
+            os << enum_decl.name;
+        }
+        os << "::" << case_name << "_t>) {\n";
 
         // §8 multiple arms per case: emit each in source order, scoping
         // per-arm bindings inside a `{}` block so different arms can
