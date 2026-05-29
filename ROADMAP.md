@@ -103,19 +103,19 @@ phase 7.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 
-Phase 1 (`b0727b9` / `e77f2e0`) is single-pass and linear. First
-phase-2 slice shipped: the `split(at:)` partition primitive on
-Span/MutSpan (a `(prefix, suffix)` tuple of disjoint sub-views, lowered
-via `std::span::subspan`). Remaining: the iterator partitioner
-`chunks(n)`; branch-aware flow merging (the ownership checker walks both
-branches linearly today); cross-statement borrow liveness (so using a
-parent span while a split half is live is caught — exclusivity is
-per-call only today); partition *provenance* in `as_place` (proving
-same-root sub-views disjoint, not just distinct bound symbols); and
-`linear` types (`KwLinear` is tokenized but unparsed; must-consume needs
-the branch merge, so the two are coupled). `chunks(n)` is the natural
-next runnable slice; the flow-merge + linear pair is the deeper
-analysis work.
+Phase 1 (`b0727b9` / `e77f2e0`) is single-pass and linear. Two phase-2
+slices shipped: the `split(at:)` partition primitive on Span/MutSpan (a
+`(prefix, suffix)` tuple of disjoint sub-views), and **branch-aware flow
+merging** in the ownership checker (each `if`/`match` branch is checked
+from a forked state and merged at the join — a move in one branch no
+longer poisons the other, while one-sided moves are still treated as
+moved). Remaining: `linear` types (`KwLinear` is tokenized but unparsed;
+must-consume — a `linear` value consumed on *every* path — builds
+directly on the per-path state the flow merge now computes, so it's the
+natural next slice); the iterator partitioner `chunks(n)`; cross-statement
+borrow liveness (exclusivity is per-call only today); and partition
+*provenance* in `as_place` (proving same-root sub-views disjoint, not
+just distinct bound symbols).
 
 ### 6. Capability narrowing + audit trail
 

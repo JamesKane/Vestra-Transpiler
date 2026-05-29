@@ -217,29 +217,49 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
             // until/unless it's used there.
             check_expr(*i.let_init);
         }
-        // Phase 1 is conservative: we walk both branches in sequence rather
-        // than merging branch states. This may over-reject (a binding moved
-        // only in one branch is considered moved after the if), but it never
-        // under-rejects.
+        // §10/§5 phase 2 — branch-aware flow merge. Each branch is checked
+        // from the same post-condition state, independently, then merged at
+        // the join: a move in one branch no longer poisons the other, so
+        // `if c { take(x) } else { take(x) }` is accepted. A binding moved
+        // on a path reaching the join is treated as moved after the if
+        // (a one-sided `if c { take(x) }` still forbids a later use of x),
+        // which keeps the analysis sound.
+        BindingMap pre = bindings_;
         if (i.then_branch) {
             check_expr(*i.then_branch);
         }
+        BindingMap then_state = std::move(bindings_);
+        bindings_ = pre;
         if (i.else_branch) {
             check_expr(*i.else_branch);
         }
+        // bindings_ is now the else-path state (or `pre` when there is no
+        // else); union in the then-path's moves.
+        merge_consumed(bindings_, then_state);
         break;
     }
     case ast::NodeKind::MatchExpr: {
         const auto& m = static_cast<const ast::MatchExpr&>(e);
         check_expr(*m.scrutinee);
+        // §10/§5 phase 2 — guards run in sequence before arm selection
+        // (sound: assume each one ran), then every arm body is checked from
+        // the resulting state and the bodies are merged at the join, so one
+        // arm moving a binding doesn't poison another.
         for (const auto& arm : m.arms) {
             if (arm.guard) {
                 check_expr(*arm.guard);
             }
+        }
+        BindingMap pre = bindings_;
+        BindingMap merged = pre;
+        for (const auto& arm : m.arms) {
             if (arm.body) {
+                bindings_ = pre;
                 check_expr(*arm.body);
+                merge_consumed(merged, bindings_);
             }
         }
+        bindings_ = std::move(merged);
         break;
     }
     case ast::NodeKind::BlockExpr: {
@@ -361,6 +381,22 @@ void OwnershipChecker::check_use(const ast::IdentExpr& ident) {
                         .at(it->second.consume_site));
     }
     reporter_->report(std::move(d));
+}
+
+// §10/§5 phase 2 — fold a branch's consumed-set into `dst`. A binding is
+// Consumed in the merged state iff it is Consumed on either path, so a join
+// reached by any path that moved x sees x as moved.
+void OwnershipChecker::merge_consumed(BindingMap& dst, const BindingMap& branch) {
+    for (const auto& [sym, info] : branch) {
+        if (info.state != State::Consumed) {
+            continue;
+        }
+        auto& slot = dst[sym];
+        if (slot.state != State::Consumed) {
+            slot.state = State::Consumed;
+            slot.consume_site = info.consume_site;
+        }
+    }
 }
 
 // ============================================================================

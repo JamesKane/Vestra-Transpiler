@@ -182,3 +182,70 @@ TEST_CASE("reassigning a consumed var binding makes it live again") {
               .error_count
           == 0);
 }
+
+// ---- §10/§5 phase 2: branch-aware flow merging -----------------------------
+
+TEST_CASE("both branches of an if may each move the same binding") {
+    // Phase 1 walked the branches linearly and wrongly saw `b` as moved in
+    // the else by the then-branch; phase 2 forks per branch.
+    CHECK(check(with_prelude("func ok(_ c: Bool) {\n"
+                             "    let b = make_buf()\n"
+                             "    if c { take(b) } else { take(b) }\n"
+                             "}\n"))
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a binding not moved on any branch is still live after the if") {
+    CHECK(check(with_prelude("func ok(_ c: Bool) {\n"
+                             "    let b = make_buf()\n"
+                             "    if c { } else { }\n"
+                             "    take(b)\n"
+                             "}\n"))
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a one-sided move makes the binding moved after the if") {
+    // Moved on the then-path, live on the else-path: at the join it is
+    // treated as moved, so the later use is rejected (sound).
+    auto r = check(with_prelude("func bad(_ c: Bool) {\n"
+                                "    let b = make_buf()\n"
+                                "    if c { take(b) }\n"
+                                "    take(b)\n"
+                                "}\n"));
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("after it was moved") != std::string::npos);
+}
+
+TEST_CASE("a double move within one branch is still rejected") {
+    auto r = check(with_prelude("func bad(_ c: Bool) {\n"
+                                "    let b = make_buf()\n"
+                                "    if c { take(b)  take(b) }\n"
+                                "}\n"));
+    CHECK(r.error_count >= 1);
+}
+
+TEST_CASE("each match arm may move the same binding") {
+    CHECK(check(with_prelude("func ok(_ n: Int32) {\n"
+                             "    let b = make_buf()\n"
+                             "    match n {\n"
+                             "        case 0: take(b)\n"
+                             "        default: take(b)\n"
+                             "    }\n"
+                             "}\n"))
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a binding moved in one match arm is moved after the match") {
+    auto r = check(with_prelude("func bad(_ n: Int32) {\n"
+                                "    let b = make_buf()\n"
+                                "    match n {\n"
+                                "        case 0: take(b)\n"
+                                "        default: 0\n"
+                                "    }\n"
+                                "    take(b)\n"
+                                "}\n"));
+    CHECK(r.error_count >= 1);
+}

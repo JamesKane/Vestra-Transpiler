@@ -73,6 +73,14 @@ private:
     // report use-after-move with the original move site as a note.
     void check_use(const ast::IdentExpr& ident);
 
+    using BindingMap = std::unordered_map<const Symbol*, BindingInfo>;
+
+    // §10/§5 phase 2 — branch-aware flow merge. Fold `branch` into `dst`
+    // so a binding is Consumed in `dst` iff it is Consumed on *either*
+    // path (a join's state is the union of the moves on the paths reaching
+    // it). Keeps the consume site for diagnostics.
+    static void merge_consumed(BindingMap& dst, const BindingMap& branch);
+
     // Is this type a candidate for ownership tracking? Trivial types are
     // freely copied and never tracked.
     [[nodiscard]] static bool is_trivial(TypePtr t) noexcept;
