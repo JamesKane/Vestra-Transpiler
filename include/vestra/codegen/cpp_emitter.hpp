@@ -51,6 +51,10 @@ public:
 private:
     void emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl& d);
     void emit_func(std::ostream& hdr, std::ostream& src, const ast::FuncDecl& f);
+    // §11 — append a trailing `co_return;` to a void async function body
+    // when needed so it is a C++20 coroutine.
+    void
+    emit_async_void_coreturn(std::ostream& os, const ast::FuncDecl& f, const ast::BlockExpr& blk);
     void emit_struct(std::ostream& hdr, const ast::StructDecl& s);
     void emit_enum(std::ostream& hdr, const ast::EnumDecl& e);
     // §12.3 derive(Hash): emit a `template <> struct std::hash<Q::T>`
@@ -228,6 +232,10 @@ private:
     // `Sysreg.X.write(v)` reads this to decide whether to route
     // through the barrier-bearing wrapper or the raw write.
     bool current_no_auto_barrier_ = false;
+
+    // §11 — true while emitting an `async func` body, so a `return` lowers
+    // to `co_return` (the function is a C++20 coroutine returning Task<T>).
+    bool current_func_is_async_ = false;
 
     // §12.3 derive layer: a target-type-name → derived-protocol-name
     // index built up front from every `derive(...) for T` top-level

@@ -60,12 +60,17 @@ swings (async, macros, ownership phase 2) or the annex deepening.
 
 ### 2. `async` / `spawn` / `select` / `parallel` (§11) (multi-session)
 
-Today parsed but emitted as `unsupported` comments. The C++26 target
-has `std::execution` and senders/receivers; mapping async/await to
-those is the structurally clean path. `spawn` becomes a detached
-sender, `select` a `let_value` composition, `parallel` a `bulk` or a
-custom partitioner. A big phase, probably 2-3 sessions; first slice is
-`async func` + `await` over a single sender.
+First slice shipped: `async func` + `await` lower to C++20 coroutines
+(a `__vstr::Task<T>` shim), since the host libc++ ships `<execution>`
+policies but not P2300 senders (`std::execution::just` is absent). v0.5
+Task is synchronous (eager, no scheduler), giving correct sequential
+semantics with no real suspension. Remaining: `spawn` (→ `Future[T]`;
+still emits the unsupported comment), `select` (AST exists, parser
+doesn't), `parallel` (library form over `chunks`/`split` + a
+non-escaping closure), async + throws (`Task<expected<T,E>>`), a real
+scheduler / actual suspension, and the "no borrow across await" §11
+rule. `spawn` + a Future type is the natural next slice; senders/
+receivers can replace the coroutine Task if/when libc++ ships P2300.
 
 ### 3. `Channel[T]` + `parallel` library (§11)
 

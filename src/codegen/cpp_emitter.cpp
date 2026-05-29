@@ -349,9 +349,10 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
         hdr << "// vestra: no_libc = true\n";
     }
     hdr << "#pragma once\n\n";
-    hdr << "#include <atomic>\n";    // §A4 Atomic[T] lowers to std::atomic
-    hdr << "#include <bit>\n";       // §A6 MmioWireView std::byteswap / std::endian
-    hdr << "#include <concepts>\n";  // §7 generic bounds lower to requires-clauses
+    hdr << "#include <atomic>\n";     // §A4 Atomic[T] lowers to std::atomic
+    hdr << "#include <bit>\n";        // §A6 MmioWireView std::byteswap / std::endian
+    hdr << "#include <concepts>\n";   // §7 generic bounds lower to requires-clauses
+    hdr << "#include <coroutine>\n";  // §11 async func / await lower to coroutines
     hdr << "#include <cstdint>\n";
     hdr << "#include <cstdlib>\n";     // §10 panic / abort → std::abort
     hdr << "#include <expected>\n";    // §9 throws(E) → T lowers to std::expected
@@ -440,6 +441,68 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    if (!r.has_value()) { panic(\"force-unwrap of Result error\"); }\n";
     hdr << "    return *std::forward<Exp>(r);\n";
     hdr << "}\n\n";
+    // §11 async runtime: a Vestra `async func` lowers to a C++20 coroutine
+    // returning Task<T>. v0.5 has no scheduler — a Task starts eagerly
+    // (initial_suspend is suspend_never) and, with no real suspension point,
+    // runs to completion synchronously; `co_await` on a completed Task just
+    // hands back its value, giving correct sequential semantics. `.get()`
+    // lets a non-async (C++) caller drive a Task to its result.
+    hdr << R"__task(template <class T>
+struct Task {
+    struct promise_type {
+        T value{};
+        Task get_return_object() {
+            return Task{std::coroutine_handle<promise_type>::from_promise(*this)};
+        }
+        std::suspend_never initial_suspend() noexcept { return {}; }
+        std::suspend_always final_suspend() noexcept { return {}; }
+        void return_value(T v) { value = std::move(v); }
+        void unhandled_exception() { std::abort(); }
+    };
+    std::coroutine_handle<promise_type> h_;
+    explicit Task(std::coroutine_handle<promise_type> h) : h_(h) {}
+    Task(Task&& o) noexcept : h_(std::exchange(o.h_, {})) {}
+    Task& operator=(Task&& o) noexcept {
+        if (this != &o) { if (h_) { h_.destroy(); } h_ = std::exchange(o.h_, {}); }
+        return *this;
+    }
+    Task(const Task&) = delete;
+    Task& operator=(const Task&) = delete;
+    ~Task() { if (h_) { h_.destroy(); } }
+    [[nodiscard]] bool await_ready() const noexcept { return !h_ || h_.done(); }
+    void await_suspend(std::coroutine_handle<>) const noexcept {}
+    T await_resume() { return std::move(h_.promise().value); }
+    [[nodiscard]] T get() { return std::move(h_.promise().value); }
+};
+
+template <>
+struct Task<void> {
+    struct promise_type {
+        Task get_return_object() {
+            return Task{std::coroutine_handle<promise_type>::from_promise(*this)};
+        }
+        std::suspend_never initial_suspend() noexcept { return {}; }
+        std::suspend_always final_suspend() noexcept { return {}; }
+        void return_void() {}
+        void unhandled_exception() { std::abort(); }
+    };
+    std::coroutine_handle<promise_type> h_;
+    explicit Task(std::coroutine_handle<promise_type> h) : h_(h) {}
+    Task(Task&& o) noexcept : h_(std::exchange(o.h_, {})) {}
+    Task& operator=(Task&& o) noexcept {
+        if (this != &o) { if (h_) { h_.destroy(); } h_ = std::exchange(o.h_, {}); }
+        return *this;
+    }
+    Task(const Task&) = delete;
+    Task& operator=(const Task&) = delete;
+    ~Task() { if (h_) { h_.destroy(); } }
+    [[nodiscard]] bool await_ready() const noexcept { return !h_ || h_.done(); }
+    void await_suspend(std::coroutine_handle<>) const noexcept {}
+    void await_resume() const noexcept {}
+    void get() const noexcept {}
+};
+
+)__task";
     // §9 iterator combinators. `Zip<A, B>` and `Take<A>` are header-
     // local templates driven by the existing iterator-protocol for-
     // loop machinery — both expose `next()` returning std::optional
@@ -1262,6 +1325,15 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         ~NoAutoBarrierRestore() { self->current_no_auto_barrier_ = prev; }
     } _no_auto_barrier_restore{this, prev_no_auto_barrier};
 
+    // §11 async: a `return` in this body must lower to `co_return`.
+    const bool prev_is_async = current_func_is_async_;
+    current_func_is_async_ = f.is_async;
+    struct AsyncRestore {
+        CppEmitter* self;
+        bool prev;
+        ~AsyncRestore() { self->current_func_is_async_ = prev; }
+    } _async_restore{this, prev_is_async};
+
     // §7 generics: a Vestra generic function lowers to a C++ template. The
     // host compiler then monomorphizes per instantiation, which is what
     // Vestra semantically requires anyway. A const generic ([const N: Int])
@@ -1360,6 +1432,15 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         // `std::expected<T, E>` so callers see the fallible type. Inside
         // the body, `return x` works via the converting ctor; `throw e`
         // and `try f()` are lowered to the matching std::expected ops.
+        // §11 an `async func` lowers to a C++20 coroutine returning
+        // `__vstr::Task<R>` (std::execution senders aren't in the host
+        // libc++; coroutines are). The `await` sites become `co_await` and
+        // the returns become `co_return`. v0.5 covers async without
+        // throws(E); the two combined would nest as Task<expected<…>> and
+        // wait on a follow-on.
+        if (f.is_async) {
+            os << "__vstr::Task<";
+        }
         if (f.effects.throws_type) {
             os << "std::expected<";
             if (f.result) {
@@ -1374,6 +1455,9 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
             emit_type(os, *f.result);
         } else {
             os << "void";
+        }
+        if (f.is_async) {
+            os << ">";
         }
         os << " " << f.name << "(";
         for (std::size_t i = 0; i < f.params.size(); ++i) {
@@ -1513,6 +1597,7 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
             for (const auto& s : blk.stmts) {
                 emit_stmt(hdr, *s, 1);
             }
+            emit_async_void_coreturn(hdr, f, blk);
         } else {
             unsupported(hdr, "non-block function body", f.body->range);
         }
@@ -1542,10 +1627,28 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         for (const auto& s : blk.stmts) {
             emit_stmt(src, *s, 1);
         }
+        emit_async_void_coreturn(src, f, blk);
     } else {
         unsupported(src, "non-block function body", f.body->range);
     }
     src << "}\n\n";
+}
+
+// §11 — a `void`-returning async function must still contain a coroutine
+// keyword to be a C++20 coroutine. If its body doesn't already end in a
+// `return` (which lowers to `co_return`), append a trailing `co_return;`.
+void CppEmitter::emit_async_void_coreturn(std::ostream& os,
+                                          const ast::FuncDecl& f,
+                                          const ast::BlockExpr& blk) {
+    if (!f.is_async || f.result != nullptr) {
+        return;
+    }
+    const bool ends_in_return =
+        !blk.stmts.empty() && blk.stmts.back()->kind == ast::NodeKind::ReturnStmt;
+    if (!ends_in_return) {
+        write_indent(os, 1);
+        os << "co_return;\n";
+    }
 }
 
 void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
@@ -2987,7 +3090,7 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         if (r.value) {
             emit_stmt_expr(os, *r.value, /*return_value=*/true);
         } else {
-            os << "return;\n";
+            os << (current_func_is_async_ ? "co_return;\n" : "return;\n");
         }
         break;
     }
@@ -3299,7 +3402,10 @@ void CppEmitter::emit_stmt_expr(std::ostream& os, const ast::Expr& expr, bool re
         active_hoists_ = &combined;
     }
     if (return_value) {
-        os << "return ";
+        // §11 — inside an async function this statement-position return is
+        // a coroutine return. (Value-context IIFE lambdas in emit_expr keep
+        // their plain `return`; only the function-level return changes.)
+        os << (current_func_is_async_ ? "co_return " : "return ");
     }
     emit_expr(os, expr);
     os << ";\n";
@@ -4655,6 +4761,17 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             }
         }
         os << " }";
+        break;
+    }
+    case ast::NodeKind::AwaitExpr: {
+        // §11 — `await e` lowers to `co_await (e)`. The awaited expression
+        // is a call to an async function, which returns a `__vstr::Task<T>`;
+        // co_awaiting it yields the T. The parens keep it well-formed in any
+        // surrounding expression (co_await binds like a unary operator).
+        const auto& a = static_cast<const ast::AwaitExpr&>(e);
+        os << "co_await (";
+        emit_expr(os, *a.inner);
+        os << ")";
         break;
     }
     default:

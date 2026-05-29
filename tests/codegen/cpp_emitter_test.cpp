@@ -2264,3 +2264,23 @@ TEST_CASE("derive(Hash, Debug) on a generic enum qualifies dependent case types"
     // A `X<T>::case_t` reference inside the partial spec needs `typename`.
     CHECK(f.out.header.find("std::is_same_v<__T, typename Maybe<T>::just_t>") != std::string::npos);
 }
+
+// ---- §11 async func + await ------------------------------------------------
+
+TEST_CASE("async func lowers to a Task<T> coroutine with co_return / co_await") {
+    SemaEmitFixture f("async func leaf(_ x: Int32) -> Int32 { return x + 1 }\n"
+                      "async func use() -> Int32 { return await leaf(1) }\n");
+    CHECK(f.out.header.find("struct Task {") != std::string::npos);  // runtime shim present
+    CHECK(f.out.source.find("__vstr::Task<std::int32_t> leaf(const std::int32_t& x)")
+          != std::string::npos);
+    CHECK(f.out.source.find("co_return x + 1;") != std::string::npos);
+    CHECK(f.out.source.find("co_return co_await (leaf(1));") != std::string::npos);
+}
+
+TEST_CASE("a void async func lowers to Task<void> with a trailing co_return") {
+    SemaEmitFixture f("async func leaf() -> Int32 { return 1 }\n"
+                      "async func touch() { await leaf() }\n");
+    CHECK(f.out.source.find("__vstr::Task<void> touch()") != std::string::npos);
+    CHECK(f.out.source.find("co_await (leaf());") != std::string::npos);
+    CHECK(f.out.source.find("co_return;") != std::string::npos);
+}

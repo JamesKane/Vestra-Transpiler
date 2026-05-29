@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §11 async, first slice: `async func` + `await`.
+//
+// `async` is a capability, not a function colour: `async func` adds
+// `using Async` to the clause and `await e` is permitted exactly where
+// Async is in scope (the capability checker already enforces this). This
+// slice adds the codegen: an `async func` lowers to a C++20 coroutine
+// returning `__vstr::Task<T>`, each `return` becomes `co_return`, and each
+// `await e` becomes `co_await (e)`. v0.5 has no scheduler — a Task runs
+// eagerly to completion, so without a real suspension point the awaits
+// resolve synchronously with correct sequential semantics. `spawn`,
+// `select`, `parallel`, and async + throws wait on later slices.
+
+module examples.async_demo
+
+// A leaf async computation.
+async func increment(_ x: Int32) -> Int32 {
+    return x + 1
+}
+
+// Sequential awaits, each binding its result.
+async func sumTwo(_ a: Int32, _ b: Int32) -> Int32 {
+    let x = await increment(a)
+    let y = await increment(b)
+    return x + y
+}
+
+// Nested await: the inner result feeds the outer call.
+async func twice(_ x: Int32) -> Int32 {
+    return await increment(await increment(x))
+}
+
+// A void async function (lowers to Task<void> with a trailing co_return).
+async func touch(_ x: Int32) {
+    await increment(x)
+}
