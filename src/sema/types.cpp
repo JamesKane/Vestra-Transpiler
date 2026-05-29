@@ -192,8 +192,14 @@ std::string Type::describe() const {
     }
     case TypeKind::Vector: {
         std::string elem = inner_ ? inner_->describe() : std::string{"?"};
+        // §7 generics phase 2 — a symbolic-length vector renders `[N]T`.
+        if (!name_.empty()) {
+            return std::format("[{}]{}", name_, elem);
+        }
         return std::format("[{}]{}", length_, elem);
     }
+    case TypeKind::ConstValue:
+        return std::to_string(length_);
     case TypeKind::Tuple: {
         std::string s = "(";
         for (std::size_t i = 0; i < parts_.size(); ++i) {
@@ -490,6 +496,24 @@ TypePtr TypeArena::make_vector(std::int64_t length, TypePtr element) {
     return p;
 }
 
+TypePtr TypeArena::make_vector_symbolic(std::string length_name, TypePtr element) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Vector));
+    t->length_ = 0;
+    t->name_ = std::move(length_name);
+    t->inner_ = element;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_const_value(std::int64_t value) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::ConstValue));
+    t->length_ = value;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
 TypePtr TypeArena::make_function(std::vector<TypePtr> params, TypePtr result) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::Function));
     t->parts_ = std::move(params);
@@ -615,7 +639,15 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     case TypeKind::Result:
         return equal(a->inner(), b->inner()) && equal(a->result(), b->result());
     case TypeKind::Vector:
+        // §7 generics phase 2 — symbolic-length vectors compare by name; a
+        // symbolic and a concrete-length vector are never equal.
+        if (!a->vector_length_name().empty() || !b->vector_length_name().empty()) {
+            return a->vector_length_name() == b->vector_length_name()
+                   && equal(a->inner(), b->inner());
+        }
         return a->vector_length() == b->vector_length() && equal(a->inner(), b->inner());
+    case TypeKind::ConstValue:
+        return a->const_value() == b->const_value();
     case TypeKind::Function:
         if (!equal(a->result(), b->result())) {
             return false;
@@ -893,6 +925,19 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     }
     case TypeKind::Vector: {
         auto elem = substitute(t->inner(), bindings);
+        // §7 generics phase 2 — a symbolic-length vector `[N]T` concretizes
+        // to `[8]T` once N binds to a ConstValue; otherwise it stays
+        // symbolic (with its element possibly substituted).
+        if (!t->vector_length_name().empty()) {
+            auto it = bindings.find(std::string{t->vector_length_name()});
+            if (it != bindings.end() && it->second != nullptr
+                && it->second->kind() == TypeKind::ConstValue) {
+                return make_vector(it->second->const_value(), elem);
+            }
+            return elem == t->inner()
+                       ? t
+                       : make_vector_symbolic(std::string{t->vector_length_name()}, elem);
+        }
         return elem == t->inner() ? t : make_vector(t->vector_length(), elem);
     }
     case TypeKind::Tuple: {

@@ -38,14 +38,13 @@ bool struct_is_repr_union(const ast::StructDecl& s) {
     return false;
 }
 
-// §7 generics phase 2 — count the named type parameters (the non-const
-// generics) of a struct or enum. Const generics (`[const N: Int]`) are
-// deferred to a later slice and don't participate in the type-argument
-// arity.
+// §7 generics phase 2 — count the named generic parameters of a struct or
+// enum, type AND const (`[const N: Int]`) alike, since both consume a
+// generic argument at a use site.
 std::size_t named_type_param_count(const std::vector<ast::GenericParam>& gens) {
     std::size_t n = 0;
     for (const auto& g : gens) {
-        if (!g.is_const && !g.name.empty()) {
+        if (!g.name.empty()) {
             ++n;
         }
     }
@@ -867,7 +866,7 @@ void Resolver::check_decl(const ast::Decl& d) {
         // empty scope and is a no-op.
         ScopeStack::Guard struct_generics_g(scopes_);
         for (const auto& gp : s.generics) {
-            if (gp.is_const || gp.name.empty()) {
+            if (gp.name.empty()) {
                 continue;
             }
             Symbol gs;
@@ -923,7 +922,7 @@ void Resolver::check_decl(const ast::Decl& d) {
         // signature referencing `T` resolves. No-op for a non-generic enum.
         ScopeStack::Guard enum_generics_g(scopes_);
         for (const auto& gp : e.generics) {
-            if (gp.is_const || gp.name.empty()) {
+            if (gp.name.empty()) {
                 continue;
             }
             Symbol gs;
@@ -3260,7 +3259,7 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
             const auto& ep = expected->parts();
             std::size_t gi = 0;
             for (const auto& gp : s_decl.generics) {
-                if (gp.is_const || gp.name.empty()) {
+                if (gp.name.empty()) {
                     continue;
                 }
                 if (gi < ep.size() && ep[gi] != nullptr) {
@@ -3345,14 +3344,15 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         // diagnostic — the user should annotate the binding's type.
         std::vector<TypePtr> inst_args;
         for (const auto& gp : s_decl.generics) {
-            if (gp.is_const || gp.name.empty()) {
+            if (gp.name.empty()) {
                 continue;
             }
             auto bit = gbindings.find(gp.name);
             if (bit == gbindings.end()) {
                 error_at(c.range,
-                         std::format("cannot infer type argument '{}' for generic struct '{}'; "
+                         std::format("cannot infer {} argument '{}' for generic struct '{}'; "
                                      "annotate the binding's type (e.g. `let x: {}[...] = ...`)",
+                                     gp.is_const ? "const" : "type",
                                      gp.name,
                                      s_decl.name,
                                      s_decl.name));
@@ -3516,6 +3516,60 @@ TypePtr Resolver::check_if(const ast::IfExpr& i, TypePtr expected) {
 // ============================================================================
 // Type-expression resolution
 // ============================================================================
+
+std::optional<std::vector<TypePtr>>
+Resolver::resolve_generic_instance_args(const std::vector<ast::GenericParam>& generics,
+                                        const ast::NamedType& n,
+                                        std::string_view kind,
+                                        std::string_view name,
+                                        diag::SourceRange range) {
+    const std::size_t arity = named_type_param_count(generics);
+    if (arity == 0) {
+        if (n.has_generics) {
+            error_at(range, std::format("'{}' is not a generic type", name));
+        }
+        return std::nullopt;
+    }
+    const std::size_t provided = n.type_args.size() + n.const_args.size();
+    if (!n.has_generics || provided == 0) {
+        error_at(range,
+                 std::format("generic {} '{}' requires {} generic argument(s) written as '{}[...]'",
+                             kind,
+                             name,
+                             arity,
+                             name));
+        return std::nullopt;
+    }
+    if (provided != arity) {
+        error_at(range,
+                 std::format("generic {} '{}' expects {} generic argument(s), got {}",
+                             kind,
+                             name,
+                             arity,
+                             provided));
+    }
+    // Walk the parameters in declaration order, drawing each from the
+    // matching by-kind argument sequence: a type parameter consumes the
+    // next type_arg, a const parameter the next const_arg (as a ConstValue).
+    std::vector<TypePtr> args;
+    args.reserve(arity);
+    std::size_t ti = 0;
+    std::size_t ci = 0;
+    for (const auto& gp : generics) {
+        if (gp.name.empty()) {
+            continue;
+        }
+        if (gp.is_const) {
+            args.push_back(ci < n.const_args.size() ? types_->make_const_value(n.const_args[ci++])
+                                                    : types_->error());
+        } else {
+            args.push_back(ti < n.type_args.size() && n.type_args[ti] != nullptr
+                               ? resolve_type(*n.type_args[ti++])
+                               : types_->error());
+        }
+    }
+    return args;
+}
 
 TypePtr Resolver::resolve_type(const ast::Type& t) {
     switch (t.kind) {
@@ -3690,76 +3744,24 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                     if (sym->type->kind() == TypeKind::Struct && sym->decl != nullptr
                         && sym->decl->kind == ast::NodeKind::Struct) {
                         const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
-                        const std::size_t arity = named_type_param_count(sd.generics);
-                        if (arity == 0) {
-                            if (n.has_generics) {
-                                error_at(t.range,
-                                         std::format("'{}' is not a generic type", sd.name));
-                            }
-                            return sym->type;
+                        if (auto args = resolve_generic_instance_args(
+                                sd.generics, n, "struct", sd.name, t.range)) {
+                            return types_->make_struct_instance(sym->type->nominal_decl(),
+                                                                std::move(*args));
                         }
-                        if (!n.has_generics || n.type_args.empty()) {
-                            error_at(t.range,
-                                     std::format("generic struct '{}' requires {} type "
-                                                 "argument(s) written as '{}[...]'",
-                                                 sd.name,
-                                                 arity,
-                                                 sd.name));
-                            return sym->type;
-                        }
-                        if (n.type_args.size() != arity) {
-                            error_at(t.range,
-                                     std::format("generic struct '{}' expects {} type "
-                                                 "argument(s), got {}",
-                                                 sd.name,
-                                                 arity,
-                                                 n.type_args.size()));
-                        }
-                        std::vector<TypePtr> args;
-                        args.reserve(n.type_args.size());
-                        for (const auto& ta : n.type_args) {
-                            args.push_back(ta ? resolve_type(*ta) : types_->error());
-                        }
-                        return types_->make_struct_instance(sym->type->nominal_decl(),
-                                                            std::move(args));
+                        return sym->type;
                     }
                     // §7 generics phase 2 — same shape for a user-defined
                     // generic enum: `Option[Int32]` is an enum instance.
                     if (sym->type->kind() == TypeKind::Enum && sym->decl != nullptr
                         && sym->decl->kind == ast::NodeKind::Enum) {
                         const auto& ed = static_cast<const ast::EnumDecl&>(*sym->decl);
-                        const std::size_t arity = named_type_param_count(ed.generics);
-                        if (arity == 0) {
-                            if (n.has_generics) {
-                                error_at(t.range,
-                                         std::format("'{}' is not a generic type", ed.name));
-                            }
-                            return sym->type;
+                        if (auto args = resolve_generic_instance_args(
+                                ed.generics, n, "enum", ed.name, t.range)) {
+                            return types_->make_enum_instance(sym->type->nominal_decl(),
+                                                              std::move(*args));
                         }
-                        if (!n.has_generics || n.type_args.empty()) {
-                            error_at(t.range,
-                                     std::format("generic enum '{}' requires {} type "
-                                                 "argument(s) written as '{}[...]'",
-                                                 ed.name,
-                                                 arity,
-                                                 ed.name));
-                            return sym->type;
-                        }
-                        if (n.type_args.size() != arity) {
-                            error_at(t.range,
-                                     std::format("generic enum '{}' expects {} type "
-                                                 "argument(s), got {}",
-                                                 ed.name,
-                                                 arity,
-                                                 n.type_args.size()));
-                        }
-                        std::vector<TypePtr> args;
-                        args.reserve(n.type_args.size());
-                        for (const auto& ta : n.type_args) {
-                            args.push_back(ta ? resolve_type(*ta) : types_->error());
-                        }
-                        return types_->make_enum_instance(sym->type->nominal_decl(),
-                                                          std::move(args));
+                        return sym->type;
                     }
                     return sym->type;
                 }
@@ -3777,8 +3779,20 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
     }
     case ast::NodeKind::VectorType: {
         const auto& v = static_cast<const ast::VectorType&>(t);
-        return types_->make_vector(v.length,
-                                   v.element ? resolve_type(*v.element) : types_->error());
+        TypePtr elem = v.element ? resolve_type(*v.element) : types_->error();
+        // §7 generics phase 2 — a symbolic length `[N]T` references a
+        // const-generic parameter. If N is bound to a concrete value in
+        // scope (an instantiation), produce the concrete `[8]T`; otherwise
+        // keep it symbolic (the decl-template / inference case).
+        if (!v.length_ident.empty()) {
+            if (auto* sym = scopes_.current().lookup(v.length_ident);
+                sym != nullptr && sym->type != nullptr
+                && sym->type->kind() == TypeKind::ConstValue) {
+                return types_->make_vector(sym->type->const_value(), elem);
+            }
+            return types_->make_vector_symbolic(v.length_ident, elem);
+        }
+        return types_->make_vector(v.length, elem);
     }
     case ast::NodeKind::TupleType: {
         const auto& tup = static_cast<const ast::TupleType&>(t);
@@ -3889,13 +3903,18 @@ TypePtr Resolver::resolve_member_type_with_generics(const std::vector<ast::Gener
     if (named_type_param_count(generics) == 0) {
         return resolve_type(member_type);
     }
-    // Bind each type parameter for the duration of this resolution. With
-    // instance arguments present each binds to its concrete argument; with
-    // none, each binds to an opaque GenericParam placeholder.
+    // Bind each parameter (type and const alike) for the duration of this
+    // resolution. With instance arguments present each binds to its
+    // concrete argument — a type param to a type, a const param to a
+    // ConstValue, which is what lets a `[N]T` field concretize. With no
+    // arguments each binds to an opaque GenericParam placeholder, so a
+    // `[N]T` stays a symbolic-length vector for the decl-template /
+    // inference case. `args` interleaves type + const arguments in
+    // declaration order, matching this walk.
     ScopeStack::Guard g(scopes_);
     std::size_t idx = 0;
     for (const auto& gp : generics) {
-        if (gp.is_const || gp.name.empty()) {
+        if (gp.name.empty()) {
             continue;
         }
         Symbol s;
@@ -5090,6 +5109,23 @@ void Resolver::unify_generic(TypePtr ptype,
     }
     if (ptype->kind() == TypeKind::Vector && atype->kind() == TypeKind::Vector) {
         unify_generic(ptype->inner(), atype->inner(), bindings, site);
+        // §7 generics phase 2 — a symbolic-length parameter `[N]T` unifies
+        // its length against the concrete argument's length, binding the
+        // const generic N (e.g. inferring N = 4 from a `[4]Int32` argument).
+        if (!ptype->vector_length_name().empty()) {
+            auto cname = std::string{ptype->vector_length_name()};
+            auto cval = types_->make_const_value(atype->vector_length());
+            auto it = bindings.find(cname);
+            if (it == bindings.end()) {
+                bindings.emplace(std::move(cname), cval);
+            } else if (!TypeArena::equal(it->second, cval)) {
+                error_at(site,
+                         std::format("conflicting bindings for const generic '{}': {} vs {}",
+                                     ptype->vector_length_name(),
+                                     it->second ? it->second->describe() : "?",
+                                     cval->describe()));
+            }
+        }
         return;
     }
     if (ptype->kind() == TypeKind::Tuple && atype->kind() == TypeKind::Tuple

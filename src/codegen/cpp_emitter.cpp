@@ -1513,13 +1513,13 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
     // every member shares one storage cell.
     const auto struct_attrs = read_layout_attrs(s.attributes);
     // §7 generics phase 2 — a Vestra generic struct lowers to a C++ class
-    // template. Emit `template <class T, ...>` ahead of the keyword; the
-    // monomorphization is the C++ compiler's job, exactly as for generic
-    // functions. Const generics are deferred, so only named type params
-    // appear here.
+    // template. Emit `template <class T, std::size_t N, ...>` ahead of the
+    // keyword (a const generic `[const N: Int]` becomes a `std::size_t`
+    // non-type parameter, the natural fit for array lengths); the
+    // monomorphization is the C++ compiler's job, as for generic functions.
     bool struct_first_generic = true;
     for (const auto& g : s.generics) {
-        if (g.is_const || g.name.empty()) {
+        if (g.name.empty()) {
             continue;
         }
         if (struct_first_generic) {
@@ -1528,7 +1528,7 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
         } else {
             hdr << ", ";
         }
-        hdr << "class " << g.name;
+        hdr << (g.is_const ? "std::size_t " : "class ") << g.name;
     }
     if (!struct_first_generic) {
         hdr << ">\n";
@@ -1870,7 +1870,7 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
     // its cases happen to be payload-free.
     bool is_generic = false;
     for (const auto& g : e.generics) {
-        if (!g.is_const && !g.name.empty()) {
+        if (!g.name.empty()) {
             is_generic = true;
             break;
         }
@@ -1911,7 +1911,7 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
     // template prefix is needed.
     bool enum_first_generic = true;
     for (const auto& g : e.generics) {
-        if (g.is_const || g.name.empty()) {
+        if (g.name.empty()) {
             continue;
         }
         if (enum_first_generic) {
@@ -1920,7 +1920,7 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
         } else {
             hdr << ", ";
         }
-        hdr << "class " << g.name;
+        hdr << (g.is_const ? "std::size_t " : "class ") << g.name;
     }
     if (!enum_first_generic) {
         hdr << ">\n";
@@ -4634,7 +4634,20 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
     case TypeKind::Vector:
         os << "std::array<";
         emit_sema_type(os, t->inner());
-        os << ", " << t->vector_length() << ">";
+        // §7 generics phase 2 — symbolic-length vectors carry the const
+        // generic's name; concrete-length vectors the integer.
+        os << ", ";
+        if (!t->vector_length_name().empty()) {
+            os << t->vector_length_name();
+        } else {
+            os << t->vector_length();
+        }
+        os << ">";
+        return;
+    case TypeKind::ConstValue:
+        // §7 generics phase 2 — a const generic argument lowers to its
+        // integer literal in template-argument position (`Buffer<T, 8>`).
+        os << t->const_value();
         return;
     case TypeKind::Tuple:
         os << "std::tuple<";
@@ -4949,7 +4962,15 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
         } else {
             os << "void";
         }
-        os << ", " << v.length << ">";
+        // §7 generics phase 2 — a symbolic length `[N]T` emits the const
+        // generic's name (the enclosing template's non-type parameter).
+        os << ", ";
+        if (!v.length_ident.empty()) {
+            os << v.length_ident;
+        } else {
+            os << v.length;
+        }
+        os << ">";
         break;
     }
     case ast::NodeKind::TupleType: {

@@ -172,14 +172,14 @@ TEST_CASE("generic struct with the wrong type-argument arity is reported") {
     auto r = check("struct Pair[T] { var first: T  var second: T }\n"
                    "func f(_ p: Pair[Int32, Bool]) -> Int32 { return p.first }\n");
     CHECK(r.error_count >= 1);
-    CHECK(r.first_message.find("expects 1 type argument") != std::string::npos);
+    CHECK(r.first_message.find("expects 1 generic argument") != std::string::npos);
 }
 
 TEST_CASE("a generic struct used without type arguments is reported") {
     auto r = check("struct Pair[T] { var first: T  var second: T }\n"
                    "func f(_ p: Pair) -> Int32 { return 0 }\n");
     CHECK(r.error_count >= 1);
-    CHECK(r.first_message.find("requires 1 type argument") != std::string::npos);
+    CHECK(r.first_message.find("requires 1 generic argument") != std::string::npos);
 }
 
 TEST_CASE("a non-generic struct given type arguments is reported") {
@@ -245,14 +245,14 @@ TEST_CASE("generic enum with the wrong type-argument arity is reported") {
     auto r = check("enum Maybe[T] { case just(T)  case nothing }\n"
                    "func f(_ m: Maybe[Int32, Bool]) -> Int32 { return 0 }\n");
     CHECK(r.error_count >= 1);
-    CHECK(r.first_message.find("expects 1 type argument") != std::string::npos);
+    CHECK(r.first_message.find("expects 1 generic argument") != std::string::npos);
 }
 
 TEST_CASE("a generic enum used without type arguments is reported") {
     auto r = check("enum Maybe[T] { case just(T)  case nothing }\n"
                    "func f(_ m: Maybe) -> Int32 { return 0 }\n");
     CHECK(r.error_count >= 1);
-    CHECK(r.first_message.find("requires 1 type argument") != std::string::npos);
+    CHECK(r.first_message.find("requires 1 generic argument") != std::string::npos);
 }
 
 TEST_CASE("a generic enum no-payload case with no context is reported") {
@@ -273,4 +273,41 @@ TEST_CASE("conflicting type-argument inference across an enum payload is reporte
                    "}\n");
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("conflicting bindings for generic 'T'") != std::string::npos);
+}
+
+// ---- §7 generics phase 2: const generics -----------------------------------
+
+TEST_CASE("const generic field access resolves [N]T at the bound length") {
+    // `b.data[0]` over a Buffer[Int32, 4] resolves to Int32 (the [N]T field
+    // concretizes to [4]Int32), so returning it from Int32 type-checks.
+    CHECK(check("struct Buffer[T, const N: Int] { var data: [N]T }\n"
+                "func first(_ b: Buffer[Int32, 4]) -> Int32 { return b.data[0] }\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("const generic construction infers both the type and const args") {
+    CHECK(check("struct Buffer[T, const N: Int] { var data: [N]T }\n"
+                "func make() -> Buffer[Int32, 4] {\n"
+                "    return Buffer(data: [10, 20, 30, 40])\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("const generic arity counts type and const arguments together") {
+    auto r = check("struct Buffer[T, const N: Int] { var data: [N]T }\n"
+                   "func f(_ b: Buffer[Int32]) -> Int32 { return 0 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("expects 2 generic argument") != std::string::npos);
+}
+
+TEST_CASE("conflicting const-generic inference is reported") {
+    auto r = check("struct Two[const N: Int] { var a: [N]Int32  var b: [N]Int32 }\n"
+                   "func bad() -> Int32 {\n"
+                   "    let x = Two(a: [1, 2, 3], b: [1, 2])\n"
+                   "    return 0\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("conflicting bindings for const generic 'N'") != std::string::npos);
 }

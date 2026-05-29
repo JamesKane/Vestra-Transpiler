@@ -2036,3 +2036,27 @@ add_test(
 set_tests_properties(e2e_generic_enum_run PROPERTIES
     DEPENDS                e2e_generic_enum_compile
     PASS_REGULAR_EXPRESSION "generic_enum OK")
+
+# §7 generics phase 2 (third slice): const generics.
+set(e2e_constgen_input  ${CMAKE_SOURCE_DIR}/examples/const_generic.vst)
+set(e2e_constgen_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_const_generic.cpp)
+
+add_test(
+    NAME    e2e_const_generic_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_constgen_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_const_generic_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_constgen_driver} ${e2e_workdir}/const_generic.cpp
+            -o ${e2e_workdir}/const_generic_app)
+set_tests_properties(e2e_const_generic_compile PROPERTIES DEPENDS e2e_const_generic_transpile)
+
+add_test(
+    NAME    e2e_const_generic_run
+    COMMAND ${e2e_workdir}/const_generic_app)
+set_tests_properties(e2e_const_generic_run PROPERTIES
+    DEPENDS                e2e_const_generic_compile
+    PASS_REGULAR_EXPRESSION "const_generic OK")

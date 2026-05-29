@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §7 generics phase 2, third slice: const generics.
+//
+// A generic parameter can be a compile-time integer: `[const N: Int]`.
+// The canonical use is a fixed-capacity container whose storage is an
+// `[N]T` array. A use-site `Buffer[Int32, 4]` binds T = Int32 and N = 4;
+// the field `[N]T` concretizes to `[4]Int32`. Construction infers both
+// the type argument (from the element type) and the const argument (from
+// the array length). Each instantiation lowers to a C++ class template
+// `template <class T, std::size_t N> struct Buffer { std::array<T, N> ... }`,
+// so the monomorphization is the C++ compiler's job.
+
+module examples.const_generic
+
+// One type parameter and one const parameter.
+struct Buffer[T, const N: Int] {
+    var data: [N]T
+}
+
+// Construction infers T = Int32 (element type) and N = 4 (array length).
+func make4() -> Buffer[Int32, 4] {
+    return Buffer(data: [10, 20, 30, 40])
+}
+
+// Field access through the instantiation; `data` is `[4]Int32`, so an
+// element reads as Int32.
+func firstOf(_ b: Buffer[Int32, 4]) -> Int32 {
+    return b.data[0]
+}
+
+func thirdOf(_ b: Buffer[Int32, 4]) -> Int32 {
+    return b.data[2]
+}
+
+// A second instantiation with a different length proves N flows through.
+func make2() -> Buffer[Int32, 2] {
+    return Buffer(data: [7, 9])
+}
+
+func sumPairBuf(_ b: Buffer[Int32, 2]) -> Int32 {
+    return b.data[0] + b.data[1]
+}

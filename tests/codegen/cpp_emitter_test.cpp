@@ -2158,3 +2158,25 @@ TEST_CASE("two-parameter generic enum emits a two-parameter template") {
     CHECK(f.out.source.find("Either<std::int32_t, bool>{Either<std::int32_t, bool>::left_t{n}}")
           != std::string::npos);
 }
+
+// ---- §7 generics phase 2: const generics ----------------------------------
+
+TEST_CASE("const generic struct lowers to a class template with std::size_t N") {
+    SemaEmitFixture f("struct Buffer[T, const N: Int] { var data: [N]T }\n"
+                      "func first(_ b: Buffer[Int32, 4]) -> Int32 { return b.data[0] }\n");
+    CHECK(f.out.header.find("template <class T, std::size_t N>") != std::string::npos);
+    CHECK(f.out.header.find("struct Buffer {") != std::string::npos);
+    // The [N]T field emits the symbolic length name inside the template.
+    CHECK(f.out.header.find("std::array<T, N> data") != std::string::npos);
+    // A parameter typed Buffer[Int32, 4] lowers to the specialization.
+    CHECK(f.out.source.find("Buffer<std::int32_t, 4>") != std::string::npos);
+}
+
+TEST_CASE("const generic construction emits the inferred specialization") {
+    SemaEmitFixture f("struct Buffer[T, const N: Int] { var data: [N]T }\n"
+                      "func make() -> Buffer[Int32, 4] {\n"
+                      "    return Buffer(data: [10, 20, 30, 40])\n"
+                      "}\n");
+    CHECK(f.out.source.find("Buffer<std::int32_t, 4>{.data = {10, 20, 30, 40}}")
+          != std::string::npos);
+}

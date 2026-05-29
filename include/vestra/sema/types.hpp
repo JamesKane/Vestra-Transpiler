@@ -155,6 +155,11 @@ enum class TypeKind : std::uint16_t {
     OpaqueType,
     // generic parameter — opaque within its declaring scope
     GenericParam,
+    // §7 generics phase 2 — a compile-time integer used as a generic
+    // argument (a const generic, `[const N: Int]`). Carries the value in
+    // length_. Appears in a struct/enum instance's parts_ alongside type
+    // arguments and as the binding a symbolic vector length resolves to.
+    ConstValue,
 };
 
 class Type;
@@ -174,6 +179,11 @@ public:
     // Field accessors — only meaningful for the kinds that use them.
     [[nodiscard]] TypePtr inner() const noexcept { return inner_; }
     [[nodiscard]] std::int64_t vector_length() const noexcept { return length_; }
+    // §7 generics phase 2 — for a symbolic-length vector (`[N]T`) this is
+    // the const-parameter name "N"; empty for a concrete-length vector.
+    [[nodiscard]] std::string_view vector_length_name() const noexcept { return name_; }
+    // §7 generics phase 2 — the integer carried by a ConstValue.
+    [[nodiscard]] std::int64_t const_value() const noexcept { return length_; }
     [[nodiscard]] const std::vector<TypePtr>& parts() const noexcept { return parts_; }
     [[nodiscard]] TypePtr result() const noexcept { return result_; }
     [[nodiscard]] const ast::Decl* nominal_decl() const noexcept { return decl_; }
@@ -270,6 +280,12 @@ public:
     // composes (Ptr[T], UInt64) tag inside an Atomic[UInt128].
     [[nodiscard]] TypePtr make_atomic_tagged_pointer(TypePtr inner);
     [[nodiscard]] TypePtr make_vector(std::int64_t length, TypePtr element);
+    // §7 generics phase 2 — a `[N]T` whose length is a const-generic
+    // parameter (name) not yet bound to a concrete value. Substitution
+    // concretizes it to make_vector(value, …) once N is bound.
+    [[nodiscard]] TypePtr make_vector_symbolic(std::string length_name, TypePtr element);
+    // §7 generics phase 2 — a compile-time integer generic argument.
+    [[nodiscard]] TypePtr make_const_value(std::int64_t value);
     [[nodiscard]] TypePtr make_function(std::vector<TypePtr> params, TypePtr result);
     [[nodiscard]] TypePtr make_tuple(std::vector<TypePtr> elements);
 

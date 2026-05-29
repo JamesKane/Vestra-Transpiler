@@ -9,6 +9,7 @@
 #include "vestra/sema/scope.hpp"
 #include "vestra/sema/types.hpp"
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -145,6 +146,19 @@ private:
 
     // Resolve an `ast::Type` node into a `sema::TypePtr`.
     TypePtr resolve_type(const ast::Type& t);
+
+    // §7 generics phase 2 — build the interleaved type + const generic
+    // arguments for a use-site `Name[...]`, in declaration order, against a
+    // struct/enum's parameter list. Returns nullopt (after emitting the
+    // right diagnostic) when the type isn't generic or no args were given,
+    // in which case the caller falls back to the bare nominal. `kind` is
+    // "struct" / "enum" for the messages.
+    [[nodiscard]] std::optional<std::vector<TypePtr>>
+    resolve_generic_instance_args(const std::vector<ast::GenericParam>& generics,
+                                  const ast::NamedType& n,
+                                  std::string_view kind,
+                                  std::string_view name,
+                                  diag::SourceRange range);
 
     // ---- struct / enum lookup helpers ------------------------------------
 
