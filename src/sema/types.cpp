@@ -133,6 +133,8 @@ std::string Type::describe() const {
         return inner_ ? std::format("Box[{}]", inner_->describe()) : std::string{"Box"};
     case TypeKind::Future:
         return inner_ ? std::format("Future[{}]", inner_->describe()) : std::string{"Future"};
+    case TypeKind::Channel:
+        return inner_ ? std::format("Channel[{}]", inner_->describe()) : std::string{"Channel"};
     case TypeKind::Span:
         return inner_ ? std::format("Span[{}]", inner_->describe()) : std::string{"Span"};
     case TypeKind::MutSpan:
@@ -322,6 +324,14 @@ TypePtr TypeArena::make_box(TypePtr inner) {
 
 TypePtr TypeArena::make_future(TypePtr inner) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::Future));
+    t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_channel(TypePtr inner) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Channel));
     t->inner_ = inner;
     auto* p = t.get();
     owned_.push_back(std::move(t));
@@ -621,6 +631,7 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     case TypeKind::Optional:
     case TypeKind::Box:
     case TypeKind::Future:
+    case TypeKind::Channel:
     case TypeKind::Span:
     case TypeKind::MutSpan:
     case TypeKind::Ptr:
@@ -844,6 +855,10 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::Future: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_future(inner);
+    }
+    case TypeKind::Channel: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_channel(inner);
     }
     case TypeKind::Span: {
         auto inner = substitute(t->inner(), bindings);

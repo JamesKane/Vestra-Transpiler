@@ -2156,3 +2156,27 @@ add_test(
 set_tests_properties(e2e_parallel_demo_run PROPERTIES
     DEPENDS                e2e_parallel_demo_compile
     PASS_REGULAR_EXPRESSION "parallel_demo OK")
+
+# §11 Channel[T].
+set(e2e_channel_input  ${CMAKE_SOURCE_DIR}/examples/channel_demo.vst)
+set(e2e_channel_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_channel_demo.cpp)
+
+add_test(
+    NAME    e2e_channel_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_channel_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_channel_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_channel_driver} ${e2e_workdir}/channel_demo.cpp
+            -o ${e2e_workdir}/channel_demo_app)
+set_tests_properties(e2e_channel_demo_compile PROPERTIES DEPENDS e2e_channel_demo_transpile)
+
+add_test(
+    NAME    e2e_channel_demo_run
+    COMMAND ${e2e_workdir}/channel_demo_app)
+set_tests_properties(e2e_channel_demo_run PROPERTIES
+    DEPENDS                e2e_channel_demo_compile
+    PASS_REGULAR_EXPRESSION "channel_demo OK")

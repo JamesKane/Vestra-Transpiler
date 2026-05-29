@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §11 Channel[T] — a typed queue connecting tasks.
+//
+// `Channel.new()` mints a channel (the element type comes from the
+// annotated binding); `ch.send(v)` enqueues a value (the value is moved
+// in — send is a sink), and `ch.recv()` returns `T?` — the front value, or
+// `nil` when the channel is empty. v0.5 is single-threaded and unbounded
+// (a real scheduler with bounded back-pressure is a follow-on), so a
+// channel here is an ordinary FIFO buffer.
+
+module examples.channel_demo
+
+// Enqueue three values, then drain them with `if let`.
+func roundtrip() -> Int32 {
+    let ch: Channel[Int32] = Channel.new()
+    ch.send(10)
+    ch.send(20)
+    ch.send(30)
+    var total: Int32 = 0
+    if let a = ch.recv() {
+        total = total + a
+    }
+    if let b = ch.recv() {
+        total = total + b
+    }
+    if let c = ch.recv() {
+        total = total + c
+    }
+    return total
+}
+
+// `recv` on an empty channel yields `nil`, recovered here with `??`.
+func emptyRecv() -> Int32 {
+    let ch: Channel[Int32] = Channel.new()
+    return ch.recv() ?? -1
+}
+
+// FIFO order: the first value sent is the first received.
+func firstOut() -> Int32 {
+    let ch: Channel[Int32] = Channel.new()
+    ch.send(1)
+    ch.send(2)
+    return ch.recv() ?? 0
+}

@@ -3187,6 +3187,38 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
             auto inner = check_expr(*c.args[0].value);
             return types_->make_box(inner != nullptr ? inner : types_->error());
         }
+        // §11 `Channel.new()` — mints a typed queue. The element type comes
+        // from the expected `Channel[T]` (there is no value to infer from),
+        // so it must be used in a typed context. An optional capacity
+        // argument (Int) is accepted but ignored in v0.5 (the queue is
+        // unbounded; bounded back-pressure waits on a scheduler).
+        if (mem.base->kind == ast::NodeKind::IdentExpr
+            && static_cast<const ast::IdentExpr&>(*mem.base).name == "Channel"
+            && mem.member == "new" && scopes_.current().lookup("Channel") == nullptr) {
+            if (c.args.size() > 1) {
+                for (const auto& a : c.args) {
+                    (void)check_expr(*a.value);
+                }
+                error_at(c.range, "Channel.new() takes at most one argument (an Int capacity)");
+            } else if (c.args.size() == 1) {
+                auto cap = check_expr(*c.args[0].value);
+                if (cap != nullptr && !cap->is_error() && !cap->is_integer()) {
+                    error_at(c.args[0].value->range,
+                             std::format("Channel.new capacity must be an integer, got {}",
+                                         cap->describe()));
+                }
+            }
+            TypePtr inner = (expected != nullptr && expected->kind() == TypeKind::Channel)
+                                ? expected->inner()
+                                : nullptr;
+            if (inner == nullptr) {
+                error_at(c.range,
+                         "cannot infer Channel element type; annotate the binding (e.g. "
+                         "`let ch: Channel[Int32] = Channel.new()`)");
+                inner = types_->error();
+            }
+            return types_->make_channel(inner);
+        }
     }
 
     // §A11 (§14.8) `PerCpu.new(value)` — the heap factory for per-hart
@@ -3678,6 +3710,11 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
             if (n.path[0] == "Future" && n.type_args.size() == 1) {
                 return types_->make_future(n.type_args[0] ? resolve_type(*n.type_args[0])
                                                           : types_->error());
+            }
+            // §11 Channel[T] — a typed queue (`send` / `recv`).
+            if (n.path[0] == "Channel" && n.type_args.size() == 1) {
+                return types_->make_channel(n.type_args[0] ? resolve_type(*n.type_args[0])
+                                                           : types_->error());
             }
             // §10 builtin `Span[T]` / `MutSpan[T]` — borrowed,
             // non-escapable views over a contiguous range of T. Lower
@@ -4381,6 +4418,16 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
     if (owner_type->kind() == TypeKind::SysregHandleWO && owner_type->inner() != nullptr) {
         if (name == "write") {
             return types_->make_function({owner_type->inner()}, types_->unit());
+        }
+    }
+    // §11 Channel[T] — `send(T) -> Unit` (the value is moved into the
+    // queue) and `recv() -> T?` (the front value, or nil when empty).
+    if (owner_type->kind() == TypeKind::Channel && owner_type->inner() != nullptr) {
+        if (name == "send") {
+            return types_->make_function({owner_type->inner()}, types_->unit());
+        }
+        if (name == "recv") {
+            return types_->make_function({}, types_->make_optional(owner_type->inner()));
         }
     }
     if (owner_type->kind() == TypeKind::PerCpu && owner_type->inner() != nullptr) {

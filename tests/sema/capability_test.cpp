@@ -455,3 +455,23 @@ TEST_CASE("parallel rejects a non-MutSpan first argument") {
     CHECK(r.first_message.find("parallel's first argument must be a MutSpan[T]")
           != std::string::npos);
 }
+
+// ---- §11 Channel[T] --------------------------------------------------------
+
+TEST_CASE("channel send / recv type-check; recv yields an Optional") {
+    CHECK(check("func rt() -> Int32 {\n"
+                "    let ch: Channel[Int32] = Channel.new()\n"
+                "    ch.send(10)\n"
+                "    return ch.recv() ?? 0\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("Channel.new without a contextual type is rejected") {
+    auto r = check("func bad() {\n"
+                   "    let ch = Channel.new()\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("cannot infer Channel element type") != std::string::npos);
+}

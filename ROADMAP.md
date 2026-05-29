@@ -77,12 +77,15 @@ across await" §11 rule. `Channel[T]` (roadmap #3, which unblocks the
 remaining `select` arms) is the natural next §11 step; senders/receivers
 can replace the coroutine shims if/when libc++ ships P2300.
 
-### 3. `Channel[T]` + `parallel` library (§11)
+### 3. `Channel[T]` + `parallel` library (§11) — shipped
 
-Depends on async. A typed bounded queue: `send` is a sink, `recv`
-returns Optional. `parallel(over: xs, by: chunks)` takes a
-non-escaping closure and runs it over partitions. Pairs with the
-Span[T] non-escapable work already in.
+Both shipped: `parallel` (under §11 above) and `Channel[T]` — a typed
+queue with `send` (a sink) and `recv() -> T?`, lowered to a
+`__vstr::Channel<T>` over a shared deque. v0.5 is single-threaded and
+unbounded. Remaining (tracked under §11 above): bounded capacity /
+back-pressure, a closed-channel state distinct from empty, `send` as a
+true call-site move, and the channel/timeout `select` arms this
+unblocks.
 
 ### 4. Quote / splice / declaration macros (§12.4) (multi-session)
 

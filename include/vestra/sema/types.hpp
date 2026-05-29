@@ -62,6 +62,8 @@ enum class TypeKind : std::uint16_t {
     Box,
     // §11 Future[T] — what `spawn f()` yields; `await` consumes it for the T.
     Future,
+    // §11 Channel[T] — a typed queue: `send` is a sink, `recv` -> T?.
+    Channel,
     Vector,
     Function,
     Tuple,
@@ -245,6 +247,8 @@ public:
     [[nodiscard]] TypePtr make_box(TypePtr inner);
     // §11 Future[T] — the result handle a `spawn` yields; `await` unwraps it.
     [[nodiscard]] TypePtr make_future(TypePtr inner);
+    // §11 Channel[T] — a typed queue; `send(T)` and `recv() -> T?`.
+    [[nodiscard]] TypePtr make_channel(TypePtr inner);
     // §10 Span[T] / MutSpan[T] — borrowed, non-escapable views.
     // Lower to `std::span<const T>` and `std::span<T>` respectively.
     [[nodiscard]] TypePtr make_span(TypePtr inner);

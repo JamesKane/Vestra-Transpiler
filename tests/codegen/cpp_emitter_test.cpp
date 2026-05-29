@@ -2346,3 +2346,18 @@ TEST_CASE("parallel lowers to __vstr::parallel over a worker closure") {
           != std::string::npos);
     CHECK(f.out.source.find("[&](std::span<std::int32_t> slice)") != std::string::npos);
 }
+
+// ---- §11 Channel[T] -------------------------------------------------------
+
+TEST_CASE("Channel.new mints a __vstr::Channel and send/recv pass through") {
+    SemaEmitFixture f("func rt() -> Int32 {\n"
+                      "    let ch: Channel[Int32] = Channel.new()\n"
+                      "    ch.send(10)\n"
+                      "    return ch.recv() ?? 0\n"
+                      "}\n");
+    CHECK(f.out.header.find("struct Channel {") != std::string::npos);  // runtime shim
+    CHECK(f.out.source.find("__vstr::Channel<std::int32_t> ch = __vstr::Channel<std::int32_t>{}")
+          != std::string::npos);
+    CHECK(f.out.source.find("ch.send(10);") != std::string::npos);
+    CHECK(f.out.source.find("ch.recv()") != std::string::npos);
+}

@@ -353,6 +353,7 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "#include <bit>\n";        // §A6 MmioWireView std::byteswap / std::endian
     hdr << "#include <concepts>\n";   // §7 generic bounds lower to requires-clauses
     hdr << "#include <coroutine>\n";  // §11 async func / await lower to coroutines
+    hdr << "#include <deque>\n";      // §11 Channel[T] backs onto a deque
     hdr << "#include <cstdint>\n";
     hdr << "#include <cstdlib>\n";     // §10 panic / abort → std::abort
     hdr << "#include <expected>\n";    // §9 throws(E) → T lowers to std::expected
@@ -546,6 +547,24 @@ void parallel(std::span<T> data, std::intptr_t chunks, F&& body) {
         off += len;
     }
 }
+
+// §11 Channel<T>: a typed FIFO queue. `send` moves a value in; `recv`
+// returns the front value or std::nullopt when empty. The buffer is held
+// through a shared_ptr so copies of a channel handle share one queue
+// (the share-nothing model passes the handle between tasks). v0.5 is
+// single-threaded and unbounded — bounded back-pressure waits on a
+// scheduler.
+template <class T>
+struct Channel {
+    std::shared_ptr<std::deque<T>> q_ = std::make_shared<std::deque<T>>();
+    void send(T v) { q_->push_back(std::move(v)); }
+    std::optional<T> recv() {
+        if (q_->empty()) { return std::nullopt; }
+        T v = std::move(q_->front());
+        q_->pop_front();
+        return v;
+    }
+};
 
 )__task";
     // §9 iterator combinators. `Zip<A, B>` and `Take<A>` are header-
@@ -3995,6 +4014,20 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << ")";
                 break;
             }
+            // §11 `Channel.new()` mints a fresh queue: `__vstr::Channel<T>{}`
+            // (T from the call's resolved Channel type). Any capacity
+            // argument is ignored in v0.5 (the queue is unbounded).
+            if (mem.base && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "Channel"
+                && mem.member == "new" && resolution_ != nullptr) {
+                auto rt = resolution_->type_of(&e);
+                if (rt != nullptr && rt->kind() == sema::TypeKind::Channel) {
+                    os << "__vstr::Channel<";
+                    emit_sema_type(os, rt->inner());
+                    os << ">{}";
+                    break;
+                }
+            }
             // §A11 (§14.8) `PerCpu.new(value)` heap-allocates a
             // 64-byte-aligned __vstr::PerCpu<T> wrapping `value` and
             // returns a unique_ptr. The brace-init around `value`
@@ -4934,6 +4967,11 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         emit_sema_type(os, t->inner());
         os << ">";
         return;
+    case TypeKind::Channel:
+        os << "__vstr::Channel<";
+        emit_sema_type(os, t->inner());
+        os << ">";
+        return;
     case TypeKind::Span:
         // Read-only borrowed view → `std::span<const T>`. The const on
         // the element pins the read-only side of the type system at
@@ -5222,6 +5260,13 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
             // §11 Future[T] → the runtime Future shim.
             if (n.path[0] == "Future" && n.type_args.size() == 1) {
                 os << "__vstr::Future<";
+                emit_type(os, *n.type_args[0]);
+                os << ">";
+                return;
+            }
+            // §11 Channel[T] → the runtime Channel shim.
+            if (n.path[0] == "Channel" && n.type_args.size() == 1) {
+                os << "__vstr::Channel<";
                 emit_type(os, *n.type_args[0]);
                 os << ">";
                 return;
