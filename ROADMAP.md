@@ -46,14 +46,13 @@ enforced at the call site and at struct/enum instantiation, with a C++20
 entries. Remaining pieces: const generics on *functions* (inference of N
 from arguments; the struct/enum slice covers types only); explicit
 type-args at a construction site (`Pair[Int32](...)`, where the callee
-currently parses as an index expression); leading-dot *construction* of a
-payloaded enum (`return .just(x)` / `.nothing`, a pre-existing codegen gap
-that non-generic enums share); const-expression array lengths (`[N + 1]T`);
-bound enforcement gating body operations; transitive bound checking;
-user-defined-protocol conformance (no general table yet); `requires`
-clauses on generic structs/enums (functions only today); and derive /
-`std::hash` / `std::formatter` emission for generic types. The
-type-parameter surface is now substantially complete — what remains is
+currently parses as an index expression); const-expression array lengths
+(`[N + 1]T`); bound enforcement gating body operations; transitive bound
+checking; user-defined-protocol conformance (no general table yet);
+`requires` clauses on generic structs/enums (functions only today); and
+derive / `std::hash` / `std::formatter` emission for generic types. (The
+leading-dot payloaded-enum construction gap was closed as a §8 follow-on.)
+The type-parameter surface is now substantially complete — what remains is
 refinement. Const generics on functions is the natural next slice.
 
 ### 2. `async` / `spawn` / `select` / `parallel` (§11) (multi-session)

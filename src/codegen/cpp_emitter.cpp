@@ -4050,6 +4050,41 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 }
             }
         }
+        // Payloaded-enum case construction via the leading-dot form:
+        // `.circle(radius: 1.0)` against a contextual enum type lowers the
+        // same way as the `Shape.circle(...)` form above. The case name
+        // comes from the leading dot; the enum decl + any generic `<args>`
+        // come from the call's resolved instance type.
+        if (resolution_ != nullptr && c.callee->kind == ast::NodeKind::LeadingDotExpr) {
+            const auto& d = static_cast<const ast::LeadingDotExpr&>(*c.callee);
+            auto inst = resolution_->type_of(&c);
+            if (inst != nullptr && inst->kind() == sema::TypeKind::Enum
+                && inst->nominal_decl() != nullptr) {
+                const auto& ed = static_cast<const ast::EnumDecl&>(*inst->nominal_decl());
+                if (enum_is_sum_type(ed)) {
+                    const bool generic_inst = !inst->parts().empty();
+                    auto emit_enum_name = [&]() {
+                        if (generic_inst) {
+                            emit_sema_type(os, inst);
+                        } else {
+                            os << ed.name;
+                        }
+                    };
+                    emit_enum_name();
+                    os << "{";
+                    emit_enum_name();
+                    os << "::" << d.name << "_t{";
+                    for (std::size_t i = 0; i < c.args.size(); ++i) {
+                        if (i != 0) {
+                            os << ", ";
+                        }
+                        emit_expr(os, *c.args[i].value);
+                    }
+                    os << "}}";
+                    break;
+                }
+            }
+        }
         // §17.x conversion-call lowering: `Float64(i)` → `static_cast<double>(i)`.
         // Sema accepts a bare numeric-primitive ident in callee position and
         // produces a one-arg call typed at that primitive; here we map it to
@@ -4373,7 +4408,26 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     }
                     break;
                 }
-                os << enum_decl.name << "::" << d.name;
+                // A no-payload case of a payloaded (sum-type) enum needs the
+                // struct-of-variant wrap — `Maybe<Int32>{Maybe<Int32>::
+                // nothing_t{}}` — just like the `Enum.case` member form;
+                // a bare enum keeps the plain `Enum::case`.
+                if (enum_is_sum_type(enum_decl)) {
+                    const bool generic_inst = !t->parts().empty();
+                    auto emit_enum_name = [&]() {
+                        if (generic_inst) {
+                            emit_sema_type(os, t);
+                        } else {
+                            os << enum_decl.name;
+                        }
+                    };
+                    emit_enum_name();
+                    os << "{";
+                    emit_enum_name();
+                    os << "::" << d.name << "_t{}}";
+                } else {
+                    os << enum_decl.name << "::" << d.name;
+                }
                 break;
             }
         }

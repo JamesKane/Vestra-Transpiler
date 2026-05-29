@@ -2203,3 +2203,25 @@ TEST_CASE("a bound without a standard concept emits no requires clause") {
     CHECK(f.out.header.find("template <class T>") != std::string::npos);
     CHECK(f.out.header.find("requires (") == std::string::npos);
 }
+
+// ---- §8 leading-dot construction of a payloaded enum ----------------------
+
+TEST_CASE("leading-dot construction of a payloaded enum emits the variant wrap") {
+    SemaEmitFixture f("enum Shape { case circle(r: Float64)  case point }\n"
+                      "func a() -> Shape { return .point }\n"
+                      "func b() -> Shape { return .circle(r: 1.0) }\n");
+    // No-payload case via leading dot wraps the variant, not `Shape::point`.
+    CHECK(f.out.source.find("Shape{Shape::point_t{}}") != std::string::npos);
+    // Payloaded case via leading dot slots the argument into the case_t.
+    CHECK(f.out.source.find("Shape{Shape::circle_t{1.0}}") != std::string::npos);
+}
+
+TEST_CASE("leading-dot construction of a generic enum qualifies with the instance args") {
+    SemaEmitFixture f("enum Maybe[T] { case just(T)  case nothing }\n"
+                      "func n() -> Maybe[Int32] { return .nothing }\n"
+                      "func j(_ v: Int32) -> Maybe[Int32] { return .just(v) }\n");
+    CHECK(f.out.source.find("Maybe<std::int32_t>{Maybe<std::int32_t>::nothing_t{}}")
+          != std::string::npos);
+    CHECK(f.out.source.find("Maybe<std::int32_t>{Maybe<std::int32_t>::just_t{v}}")
+          != std::string::npos);
+}

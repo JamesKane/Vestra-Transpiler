@@ -35,15 +35,15 @@ func unwrapOr(_ m: Maybe[Int32], _ fallback: Int32) -> Int32 {
 }
 
 // Payloaded construction infers T = Int32 from the argument.
+// Payloaded construction via the leading-dot form, resolved against the
+// return type's `Maybe[Int32]`.
 func someInt(_ v: Int32) -> Maybe[Int32] {
-    return Maybe.just(v)
+    return .just(v)
 }
 
-// No-payload construction: the explicit `Maybe.nothing` resolves against
-// the return type's `Maybe[Int32]` (leading-dot construction of a
-// payloaded enum is a separate, pre-existing codegen gap).
+// No-payload construction, likewise leading-dot.
 func noneInt() -> Maybe[Int32] {
-    return Maybe.nothing
+    return .nothing
 }
 
 // Two-parameter match, both arms.
@@ -55,9 +55,9 @@ func leftOr(_ e: Either[Int32, Bool], _ fallback: Int32) -> Int32 {
 }
 
 func makeLeft(_ n: Int32) -> Either[Int32, Bool] {
-    return Either.left(n)
+    return .left(n)
 }
 
 func makeRight(_ b: Bool) -> Either[Int32, Bool] {
-    return Either.right(b)
+    return .right(b)
 }
