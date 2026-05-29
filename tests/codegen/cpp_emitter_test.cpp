@@ -2372,3 +2372,15 @@ TEST_CASE("an expression-context quote materializes its body with splices substi
     CHECK(f.out.source.find("return (x) * (x);") != std::string::npos);
     CHECK(f.out.source.find("return (a) * (x) + (y);") != std::string::npos);
 }
+
+// ---- §5/§18.4 split(at:) partition primitive ------------------------------
+
+TEST_CASE("split(at:) lowers to __vstr::split_at and destructures to auto [lo, hi]") {
+    SemaEmitFixture f("func f(_ s: MutSpan[Int32], _ k: Int) -> Int32 {\n"
+                      "    let (lo, hi) = s.split(at: k)\n"
+                      "    return lo.count + hi.count\n"
+                      "}\n");
+    CHECK(f.out.header.find("split_at(std::span<T> s, std::intptr_t at)") != std::string::npos);
+    CHECK(f.out.source.find("auto [lo, hi] = __vstr::split_at(s, static_cast<std::intptr_t>(k))")
+          != std::string::npos);
+}

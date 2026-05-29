@@ -2407,3 +2407,22 @@ TEST_CASE("a splice outside a quote is rejected") {
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("`$` splice is only valid inside a `quote") != std::string::npos);
 }
+
+// ---- §5/§18.4 split(at:) partition primitive ------------------------------
+
+TEST_CASE("split(at:) on a MutSpan yields a tuple of two sub-views") {
+    CHECK(check_errors("func f(_ s: MutSpan[Int32], _ k: Int) -> Int32 {\n"
+                       "    let (lo, hi) = s.split(at: k)\n"
+                       "    return lo.count + hi.count\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("split on a non-span value is rejected") {
+    auto r = check_detail("func bad(_ n: Int32) -> Int32 {\n"
+                          "    let (a, b) = n.split(at: 1)\n"
+                          "    return 0\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("'split' on type Int32") != std::string::npos);
+}

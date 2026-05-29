@@ -103,11 +103,19 @@ phase 7.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 
-Phase 1 (`b0727b9` / `e77f2e0`) is single-pass and linear. Phase 2
-needs branch-aware flow merging; cross-statement borrow liveness;
-partition primitives (`chunks(n)` / `split(at:)`); linear types
-(`linear struct Foo { ... }`). Partition primitives also unblock the
-Channel `parallel` partitioner above.
+Phase 1 (`b0727b9` / `e77f2e0`) is single-pass and linear. First
+phase-2 slice shipped: the `split(at:)` partition primitive on
+Span/MutSpan (a `(prefix, suffix)` tuple of disjoint sub-views, lowered
+via `std::span::subspan`). Remaining: the iterator partitioner
+`chunks(n)`; branch-aware flow merging (the ownership checker walks both
+branches linearly today); cross-statement borrow liveness (so using a
+parent span while a split half is live is caught — exclusivity is
+per-call only today); partition *provenance* in `as_place` (proving
+same-root sub-views disjoint, not just distinct bound symbols); and
+`linear` types (`KwLinear` is tokenized but unparsed; must-consume needs
+the branch merge, so the two are coupled). `chunks(n)` is the natural
+next runnable slice; the flow-merge + linear pair is the deeper
+analysis work.
 
 ### 6. Capability narrowing + audit trail
 

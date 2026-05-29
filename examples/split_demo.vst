@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §5 clause 4 / §18.4 — the `split(at:)` partition primitive.
+//
+// `s.split(at: i)` on a Span[T] / MutSpan[T] is a *trusted partitioner*: it
+// yields the `(prefix, suffix)` tuple of two non-overlapping sub-views of
+// the same span type — [0, i) and [i, count). Because the halves are a
+// provably-disjoint partition, they can be processed independently (and,
+// bound with `let (lo, hi) = …`, each is its own borrow). This is the
+// disjoint-partition affordance §11.2's `parallel` and §5's exclusivity
+// rules rest on. The iterator partitioner `chunks(n)` and the
+// cross-statement borrow-liveness check on the parent span are follow-on
+// slices of ownership/exclusivity phase 2.
+
+module examples.split_demo
+
+// Sum a span by splitting it and summing each half independently.
+func sumSpan(_ s: Span[Int32], _ at: Int) -> Int32 {
+    let (lo, hi) = s.split(at: at)
+    var total: Int32 = 0
+    var i = 0
+    while i < lo.count {
+        total = total + lo[i]
+        i = i + 1
+    }
+    var j = 0
+    while j < hi.count {
+        total = total + hi[j]
+        j = j + 1
+    }
+    return total
+}
+
+// Mutate the two halves of a MutSpan independently: negate the prefix,
+// double the suffix. The disjoint partition makes this race-free.
+func transform(_ s: MutSpan[Int32], _ at: Int) {
+    let (lo, hi) = s.split(at: at)
+    var i = 0
+    while i < lo.count {
+        lo[i] = 0 - lo[i]
+        i = i + 1
+    }
+    var j = 0
+    while j < hi.count {
+        hi[j] = hi[j] * 2
+        j = j + 1
+    }
+}

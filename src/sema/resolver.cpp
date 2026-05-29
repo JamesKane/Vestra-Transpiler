@@ -3140,6 +3140,42 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
+    // §5 clause 4 / §18.4 — `s.split(at: i)` on a Span[T] / MutSpan[T] is a
+    // trusted partitioner: it yields a provably-disjoint partition, the
+    // tuple `(prefix, suffix)` of two non-overlapping sub-views of the same
+    // span type ([0, i) and [i, count)). The disjoint provenance lets both
+    // halves be borrowed at once; binding them with `let (lo, hi) = …`
+    // gives distinct symbols the exclusivity checker already treats as
+    // non-overlapping. (chunks(n), the iterator partitioner, and the
+    // cross-statement borrow-liveness check on the parent wait on
+    // follow-on slices.)
+    if (c.callee->kind == ast::NodeKind::MemberExpr) {
+        const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+        if (mem.member == "split" && mem.base != nullptr) {
+            auto base_t = check_expr(*mem.base);
+            if (base_t != nullptr
+                && (base_t->kind() == TypeKind::Span || base_t->kind() == TypeKind::MutSpan)) {
+                if (c.args.size() != 1) {
+                    for (const auto& a : c.args) {
+                        (void)check_expr(*a.value);
+                    }
+                    error_at(c.range, "split(at: i) takes exactly one argument");
+                    return types_->make_tuple({base_t, base_t});
+                }
+                if (!c.args[0].label.empty() && c.args[0].label != "at") {
+                    error_at(c.args[0].value->range, "split expects the label 'at'");
+                }
+                auto idx = check_expr(*c.args[0].value, types_->primitive(TypeKind::Int));
+                if (idx != nullptr && !idx->is_error() && !idx->is_integer()) {
+                    error_at(
+                        c.args[0].value->range,
+                        std::format("split index must be an integer, got {}", idx->describe()));
+                }
+                return types_->make_tuple({base_t, base_t});
+            }
+        }
+    }
+
     // §14.8 / §12.6 `cfg.option("name")` — comptime-folded build
     // option accessor. v0.5 admits one name: "cache_line_bytes"
     // (returns 64 — the default that §A11's Padded[T] template

@@ -548,6 +548,18 @@ void parallel(std::span<T> data, std::intptr_t chunks, F&& body) {
     }
 }
 
+// §5/§18.4 split_at: the trusted partitioner behind `s.split(at: i)`. Returns
+// the two non-overlapping sub-views ([0, i) and [i, count)); `i` is clamped
+// to [0, count] so an out-of-range split yields an empty piece rather than
+// undefined behaviour.
+template <class T>
+std::tuple<std::span<T>, std::span<T>> split_at(std::span<T> s, std::intptr_t at) {
+    const std::size_t n = s.size();
+    const std::size_t k =
+        at < 0 ? 0 : (static_cast<std::size_t>(at) > n ? n : static_cast<std::size_t>(at));
+    return {s.subspan(0, k), s.subspan(k)};
+}
+
 // §11 Channel<T>: a typed FIFO queue. `send` moves a value in; `recv`
 // returns the front value or std::nullopt when empty. The buffer is held
 // through a shared_ptr so copies of a channel handle share one queue
@@ -4124,6 +4136,21 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << ").transform_error(";
                     emit_expr(os, *c.args[0].value);
                     os << ")";
+                    break;
+                }
+            }
+            // §5/§18.4 `s.split(at: i)` → the runtime partitioner, which
+            // returns the (prefix, suffix) tuple of std::span sub-views.
+            if (mem.member == "split" && c.args.size() == 1 && resolution_ != nullptr) {
+                auto base_t = resolution_->type_of(mem.base.get());
+                if (base_t != nullptr
+                    && (base_t->kind() == sema::TypeKind::Span
+                        || base_t->kind() == sema::TypeKind::MutSpan)) {
+                    os << "__vstr::split_at(";
+                    emit_expr(os, *mem.base);
+                    os << ", static_cast<std::intptr_t>(";
+                    emit_expr(os, *c.args[0].value);
+                    os << "))";
                     break;
                 }
             }
