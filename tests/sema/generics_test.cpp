@@ -386,3 +386,23 @@ TEST_CASE("a const-generic function threads N through to the return type") {
               .error_count
           == 0);
 }
+
+// ---- §12.3 derives on generic types ----------------------------------------
+
+TEST_CASE("derive(Default) on a generic struct does not reject its generic fields") {
+    // Field `T` is a generic param; its Default-conformance is deferred to
+    // instantiation rather than rejected at the derive.
+    CHECK(check("struct Pair[T] { var first: T  var second: T }\n"
+                "derive(Default) for Pair\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("derive(Eq, Hash, Debug) on a generic struct and enum check clean") {
+    CHECK(check("struct Pair[T] { var first: T  var second: T }\n"
+                "derive(Eq, Hash, Debug) for Pair\n"
+                "enum Maybe[T] { case just(T)  case nothing }\n"
+                "derive(Eq, Hash, Debug) for Maybe\n")
+              .error_count
+          == 0);
+}

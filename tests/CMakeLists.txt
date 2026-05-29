@@ -2084,3 +2084,27 @@ add_test(
 set_tests_properties(e2e_generic_bounds_run PROPERTIES
     DEPENDS                e2e_generic_bounds_compile
     PASS_REGULAR_EXPRESSION "generic_bounds OK")
+
+# §12.3 derives on generic types.
+set(e2e_gderive_input  ${CMAKE_SOURCE_DIR}/examples/generic_derive.vst)
+set(e2e_gderive_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_generic_derive.cpp)
+
+add_test(
+    NAME    e2e_generic_derive_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_gderive_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_generic_derive_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_gderive_driver} ${e2e_workdir}/generic_derive.cpp
+            -o ${e2e_workdir}/generic_derive_app)
+set_tests_properties(e2e_generic_derive_compile PROPERTIES DEPENDS e2e_generic_derive_transpile)
+
+add_test(
+    NAME    e2e_generic_derive_run
+    COMMAND ${e2e_workdir}/generic_derive_app)
+set_tests_properties(e2e_generic_derive_run PROPERTIES
+    DEPENDS                e2e_generic_derive_compile
+    PASS_REGULAR_EXPRESSION "generic_derive OK")

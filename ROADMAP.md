@@ -49,13 +49,14 @@ expression); a const generic as a runtime/comptime *value* in a body
 (`for i in 0..N`; today N is only an array length); const-expression
 array lengths (`[N + 1]T`); bound enforcement gating body operations;
 transitive bound checking; user-defined-protocol conformance (no general
-table yet); `requires` clauses on generic structs/enums (functions only
-today); and derive / `std::hash` / `std::formatter` emission for generic
-types. (Leading-dot payloaded-enum construction and const generics on
-functions were closed as follow-ons.) The type-parameter surface is now
-substantially complete — what remains is refinement. Derive emission for
-generic types or explicit construction-site type-args are the natural
-next slices.
+table yet); and `requires` clauses on generic structs/enums (functions
+only today). (Leading-dot payloaded-enum construction, const generics on
+functions, and derive emission for generic types were closed as
+follow-ons.) The type-parameter surface is now substantially complete —
+the remaining items are minor refinements. Explicit construction-site
+type-args is the most user-visible one left; otherwise generics phase 2
+is effectively done and the next phase is best drawn from the bigger
+swings (async, macros, ownership phase 2) or the annex deepening.
 
 ### 2. `async` / `spawn` / `select` / `parallel` (§11) (multi-session)
 

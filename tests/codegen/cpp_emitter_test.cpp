@@ -2242,3 +2242,25 @@ TEST_CASE("an array literal self-describes its std::array type for deduction") {
     CHECK(f.out.source.find("first(std::array<std::intptr_t, 3>{10, 20, 30})")
           != std::string::npos);
 }
+
+// ---- §12.3 derives on generic types ---------------------------------------
+
+TEST_CASE("derive(Hash, Debug) on a generic struct emits partial specializations") {
+    SemaEmitFixture f("struct Pair[T] { var first: T  var second: T }\n"
+                      "derive(Eq, Hash, Debug) for Pair\n");
+    // operator== lives inside the class template.
+    CHECK(f.out.header.find("[[nodiscard]] bool operator==(const Pair&) const noexcept = default;")
+          != std::string::npos);
+    // std::hash / std::formatter become partial specializations over T.
+    CHECK(f.out.header.find("template <class T>\nstruct std::hash<Pair<T>>") != std::string::npos);
+    CHECK(f.out.header.find("template <class T>\nstruct std::formatter<Pair<T>>")
+          != std::string::npos);
+}
+
+TEST_CASE("derive(Hash, Debug) on a generic enum qualifies dependent case types") {
+    SemaEmitFixture f("enum Maybe[T] { case just(T)  case nothing }\n"
+                      "derive(Hash, Debug) for Maybe\n");
+    CHECK(f.out.header.find("template <class T>\nstruct std::hash<Maybe<T>>") != std::string::npos);
+    // A `X<T>::case_t` reference inside the partial spec needs `typename`.
+    CHECK(f.out.header.find("std::is_same_v<__T, typename Maybe<T>::just_t>") != std::string::npos);
+}

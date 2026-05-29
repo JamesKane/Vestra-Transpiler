@@ -1035,6 +1035,21 @@ void Resolver::check_decl(const ast::Decl& d) {
             break;
         }
         const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
+        // §7 generics phase 2 — bind the target struct's type parameters as
+        // placeholders so a field typed `T` resolves to a GenericParam
+        // (deferred-conformant) rather than failing with "unknown type T".
+        ScopeStack::Guard derive_generics_g(scopes_);
+        for (const auto& gp : sd.generics) {
+            if (gp.name.empty()) {
+                continue;
+            }
+            Symbol gs;
+            gs.name = gp.name;
+            gs.kind = SymbolKind::GenericParam;
+            gs.type = types_->make_generic_param(gp.name);
+            gs.definition_range = gp.range;
+            (void)derive_generics_g.scope().insert(std::move(gs));
+        }
         for (const auto& f : sd.fields) {
             if (f.kind == ast::StructDecl::Field::Kind::Embed) {
                 continue;  // embed fields are checked through the embedded struct's own derive
@@ -4022,6 +4037,12 @@ bool Resolver::is_default_conformant(TypePtr t) const {
         return true;
     case TypeKind::Struct:
         return decl_derives(t->nominal_decl(), "Default");
+    case TypeKind::GenericParam:
+        // §7 generics phase 2 — a field typed by a generic parameter can't
+        // be checked for Default-conformance until the type is
+        // instantiated. Defer: accept here, and the C++ value-init at the
+        // instantiation site enforces it.
+        return true;
     case TypeKind::OpaqueType: {
         // §3 newtype follow-on: an opaque is Default-conformant iff
         // the user has written `derive(Default) for Q` AND the

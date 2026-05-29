@@ -1693,6 +1693,64 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
     hdr << ";\n\n";
 }
 
+namespace {
+
+// §7 generics phase 2 — a std::hash / std::formatter specialization for a
+// generic type is a *partial* specialization: `template <class T> struct
+// std::hash<Pair<T>>` rather than `template <> struct std::hash<Pair>`.
+// These two helpers emit the template head and the `<T, N>` argument suffix
+// on the specialized type name; for a non-generic type they degrade to
+// `template <>` and no suffix, preserving the existing output.
+bool spec_decl_is_generic(const std::vector<ast::GenericParam>& gens) {
+    for (const auto& g : gens) {
+        if (!g.name.empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void emit_spec_head(std::ostream& os, const std::vector<ast::GenericParam>& gens) {
+    if (!spec_decl_is_generic(gens)) {
+        os << "template <>\n";
+        return;
+    }
+    os << "template <";
+    bool first = true;
+    for (const auto& g : gens) {
+        if (g.name.empty()) {
+            continue;
+        }
+        if (!first) {
+            os << ", ";
+        }
+        first = false;
+        os << (g.is_const ? "std::size_t " : "class ") << g.name;
+    }
+    os << ">\n";
+}
+
+void emit_spec_args(std::ostream& os, const std::vector<ast::GenericParam>& gens) {
+    if (!spec_decl_is_generic(gens)) {
+        return;
+    }
+    os << "<";
+    bool first = true;
+    for (const auto& g : gens) {
+        if (g.name.empty()) {
+            continue;
+        }
+        if (!first) {
+            os << ", ";
+        }
+        first = false;
+        os << g.name;
+    }
+    os << ">";
+}
+
+}  // namespace
+
 void CppEmitter::emit_hash_spec(std::ostream& os,
                                 const ast::StructDecl& s,
                                 std::string_view qual_prefix) {
@@ -1700,10 +1758,13 @@ void CppEmitter::emit_hash_spec(std::ostream& os,
     // decent distribution as long as each field has a sensible
     // std::hash. Doesn't need to be cryptographically strong — it's
     // for unordered_map bucket dispatch.
-    os << "template <>\n";
-    os << "struct std::hash<" << qual_prefix << s.name << "> {\n";
-    os << "    [[nodiscard]] std::size_t operator()(const " << qual_prefix << s.name
-       << "& v) const noexcept {\n";
+    emit_spec_head(os, s.generics);
+    os << "struct std::hash<" << qual_prefix << s.name;
+    emit_spec_args(os, s.generics);
+    os << "> {\n";
+    os << "    [[nodiscard]] std::size_t operator()(const " << qual_prefix << s.name;
+    emit_spec_args(os, s.generics);
+    os << "& v) const noexcept {\n";
     os << "        std::size_t __h = 0;\n";
     for (const auto& f : s.fields) {
         if (f.kind == ast::StructDecl::Field::Kind::Embed || f.type == nullptr) {
@@ -1761,15 +1822,20 @@ void CppEmitter::emit_debug_spec_opaque(std::ostream& os,
 void CppEmitter::emit_hash_spec_enum(std::ostream& os,
                                      const ast::EnumDecl& e,
                                      std::string_view qual_prefix) {
-    // Bare enums fall back to the standard library's `std::hash<E>`;
-    // we only need a spec when the enum lowers to a struct-of-variant.
-    if (!enum_is_sum_type(e)) {
+    // Bare enums fall back to the standard library's `std::hash<E>`; we
+    // only need a spec when the enum lowers to a struct-of-variant. A
+    // generic enum always lowers to the variant shape (even all-bare), so
+    // it needs the spec too.
+    if (!enum_is_sum_type(e) && !spec_decl_is_generic(e.generics)) {
         return;
     }
-    os << "template <>\n";
-    os << "struct std::hash<" << qual_prefix << e.name << "> {\n";
-    os << "    [[nodiscard]] std::size_t operator()(const " << qual_prefix << e.name
-       << "& v) const noexcept {\n";
+    emit_spec_head(os, e.generics);
+    os << "struct std::hash<" << qual_prefix << e.name;
+    emit_spec_args(os, e.generics);
+    os << "> {\n";
+    os << "    [[nodiscard]] std::size_t operator()(const " << qual_prefix << e.name;
+    emit_spec_args(os, e.generics);
+    os << "& v) const noexcept {\n";
     os << "        return std::visit([&](auto&& __alt) {\n";
     os << "            using __T = std::decay_t<decltype(__alt)>;\n";
     os << "            std::size_t __h = v.value.index();\n";
@@ -1781,8 +1847,15 @@ void CppEmitter::emit_hash_spec_enum(std::ostream& os,
         } else {
             os << " else if";
         }
-        os << " constexpr (std::is_same_v<__T, " << qual_prefix << e.name << "::" << c.name
-           << "_t>) {\n";
+        os << " constexpr (std::is_same_v<__T, ";
+        // Inside a partial specialization `X<T>::case_t` is a dependent
+        // name and needs `typename`; a concrete `X::case_t` does not.
+        if (spec_decl_is_generic(e.generics)) {
+            os << "typename ";
+        }
+        os << qual_prefix << e.name;
+        emit_spec_args(os, e.generics);
+        os << "::" << c.name << "_t>) {\n";
         for (std::size_t i = 0; i < c.payload.size(); ++i) {
             const auto& [pname, ptype] = c.payload[i];
             std::string fname = pname.empty() ? std::format("_{}", i) : pname;
@@ -1811,10 +1884,14 @@ void CppEmitter::emit_debug_spec_struct(std::ostream& os,
     // Each `{}` in the std::format string is a placeholder; literal
     // braces in the output must be doubled (`{{` / `}}`) to survive
     // std::format's brace syntax.
-    os << "template <>\n";
-    os << "struct std::formatter<" << qual_prefix << s.name << "> {\n";
+    emit_spec_head(os, s.generics);
+    os << "struct std::formatter<" << qual_prefix << s.name;
+    emit_spec_args(os, s.generics);
+    os << "> {\n";
     os << "    constexpr auto parse(auto& __ctx) { return __ctx.begin(); }\n";
-    os << "    auto format(const " << qual_prefix << s.name << "& v, auto& __ctx) const {\n";
+    os << "    auto format(const " << qual_prefix << s.name;
+    emit_spec_args(os, s.generics);
+    os << "& v, auto& __ctx) const {\n";
     os << "        return std::format_to(__ctx.out(), \"" << s.name << "{{";
     bool first = true;
     for (const auto& f : s.fields) {
@@ -1842,10 +1919,12 @@ void CppEmitter::emit_debug_spec_struct(std::ostream& os,
 void CppEmitter::emit_debug_spec_enum(std::ostream& os,
                                       const ast::EnumDecl& e,
                                       std::string_view qual_prefix) {
-    os << "template <>\n";
-    os << "struct std::formatter<" << qual_prefix << e.name << "> {\n";
+    emit_spec_head(os, e.generics);
+    os << "struct std::formatter<" << qual_prefix << e.name;
+    emit_spec_args(os, e.generics);
+    os << "> {\n";
     os << "    constexpr auto parse(auto& __ctx) { return __ctx.begin(); }\n";
-    if (!enum_is_sum_type(e)) {
+    if (!enum_is_sum_type(e) && !spec_decl_is_generic(e.generics)) {
         // Bare enum class: render `EnumName.caseName` via a switch.
         os << "    auto format(" << qual_prefix << e.name << " v, auto& __ctx) const {\n";
         os << "        switch (v) {\n";
@@ -1862,7 +1941,9 @@ void CppEmitter::emit_debug_spec_enum(std::ostream& os,
     // Sum-type enum: std::visit + constexpr-if chain, mirroring
     // emit_match. Each alternative renders as `EnumName::caseName{…}`
     // for payloaded cases, or just `EnumName::caseName` for bare.
-    os << "    auto format(const " << qual_prefix << e.name << "& v, auto& __ctx) const {\n";
+    os << "    auto format(const " << qual_prefix << e.name;
+    emit_spec_args(os, e.generics);
+    os << "& v, auto& __ctx) const {\n";
     os << "        return std::visit([&](auto&& __alt) {\n";
     os << "            using __T = std::decay_t<decltype(__alt)>;\n";
     bool first = true;
@@ -1873,8 +1954,13 @@ void CppEmitter::emit_debug_spec_enum(std::ostream& os,
         } else {
             os << " else if";  // chained — previous arm ended with bare "}"
         }
-        os << " constexpr (std::is_same_v<__T, " << qual_prefix << e.name << "::" << c.name
-           << "_t>) {\n";
+        os << " constexpr (std::is_same_v<__T, ";
+        if (spec_decl_is_generic(e.generics)) {
+            os << "typename ";
+        }
+        os << qual_prefix << e.name;
+        emit_spec_args(os, e.generics);
+        os << "::" << c.name << "_t>) {\n";
         write_indent(os, 4);
         if (c.payload.empty()) {
             os << "return std::format_to(__ctx.out(), \"" << e.name << "::" << c.name << "\");\n";

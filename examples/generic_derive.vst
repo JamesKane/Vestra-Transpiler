@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §12.3 / §7 generics phase 2: derives on generic types.
+//
+// `derive(Eq, Hash, Debug, Default) for Pair` on a generic struct (and the
+// same for a generic enum) now emits the right C++: the inline operator== /
+// clone live inside the class template, and the std::hash / std::formatter
+// specializations become partial specializations
+// (`template <class T> struct std::hash<Pair<T>>`). Each instantiation a
+// program uses gets the derived behavior for free from the C++ compiler.
+
+module examples.generic_derive
+
+struct Pair[T] {
+    var first: T
+    var second: T
+}
+
+derive(Eq, Hash, Debug, Default) for Pair
+
+enum Maybe[T] {
+    case just(T)
+    case nothing
+}
+
+derive(Eq, Hash, Debug) for Maybe
+
+// derive(Eq) → structural operator== inside the template.
+func eqPair(_ a: Pair[Int32], _ b: Pair[Int32]) -> Bool {
+    return a == b
+}
+
+// derive(Debug) makes the type Display-conformant, so a generic
+// instantiation can be interpolated.
+func showPair(_ p: Pair[Int32]) -> String {
+    return "\(p)"
+}
+
+func eqMaybe(_ a: Maybe[Int32], _ b: Maybe[Int32]) -> Bool {
+    return a == b
+}
