@@ -36,3 +36,12 @@ async func twice(_ x: Int32) -> Int32 {
 async func touch(_ x: Int32) {
     await increment(x)
 }
+
+// `spawn f(args)` runs the call and yields a `Future[T]`; `await` consumes
+// the future for its result. v0.5 has no scheduler, so a spawn runs
+// eagerly, but the surface is the §11 one: spawn both, then await both.
+async func sumSpawned(_ a: Int32, _ b: Int32) -> Int32 {
+    let fa = spawn increment(a)
+    let fb = spawn increment(b)
+    return await fa + await fb
+}

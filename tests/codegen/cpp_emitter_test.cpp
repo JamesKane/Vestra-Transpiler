@@ -2284,3 +2284,25 @@ TEST_CASE("a void async func lowers to Task<void> with a trailing co_return") {
     CHECK(f.out.source.find("co_await (leaf());") != std::string::npos);
     CHECK(f.out.source.find("co_return;") != std::string::npos);
 }
+
+// ---- §11 spawn → Future[T] -------------------------------------------------
+
+TEST_CASE("spawn lowers to __vstr::spawn_future and await consumes the future") {
+    SemaEmitFixture f("async func leaf(_ x: Int32) -> Int32 { return x + 1 }\n"
+                      "async func use() -> Int32 {\n"
+                      "    let fut = spawn leaf(10)\n"
+                      "    return await fut\n"
+                      "}\n");
+    CHECK(f.out.header.find("struct Future {") != std::string::npos);  // runtime shim present
+    CHECK(f.out.source.find("auto fut = __vstr::spawn_future(leaf(10));") != std::string::npos);
+    CHECK(f.out.source.find("co_return co_await (fut);") != std::string::npos);
+}
+
+TEST_CASE("a Future[T] type annotation lowers to __vstr::Future<T>") {
+    SemaEmitFixture f("async func leaf() -> Int32 { return 1 }\n"
+                      "async func use() -> Int32 {\n"
+                      "    let fut: Future[Int32] = spawn leaf()\n"
+                      "    return await fut\n"
+                      "}\n");
+    CHECK(f.out.source.find("__vstr::Future<std::int32_t> fut") != std::string::npos);
+}

@@ -134,6 +134,19 @@ TEST_CASE("an async function may await") {
           == 0);
 }
 
+TEST_CASE("spawn yields a Future that await unwraps to the inner type") {
+    // `spawn leaf()` is a Future[Int32]; awaiting it gives back the Int32,
+    // so the addition and the Int32 return both type-check.
+    CHECK(check("async func leaf(_ x: Int32) -> Int32 { return x + 1 }\n"
+                "async func use() -> Int32 {\n"
+                "    let f: Future[Int32] = spawn leaf(1)\n"
+                "    let g = spawn leaf(2)\n"
+                "    return await f + await g\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 TEST_CASE("await outside an async context is rejected") {
     auto r = check("async func leaf() -> Int32 { return 1 }\n"
                    "func bad() -> Int32 { return await leaf() }\n");

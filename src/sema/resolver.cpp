@@ -2013,11 +2013,19 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         }
         break;
     }
-    case ast::NodeKind::AwaitExpr:
-        t = check_expr(*static_cast<const ast::AwaitExpr&>(e).inner);
+    case ast::NodeKind::AwaitExpr: {
+        // §11 `await e` consumes its operand for the underlying value: a
+        // `Future[T]` (from `spawn`) unwraps to T; a direct async call is
+        // already typed T (async results aren't wrapped), so await is
+        // transparent there.
+        auto inner = check_expr(*static_cast<const ast::AwaitExpr&>(e).inner);
+        t = (inner != nullptr && inner->kind() == TypeKind::Future) ? inner->inner() : inner;
         break;
+    }
     case ast::NodeKind::SpawnExpr:
-        t = check_expr(*static_cast<const ast::SpawnExpr&>(e).inner);
+        // §11 `spawn f(args)` runs the call and yields a `Future[T]` where
+        // T is the call's result type.
+        t = types_->make_future(check_expr(*static_cast<const ast::SpawnExpr&>(e).inner));
         break;
     case ast::NodeKind::ThrowExpr: {
         // §9: `throw e` is only valid inside a throws(E) function; e must
@@ -3618,6 +3626,12 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
             if (n.path[0] == "Box" && n.type_args.size() == 1) {
                 return types_->make_box(n.type_args[0] ? resolve_type(*n.type_args[0])
                                                        : types_->error());
+            }
+            // §11 Future[T] — a `spawn`-produced result handle. Spellable as
+            // a type so a future can be bound (`let f: Future[Int32] = …`).
+            if (n.path[0] == "Future" && n.type_args.size() == 1) {
+                return types_->make_future(n.type_args[0] ? resolve_type(*n.type_args[0])
+                                                          : types_->error());
             }
             // §10 builtin `Span[T]` / `MutSpan[T]` — borrowed,
             // non-escapable views over a contiguous range of T. Lower

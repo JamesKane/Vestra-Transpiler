@@ -449,6 +449,7 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     // lets a non-async (C++) caller drive a Task to its result.
     hdr << R"__task(template <class T>
 struct Task {
+    using __vstr_task_value = T;  // marks this as a Task for spawn_future
     struct promise_type {
         T value{};
         Task get_return_object() {
@@ -501,6 +502,30 @@ struct Task<void> {
     void await_resume() const noexcept {}
     void get() const noexcept {}
 };
+
+// §11 Future<T>: what `spawn` yields. v0.5 has no scheduler, so the value
+// is already computed and held by value; the Future is an always-ready
+// awaiter (so `co_await future` hands back the T) and also exposes `.get()`
+// for a non-async caller. `spawn_future` boxes the spawned expression —
+// driving an async-call `Task<T>` to completion, or storing a plain T.
+template <class T>
+struct Future {
+    T value_;
+    [[nodiscard]] bool await_ready() const noexcept { return true; }
+    void await_suspend(std::coroutine_handle<>) const noexcept {}
+    T await_resume() { return std::move(value_); }
+    [[nodiscard]] T get() { return std::move(value_); }
+};
+
+template <class E>
+auto spawn_future(E&& e) {
+    using D = std::decay_t<E>;
+    if constexpr (requires { typename D::__vstr_task_value; }) {
+        return Future<typename D::__vstr_task_value>{std::move(e).get()};
+    } else {
+        return Future<D>{std::forward<E>(e)};
+    }
+}
 
 )__task";
     // §9 iterator combinators. `Zip<A, B>` and `Take<A>` are header-
@@ -4774,6 +4799,17 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         os << ")";
         break;
     }
+    case ast::NodeKind::SpawnExpr: {
+        // §11 — `spawn e` yields a `Future[T]`. v0.5 runs the spawned call
+        // eagerly and boxes its result: `__vstr::spawn_future(e)` overloads
+        // on whether `e` is an async-call `Task<T>` (driven to its value) or
+        // a plain `T`. `await` later consumes the Future for the T.
+        const auto& sp = static_cast<const ast::SpawnExpr&>(e);
+        os << "__vstr::spawn_future(";
+        emit_expr(os, *sp.inner);
+        os << ")";
+        break;
+    }
     default:
         unsupported(os, "expression", e.range);
         break;
@@ -4852,6 +4888,11 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         return;
     case TypeKind::Box:
         os << "std::unique_ptr<";
+        emit_sema_type(os, t->inner());
+        os << ">";
+        return;
+    case TypeKind::Future:
+        os << "__vstr::Future<";
         emit_sema_type(os, t->inner());
         os << ">";
         return;
@@ -5136,6 +5177,13 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
             // §10 `Box[T]` lowers to std::unique_ptr<T>.
             if (n.path[0] == "Box" && n.type_args.size() == 1) {
                 os << "std::unique_ptr<";
+                emit_type(os, *n.type_args[0]);
+                os << ">";
+                return;
+            }
+            // §11 Future[T] → the runtime Future shim.
+            if (n.path[0] == "Future" && n.type_args.size() == 1) {
+                os << "__vstr::Future<";
                 emit_type(os, *n.type_args[0]);
                 os << ">";
                 return;

@@ -26,6 +26,9 @@ int main() {
     // Void async function runs to completion.
     ad::touch(0).get();
 
+    // spawn → Future[T], consumed by await.
+    assert(ad::sumSpawned(10, 20).get() == 32);  // (10+1) + (20+1)
+
     std::puts("async_demo OK");
     return 0;
 }
