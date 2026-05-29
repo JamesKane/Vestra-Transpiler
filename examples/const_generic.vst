@@ -42,3 +42,14 @@ func make2() -> Buffer[Int32, 2] {
 func sumPairBuf(_ b: Buffer[Int32, 2]) -> Int32 {
     return b.data[0] + b.data[1]
 }
+
+// Const generics on a free function: N is inferred from the array
+// argument's length (the same unification that drives the struct form),
+// and the function lowers to `template <class T, std::size_t N>`.
+func firstElem[T, const N: Int](_ a: [N]T) -> T {
+    return a[0]
+}
+
+func headOfThree() -> Int32 {
+    return firstElem([5, 6, 7])
+}

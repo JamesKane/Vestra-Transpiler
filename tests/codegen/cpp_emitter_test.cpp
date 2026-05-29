@@ -2177,7 +2177,8 @@ TEST_CASE("const generic construction emits the inferred specialization") {
                       "func make() -> Buffer[Int32, 4] {\n"
                       "    return Buffer(data: [10, 20, 30, 40])\n"
                       "}\n");
-    CHECK(f.out.source.find("Buffer<std::int32_t, 4>{.data = {10, 20, 30, 40}}")
+    CHECK(f.out.source.find(
+              "Buffer<std::int32_t, 4>{.data = std::array<std::int32_t, 4>{10, 20, 30, 40}}")
           != std::string::npos);
 }
 
@@ -2223,5 +2224,21 @@ TEST_CASE("leading-dot construction of a generic enum qualifies with the instanc
     CHECK(f.out.source.find("Maybe<std::int32_t>{Maybe<std::int32_t>::nothing_t{}}")
           != std::string::npos);
     CHECK(f.out.source.find("Maybe<std::int32_t>{Maybe<std::int32_t>::just_t{v}}")
+          != std::string::npos);
+}
+
+// ---- §7 generics phase 2: const generics on functions ---------------------
+
+TEST_CASE("a const-generic function lowers to template <class T, std::size_t N>") {
+    SemaEmitFixture f("func first[T, const N: Int](_ a: [N]T) -> T { return a[0] }\n");
+    CHECK(f.out.header.find("template <class T, std::size_t N>") != std::string::npos);
+    CHECK(f.out.header.find("std::array<T, N>") != std::string::npos);
+}
+
+TEST_CASE("an array literal self-describes its std::array type for deduction") {
+    SemaEmitFixture f("func first[T, const N: Int](_ a: [N]T) -> T { return a[0] }\n"
+                      "func u() -> Int { return first([10, 20, 30]) }\n");
+    // The literal argument carries its type so the generic call deduces N.
+    CHECK(f.out.source.find("first(std::array<std::intptr_t, 3>{10, 20, 30})")
           != std::string::npos);
 }

@@ -25,6 +25,13 @@ int main() {
     auto b2 = cg::make2();
     assert(cg::sumPairBuf(b2) == 16);
 
+    // Const generics on a free function: N inferred from the literal's
+    // length at the call site.
+    assert(cg::headOfThree() == 5);
+    // And callable directly from C++, deducing both T and N.
+    std::array<std::int32_t, 4> arr{8, 1, 2, 3};
+    assert(cg::firstElem(arr) == 8);
+
     // The emitted template is an ordinary C++ class template parameterized
     // on a type and a std::size_t: build a specialization directly and
     // round-trip it through the Vestra accessors.

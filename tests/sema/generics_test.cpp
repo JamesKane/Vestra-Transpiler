@@ -370,3 +370,19 @@ TEST_CASE("a struct type-parameter bound is enforced at instantiation") {
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("does not satisfy the bound 'T: Hash'") != std::string::npos);
 }
+
+// ---- §7 generics phase 2: const generics on functions ----------------------
+
+TEST_CASE("a const-generic function infers N from the array argument's length") {
+    CHECK(check("func first[T, const N: Int](_ a: [N]T) -> T { return a[0] }\n"
+                "func u() -> Int32 { return first([10, 20, 30]) }\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a const-generic function threads N through to the return type") {
+    CHECK(check("func id[T, const N: Int](_ a: [N]T) -> [N]T { return a }\n"
+                "func u(_ a: [4]Int32) -> [4]Int32 { return id(a) }\n")
+              .error_count
+          == 0);
+}

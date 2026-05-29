@@ -1264,11 +1264,13 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
 
     // §7 generics: a Vestra generic function lowers to a C++ template. The
     // host compiler then monomorphizes per instantiation, which is what
-    // Vestra semantically requires anyway. Const generics ([const N: Int])
-    // are deferred — phase 1 only handles type parameters.
+    // Vestra semantically requires anyway. A const generic ([const N: Int])
+    // becomes a `std::size_t N` non-type parameter (the natural fit for the
+    // `[N]T` array lengths it indexes), inferred at the call site from a
+    // `[N]T` argument's length.
     const bool has_type_generics =
         std::any_of(f.generics.begin(), f.generics.end(), [](const ast::GenericParam& g) {
-            return !g.is_const && !g.name.empty();
+            return !g.name.empty();
         });
     auto emit_template_prefix = [&](std::ostream& os) {
         if (!has_type_generics) {
@@ -1277,14 +1279,14 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         os << "template <";
         bool first = true;
         for (const auto& g : f.generics) {
-            if (g.is_const || g.name.empty()) {
+            if (g.name.empty()) {
                 continue;
             }
             if (!first) {
                 os << ", ";
             }
             first = false;
-            os << "class " << g.name;
+            os << (g.is_const ? "std::size_t " : "class ") << g.name;
         }
         os << ">\n";
         // §7 generics — map each protocol bound that has a clean C++20
@@ -3333,6 +3335,20 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // and the function-name-decays-to-pointer rule covers the
         // vector-table case where each element is a bare ISR name.
         const auto& v = static_cast<const ast::VectorLitExpr&>(e);
+        // §7 generics — self-describe the literal with its `std::array<E, N>`
+        // type when the element is a plain data type, so it can deduce a
+        // generic `[N]T` parameter at a call site (template argument
+        // deduction can't see through a bare brace list). The vector-table
+        // forms (function-pointer / @interrupt elements) keep the bare list,
+        // since their declared target type supplies the shape and their
+        // element decay relies on it.
+        const sema::Type* lit_t = resolution_ != nullptr ? resolution_->type_of(&e) : nullptr;
+        if (lit_t != nullptr && lit_t->kind() == sema::TypeKind::Vector
+            && lit_t->vector_length_name().empty() && lit_t->inner() != nullptr
+            && lit_t->inner()->kind() != sema::TypeKind::Function
+            && lit_t->inner()->kind() != sema::TypeKind::InterruptHandler) {
+            emit_sema_type(os, lit_t);
+        }
         os << "{";
         for (std::size_t i = 0; i < v.elements.size(); ++i) {
             if (i != 0) {

@@ -3441,12 +3441,16 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
     // generic only appears in the return position with no contextual type.
     if (fn != nullptr) {
         for (const auto& gp : fn->generics) {
-            if (gp.is_const || gp.name.empty()) {
+            if (gp.name.empty()) {
                 continue;
             }
+            // A const generic is inferred the same way (unify_generic binds
+            // a `[N]T` parameter's length from the argument), so an unbound
+            // one is reported here too.
             if (!bindings.contains(gp.name)) {
                 error_at(c.range,
-                         std::format("cannot infer generic parameter '{}' for call to '{}'",
+                         std::format("cannot infer {} '{}' for call to '{}'",
+                                     gp.is_const ? "const generic" : "generic parameter",
                                      gp.name,
                                      fn->name));
             }

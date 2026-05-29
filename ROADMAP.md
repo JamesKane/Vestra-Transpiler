@@ -43,17 +43,19 @@ var data: [N]T }`, monomorphized to `template <class T, std::size_t N>`),
 and *protocol bounds* (`func eq[T: Eq](...)` / `where T: Comparable`,
 enforced at the call site and at struct/enum instantiation, with a C++20
 `requires` clause for the concept-mappable bounds). See the HANDOFF top
-entries. Remaining pieces: const generics on *functions* (inference of N
-from arguments; the struct/enum slice covers types only); explicit
-type-args at a construction site (`Pair[Int32](...)`, where the callee
-currently parses as an index expression); const-expression array lengths
-(`[N + 1]T`); bound enforcement gating body operations; transitive bound
-checking; user-defined-protocol conformance (no general table yet);
-`requires` clauses on generic structs/enums (functions only today); and
-derive / `std::hash` / `std::formatter` emission for generic types. (The
-leading-dot payloaded-enum construction gap was closed as a §8 follow-on.)
-The type-parameter surface is now substantially complete — what remains is
-refinement. Const generics on functions is the natural next slice.
+entries. Remaining pieces: explicit type-args at a construction site
+(`Pair[Int32](...)`, where the callee currently parses as an index
+expression); a const generic as a runtime/comptime *value* in a body
+(`for i in 0..N`; today N is only an array length); const-expression
+array lengths (`[N + 1]T`); bound enforcement gating body operations;
+transitive bound checking; user-defined-protocol conformance (no general
+table yet); `requires` clauses on generic structs/enums (functions only
+today); and derive / `std::hash` / `std::formatter` emission for generic
+types. (Leading-dot payloaded-enum construction and const generics on
+functions were closed as follow-ons.) The type-parameter surface is now
+substantially complete — what remains is refinement. Derive emission for
+generic types or explicit construction-site type-args are the natural
+next slices.
 
 ### 2. `async` / `spawn` / `select` / `parallel` (§11) (multi-session)
 
