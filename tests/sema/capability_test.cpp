@@ -410,3 +410,26 @@ TEST_CASE("the shapes example checks clean under capabilities") {
               .error_count
           == 0);
 }
+
+TEST_CASE("select binds a future arm's value and admits a default") {
+    CHECK(check("async func leaf(_ x: Int32) -> Int32 { return x + 1 }\n"
+                "async func pick() -> Int32 {\n"
+                "    let a = spawn leaf(1)\n"
+                "    let b = spawn leaf(2)\n"
+                "    return select {\n"
+                "        on let x = a: x\n"
+                "        on let y = b: y\n"
+                "        default:      0\n"
+                "    }\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a select event that is not a future is rejected") {
+    auto r = check("async func f(_ n: Int32) -> Int32 {\n"
+                   "    return select { on let x = n: x  default: 0 }\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("select event must be a Future[T]") != std::string::npos);
+}

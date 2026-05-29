@@ -2306,3 +2306,25 @@ TEST_CASE("a Future[T] type annotation lowers to __vstr::Future<T>") {
                       "}\n");
     CHECK(f.out.source.find("__vstr::Future<std::int32_t> fut") != std::string::npos);
 }
+
+// ---- §11 select over futures ----------------------------------------------
+
+TEST_CASE("select lowers to an ordered await_ready IIFE binding the future value") {
+    SemaEmitFixture f("async func leaf(_ x: Int32) -> Int32 { return x + 1 }\n"
+                      "async func pick() -> Int32 {\n"
+                      "    let a = spawn leaf(1)\n"
+                      "    let b = spawn leaf(2)\n"
+                      "    return select {\n"
+                      "        on let x = a: x\n"
+                      "        on let y = b: y\n"
+                      "        default:      0\n"
+                      "    }\n"
+                      "}\n");
+    CHECK(f.out.source.find("if (__vstr_sel0.await_ready())") != std::string::npos);
+    CHECK(f.out.source.find("auto&& x = __vstr_selv;") != std::string::npos);
+    CHECK(f.out.source.find("if (__vstr_sel1.await_ready())") != std::string::npos);
+    // The select sits inside the coroutine's co_return; its own arm returns
+    // are plain lambda returns, and the default is the fallthrough.
+    CHECK(f.out.source.find("co_return [&]() -> std::int32_t {") != std::string::npos);
+    CHECK(f.out.source.find("return 0;") != std::string::npos);
+}

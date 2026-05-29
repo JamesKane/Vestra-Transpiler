@@ -29,6 +29,9 @@ int main() {
     // spawn → Future[T], consumed by await.
     assert(ad::sumSpawned(10, 20).get() == 32);  // (10+1) + (20+1)
 
+    // select over two ready futures: the first arm wins.
+    assert(ad::firstReady(10, 20).get() == 11);  // increment(10)
+
     std::puts("async_demo OK");
     return 0;
 }

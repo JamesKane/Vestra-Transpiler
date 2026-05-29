@@ -1750,6 +1750,41 @@ ast::ExprPtr Parser::parse_primary() {
         m->range = merge(start, last_range());
         return m;
     }
+    case TokenKind::KwSelect: {
+        // §11 `select { on (let pat =)? event : body  …  default: body }`.
+        // v0.5 events are `Future[T]` (channels / timeout wait on the
+        // Channel slice + a scheduler); the binding form `on let msg = fut`
+        // unwraps the future's value into the arm body.
+        advance();
+        auto sel = std::make_unique<ast::SelectExpr>();
+        expect(TokenKind::LBrace, "'{' to open select body");
+        skip_newlines();
+        while (!check(TokenKind::RBrace) && !at_end()) {
+            if (match(TokenKind::KwDefault)) {
+                expect(TokenKind::Colon, "':' after 'default'");
+                sel->default_body = parse_expr();
+                skip_newlines();
+                continue;
+            }
+            if (!match(TokenKind::KwOn)) {
+                emit_error(peek().range, "expected 'on' or 'default' in select arm");
+                break;
+            }
+            ast::SelectArm arm;
+            if (match(TokenKind::KwLet)) {
+                arm.pattern = parse_pattern();
+                expect(TokenKind::Assign, "'=' after 'let' pattern in select arm");
+            }
+            arm.event = parse_expr();
+            expect(TokenKind::Colon, "':' after select event");
+            arm.body = parse_expr();
+            sel->arms.push_back(std::move(arm));
+            skip_newlines();
+        }
+        expect(TokenKind::RBrace, "'}' closing select body");
+        sel->range = merge(start, last_range());
+        return sel;
+    }
     case TokenKind::KwDo: {
         // §9 `do { body } catch NAME { handler }` — inline error
         // handling. Two binding shapes:

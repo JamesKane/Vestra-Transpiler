@@ -93,6 +93,10 @@ private:
     void emit_stmt(std::ostream& os, const ast::Stmt& s, int indent);
     void emit_expr(std::ostream& os, const ast::Expr& e);
     void emit_match(std::ostream& os, const ast::MatchExpr& m);
+    // §11 `select { … }` — lower to an IIFE that takes the first arm whose
+    // Future event is ready (always, in the synchronous v0.5 model), binds
+    // the value, and runs the body; default / std::unreachable otherwise.
+    void emit_select(std::ostream& os, const ast::SelectExpr& sel);
     // §17.7 match-arm pattern helpers. `emit_pat_predicate` writes a C++
     // expression that returns true when the value spelled by `base`
     // matches the pattern; `emit_pat_bindings` writes the `auto&&

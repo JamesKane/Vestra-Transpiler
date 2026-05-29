@@ -4679,6 +4679,9 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             emit_match(os, static_cast<const ast::MatchExpr&>(e));
         }
         break;
+    case ast::NodeKind::SelectExpr:
+        emit_select(os, static_cast<const ast::SelectExpr&>(e));
+        break;
     case ast::NodeKind::IfExpr: {
         const auto& i = static_cast<const ast::IfExpr&>(e);
         // §9 conditional hoist: when the parent statement registered
@@ -5404,6 +5407,61 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
 // ============================================================================
 // match — bare enums lower to a switch over the matching enum class.
 // ============================================================================
+
+void CppEmitter::emit_select(std::ostream& os, const ast::SelectExpr& sel) {
+    // §11 v0.5 — every event is a Future[T] (an always-ready awaiter in the
+    // synchronous model). Lower to an IIFE that, in source order, takes the
+    // first arm whose event is ready, binds the value, and runs the body;
+    // the default (or std::unreachable) covers "nothing ready". The lambda
+    // uses plain `return` (not co_return) — it is not itself a coroutine.
+    sema::TypePtr rt = resolution_ != nullptr ? resolution_->type_of(&sel) : nullptr;
+    os << "[&]() -> ";
+    if (rt != nullptr) {
+        emit_sema_type(os, rt);
+    } else {
+        os << "auto";
+    }
+    os << " {\n";
+    int idx = 0;
+    for (const auto& arm : sel.arms) {
+        const std::string ev = std::format("__vstr_sel{}", idx++);
+        write_indent(os, 2);
+        os << "{\n";
+        write_indent(os, 3);
+        os << "auto&& " << ev << " = ";
+        if (arm.event) {
+            emit_expr(os, *arm.event);
+        }
+        os << ";\n";
+        write_indent(os, 3);
+        os << "if (" << ev << ".await_ready()) {\n";
+        if (arm.pattern) {
+            write_indent(os, 4);
+            os << "auto&& __vstr_selv = " << ev << ".get();\n";
+            emit_pat_bindings(os, *arm.pattern, "__vstr_selv", 4);
+        }
+        write_indent(os, 4);
+        os << "return ";
+        if (arm.body) {
+            emit_expr(os, *arm.body);
+        }
+        os << ";\n";
+        write_indent(os, 3);
+        os << "}\n";
+        write_indent(os, 2);
+        os << "}\n";
+    }
+    write_indent(os, 2);
+    if (sel.default_body) {
+        os << "return ";
+        emit_expr(os, *sel.default_body);
+        os << ";\n";
+    } else {
+        os << "std::unreachable();\n";
+    }
+    write_indent(os, 1);
+    os << "}()";
+}
 
 void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
     // We need sema's findings to know what the scrutinee is. Without them we

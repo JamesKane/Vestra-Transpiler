@@ -2267,6 +2267,9 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
     case ast::NodeKind::MatchExpr:
         t = check_match(static_cast<const ast::MatchExpr&>(e), expected);
         break;
+    case ast::NodeKind::SelectExpr:
+        t = check_select(static_cast<const ast::SelectExpr&>(e), expected);
+        break;
     case ast::NodeKind::InterpStringExpr: {
         // §4: a `"…\(expr)…"` literal is a freshly allocated String.
         // Every splice must be Display-conformant — primitive numerics
@@ -5070,6 +5073,45 @@ TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
         }
     }
 
+    return result_type != nullptr ? result_type : types_->unit();
+}
+
+TypePtr Resolver::check_select(const ast::SelectExpr& sel, TypePtr expected) {
+    TypePtr result_type = nullptr;
+    auto join = [&](TypePtr arm_type, diag::SourceRange r) {
+        if (result_type == nullptr) {
+            result_type = arm_type;
+        } else if (arm_type != nullptr && !arm_type->is_never() && !result_type->is_never()
+                   && !TypeArena::equal(arm_type, result_type)) {
+            error_at(r,
+                     std::format("select arms have different types: {} vs {}",
+                                 result_type->describe(),
+                                 arm_type->describe()));
+            result_type = types_->error();
+        }
+    };
+    for (const auto& arm : sel.arms) {
+        ScopeStack::Guard g(scopes_);
+        // §11 v0.5 — the only event kind that exists is a Future[T]
+        // (channels and timeout wait on the Channel slice + a scheduler).
+        TypePtr ev = arm.event ? check_expr(*arm.event) : types_->error();
+        if (ev != nullptr && !ev->is_error() && ev->kind() != TypeKind::Future) {
+            error_at(arm.event->range,
+                     std::format("select event must be a Future[T]; got {} (channels and timeout "
+                                 "are not yet supported)",
+                                 ev->describe()));
+        }
+        if (arm.pattern) {
+            TypePtr inner =
+                (ev != nullptr && ev->kind() == TypeKind::Future) ? ev->inner() : types_->error();
+            check_pattern(*arm.pattern, inner);
+        }
+        TypePtr arm_type = arm.body ? check_expr(*arm.body, expected) : types_->unit();
+        join(arm_type, arm.body ? arm.body->range : sel.range);
+    }
+    if (sel.default_body) {
+        join(check_expr(*sel.default_body, expected), sel.default_body->range);
+    }
     return result_type != nullptr ? result_type : types_->unit();
 }
 

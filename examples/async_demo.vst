@@ -45,3 +45,16 @@ async func sumSpawned(_ a: Int32, _ b: Int32) -> Int32 {
     let fb = spawn increment(b)
     return await fa + await fb
 }
+
+// `select` waits on several futures; the first ready arm wins, binding its
+// value. v0.5 futures are always ready, so the first arm is taken; the
+// optional `default` covers "nothing ready".
+async func firstReady(_ a: Int32, _ b: Int32) -> Int32 {
+    let fa = spawn increment(a)
+    let fb = spawn increment(b)
+    return select {
+        on let x = fa: x
+        on let y = fb: y
+        default:       0
+    }
+}

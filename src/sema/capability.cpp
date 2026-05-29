@@ -408,6 +408,23 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
         }
         break;
     }
+    case ast::NodeKind::SelectExpr: {
+        // §11 — recurse into each arm's event and body (and the default)
+        // so capabilities used inside a select are still discharged.
+        const auto& sel = static_cast<const ast::SelectExpr&>(e);
+        for (const auto& arm : sel.arms) {
+            if (arm.event) {
+                check_expr(*arm.event);
+            }
+            if (arm.body) {
+                check_expr(*arm.body);
+            }
+        }
+        if (sel.default_body) {
+            check_expr(*sel.default_body);
+        }
+        break;
+    }
     case ast::NodeKind::BlockExpr:
         for (const auto& s : static_cast<const ast::BlockExpr&>(e).stmts) {
             check_stmt(*s);

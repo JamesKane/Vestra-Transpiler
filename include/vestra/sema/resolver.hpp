@@ -140,6 +140,10 @@ private:
     TypePtr check_call(const ast::CallExpr& c, TypePtr expected = nullptr);
     TypePtr check_if(const ast::IfExpr& i, TypePtr expected);
     TypePtr check_match(const ast::MatchExpr& m, TypePtr expected);
+    // §11 `select { on … : … }` — each arm's event must be a Future[T]
+    // (v0.5; channels / timeout are deferred); a binding arm unwraps the
+    // future to T. The result type joins the arm + default body types.
+    TypePtr check_select(const ast::SelectExpr& s, TypePtr expected);
     TypePtr check_block_expr(const ast::BlockExpr& b, TypePtr expected);
     TypePtr check_member(const ast::MemberExpr& m, TypePtr expected = nullptr);
     TypePtr check_leading_dot(const ast::LeadingDotExpr& d, TypePtr expected);
