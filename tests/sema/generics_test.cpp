@@ -311,3 +311,62 @@ TEST_CASE("conflicting const-generic inference is reported") {
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("conflicting bindings for const generic 'N'") != std::string::npos);
 }
+
+// ---- §7 generics phase 2: protocol bounds (where-clauses) ------------------
+
+TEST_CASE("inline Eq bound is satisfied by a primitive") {
+    CHECK(check("func eq[T: Eq](_ a: T, _ b: T) -> Bool { return a == b }\n"
+                "func u() -> Bool { return eq(1, 2) }\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("inline Eq bound is violated by a struct without derive(Eq)") {
+    auto r = check("struct P { var x: Int32 }\n"
+                   "func eq[T: Eq](_ a: T, _ b: T) -> Bool { return true }\n"
+                   "func u(_ p: P) -> Bool { return eq(p, p) }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("does not satisfy the bound 'T: Eq'") != std::string::npos);
+}
+
+TEST_CASE("where-clause Eq bound is satisfied by a struct with derive(Eq)") {
+    CHECK(check("struct P { var x: Int32 }\n"
+                "derive(Eq) for P\n"
+                "func eq[T](_ a: T, _ b: T) -> Bool where T: Eq { return true }\n"
+                "func u(_ p: P) -> Bool { return eq(p, p) }\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("Comparable bound is satisfied by a primitive") {
+    CHECK(check("func mx[T](_ a: T, _ b: T) -> T where T: Comparable {\n"
+                "    return if a > b { a } else { b }\n"
+                "}\n"
+                "func u() -> Int32 { return mx(1, 2) }\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a conjunctive bound requires every protocol") {
+    // P derives Eq but not Hash, so `T: Eq & Hash` is violated.
+    auto r = check("struct P { var x: Int32 }\n"
+                   "derive(Eq) for P\n"
+                   "func f[T: Eq & Hash](_ a: T) -> Bool { return true }\n"
+                   "func u(_ p: P) -> Bool { return f(p) }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("does not satisfy the bound 'T: Hash'") != std::string::npos);
+}
+
+TEST_CASE("a where clause naming an unknown parameter is reported") {
+    auto r = check("func f[T](_ x: T) -> T where U: Eq { return x }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("unknown generic parameter 'U'") != std::string::npos);
+}
+
+TEST_CASE("a struct type-parameter bound is enforced at instantiation") {
+    auto r = check("struct Keyed[T: Hash] { var key: T }\n"
+                   "struct P { var x: Int32 }\n"
+                   "func f(_ k: Keyed[P]) -> Int32 { return 0 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("does not satisfy the bound 'T: Hash'") != std::string::npos);
+}

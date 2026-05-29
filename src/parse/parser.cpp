@@ -619,11 +619,58 @@ std::unique_ptr<ast::FuncDecl> Parser::parse_func(std::vector<ast::Attribute> at
     if (match(TokenKind::Arrow)) {
         f->result = parse_type();
     }
+    // §7 generics: an optional `where T: P, U: P & Q` clause refines the
+    // bounds of the already-parsed generic parameters (the inline
+    // `[T: P]` form is the other way to write the same thing).
+    parse_where_opt(f->generics);
     if (check(TokenKind::LBrace)) {
         f->body = parse_block_expr();
     }
     f->range = merge(start, last_range());
     return f;
+}
+
+void Parser::parse_where_opt(std::vector<ast::GenericParam>& generics) {
+    if (!match(TokenKind::KwWhere)) {
+        return;
+    }
+    do {
+        if (!check(TokenKind::Identifier)) {
+            emit_error(peek().range, "expected a generic parameter name in 'where' clause");
+            break;
+        }
+        auto name_tok = advance();
+        std::string name{name_tok.lexeme};
+        expect(TokenKind::Colon, "':' after the parameter name in a 'where' clause");
+        // Collect the conjunctive bound `P & Q & …`.
+        std::vector<ast::TypePtr> protocols;
+        protocols.push_back(parse_type());
+        while (match(TokenKind::Amp)) {
+            protocols.push_back(parse_type());
+        }
+        // Merge onto the matching generic parameter; an unknown name is a
+        // diagnostic (the clause must refer to a declared parameter).
+        ast::GenericParam* target = nullptr;
+        for (auto& g : generics) {
+            if (g.name == name) {
+                target = &g;
+                break;
+            }
+        }
+        if (target == nullptr) {
+            emit_error(
+                name_tok.range,
+                std::format("'where' clause refers to unknown generic parameter '{}'", name));
+        } else if (target->is_const) {
+            emit_error(
+                name_tok.range,
+                std::format("const generic parameter '{}' cannot have a protocol bound", name));
+        } else {
+            for (auto& p : protocols) {
+                target->bound.protocols.push_back(std::move(p));
+            }
+        }
+    } while (match(TokenKind::Comma));
 }
 
 std::unique_ptr<ast::StructDecl> Parser::parse_struct(std::vector<ast::Attribute> attrs,

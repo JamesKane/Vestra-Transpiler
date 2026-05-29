@@ -349,8 +349,9 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
         hdr << "// vestra: no_libc = true\n";
     }
     hdr << "#pragma once\n\n";
-    hdr << "#include <atomic>\n";  // §A4 Atomic[T] lowers to std::atomic
-    hdr << "#include <bit>\n";     // §A6 MmioWireView std::byteswap / std::endian
+    hdr << "#include <atomic>\n";    // §A4 Atomic[T] lowers to std::atomic
+    hdr << "#include <bit>\n";       // §A6 MmioWireView std::byteswap / std::endian
+    hdr << "#include <concepts>\n";  // §7 generic bounds lower to requires-clauses
     hdr << "#include <cstdint>\n";
     hdr << "#include <cstdlib>\n";     // §10 panic / abort → std::abort
     hdr << "#include <expected>\n";    // §9 throws(E) → T lowers to std::expected
@@ -1286,6 +1287,48 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
             os << "class " << g.name;
         }
         os << ">\n";
+        // §7 generics — map each protocol bound that has a clean C++20
+        // concept onto a `requires` conjunct. The Vestra call site already
+        // enforces conformance, so this is defense-in-depth + documentation;
+        // protocols without a standard concept (Hash, Debug, Display, Clone,
+        // user-defined) are omitted from the clause.
+        std::vector<std::string> constraints;
+        for (const auto& g : f.generics) {
+            if (g.is_const || g.name.empty()) {
+                continue;
+            }
+            for (const auto& proto : g.bound.protocols) {
+                if (proto == nullptr || proto->kind != ast::NodeKind::NamedType) {
+                    continue;
+                }
+                const auto& nt = static_cast<const ast::NamedType&>(*proto);
+                if (nt.path.empty()) {
+                    continue;
+                }
+                const std::string& p = nt.path.back();
+                std::string concept_name;
+                if (p == "Eq") {
+                    concept_name = "std::equality_comparable";
+                } else if (p == "Comparable" || p == "Ordered") {
+                    concept_name = "std::totally_ordered";
+                } else if (p == "Default") {
+                    concept_name = "std::default_initializable";
+                }
+                if (!concept_name.empty()) {
+                    constraints.push_back(concept_name + "<" + g.name + ">");
+                }
+            }
+        }
+        if (!constraints.empty()) {
+            os << "requires (";
+            for (std::size_t i = 0; i < constraints.size(); ++i) {
+                if (i != 0) {
+                    os << " && ";
+                }
+                os << constraints[i];
+            }
+            os << ")\n";
+        }
     };
 
     // §6 tuple-pattern param: a param whose AST stores a TuplePat (no

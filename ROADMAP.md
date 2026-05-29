@@ -36,25 +36,25 @@ first slice.
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
 types, unification with `expected` propagation, emit as C++
-templates). Three phase-2 slices shipped: user-defined generic *structs* (`e74f1ad`,
+templates). Four phase-2 slices shipped: user-defined generic *structs* (`e74f1ad`,
 `struct Pair[T] { ... }`), generic *enums* (`1bfff52`, `struct`-of-variant
-templates), and *const generics* (`struct Buffer[T, const N: Int] {
-var data: [N]T }`, monomorphized to `template <class T, std::size_t N>`);
-all with construction inference. See the HANDOFF top entries. Remaining
-pieces: const generics on *functions* (inference of N from arguments;
-the struct/enum slice covers types only); where-clause refinement
-(`func f[T](x: T) where T: Eq -> Bool`); protocol-bound enforcement at
-the call site; explicit type-args at a construction site
-(`Pair[Int32](...)`, where the callee currently parses as an index
-expression); leading-dot *construction* of a payloaded enum
-(`return .just(x)` / `.nothing`, a pre-existing codegen gap that non-
-generic enums share); const-expression array lengths (`[N + 1]T`); and
-derive / `std::hash` / `std::formatter` emission for generic types
-(partial specializations over `template <class T>`). The highest-
-leverage open swing, since it moves `Span[T]` / `PerCpu[T]` / `Padded[T]`
-toward ordinary library types instead of compiler-known shapes.
-Where-clauses or const generics on functions are the natural next
-slices.
+templates), *const generics* (`8bf316a`, `struct Buffer[T, const N: Int] {
+var data: [N]T }`, monomorphized to `template <class T, std::size_t N>`),
+and *protocol bounds* (`func eq[T: Eq](...)` / `where T: Comparable`,
+enforced at the call site and at struct/enum instantiation, with a C++20
+`requires` clause for the concept-mappable bounds). See the HANDOFF top
+entries. Remaining pieces: const generics on *functions* (inference of N
+from arguments; the struct/enum slice covers types only); explicit
+type-args at a construction site (`Pair[Int32](...)`, where the callee
+currently parses as an index expression); leading-dot *construction* of a
+payloaded enum (`return .just(x)` / `.nothing`, a pre-existing codegen gap
+that non-generic enums share); const-expression array lengths (`[N + 1]T`);
+bound enforcement gating body operations; transitive bound checking;
+user-defined-protocol conformance (no general table yet); `requires`
+clauses on generic structs/enums (functions only today); and derive /
+`std::hash` / `std::formatter` emission for generic types. The
+type-parameter surface is now substantially complete — what remains is
+refinement. Const generics on functions is the natural next slice.
 
 ### 2. `async` / `spawn` / `select` / `parallel` (§11) (multi-session)
 

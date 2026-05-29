@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §7 generics phase 2: protocol bounds (where-clauses).
+//
+// A generic parameter can carry a protocol bound, written inline
+// (`[T: Eq]`) or in a trailing `where` clause (`where T: Comparable`).
+// The bound is enforced at the call site: the inferred argument type must
+// satisfy it (a primitive, or a struct/enum with the matching derive).
+// Bounds that map onto a C++20 concept (Eq, Comparable, Default) also lower
+// to a `requires` clause on the emitted template.
+
+module examples.generic_bounds
+
+// Inline bound: T must be Eq.
+func areEqual[T: Eq](_ a: T, _ b: T) -> Bool {
+    return a == b
+}
+
+// where-clause bound: T must be Comparable.
+func maxOf[T](_ a: T, _ b: T) -> T where T: Comparable {
+    return if a > b { a } else { b }
+}
+
+// A user struct that derives the protocol its use requires.
+struct Point {
+    var x: Int32
+    var y: Int32
+}
+
+derive(Eq) for Point
+
+// Point satisfies Eq through its derive, so this call is admitted.
+func pointsEqual(_ p: Point, _ q: Point) -> Bool {
+    return areEqual(p, q)
+}
+
+// Int32 satisfies both Eq and Comparable as a primitive.
+func intsEqual(_ a: Int32, _ b: Int32) -> Bool {
+    return areEqual(a, b)
+}
+
+func biggest(_ a: Int32, _ b: Int32) -> Int32 {
+    return maxOf(a, b)
+}

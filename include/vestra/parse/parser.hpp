@@ -67,6 +67,9 @@ private:
     std::vector<ast::Attribute> parse_attributes();
     ast::Visibility parse_visibility();
     std::vector<ast::GenericParam> parse_generics_opt();
+    // §7 generics: parse an optional `where T: P, U: P & Q` clause and merge
+    // each refinement onto the matching already-parsed generic parameter.
+    void parse_where_opt(std::vector<ast::GenericParam>& generics);
     std::vector<ast::Param> parse_params();
     ast::Effects parse_effects_opt();
 

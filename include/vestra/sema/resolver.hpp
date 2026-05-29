@@ -189,6 +189,22 @@ private:
                                         std::string_view name,
                                         const ast::FuncDecl** out_method = nullptr);
 
+    // §7 generics — does type `t` satisfy a protocol bound named `protocol`
+    // (a generic parameter's `where T: P` / `[T: P]` constraint)? The
+    // derivable built-ins (Eq, Hash, Comparable/Ordered, Display, Debug,
+    // Clone, Default) are checked against primitives + the relevant
+    // derive(P); a GenericParam argument and an unrecognized (user-defined)
+    // protocol are accepted, since v0.5 has no general conformance table.
+    [[nodiscard]] bool type_satisfies_bound(TypePtr t, std::string_view protocol) const;
+
+    // §7 generics — enforce every bound on a generic parameter list against
+    // the inferred/supplied argument types. `bindings` maps each parameter
+    // name to its resolved type. Emits a diagnostic at `range` per
+    // violation. Used at function call sites and struct/enum instantiations.
+    void check_generic_bounds(const std::vector<ast::GenericParam>& generics,
+                              const std::unordered_map<std::string, TypePtr>& bindings,
+                              diag::SourceRange range);
+
     // True when the unit has `derive(Proto, …) for T` for the given
     // nominal decl + protocol simple-name (last path segment). Used to
     // surface synthetic methods like `.clone()` from derive(Clone)

@@ -3451,6 +3451,9 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                                      fn->name));
             }
         }
+        // §7 generics — every `where T: P` / `[T: P]` bound on the callee
+        // must be satisfied by the inferred argument type.
+        check_generic_bounds(fn->generics, bindings, c.range);
     }
 
     auto result = callee_type->result() != nullptr ? callee_type->result() : types_->unit();
@@ -3568,6 +3571,20 @@ Resolver::resolve_generic_instance_args(const std::vector<ast::GenericParam>& ge
                                : types_->error());
         }
     }
+    // §7 generics — enforce any `[T: P]` bounds on the type parameters
+    // against the supplied arguments at the instantiation site.
+    std::unordered_map<std::string, TypePtr> bindings;
+    std::size_t bi = 0;
+    for (const auto& gp : generics) {
+        if (gp.name.empty()) {
+            continue;
+        }
+        if (bi < args.size()) {
+            bindings.emplace(gp.name, args[bi]);
+        }
+        ++bi;
+    }
+    check_generic_bounds(generics, bindings, range);
     return args;
 }
 
@@ -4091,6 +4108,100 @@ void Resolver::bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type) 
         sym.definition_range = sub->range;
         if (auto* prev = scopes_.current().insert(std::move(sym))) {
             duplicate_definition(*prev, sym.name, sub->range);
+        }
+    }
+}
+
+bool Resolver::type_satisfies_bound(TypePtr t, std::string_view protocol) const {
+    if (t == nullptr || t->is_error()) {
+        return true;  // suppress cascading errors on already-broken types
+    }
+    // A generic parameter standing in for a concrete type can't be checked
+    // structurally here; accept it. The enclosing scope's own bound on that
+    // parameter is the relevant constraint — transitive bound checking is a
+    // follow-on.
+    if (t->kind() == TypeKind::GenericParam) {
+        return true;
+    }
+    if (protocol == "Display") {
+        return is_display_conformant(t);
+    }
+    if (protocol == "Default") {
+        return is_default_conformant(t);
+    }
+    if (protocol == "Eq" || protocol == "Hash" || protocol == "Debug" || protocol == "Clone") {
+        if (t->is_primitive()) {
+            return true;
+        }
+        switch (t->kind()) {
+        case TypeKind::Optional:
+        case TypeKind::Vector:
+            return type_satisfies_bound(t->inner(), protocol);
+        case TypeKind::Tuple:
+            for (const auto& p : t->parts()) {
+                if (!type_satisfies_bound(p, protocol)) {
+                    return false;
+                }
+            }
+            return true;
+        case TypeKind::Struct:
+        case TypeKind::Enum:
+        case TypeKind::OpaqueType:
+            return decl_derives(t->nominal_decl(), protocol);
+        default:
+            return false;
+        }
+    }
+    if (protocol == "Comparable" || protocol == "Ordered") {
+        // Numeric, character, and string primitives have a natural ordering.
+        // v0.5 has no derive(Comparable), so a struct/enum can't yet declare
+        // one.
+        if (t->is_numeric()) {
+            return true;
+        }
+        switch (t->kind()) {
+        case TypeKind::Char:
+        case TypeKind::Str:
+        case TypeKind::StrConst:
+        case TypeKind::String:
+            return true;
+        default:
+            return false;
+        }
+    }
+    // An unrecognized (user-defined) protocol can't be verified without a
+    // general conformance table, which v0.5 doesn't have. Accept rather than
+    // reject a construct we can't check.
+    return true;
+}
+
+void Resolver::check_generic_bounds(const std::vector<ast::GenericParam>& generics,
+                                    const std::unordered_map<std::string, TypePtr>& bindings,
+                                    diag::SourceRange range) {
+    for (const auto& gp : generics) {
+        if (gp.is_const || gp.name.empty() || gp.bound.protocols.empty()) {
+            continue;
+        }
+        auto it = bindings.find(gp.name);
+        if (it == bindings.end() || it->second == nullptr) {
+            continue;  // unbound — reported separately
+        }
+        for (const auto& proto : gp.bound.protocols) {
+            if (proto == nullptr || proto->kind != ast::NodeKind::NamedType) {
+                continue;
+            }
+            const auto& nt = static_cast<const ast::NamedType&>(*proto);
+            if (nt.path.empty()) {
+                continue;
+            }
+            std::string_view pname = nt.path.back();
+            if (!type_satisfies_bound(it->second, pname)) {
+                error_at(range,
+                         std::format("type {} does not satisfy the bound '{}: {}'",
+                                     it->second->describe(),
+                                     gp.name,
+                                     pname));
+            }
         }
     }
 }

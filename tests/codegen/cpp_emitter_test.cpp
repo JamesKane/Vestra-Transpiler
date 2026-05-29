@@ -2180,3 +2180,26 @@ TEST_CASE("const generic construction emits the inferred specialization") {
     CHECK(f.out.source.find("Buffer<std::int32_t, 4>{.data = {10, 20, 30, 40}}")
           != std::string::npos);
 }
+
+// ---- §7 generics phase 2: protocol bounds (requires-clauses) --------------
+
+TEST_CASE("an Eq bound lowers to a std::equality_comparable requires clause") {
+    SemaEmitFixture f("func eq[T: Eq](_ a: T, _ b: T) -> Bool { return a == b }\n");
+    CHECK(f.out.header.find("template <class T>") != std::string::npos);
+    CHECK(f.out.header.find("requires (std::equality_comparable<T>)") != std::string::npos);
+}
+
+TEST_CASE("a where Comparable bound lowers to std::totally_ordered") {
+    SemaEmitFixture f("func mx[T](_ a: T, _ b: T) -> T where T: Comparable {\n"
+                      "    return if a > b { a } else { b }\n"
+                      "}\n");
+    CHECK(f.out.header.find("requires (std::totally_ordered<T>)") != std::string::npos);
+}
+
+TEST_CASE("a bound without a standard concept emits no requires clause") {
+    // Hash has no clean C++20 concept, so the template is emitted
+    // unconstrained (the Vestra call site still enforces conformance).
+    SemaEmitFixture f("func h[T: Hash](_ a: T) -> Bool { return true }\n");
+    CHECK(f.out.header.find("template <class T>") != std::string::npos);
+    CHECK(f.out.header.find("requires (") == std::string::npos);
+}

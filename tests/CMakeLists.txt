@@ -2060,3 +2060,27 @@ add_test(
 set_tests_properties(e2e_const_generic_run PROPERTIES
     DEPENDS                e2e_const_generic_compile
     PASS_REGULAR_EXPRESSION "const_generic OK")
+
+# §7 generics phase 2: protocol bounds (where-clauses).
+set(e2e_bounds_input  ${CMAKE_SOURCE_DIR}/examples/generic_bounds.vst)
+set(e2e_bounds_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_generic_bounds.cpp)
+
+add_test(
+    NAME    e2e_generic_bounds_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_bounds_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_generic_bounds_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_bounds_driver} ${e2e_workdir}/generic_bounds.cpp
+            -o ${e2e_workdir}/generic_bounds_app)
+set_tests_properties(e2e_generic_bounds_compile PROPERTIES DEPENDS e2e_generic_bounds_transpile)
+
+add_test(
+    NAME    e2e_generic_bounds_run
+    COMMAND ${e2e_workdir}/generic_bounds_app)
+set_tests_properties(e2e_generic_bounds_run PROPERTIES
+    DEPENDS                e2e_generic_bounds_compile
+    PASS_REGULAR_EXPRESSION "generic_bounds OK")
