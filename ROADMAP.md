@@ -60,21 +60,22 @@ swings (async, macros, ownership phase 2) or the annex deepening.
 
 ### 2. `async` / `spawn` / `select` / `parallel` (§11) (multi-session)
 
-Three slices shipped: `async func` + `await` over a `__vstr::Task<T>`
+Four slices shipped: `async func` + `await` over a `__vstr::Task<T>`
 coroutine shim (the host libc++ ships `<execution>` policies but not
-P2300 senders), `spawn` → `Future[T]` consumed by `await`, and `select`
-over future arms (parser + sema + an `await_ready` IIFE lowering). v0.5
-Task / Future / select are synchronous (eager, no scheduler), giving
-correct sequential semantics with no real suspension. Remaining:
-`parallel` (library form over `chunks`/`split` + a non-escaping
-closure); channel recv/send and timeout `select` arms (need `Channel[T]`
-+ a scheduler); async + throws (`Task<expected<T,E>>`); spawn
-capture-by-value / move semantics + non-escapable futures; spawn of a
-void function; a real scheduler / actual suspension; and the "no borrow
-across await" §11 rule. `parallel` or `Channel[T]` (roadmap #3, which
-also unblocks the remaining `select` arms) are the natural next slices;
-senders/receivers can replace the coroutine shims if/when libc++ ships
-P2300.
+P2300 senders), `spawn` → `Future[T]` consumed by `await`, `select` over
+future arms (an `await_ready` IIFE), and `parallel` (a builtin that
+splits a `MutSpan[T]` into N disjoint sub-views and runs a non-escaping
+worker on each). v0.5 Task / Future / select / parallel are all
+synchronous (eager, no scheduler), giving correct sequential semantics
+with no real suspension. Remaining: channel recv/send and timeout
+`select` arms (need `Channel[T]` + a scheduler); `chunks()` / `split(at:)`
+as user-facing partition primitives; async + throws
+(`Task<expected<T,E>>`); spawn capture-by-value / move semantics +
+non-escapable futures; spawn of a void function; the `using Async` gate
+on `parallel`; a real scheduler / actual suspension; and the "no borrow
+across await" §11 rule. `Channel[T]` (roadmap #3, which unblocks the
+remaining `select` arms) is the natural next §11 step; senders/receivers
+can replace the coroutine shims if/when libc++ ships P2300.
 
 ### 3. `Channel[T]` + `parallel` library (§11)
 

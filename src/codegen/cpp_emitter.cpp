@@ -527,6 +527,26 @@ auto spawn_future(E&& e) {
     }
 }
 
+// §11.2 parallel: split `data` into `chunks` disjoint contiguous sub-spans
+// (balanced — the first `total % chunks` get one extra element) and run the
+// non-escaping worker on each. v0.5 runs them sequentially (no scheduler);
+// the disjoint-MutSpan partition + non-escaping body is the contract a real
+// thread pool plugs into later.
+template <class T, class F>
+void parallel(std::span<T> data, std::intptr_t chunks, F&& body) {
+    if (chunks < 1) { chunks = 1; }
+    const std::size_t nc = static_cast<std::size_t>(chunks);
+    const std::size_t total = data.size();
+    const std::size_t base = total / nc;
+    const std::size_t rem = total % nc;
+    std::size_t off = 0;
+    for (std::size_t i = 0; i < nc; ++i) {
+        const std::size_t len = base + (i < rem ? 1 : 0);
+        body(data.subspan(off, len));
+        off += len;
+    }
+}
+
 )__task";
     // §9 iterator combinators. `Zip<A, B>` and `Take<A>` are header-
     // local templates driven by the existing iterator-protocol for-
@@ -4219,6 +4239,21 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << ", ";
                     emit_expr(os, *c.args[1].value);
                     os << "}";
+                    break;
+                }
+                // §11.2 `parallel(data, chunks, body)` → the runtime helper
+                // that splits `data` into `chunks` disjoint sub-spans and
+                // calls the worker on each. The chunk count widens to
+                // std::intptr_t to match the helper's parameter.
+                if (callee_ident.name == "parallel" && c.args.size() == 3
+                    && resolution_->symbol_of(c.callee.get()) == nullptr) {
+                    os << "__vstr::parallel(";
+                    emit_expr(os, *c.args[0].value);
+                    os << ", static_cast<std::intptr_t>(";
+                    emit_expr(os, *c.args[1].value);
+                    os << "), ";
+                    emit_expr(os, *c.args[2].value);
+                    os << ")";
                     break;
                 }
             }

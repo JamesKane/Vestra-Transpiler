@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §11.2 parallel.
+//
+// `parallel(data, chunks, body)` splits `data` into `chunks` disjoint,
+// contiguous MutSpan sub-views and runs the non-escaping worker `body` on
+// each. It rests on the two §11.2 affordances: a disjoint partition (here
+// produced internally by splitting the span; the user-facing `chunks()` /
+// `split(at:)` partition primitives are a separate slice) and a
+// non-escaping closure (parallel calls it, never stores it). v0.5 runs the
+// workers sequentially — there is no scheduler yet — but the partition and
+// non-escaping-body contract is the one a real thread pool plugs into.
+
+module examples.parallel_demo
+
+// Increment every element, working over `chunks` disjoint sub-views.
+func incrementAll(_ data: MutSpan[Int32], _ chunks: Int) {
+    parallel(data, chunks, { slice =>
+        var i = 0
+        while i < slice.count {
+            slice[i] = slice[i] + 1
+            i = i + 1
+        }
+    })
+}
+
+// A second worker over the same partition shape, multiplying in place.
+func scaleAll(_ data: MutSpan[Int32], _ chunks: Int, _ factor: Int32) {
+    parallel(data, chunks, { slice =>
+        var i = 0
+        while i < slice.count {
+            slice[i] = slice[i] * factor
+            i = i + 1
+        }
+    })
+}

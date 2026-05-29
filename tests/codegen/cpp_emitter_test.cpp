@@ -2328,3 +2328,21 @@ TEST_CASE("select lowers to an ordered await_ready IIFE binding the future value
     CHECK(f.out.source.find("co_return [&]() -> std::int32_t {") != std::string::npos);
     CHECK(f.out.source.find("return 0;") != std::string::npos);
 }
+
+// ---- §11.2 parallel -------------------------------------------------------
+
+TEST_CASE("parallel lowers to __vstr::parallel over a worker closure") {
+    SemaEmitFixture f("func bump(_ data: MutSpan[Int32], _ n: Int) {\n"
+                      "    parallel(data, n, { slice =>\n"
+                      "        var i = 0\n"
+                      "        while i < slice.count {\n"
+                      "            slice[i] = slice[i] + 1\n"
+                      "            i = i + 1\n"
+                      "        }\n"
+                      "    })\n"
+                      "}\n");
+    CHECK(f.out.header.find("void parallel(std::span<T> data") != std::string::npos);  // shim
+    CHECK(f.out.source.find("__vstr::parallel(data, static_cast<std::intptr_t>(n),")
+          != std::string::npos);
+    CHECK(f.out.source.find("[&](std::span<std::int32_t> slice)") != std::string::npos);
+}

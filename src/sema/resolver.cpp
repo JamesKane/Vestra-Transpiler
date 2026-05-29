@@ -2840,6 +2840,49 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                     exs, tf->result() != nullptr ? tf->result() : types_->error());
             }
         }
+        // §11.2 `parallel(data, chunks, body)` — runs the non-escaping
+        // closure `body` over disjoint sub-spans of `data`. v0.5 takes a
+        // MutSpan[T] plus an explicit chunk count and splits internally
+        // (the user-facing `chunks()` / `split(at:)` partition primitives
+        // are a separate slice); the worker body is `(MutSpan[T]) -> Unit`.
+        if (ci.name == "parallel" && scopes_.current().lookup("parallel") == nullptr) {
+            if (c.args.size() != 3) {
+                for (const auto& a : c.args) {
+                    (void)check_expr(*a.value);
+                }
+                error_at(c.range, "parallel(data, chunks, body) takes exactly three arguments");
+                return types_->unit();
+            }
+            for (const auto& a : c.args) {
+                if (!a.label.empty()) {
+                    error_at(a.value->range, "parallel arguments cannot have labels");
+                }
+            }
+            auto td = check_expr(*c.args[0].value);
+            if (td != nullptr && !td->is_error() && td->kind() != TypeKind::MutSpan) {
+                error_at(c.args[0].value->range,
+                         std::format("parallel's first argument must be a MutSpan[T], got {}",
+                                     td->describe()));
+            }
+            auto tn = check_expr(*c.args[1].value);
+            if (tn != nullptr && !tn->is_error() && !tn->is_integer()) {
+                error_at(c.args[1].value->range,
+                         std::format("parallel's chunk count must be an integer, got {}",
+                                     tn->describe()));
+            }
+            TypePtr slice_t =
+                (td != nullptr && td->kind() == TypeKind::MutSpan) ? td : types_->error();
+            auto body_expected = types_->make_function({slice_t}, types_->unit());
+            auto tb = check_expr(*c.args[2].value, body_expected);
+            if (tb != nullptr && !tb->is_error()
+                && (tb->kind() != TypeKind::Function || tb->parts().size() != 1)) {
+                error_at(
+                    c.args[2].value->range,
+                    std::format("parallel's body must be a closure (MutSpan[T]) -> Unit, got {}",
+                                tb->describe()));
+            }
+            return types_->unit();
+        }
     }
 
     // §A7 (§14.14) `Scheduler.swapContext(saving:, loading:)` —
