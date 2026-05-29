@@ -4870,6 +4870,27 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         os << ")";
         break;
     }
+    case ast::NodeKind::QuoteExpr: {
+        // §12.4 v0.5 — an expression-context quote lowers to its body with
+        // splices substituted in place. (A deferred typed-AST value model
+        // and the declaration-macro layer are follow-on slices.)
+        const auto& q = static_cast<const ast::QuoteExpr&>(e);
+        if (q.inner) {
+            emit_expr(os, *q.inner);
+        }
+        break;
+    }
+    case ast::NodeKind::SpliceExpr: {
+        // §12.4 — `$x` / `$(expr)` substitutes the inner expression at the
+        // splice site; parenthesized so it composes inside the quoted body.
+        const auto& sp = static_cast<const ast::SpliceExpr&>(e);
+        os << "(";
+        if (sp.inner) {
+            emit_expr(os, *sp.inner);
+        }
+        os << ")";
+        break;
+    }
     case ast::NodeKind::SpawnExpr: {
         // §11 — `spawn e` yields a `Future[T]`. v0.5 runs the spawned call
         // eagerly and boxes its result: `__vstr::spawn_future(e)` overloads

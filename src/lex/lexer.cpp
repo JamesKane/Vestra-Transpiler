@@ -483,6 +483,9 @@ std::vector<Token> Lexer::tokenize() {
         case '@':
             emit(out, TokenKind::At, start);
             break;
+        case '$':  // §12.4 splice: `$ident` / `$(expr)` inside a quote
+            emit(out, TokenKind::Dollar, start);
+            break;
         case '~':
             emit(out, TokenKind::Tilde, start);
             break;

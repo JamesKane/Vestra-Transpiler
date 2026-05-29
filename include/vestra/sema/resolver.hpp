@@ -324,6 +324,9 @@ private:
     // the `@retry_loop` function-level escape; users must spell out
     // the loop at the call site.
     int weak_cas_loop_depth_ = 0;
+    // §12.4 — nesting depth of `quote { … }`. A `$`-splice is only legal
+    // when this is > 0.
+    int quote_depth_ = 0;
     // Comptime folder + the const environment it folds against. The env
     // accumulates name→value pairs as we successfully fold each top-level
     // const, so later consts can reference earlier ones. The folder gets

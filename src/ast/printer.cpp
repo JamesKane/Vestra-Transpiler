@@ -804,6 +804,26 @@ void Printer::print_expr(std::ostream& os, const Expr& e) {
         os << "spawn ";
         print_expr(os, *static_cast<const SpawnExpr&>(e).inner);
         break;
+    case NodeKind::QuoteExpr:
+        os << "quote { ";
+        if (static_cast<const QuoteExpr&>(e).inner) {
+            print_expr(os, *static_cast<const QuoteExpr&>(e).inner);
+        }
+        os << " }";
+        break;
+    case NodeKind::SpliceExpr: {
+        // `$ident` prints bare; `$(expr)` keeps the parens.
+        const auto& sp = static_cast<const SpliceExpr&>(e);
+        os << "$";
+        if (sp.inner && sp.inner->kind == NodeKind::IdentExpr) {
+            print_expr(os, *sp.inner);
+        } else if (sp.inner) {
+            os << "(";
+            print_expr(os, *sp.inner);
+            os << ")";
+        }
+        break;
+    }
     case NodeKind::TryExpr: {
         const auto& t = static_cast<const TryExpr&>(e);
         switch (t.form) {

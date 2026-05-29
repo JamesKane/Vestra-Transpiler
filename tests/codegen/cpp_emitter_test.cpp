@@ -2361,3 +2361,14 @@ TEST_CASE("Channel.new mints a __vstr::Channel and send/recv pass through") {
     CHECK(f.out.source.find("ch.send(10);") != std::string::npos);
     CHECK(f.out.source.find("ch.recv()") != std::string::npos);
 }
+
+// ---- §12.4 quote / splice (expression context) ----------------------------
+
+TEST_CASE("an expression-context quote materializes its body with splices substituted") {
+    SemaEmitFixture f("func square(_ x: Int32) -> Int32 { return quote { $(x) * $(x) } }\n"
+                      "func axpy(_ a: Int32, _ x: Int32, _ y: Int32) -> Int32 {\n"
+                      "    return quote { $a * $x + $y }\n"
+                      "}\n");
+    CHECK(f.out.source.find("return (x) * (x);") != std::string::npos);
+    CHECK(f.out.source.find("return (a) * (x) + (y);") != std::string::npos);
+}

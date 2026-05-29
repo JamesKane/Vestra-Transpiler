@@ -60,6 +60,7 @@ enum class TokenKind : std::uint16_t {
     Arrow,       // ->
     FatArrow,    // =>
     At,          // @
+    Dollar,      // $  (§12.4 splice marker)
     Question,    // ?
     Underscore,  // _   (only meaningful as a parameter name / pattern)
 

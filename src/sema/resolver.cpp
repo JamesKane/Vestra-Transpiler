@@ -2013,6 +2013,28 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         }
         break;
     }
+    case ast::NodeKind::QuoteExpr: {
+        // §12.4 v0.5 — an expression-context quote types as its body
+        // expression (with splices resolved against the surrounding
+        // scope). The body is checked with quote depth raised so a `$`
+        // splice inside is admitted.
+        const auto& q = static_cast<const ast::QuoteExpr&>(e);
+        ++quote_depth_;
+        t = q.inner ? check_expr(*q.inner, expected) : types_->error();
+        --quote_depth_;
+        break;
+    }
+    case ast::NodeKind::SpliceExpr: {
+        // §12.4 — `$x` / `$(expr)` is only legal inside a quote; its type
+        // is the spliced inner expression's type (resolved in the
+        // surrounding scope).
+        const auto& sp = static_cast<const ast::SpliceExpr&>(e);
+        if (quote_depth_ == 0) {
+            error_at(e.range, "a `$` splice is only valid inside a `quote { … }`");
+        }
+        t = sp.inner ? check_expr(*sp.inner, expected) : types_->error();
+        break;
+    }
     case ast::NodeKind::AwaitExpr: {
         // §11 `await e` consumes its operand for the underlying value: a
         // `Future[T]` (from `spawn`) unwraps to T; a direct async call is

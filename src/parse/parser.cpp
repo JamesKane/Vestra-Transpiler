@@ -1833,11 +1833,40 @@ ast::ExprPtr Parser::parse_primary() {
         return c;
     }
     case TokenKind::KwQuote: {
+        // §12.4 v0.5: an expression-context quote, `quote { EXPR }`, whose
+        // body is a single expression. `$x` / `$(expr)` inside it are
+        // splice points. (Declaration / statement quotes and the typed-AST
+        // value model are follow-on slices.)
         advance();
         auto q = std::make_unique<ast::QuoteExpr>();
-        q->inner = parse_block_expr();  // we treat `quote { ... }` as a block
+        expect(TokenKind::LBrace, "'{' to open quote body");
+        skip_newlines();
+        q->inner = parse_expr();
+        skip_newlines();
+        expect(TokenKind::RBrace, "'}' to close quote body");
         q->range = merge(start, last_range());
         return q;
+    }
+    case TokenKind::Dollar: {
+        // §12.4 splice: `$ident` or `$(expr)`. Only meaningful inside a
+        // quote (sema enforces); the inner is substituted at the splice
+        // site.
+        advance();
+        auto sp = std::make_unique<ast::SpliceExpr>();
+        if (match(TokenKind::LParen)) {
+            sp->inner = parse_expr();
+            expect(TokenKind::RParen, "')' to close '$( … )' splice");
+        } else if (check(TokenKind::Identifier)) {
+            auto id = std::make_unique<ast::IdentExpr>();
+            auto idtok = advance();
+            id->name = std::string{idtok.lexeme};
+            id->range = idtok.range;
+            sp->inner = std::move(id);
+        } else {
+            emit_error(peek().range, "expected an identifier or '(' after '$'");
+        }
+        sp->range = merge(start, last_range());
+        return sp;
     }
     case TokenKind::At: {
         // `@embed("path")` and other intrinsic-call forms in expression

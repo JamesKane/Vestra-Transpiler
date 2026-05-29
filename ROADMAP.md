@@ -89,10 +89,17 @@ unblocks.
 
 ### 4. Quote / splice / declaration macros (§12.4) (multi-session)
 
-The parser already accepts `quote { ... }`. Wiring it through to
-declaration-position macros (with `$splice` and `expand`) is the
-metaprogramming pillar of §12. Composes with the comptime folding
-that already ships through phase 7.
+First slice shipped: the `$`-splice syntax (`$ident` / `$(expr)`), a
+`SpliceExpr` AST, and an expression-context `quote { EXPR }` that
+materializes its body with splices substituted in place (an identity
+template — the value is the reusable syntax + AST + type rule). The bulk
+remains: a deferred typed-AST value model (`Decl` / `Expr` / `[Decl]`
+comptime values), declaration / statement quotes, `comptime func`
+declaration macros invoked via `@macro` with AST substitution and
+re-checking, hygiene, the builder API, and `vestra expand`. The
+AST-as-comptime-value layer is the large prerequisite and the natural
+next unit; it composes with the comptime folder that ships through
+phase 7.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 

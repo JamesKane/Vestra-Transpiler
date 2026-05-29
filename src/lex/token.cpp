@@ -67,6 +67,8 @@ std::string_view spelling(TokenKind k) noexcept {
         return "=>";
     case TokenKind::At:
         return "@";
+    case TokenKind::Dollar:
+        return "$";
     case TokenKind::Question:
         return "?";
     case TokenKind::Underscore:

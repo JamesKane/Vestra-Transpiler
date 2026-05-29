@@ -2395,3 +2395,15 @@ TEST_CASE("throw inside a throws(E) fn requires the value type to match E") {
                           "func bad() throws(E) -> Int32 { throw 42 }\n");
     CHECK(r.error_count >= 1);
 }
+
+// ---- §12.4 quote / splice (expression context) ----------------------------
+
+TEST_CASE("an expression-context quote with splices type-checks") {
+    CHECK(check_errors("func square(_ x: Int32) -> Int32 { return quote { $(x) * $(x) } }\n") == 0);
+}
+
+TEST_CASE("a splice outside a quote is rejected") {
+    auto r = check_detail("func bad(_ x: Int32) -> Int32 { return $x }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("`$` splice is only valid inside a `quote") != std::string::npos);
+}

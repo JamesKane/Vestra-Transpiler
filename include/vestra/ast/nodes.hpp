@@ -78,6 +78,7 @@ enum class NodeKind : std::uint16_t {
     EmbedExpr,
     InterpStringExpr,
     QuoteExpr,
+    SpliceExpr,
     TryExpr,
     DoCatchExpr,
     AwaitExpr,
@@ -495,6 +496,13 @@ struct InterpStringExpr : Expr {
 struct QuoteExpr : Expr {
     ExprPtr inner;
     QuoteExpr() : Expr(NodeKind::QuoteExpr) {}
+};
+// §12.4 splice point inside a `quote { … }`: `$x` (inner is an IdentExpr)
+// or `$(expr)` (inner is the parenthesized expression). The spliced value
+// is substituted into the quoted code at the splice site.
+struct SpliceExpr : Expr {
+    ExprPtr inner;
+    SpliceExpr() : Expr(NodeKind::SpliceExpr) {}
 };
 struct AwaitExpr : Expr {
     ExprPtr inner;

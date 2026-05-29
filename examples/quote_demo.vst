@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §12.4 quote / splice — first slice (expression context).
+//
+// `quote { EXPR }` is a code template; `$x` splices an identifier and
+// `$(expr)` splices a parenthesized expression into the template. In this
+// v0.5 slice a quote is used directly in expression position, so its body
+// is materialized in place with the splices substituted. The `$`-splice
+// syntax and the type-checking (a splice is only legal inside a quote) are
+// the foundation; the declaration-macro layer (a `comptime func` taking a
+// declaration and returning `[Decl]`, invoked via `@macro`), the deferred
+// typed-AST value model, and hygiene are follow-on slices.
+
+module examples.quote_demo
+
+// `$(x)` splices the parenthesized argument expression twice.
+func square(_ x: Int32) -> Int32 {
+    return quote { $(x) * $(x) }
+}
+
+// `$a` / `$x` / `$y` splice bare identifiers.
+func axpy(_ a: Int32, _ x: Int32, _ y: Int32) -> Int32 {
+    return quote { $a * $x + $y }
+}
+
+// A quoted body can be any expression — here an `if` expression, with the
+// operands spliced in.
+func clampLow(_ v: Int32, _ lo: Int32) -> Int32 {
+    return quote { if $(v) < $(lo) { $(lo) } else { $(v) } }
+}
