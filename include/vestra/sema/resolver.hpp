@@ -156,6 +156,18 @@ private:
                                        std::string_view name,
                                        const ast::StructDecl::Field** out_field = nullptr);
 
+    // §7 generics phase 2 — resolve a generic struct member type (a field
+    // or method-signature type) with the struct's type parameters bound.
+    // When `args` is non-empty each parameter binds to the corresponding
+    // instance argument, so a member typed `T` resolves to the concrete
+    // argument. When `args` is empty each parameter binds to an opaque
+    // GenericParam placeholder, so a member typed `T` resolves to
+    // GenericParam("T") (used during decl checking and construction
+    // inference). A non-generic struct routes through plain resolve_type.
+    [[nodiscard]] TypePtr resolve_struct_member_type(const ast::StructDecl& decl,
+                                                     const ast::Type& member_type,
+                                                     const std::vector<TypePtr>& args);
+
     // Look up a method by name on a struct/enum type. Returns the method's
     // full function type. `out_method` is set to the resolved FuncDecl.
     [[nodiscard]] TypePtr lookup_method(TypePtr owner_type,

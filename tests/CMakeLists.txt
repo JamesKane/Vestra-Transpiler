@@ -1988,3 +1988,27 @@ add_test(
 set_tests_properties(e2e_derive_debug_run PROPERTIES
     DEPENDS                e2e_derive_debug_compile
     PASS_REGULAR_EXPRESSION "derive\\(Debug\\) OK")
+
+# §7 generics phase 2 (first slice): user-defined generic structs.
+set(e2e_genstruct_input  ${CMAKE_SOURCE_DIR}/examples/generic_struct.vst)
+set(e2e_genstruct_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_generic_struct.cpp)
+
+add_test(
+    NAME    e2e_generic_struct_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_genstruct_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_generic_struct_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_genstruct_driver} ${e2e_workdir}/generic_struct.cpp
+            -o ${e2e_workdir}/generic_struct_app)
+set_tests_properties(e2e_generic_struct_compile PROPERTIES DEPENDS e2e_generic_struct_transpile)
+
+add_test(
+    NAME    e2e_generic_struct_run
+    COMMAND ${e2e_workdir}/generic_struct_app)
+set_tests_properties(e2e_generic_struct_run PROPERTIES
+    DEPENDS                e2e_generic_struct_compile
+    PASS_REGULAR_EXPRESSION "generic_struct OK")

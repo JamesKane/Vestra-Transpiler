@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §7 generics phase 2, first slice: user-defined generic structs.
+//
+// `struct Pair[T] { ... }` declares a struct parameterized over a type T.
+// A use-site `Pair[Int32]` is an instantiation; the field types substitute
+// T for the supplied argument, so `p.first` reads as Int32. Construction
+// infers the type arguments from the labeled arguments (and from the
+// binding's annotated type when present), the same way a generic function
+// call infers its parameters. Each instantiation lowers to a C++ class
+// template specialization, so the monomorphization is the C++ compiler's
+// job.
+
+module examples.generic_struct
+
+// One type parameter, used by two fields of the same type.
+struct Pair[T] {
+    var first: T
+    var second: T
+}
+
+// Two type parameters.
+struct KeyValue[K, V] {
+    var key: K
+    var value: V
+}
+
+// A function may take and return a concrete instantiation.
+func sumPair(_ p: Pair[Int32]) -> Int32 {
+    return p.first + p.second
+}
+
+// Construction with the arguments driving inference (T = Int32 here).
+func makePair(_ a: Int32, _ b: Int32) -> Pair[Int32] {
+    return Pair(first: a, second: b)
+}
+
+// Construction where the annotated binding seeds the width: the integer
+// literals adopt Int32 from the expected `Pair[Int32]`.
+func annotatedPair() -> Int32 {
+    let p: Pair[Int32] = Pair(first: 10, second: 20)
+    return p.first + p.second
+}
+
+// Field access through a two-parameter instantiation.
+func keyOf(_ kv: KeyValue[Int32, Bool]) -> Int32 {
+    return kv.key
+}
+
+func flagOf(_ kv: KeyValue[Int32, Bool]) -> Bool {
+    return kv.value
+}
+
+func makeEntry(_ k: Int32, _ v: Bool) -> KeyValue[Int32, Bool] {
+    return KeyValue(key: k, value: v)
+}

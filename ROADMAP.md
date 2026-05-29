@@ -1,284 +1,214 @@
 # Roadmap
 
 Forward-looking menu of candidate phases for the Vestra-to-C++26
-transpiler. The *back-looking* counterpart — what's shipped, with
-commit references and known v0.5 limitations — is in
+transpiler. The *back-looking* counterpart, what's shipped with commit
+references and known v0.5 limitations, is in
 [`HANDOFF.md`](HANDOFF.md). The spec is
 [`VESTRA_DRAFT.md`](VESTRA_DRAFT.md), with the kernel-completeness
 annex consolidated in [`VESTRA_ANNEX_A.md`](VESTRA_ANNEX_A.md).
 
-The list is **priority-ordered** — number 1 is the next phase to ship
+The list is **priority-ordered**: number 1 is the next phase to ship
 when nothing else is forcing the choice. The user picks from a 4-item
 menu each round; the AskUserQuestion draws four entries from this
 list, biased toward the top.
 
-Each candidate is sized for a single end-to-end session: AST → parser
-→ sema → codegen → unit tests → e2e. Items flagged **(multi-session)**
-are bigger swings.
+Each candidate is sized for a single end-to-end session (AST, parser,
+sema, codegen, unit tests, e2e). Items flagged **(multi-session)** are
+bigger swings; for those the per-session goal is a self-contained
+first slice.
+
+> **Doc hygiene note (2026-05-29).** The previous version of this file
+> listed a "language polish (1-5)" and "bounded follow-ons (6-10)"
+> section. Every one of those items had already shipped (commits
+> `14de903` panic, `f178251` Span, `d8d4ac2` Optional-in-Display,
+> `ec26138` pattern matching, `3075829` opaque follow-ons, `11b3a3a`
+> .mapError, plus the with-binding / do-catch-guard / zip-take / try?
+> follow-ons). The list below was re-derived from `git log` against
+> the annex track and the bigger swings. When you finish a phase,
+> move it to the "Already shipped" section the same session so this
+> file does not drift again.
 
 ---
 
-## Next up — language polish (priority 1–5)
+## Next up (priority 1-9)
 
-### 1. `panic` / `abort` / `unreachable` lowering
+### 1. Generics phase 2 (multi-session)
 
-§10 says panic is terminal — no unwinding, no `deinit`. Lower
-`panic(msg)`, `abort()`, `unreachable()` to `std::abort()` /
-`__builtin_unreachable()` / a typed `Never`-returning shape. Today
-force-unwrap (`!`) and `try!` rely on `std::bad_optional_access` /
-`std::bad_expected_access` exceptions — unifying on a real `panic`
-primitive moves the language toward §10's spec and opens the door to
-the annex's `@panic_handler` later.
+`7e93b0e`'s phase 1 covers function generics (opaque GenericParam
+types, unification with `expected` propagation, emit as C++
+templates). The first phase-2 slice shipped user-defined generic
+*structs* (`struct Pair[T] { ... }`, used as `Pair[Int32]`,
+monomorphized to C++ class templates with construction inference; see
+the HANDOFF top entry). Remaining pieces: user-defined generic *enums*
+(`enum Option[T] { case some(T) case none }`); const generics
+(`[const N: Int]`); where-clause refinement
+(`func f[T](x: T) where T: Eq -> Bool`); protocol-bound enforcement at
+the call site; explicit type-args at a construction site
+(`Pair[Int32](...)`, where the callee currently parses as an index
+expression); and derive / `std::hash` / `std::formatter` emission for
+generic structs (partial specializations over `template <class T>`).
+The highest-leverage open swing, since it moves `Span[T]` / `PerCpu[T]`
+/ `Padded[T]` toward ordinary library types instead of compiler-known
+shapes. Generic enums are the natural next slice.
 
-### 2. `Span[T]` — non-owning view (§10)
-
-The borrowed, non-escapable view type — lowers to `std::span<T>`.
-Lets a function take `Span[T]` over a `Box[T]` / fixed vector
-without copying or transferring ownership. **First non-escapable
-type in the system** — opens the door to the §5 escape rules and
-unblocks the annex's `MutSpan.raw(at:count:)` (§10.5). New TypeKind,
-sema rule, codegen lowering, e2e example.
-
-### 3. `Optional` in a Display splice
-
-Small clean win. `is_display_conformant` rejects Optional today
-because `std::format("{}", std::optional<T>)` isn't standard. The fix
-is a preamble shim that delegates to `T`'s formatter on `.some` and
-prints `nil` on `.none`. Tiny surface area; makes `"\(maybeName)"`
-interpolation "just work" for the common case.
-
-### 4. Pattern matching enhancements
-
-Three missing match-arm shapes plus the natural follow-on:
-range patterns (`case 0..10:`), or-patterns (`case .red | .green:`),
-literal patterns (`case 1:` `case "hello":`), and match over a tuple
-scrutinee (`match tup { case (1, _): … }`). The bare-tuple form is
-already enabled by the §6 tuple-pattern work; the match codegen needs
-to recognize it. All four pieces are in `parse_pattern` +
-`check_pattern` + `emit_match` — each is small individually.
-
-### 5. Newtype opaque type follow-ons (§3)
-
-Two ergonomic completions on top of the §3 opaque type:
-(a) a `derive(Eq, Hash, Debug, Clone, Display) for Q` story for
-opaque newtypes — the codegen path is mostly there for the underlying
-`T`, needs a `static_cast` through `Q` to reuse it; (b) the inverse
-conversion `T(q)` so the user has both directions written the same
-way (`Q(t)` already works as `static_cast<Q>(t)`).
-
----
-
-## Bounded follow-ons (priority 6–10)
-
-### 6. `.mapError(_ f)` on Result
-
-§9 spelling for explicit error-type widening between throws
-functions: `try someCall().mapError(toE)`. Sema recognizes `.mapError`
-as a built-in Result method (resolves the closure's input/output
-types against the Result's `E` and a new `E'`); codegen lowers via
-std::expected's `transform_error`. Completes the §9 multi-typed error
-story.
-
-### 7. `with X = expr { ... }` block satisfying a capability
-
-The capability checker already recognizes `with` as a satisfier of a
-`using C` row, but there's no sema/codegen for opening a `with` block
-whose value is bound for the body's duration. Add parse + sema for
-`with NAME = expr { ... }`, scope the binding inside the block, codegen
-as a sub-scope `{ auto NAME = expr; ... }`. Unblocks the
-`Mmio.narrowed(to:)` pattern and tightens the capability story.
-
-### 8. `do { ... } catch e where guard { ... }`
-
-§9 hints at guarded catch arms (the `case … where guard` syntax
-already exists). Mirror the syntax + sema in `do/catch` so the user
-can dispatch on the error value without writing an inner match.
-
-### 9. Iterator combinators (`zip` / `map` / `filter` / `take`)
-
-Library, not language — but needs `Iterator` and `for` to work,
-which both do. Each combinator is a struct with a `next() -> Element?`
-method that wraps an inner iterator. Pairs well with the just-shipped
-tuple-pattern work: `zip(a, b)` yields tuples and a
-`for (x, y) in zip(xs, ys) { ... }` exercises the recent feature set.
-First one establishes the template; the rest follow.
-
-### 10. `try?` over a non-Result Optional
-
-Currently `try?` requires Result. Sometimes the user wants
-`try? optional_func()` to short-circuit `nil` from a non-throwing
-optional-returning call. Either a clean error or a sema-rewrite into
-the matching Optional form.
-
----
-
-## Bigger swings (priority 11+)
-
-### 11. Generics phase 2 (multi-session)
-
-`b9583c8`'s phase-1 covers function generics. Missing pieces:
-const generics (`[const N: Int]`); user-defined generic structs /
-enums (`struct Box[T] { ... }`); where-clause refinement
-(`func f[T](x: T) where T: Eq -> Bool`); protocol-bound enforcement
-at the call site. Unblocks `Span[T]` and `PerCpu[T]` as ordinary
-library types rather than compiler-known shapes. Probably 2–3
-sessions to land cleanly.
-
-### 12. `async` / `spawn` / `select` / `parallel` (§11) (multi-session)
+### 2. `async` / `spawn` / `select` / `parallel` (§11) (multi-session)
 
 Today parsed but emitted as `unsupported` comments. The C++26 target
 has `std::execution` and senders/receivers; mapping async/await to
-those is the structurally clean path. `spawn` → detached sender;
-`select` → `let_value` composition; `parallel` → `bulk` or a custom
-partitioner. A big phase — probably 2–3 sessions.
+those is the structurally clean path. `spawn` becomes a detached
+sender, `select` a `let_value` composition, `parallel` a `bulk` or a
+custom partitioner. A big phase, probably 2-3 sessions; first slice is
+`async func` + `await` over a single sender.
 
-### 13. `Channel[T]` + `parallel` library (§11)
+### 3. `Channel[T]` + `parallel` library (§11)
 
-Depends on async. A typed bounded queue: `send` is sink, `recv`
+Depends on async. A typed bounded queue: `send` is a sink, `recv`
 returns Optional. `parallel(over: xs, by: chunks)` takes a
-non-escaping closure and runs it over partitions.
+non-escaping closure and runs it over partitions. Pairs with the
+Span[T] non-escapable work already in.
 
-### 14. Quote / splice / declaration macros (§12.4) (multi-session)
+### 4. Quote / splice / declaration macros (§12.4) (multi-session)
 
 The parser already accepts `quote { ... }`. Wiring it through to
 declaration-position macros (with `$splice` and `expand`) is the
-metaprogramming pillar of §12.
+metaprogramming pillar of §12. Composes with the comptime folding
+that already ships through phase 7.
 
-### 15. Ownership / exclusivity phase 2 (multi-session)
+### 5. Ownership / exclusivity phase 2 (multi-session)
 
-Phase 1 is single-pass and linear. Phase 2 needs:
-branch-aware flow merging; cross-statement borrow liveness;
+Phase 1 (`b0727b9` / `e77f2e0`) is single-pass and linear. Phase 2
+needs branch-aware flow merging; cross-statement borrow liveness;
 partition primitives (`chunks(n)` / `split(at:)`); linear types
-(`linear struct Foo { ... }`).
+(`linear struct Foo { ... }`). Partition primitives also unblock the
+Channel `parallel` partitioner above.
 
-### 16. Capability narrowing + audit trail
+### 6. Capability narrowing + audit trail
 
 Row polymorphism over a generic capability variable; narrowing
 (`Mmio.narrowed(to:)`); the `// Safety:` audit-comment trail for
-`unsafe` discharges.
+`unsafe` discharges. The `vestra audit` subcommand already exists
+(`--sysreg` / `--no-libc` enumerators from `a2e7438` / `3934f9f`), so
+this extends an established surface.
 
-### 17. SIMD `[N]T` lowering (§13)
+### 7. SIMD `[N]T` lowering (§13)
 
 Map fixed-length vector types to `std::experimental::simd` (or target
-intrinsics) where available, clean scalar fallback elsewhere. Needs a
-target-detection layer the codegen doesn't have yet.
+intrinsics) where available, with a clean scalar fallback elsewhere.
+Needs a target-detection layer the codegen doesn't have yet; the
+`--target` / `--target-features` plumbing from `312281c` is a starting
+point for that layer.
 
-### 18. Content-hashed `@embed` manifest
+### 8. Content-hashed `@embed` manifest
 
-Today `@embed("path")` reads files relative to the source dir at fold
-time. The spec wants paths resolved against a content-hashed
-manifest so two builds of the same source under the same config are
-byte-identical. Needs a manifest file format + a hash compare in the
-driver.
+Bounded single-session item. Today `@embed("path")` reads files
+relative to the source dir at fold time; the spec wants paths resolved
+against a content-hashed manifest so two builds of the same source
+under the same config are byte-identical. Needs a manifest file format
+plus a hash compare in the driver. Self-contained.
 
-### 19. `Soa[T]` — struct-of-arrays library type (§13)
+### 9. `Soa[T]` struct-of-arrays library type (§13)
 
 Inverts AoS storage for SIMD-friendly traversal. Library on top of
-generic structs + a small `@layout(soa)` attribute. Design-heavy;
-waits for generics phase 2.
+generic structs plus a small `@layout(soa)` attribute. Design-heavy;
+waits for generics phase 2 (#1).
 
 ---
 
-## Annex track — kernel completeness
+## Annex deepening
 
-A parallel, ordered track for the [`VESTRA_ANNEX_A.md`](VESTRA_ANNEX_A.md)
-items. Independent of the language-polish list above — the user can
-interleave. Each annex section is roughly one session unless flagged.
+The annex track A1-A12 is shipped through first slices and many
+follow-ups (see "Already shipped"). What remains are the deeper slices
+flagged in those commits:
 
-### A1. `@noinit static` + section / symbol / weak / alias / visibility (§4.5, §6.7)
+### A7 second slice: context-switch completion (§14.14)
 
-The foundation for kernel `.bss` and link-time symbol control. Two
-chapters but one phase — both are attribute-only at sema, link-data
-at codegen.
+The first slice (`14b9482`) ships `Scheduler.swapContext(saving,
+loading)` against bare `Context` values. The spec form is
+`MutPtr[Context]` / `Ptr[Context]`; now that `&decl` exists
+(`08b8744`) the pointer-threaded form can be tightened. Adds the
+separate `FpContext` for lazy-FP save/restore.
 
-### A2. `@inline` directive + layout completeness (§7.8, §6.8)
+### A8 follow-up: kernel-target vector-table layout (§14.5.3)
 
-`@inline(.always | .never | .hint)`; `@repr(union)` untagged
-overlay; explicit `@padding`; anonymous `embed`; flexible array
-members; comptime layout reflection (`Type.size`, `.alignment`,
-`Field.offset`).
+`4747e88` ships typed `@interrupt(T)` arrays. The kernel target still
+needs per-slot stride alignment (128 bytes on aarch64 EL1) and
+`.text.vec_table.<index>` sub-section emission, plus the in-slot vs
+trampoline 3.5 lowering rule. Hosted v0.5 drops these because the host
+section format differs and dispatch semantics validate without them.
 
-### A3. Raw-mint primitives (§10.5)
+### A9 deepening: boot / kernel_init runtime-model gates (§14.7) (multi-session)
 
-`Ptr.unchecked(fromAddress:)` / `MutPtr.unchecked(fromAddress:)` +
-`Span.raw` / `MutSpan.raw`, with lifetime anchored to the
-`RawMemory` discharge. **Depends on roadmap #2 (Span[T])** for the
-non-escapable view target.
+`e773018` ships the sema gates for `@boot` (using-row restriction, no
+throws, `[[gnu::naked]]`) and `@kernel_init` (no Async). The audit-time
+rules remain: call-graph reachability from each entry, allocator-init
+ordering, and rejection of ordinary functions calling `@kernel_init`.
+Needs a call-graph pass.
 
-### A4. `Atomic[T]` memory model (§14.9)
+### Lock-free / atomics deepening (§14.9)
 
-Highest-leverage single annex chunk. Five orderings, four operation
-families, strong/weak CAS with the `@retry_loop` shape rule, wide
-atomics with `+lse` / `+cx16` feature gates. Every lock-free data
-structure in the kernel rests on this.
+- `@retry_loop` function-level escape + `@allow_weak_cas` call-site
+  escape for `compareExchangeWeak` outside the admitted loop shapes
+  (`fa5b8d0` ships the shape rule; the escapes are deferred).
+- AtomicTaggedPointer (`5beef46`) contention-stress lane (a
+  multi-threaded Treiber stack with real ABA-defeating semantics) plus
+  a load-link / store-conditional emitter for kernel targets.
+- Real link-time `.o`-level wide-atomic feature gate (`312281c` ships
+  the compile-time gate; the kernel build needs the ELF-feature
+  cross-check).
 
-### A5. Sync intrinsics (§14.10)
+### Audit-surface deepening (§14.12.3 / §15.5)
 
-Compiler fences, CPU memory barriers, data-cache management,
-instruction-cache management, TLB management, pipeline-power hints
-(`waitForInterrupt`, `waitForEvent`, `relax`, …). All gated on `Asm`.
+Cross-architecture barrier-table verification (each gated sysreg
+checked against its architecture-manual paragraph), and a build-mode
+that walks the *generated* artifact's external-symbol references
+(today's `vestra audit` is source-level, seeing what the user declared
+rather than what the build linked).
 
-### A6. MMIO + sysreg (§14.11, §14.12)
+### Pattern-matching + try carry-forwards (§8 / §10)
 
-Typed `MmioView[T]` / `MmioRegion[T]` / `MmioWireView[T]` with
-implicit volatile + width + endianness discipline; target-knobbed
-`Sysreg` namespace with auto-emitted post-write barriers. The two
-chapters together remove every single-instruction `asm` wrapper.
-
-### A7. `InterruptsOff` scope + context-switch primitive (§14.13, §14.14)
-
-`with InterruptsOff { … }` with rule 7 (`waitForInterrupt`/Event
-rejected) statically checked; `Scheduler.swapContext(saving:,
-loading:)` with opaque `Context` (includes mask state) + separate
-`FpContext` for lazy-FP.
-
-### A8. `@interrupt(...)` handlers + vector tables (§14.5)
-
-Trap-frame-typed handlers, vector-table arrays, compiler-emitted
-prologue/epilogue, the 3.5 lowering rule (slot stride, in-slot vs
-trampoline). Closes the ISR-trampoline `.S` files.
-
-### A9. `@boot` + `@kernel_init` (§14.7) (multi-session)
-
-The pre-MMU sub-dialect (seven restrictions) and the post-`@boot`
-pre-scheduler regime (five restrictions). Likely two phases: parse +
-sema first, then codegen with the runtime-model gates.
-
-### A10. Compiler-emitted intrinsics + `@panic_handler` + `no_libc` (§15.4, §15.5)
-
-`memcpy` / `memset` / `memmove` / stack canaries / overflow traps as
-compiler-emitted with Vestra-supplied bodies; the `@panic_handler`
-binding; `profile.freestanding.no_libc = true` manifest flag that
-audits every external symbol. Together they make "zero references to
-libc" a build-time guarantee. **Composes with roadmap #1
-(`panic` / `abort` / `unreachable` lowering)** — the lowering target
-becomes the `@panic_handler` symbol once both are in.
-
-### A11. `PerCpu[T]` + `Padded[T]` (§14.8)
-
-Per-hart slots with cache-line padding. Library on top of the
-target-specific current-hart register read; trivial once §A4–§A6 are
-in.
-
-### A12. Pluggable calling conventions + `&decl` (§14.6)
-
-`@extern("conv")` per-target convs; `@symbol` on extern; `&decl`
-address-of-symbol. Mostly parser + codegen work; small phase.
+- Nested tuple destructuring codegen: `let ((a, b), c) = …` type-checks
+  in sema but codegen binds only the outer level (C++ structured
+  bindings are single-level; needs a sibling-statement hoist).
+- Or-patterns with bindings, payloaded-enum or-patterns, and string
+  literal patterns (the `ec26138` carry-forwards).
+- Mid-expression `try` inside an if/match arm: general per-branch
+  hoist contexts (the `e3ad4ec` walk refuses to descend into
+  conditional contexts).
 
 ---
 
-## Already-shipped (back-pointer to `HANDOFF.md`)
+## Already shipped (back-pointer to `HANDOFF.md`)
 
-§3 opaque type, §4 string interpolation + layout attrs + Display
-conformance, §5 for-in + iterator + struct methods, §6 tuples
-(literals + destructuring, nested, at param + match-arm positions),
-§9 Optional + Result + try (incl. hoisting + mid-expression in
-if/match), §10 Box[T] + Alloc check, §12.1 comptime folding through
-phase 7 (functions, locals, loops, vectors, math stdlib,
-type-as-callable conversions, @embed), §12.2 reflection phases 1–3
-(Type, Field, Field.type), §12.3 derives (Eq, Hash, Debug, Clone,
-Display, Default), §12.6 conditional compilation (`@when` + `cfg`),
-§17.7 expression precedence (Pratt parser), plus the ownership /
-exclusivity / capability / generics phase-1 work described in
-[`README.md`](README.md). See [`HANDOFF.md`](HANDOFF.md) for the full
-chronological phase log with commit hashes.
+Language: §3 opaque type (+ inverse conversion, derive(Default)), §4
+string interpolation + layout attrs + Display conformance (incl.
+Optional-in-splice), §5 for-in + iterator + struct methods, §6 tuples
+(literals + destructuring, nested, param + match-arm positions), §8 /
+§17.7 pattern matching (literal / range / or-patterns, tuple
+scrutinee, dead-arm warning), §9 Optional + Result + try (hoisting,
+mid-expression, `.mapError`, do/catch incl. where-guard +
+fall-through propagation), iterator combinators (zip / take / map /
+filter), §10 Box[T] + Alloc, Span[T] / MutSpan[T] non-owning views,
+panic / abort / unreachable, §16 closures, §17.4 with-binding
+(value + type annotation), §12.1 comptime folding through phase 7,
+§12.2 reflection phases 1-3, §12.3 derives (Eq, Hash, Debug, Clone,
+Display, Default), §12.6 conditional compilation (`@when` + `cfg`,
+incl. `cfg.option`), §17.7 Pratt precedence, plus ownership /
+exclusivity / capability / generics phase 1.
+
+Annex (first slices + follow-ups): A1 link attributes, A2 `@inline` +
+layout reflection, A3 raw-mint primitives (+ `.value` deref), A4 the
+full `Atomic[T]` memory model (orderings, bitwise, strong/weak CAS +
+retry-loop rule, wide UInt128/Int128 atomics, AtomicTaggedPointer,
+target-feature gate), A5 sync intrinsics + cache/TLB management, A6
+MMIO (`MmioView` / `MmioRegion` / `MmioWireView`, `@repr(union)`) +
+the typed `Sysreg` namespace with auto-emitted post-write barriers and
+RO/WO handles (§14.12), A7 `InterruptsOff` + `swapContext` (first
+slice), A8 `@interrupt` handlers + typed vector tables, A9 `@boot` +
+`@kernel_init` (sema gates), A10 compiler-emitted intrinsics +
+`@panic_handler` + `@stack_protector` + `--no-libc`, A11 `PerCpu[T]` +
+`Padded[T]`, A12 pluggable calling conventions + `&decl` +
+function-pointer type. The `vestra audit` subcommand ships `--sysreg`
+and `--no-libc` enumerators.
+
+See [`HANDOFF.md`](HANDOFF.md) for the full chronological phase log
+with commit hashes and per-phase rationale.

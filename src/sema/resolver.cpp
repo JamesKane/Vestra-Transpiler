@@ -38,6 +38,19 @@ bool struct_is_repr_union(const ast::StructDecl& s) {
     return false;
 }
 
+// §7 generics phase 2 — count a struct's type parameters (the named,
+// non-const generics). Const generics (`[const N: Int]`) are deferred
+// to a later slice and don't participate in the type-argument arity.
+std::size_t struct_type_param_count(const ast::StructDecl& s) {
+    std::size_t n = 0;
+    for (const auto& g : s.generics) {
+        if (!g.is_const && !g.name.empty()) {
+            ++n;
+        }
+    }
+    return n;
+}
+
 }  // namespace
 
 // ============================================================================
@@ -846,6 +859,23 @@ void Resolver::check_decl(const ast::Decl& d) {
         // Resolve member function bodies, if any. Field types were already
         // resolved on demand by callers; we don't yet type-check defaults.
         const auto& s = static_cast<const ast::StructDecl&>(d);
+        // §7 generics phase 2 — bind the struct's type parameters as opaque
+        // GenericParam placeholders for the duration of decl checking so a
+        // method signature referencing `T` resolves rather than failing
+        // with "unknown type". For a non-generic struct this pushes an
+        // empty scope and is a no-op.
+        ScopeStack::Guard struct_generics_g(scopes_);
+        for (const auto& gp : s.generics) {
+            if (gp.is_const || gp.name.empty()) {
+                continue;
+            }
+            Symbol gs;
+            gs.name = gp.name;
+            gs.kind = SymbolKind::GenericParam;
+            gs.type = types_->make_generic_param(gp.name);
+            gs.definition_range = gp.range;
+            (void)struct_generics_g.scope().insert(std::move(gs));
+        }
         for (const auto& m : s.methods) {
             if (m->kind == ast::NodeKind::Func) {
                 check_func(static_cast<const ast::FuncDecl&>(*m));
@@ -3200,14 +3230,39 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                                  s_decl.name,
                                  c.args.size()));
         }
-        // Build a label → (field, resolved type) index once.
+        // §7 generics phase 2 — a generic struct infers its type
+        // parameters from the labeled arguments, exactly like a generic
+        // function call. The field types are resolved with the params as
+        // opaque placeholders (`resolve_struct_member_type(.., {})`);
+        // unifying each against its argument's type builds the binding map.
+        // The expected type, when it's an instance of this same struct,
+        // seeds the map so an annotated binding pins the width.
+        const bool is_generic = struct_type_param_count(s_decl) > 0;
+        std::unordered_map<std::string, TypePtr> gbindings;
+        if (is_generic && expected != nullptr && expected->kind() == TypeKind::Struct
+            && expected->nominal_decl() == &s_decl) {
+            const auto& ep = expected->parts();
+            std::size_t gi = 0;
+            for (const auto& gp : s_decl.generics) {
+                if (gp.is_const || gp.name.empty()) {
+                    continue;
+                }
+                if (gi < ep.size() && ep[gi] != nullptr) {
+                    gbindings.emplace(gp.name, ep[gi]);
+                }
+                ++gi;
+            }
+        }
+        // Build a label → (field, generic field type) index once.
         std::unordered_map<std::string, std::pair<const ast::StructDecl::Field*, TypePtr>> by_label;
         for (const auto& f : s_decl.fields) {
             if (f.kind == ast::StructDecl::Field::Kind::Embed) {
                 continue;  // embeds aren't constructible by label (yet)
             }
             by_label.emplace(f.name,
-                             std::make_pair(&f, f.type ? resolve_type(*f.type) : types_->error()));
+                             std::make_pair(&f,
+                                            f.type ? resolve_struct_member_type(s_decl, *f.type, {})
+                                                   : types_->error()));
         }
         std::vector<bool> seen(s_decl.fields.size(), false);
         for (std::size_t i = 0; i < c.args.size(); ++i) {
@@ -3226,8 +3281,13 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                 (void)check_expr(*arg.value);
                 continue;
             }
-            auto field_type = it->second.second;
+            auto generic_ft = it->second.second;
+            auto field_type = types_->substitute(generic_ft, gbindings);
             auto arg_type = check_expr(*arg.value, field_type);
+            if (is_generic) {
+                unify_generic(generic_ft, arg_type, gbindings, arg.value->range);
+                field_type = types_->substitute(generic_ft, gbindings);
+            }
             if (!TypeArena::assignable(arg_type, field_type)) {
                 error_at(arg.value->range,
                          std::format("field '{}' of type {} cannot accept value of type {}",
@@ -3260,7 +3320,31 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                 }
             }
         }
-        return callee_type;
+        if (!is_generic) {
+            return callee_type;
+        }
+        // Assemble the inferred instance type. An unbound parameter (no
+        // argument mentioned it and no expected type seeded it) is a
+        // diagnostic — the user should annotate the binding's type.
+        std::vector<TypePtr> inst_args;
+        for (const auto& gp : s_decl.generics) {
+            if (gp.is_const || gp.name.empty()) {
+                continue;
+            }
+            auto bit = gbindings.find(gp.name);
+            if (bit == gbindings.end()) {
+                error_at(c.range,
+                         std::format("cannot infer type argument '{}' for generic struct '{}'; "
+                                     "annotate the binding's type (e.g. `let x: {}[...] = ...`)",
+                                     gp.name,
+                                     s_decl.name,
+                                     s_decl.name));
+                inst_args.push_back(types_->error());
+            } else {
+                inst_args.push_back(bit->second);
+            }
+        }
+        return types_->make_struct_instance(callee_type->nominal_decl(), std::move(inst_args));
     }
 
     if (callee_type->kind() != TypeKind::Function) {
@@ -3582,6 +3666,46 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
             // Then scope lookup — a nominal type or generic parameter.
             if (auto* sym = scopes_.current().lookup(n.path[0])) {
                 if (sym->type != nullptr) {
+                    // §7 generics phase 2 — a use of a user-defined generic
+                    // struct. `Pair[Int32]` resolves to a struct instance
+                    // recording the resolved arguments; field access and
+                    // construction substitute them for the struct's params.
+                    if (sym->type->kind() == TypeKind::Struct && sym->decl != nullptr
+                        && sym->decl->kind == ast::NodeKind::Struct) {
+                        const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
+                        const std::size_t arity = struct_type_param_count(sd);
+                        if (arity == 0) {
+                            if (n.has_generics) {
+                                error_at(t.range,
+                                         std::format("'{}' is not a generic type", sd.name));
+                            }
+                            return sym->type;
+                        }
+                        if (!n.has_generics || n.type_args.empty()) {
+                            error_at(t.range,
+                                     std::format("generic struct '{}' requires {} type "
+                                                 "argument(s) written as '{}[...]'",
+                                                 sd.name,
+                                                 arity,
+                                                 sd.name));
+                            return sym->type;
+                        }
+                        if (n.type_args.size() != arity) {
+                            error_at(t.range,
+                                     std::format("generic struct '{}' expects {} type "
+                                                 "argument(s), got {}",
+                                                 sd.name,
+                                                 arity,
+                                                 n.type_args.size()));
+                        }
+                        std::vector<TypePtr> args;
+                        args.reserve(n.type_args.size());
+                        for (const auto& ta : n.type_args) {
+                            args.push_back(ta ? resolve_type(*ta) : types_->error());
+                        }
+                        return types_->make_struct_instance(sym->type->nominal_decl(),
+                                                            std::move(args));
+                    }
                     return sym->type;
                 }
             }
@@ -3682,20 +3806,51 @@ TypePtr Resolver::lookup_field(TypePtr struct_type,
             if (out_field != nullptr) {
                 *out_field = &f;
             }
-            return f.type ? resolve_type(*f.type) : types_->error();
+            // §7 generics phase 2 — substitute the instance's type
+            // arguments (struct_type->parts()) for the struct's generic
+            // params so `Pair[Int32].first` resolves to Int32, not T.
+            return f.type ? resolve_struct_member_type(s, *f.type, struct_type->parts())
+                          : types_->error();
         }
     }
     // Then recurse through `embed` fields so `entity.position` resolves to
     // `entity.transform.position` per §6.
     for (const auto& f : s.fields) {
         if (f.kind == ast::StructDecl::Field::Kind::Embed && f.type) {
-            auto embed_type = resolve_type(*f.type);
+            auto embed_type = resolve_struct_member_type(s, *f.type, struct_type->parts());
             if (auto t = lookup_field(embed_type, name, out_field)) {
                 return t;
             }
         }
     }
     return nullptr;
+}
+
+TypePtr Resolver::resolve_struct_member_type(const ast::StructDecl& decl,
+                                             const ast::Type& member_type,
+                                             const std::vector<TypePtr>& args) {
+    if (struct_type_param_count(decl) == 0) {
+        return resolve_type(member_type);
+    }
+    // Bind each type parameter for the duration of this resolution. With
+    // instance arguments present each binds to its concrete argument; with
+    // none, each binds to an opaque GenericParam placeholder.
+    ScopeStack::Guard g(scopes_);
+    std::size_t idx = 0;
+    for (const auto& gp : decl.generics) {
+        if (gp.is_const || gp.name.empty()) {
+            continue;
+        }
+        Symbol s;
+        s.name = gp.name;
+        s.kind = SymbolKind::GenericParam;
+        s.type = (idx < args.size() && args[idx] != nullptr) ? args[idx]
+                                                             : types_->make_generic_param(gp.name);
+        s.definition_range = gp.range;
+        (void)g.scope().insert(std::move(s));
+        ++idx;
+    }
+    return resolve_type(member_type);
 }
 
 bool Resolver::is_display_conformant(TypePtr t) const {

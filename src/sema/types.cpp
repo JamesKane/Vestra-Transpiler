@@ -226,8 +226,22 @@ std::string Type::describe() const {
             // we have it. Use a generic placeholder; callers with the decl in
             // hand can print better.
             switch (decl_->kind) {
-            case ast::NodeKind::Struct:
-                return static_cast<const ast::StructDecl&>(*decl_).name;
+            case ast::NodeKind::Struct: {
+                std::string s = static_cast<const ast::StructDecl&>(*decl_).name;
+                // §7 generics phase 2 — a struct instance records its
+                // resolved type arguments in parts_; render `Pair[Int32]`.
+                if (!parts_.empty()) {
+                    s += "[";
+                    for (std::size_t i = 0; i < parts_.size(); ++i) {
+                        if (i != 0) {
+                            s += ", ";
+                        }
+                        s += parts_[i] ? parts_[i]->describe() : "?";
+                    }
+                    s += "]";
+                }
+                return s;
+            }
             case ast::NodeKind::Enum:
                 return static_cast<const ast::EnumDecl&>(*decl_).name;
             case ast::NodeKind::Protocol:
@@ -487,6 +501,15 @@ TypePtr TypeArena::make_nominal(TypeKind k, const ast::Decl* decl) {
     return p;
 }
 
+TypePtr TypeArena::make_struct_instance(const ast::Decl* decl, std::vector<TypePtr> args) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Struct));
+    t->decl_ = decl;
+    t->parts_ = std::move(args);
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
 TypePtr TypeArena::make_generic_param(std::string name) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::GenericParam));
     t->name_ = std::move(name);
@@ -588,7 +611,25 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
         }
         return true;
     }
-    case TypeKind::Struct:
+    case TypeKind::Struct: {
+        // §7 generics phase 2 — two struct types are equal when they
+        // share a decl AND their recorded type arguments match. A bare
+        // (non-generic) struct has empty parts on both sides.
+        if (a->nominal_decl() != b->nominal_decl()) {
+            return false;
+        }
+        const auto& pa = a->parts();
+        const auto& pb = b->parts();
+        if (pa.size() != pb.size()) {
+            return false;
+        }
+        for (std::size_t i = 0; i < pa.size(); ++i) {
+            if (!equal(pa[i], pb[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
     case TypeKind::Enum:
     case TypeKind::Protocol:
     case TypeKind::OpaqueType:
@@ -837,6 +878,25 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
         auto result = substitute(t->result(), bindings);
         changed = changed || result != t->result();
         return changed ? make_function(std::move(params), result) : t;
+    }
+    case TypeKind::Struct: {
+        // §7 generics phase 2 — a struct instance carries its type
+        // arguments in parts_; substitute through them so an instance
+        // built with a generic param (e.g. a field typed `Inner[T]`)
+        // specializes when T is bound. A bare struct (empty parts) is
+        // unchanged.
+        if (t->parts().empty()) {
+            return t;
+        }
+        std::vector<TypePtr> args;
+        args.reserve(t->parts().size());
+        bool changed = false;
+        for (auto* p : t->parts()) {
+            auto s = substitute(p, bindings);
+            changed = changed || s != p;
+            args.push_back(s);
+        }
+        return changed ? make_struct_instance(t->nominal_decl(), std::move(args)) : t;
     }
     default:
         // Primitives, nominals, Never, Error — no generic params inside.

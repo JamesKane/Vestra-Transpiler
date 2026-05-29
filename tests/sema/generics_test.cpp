@@ -125,3 +125,76 @@ TEST_CASE("the generics example checks clean") {
               .error_count
           == 0);
 }
+
+// ---- §7 generics phase 2: user-defined generic structs ---------------------
+
+TEST_CASE("generic struct field access substitutes the type argument") {
+    // `p.first` / `p.second` resolve to Int32 (T bound to Int32 by the
+    // Pair[Int32] parameter), so the addition type-checks.
+    CHECK(check("struct Pair[T] { var first: T  var second: T }\n"
+                "func sum(_ p: Pair[Int32]) -> Int32 { return p.first + p.second }\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("generic struct construction infers the type argument from arguments") {
+    CHECK(check("struct Pair[T] { var first: T  var second: T }\n"
+                "func make(_ a: Int32, _ b: Int32) -> Pair[Int32] {\n"
+                "    return Pair(first: a, second: b)\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("generic struct construction is seeded by the annotated binding type") {
+    // The integer literals adopt Int32 from the annotated `Pair[Int32]`;
+    // without expected-type seeding they would default to Int and the
+    // field assignment would still pass (Int->Int32 natural-width), so the
+    // real check is that the binding's element type is honored end-to-end.
+    CHECK(check("struct Pair[T] { var first: T  var second: T }\n"
+                "func use() -> Int32 {\n"
+                "    let p: Pair[Int32] = Pair(first: 10, second: 20)\n"
+                "    return p.first + p.second\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("two-parameter generic struct resolves each field independently") {
+    CHECK(check("struct KeyValue[K, V] { var key: K  var value: V }\n"
+                "func k(_ kv: KeyValue[Int32, Bool]) -> Int32 { return kv.key }\n"
+                "func v(_ kv: KeyValue[Int32, Bool]) -> Bool { return kv.value }\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("generic struct with the wrong type-argument arity is reported") {
+    auto r = check("struct Pair[T] { var first: T  var second: T }\n"
+                   "func f(_ p: Pair[Int32, Bool]) -> Int32 { return p.first }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("expects 1 type argument") != std::string::npos);
+}
+
+TEST_CASE("a generic struct used without type arguments is reported") {
+    auto r = check("struct Pair[T] { var first: T  var second: T }\n"
+                   "func f(_ p: Pair) -> Int32 { return 0 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("requires 1 type argument") != std::string::npos);
+}
+
+TEST_CASE("a non-generic struct given type arguments is reported") {
+    auto r = check("struct Point { var x: Int32 }\n"
+                   "func f(_ p: Point[Int32]) -> Int32 { return p.x }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("is not a generic type") != std::string::npos);
+}
+
+TEST_CASE("conflicting type-argument inference in construction is reported") {
+    auto r = check("struct Pair[T] { var first: T  var second: T }\n"
+                   "func bad() -> Int32 {\n"
+                   "    let p = Pair(first: true, second: 5)\n"
+                   "    return 0\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("conflicting bindings for generic 'T'") != std::string::npos);
+}

@@ -1512,6 +1512,27 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
     // keyword for `union`, giving a C/C++ untagged overlay where
     // every member shares one storage cell.
     const auto struct_attrs = read_layout_attrs(s.attributes);
+    // §7 generics phase 2 — a Vestra generic struct lowers to a C++ class
+    // template. Emit `template <class T, ...>` ahead of the keyword; the
+    // monomorphization is the C++ compiler's job, exactly as for generic
+    // functions. Const generics are deferred, so only named type params
+    // appear here.
+    bool struct_first_generic = true;
+    for (const auto& g : s.generics) {
+        if (g.is_const || g.name.empty()) {
+            continue;
+        }
+        if (struct_first_generic) {
+            hdr << "template <";
+            struct_first_generic = false;
+        } else {
+            hdr << ", ";
+        }
+        hdr << "class " << g.name;
+    }
+    if (!struct_first_generic) {
+        hdr << ">\n";
+    }
     hdr << (struct_attrs.is_union ? "union " : "struct ");
     if (struct_attrs.align > 0) {
         hdr << "alignas(" << struct_attrs.align << ") ";
@@ -3964,7 +3985,26 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             const auto* sym = resolution_->symbol_of(c.callee.get());
             if (sym != nullptr && sym->kind == sema::SymbolKind::Struct && sym->decl != nullptr) {
                 const auto& s_decl = static_cast<const ast::StructDecl&>(*sym->decl);
-                os << s_decl.name << "{";
+                os << s_decl.name;
+                // §7 generics phase 2 — a generic struct constructs as
+                // `Pair<Int32>{...}`. The call's resolved result type is the
+                // struct instance carrying the inferred type arguments; emit
+                // them so the brace-init names the right specialization.
+                if (resolution_ != nullptr) {
+                    auto inst = resolution_->type_of(&c);
+                    if (inst != nullptr && inst->kind() == sema::TypeKind::Struct
+                        && !inst->parts().empty()) {
+                        os << "<";
+                        for (std::size_t i = 0; i < inst->parts().size(); ++i) {
+                            if (i != 0) {
+                                os << ", ";
+                            }
+                            emit_sema_type(os, inst->parts()[i]);
+                        }
+                        os << ">";
+                    }
+                }
+                os << "{";
                 for (std::size_t i = 0; i < c.args.size(); ++i) {
                     if (i != 0) {
                         os << ", ";
@@ -4578,6 +4618,19 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
                     os << "__vstr::Context";
                 } else {
                     os << sd.name;
+                    // §7 generics phase 2 — a struct instance carries its
+                    // resolved type arguments in parts_; emit `Pair<Int32>`
+                    // so the C++ template name matches the decl emission.
+                    if (!t->parts().empty()) {
+                        os << "<";
+                        for (std::size_t i = 0; i < t->parts().size(); ++i) {
+                            if (i != 0) {
+                                os << ", ";
+                            }
+                            emit_sema_type(os, t->parts()[i]);
+                        }
+                        os << ">";
+                    }
                 }
                 return;
             }

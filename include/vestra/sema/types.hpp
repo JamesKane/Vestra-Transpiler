@@ -274,6 +274,12 @@ public:
     [[nodiscard]] TypePtr make_tuple(std::vector<TypePtr> elements);
 
     [[nodiscard]] TypePtr make_nominal(TypeKind k, const ast::Decl* decl);
+    // §7 generics phase 2 — a use-site instantiation of a generic struct,
+    // e.g. `Pair[Int32]`. Same nominal decl as the bare struct, but the
+    // resolved type arguments are recorded in parts_ so field access and
+    // construction can substitute them for the struct's generic params.
+    // An empty `args` is equivalent to make_nominal(Struct, decl).
+    [[nodiscard]] TypePtr make_struct_instance(const ast::Decl* decl, std::vector<TypePtr> args);
     [[nodiscard]] TypePtr make_generic_param(std::string name);
 
     // Look up a primitive by its Vestra spelling — used by the resolver when

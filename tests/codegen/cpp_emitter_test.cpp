@@ -2087,3 +2087,36 @@ TEST_CASE("throw inside an if branch lowers as a real return-of-unexpected") {
     CHECK(f.out.source.find("if (b == 0) { return std::unexpected{E::bad};") != std::string::npos);
     CHECK(f.out.source.find("std::unreachable") == std::string::npos);
 }
+
+// ---- §7 generics phase 2: user-defined generic structs --------------------
+
+TEST_CASE("generic struct lowers to a C++ class template") {
+    SemaEmitFixture f("struct Pair[T] { var first: T  var second: T }\n"
+                      "func sum(_ p: Pair[Int32]) -> Int32 { return p.first + p.second }\n");
+    // Decl emits a class template; the field types are the bare param T.
+    CHECK(f.out.header.find("template <class T>") != std::string::npos);
+    CHECK(f.out.header.find("struct Pair {") != std::string::npos);
+    CHECK(f.out.header.find("T first") != std::string::npos);
+    CHECK(f.out.header.find("T second") != std::string::npos);
+    // A parameter typed Pair[Int32] lowers to the specialization name.
+    CHECK(f.out.source.find("Pair<std::int32_t>") != std::string::npos);
+}
+
+TEST_CASE("generic struct construction emits the inferred specialization") {
+    SemaEmitFixture f("struct Pair[T] { var first: T  var second: T }\n"
+                      "func make(_ a: Int32, _ b: Int32) -> Pair[Int32] {\n"
+                      "    return Pair(first: a, second: b)\n"
+                      "}\n");
+    CHECK(f.out.source.find("Pair<std::int32_t>{.first = a, .second = b}") != std::string::npos);
+}
+
+TEST_CASE("two-parameter generic struct emits a two-parameter template") {
+    SemaEmitFixture f("struct KeyValue[K, V] { var key: K  var value: V }\n"
+                      "func mk(_ k: Int32, _ v: Bool) -> KeyValue[Int32, Bool] {\n"
+                      "    return KeyValue(key: k, value: v)\n"
+                      "}\n");
+    CHECK(f.out.header.find("template <class K, class V>") != std::string::npos);
+    CHECK(f.out.header.find("struct KeyValue {") != std::string::npos);
+    CHECK(f.out.source.find("KeyValue<std::int32_t, bool>{.key = k, .value = v}")
+          != std::string::npos);
+}
