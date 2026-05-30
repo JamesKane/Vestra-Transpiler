@@ -2228,3 +2228,27 @@ add_test(
 set_tests_properties(e2e_split_demo_run PROPERTIES
     DEPENDS                e2e_split_demo_compile
     PASS_REGULAR_EXPRESSION "split_demo OK")
+
+# §5/§18.4 chunks(of:) partition primitive.
+set(e2e_chunks_input  ${CMAKE_SOURCE_DIR}/examples/chunks_demo.vst)
+set(e2e_chunks_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_chunks_demo.cpp)
+
+add_test(
+    NAME    e2e_chunks_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_chunks_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_chunks_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_chunks_driver} ${e2e_workdir}/chunks_demo.cpp
+            -o ${e2e_workdir}/chunks_demo_app)
+set_tests_properties(e2e_chunks_demo_compile PROPERTIES DEPENDS e2e_chunks_demo_transpile)
+
+add_test(
+    NAME    e2e_chunks_demo_run
+    COMMAND ${e2e_workdir}/chunks_demo_app)
+set_tests_properties(e2e_chunks_demo_run PROPERTIES
+    DEPENDS                e2e_chunks_demo_compile
+    PASS_REGULAR_EXPRESSION "chunks_demo OK")

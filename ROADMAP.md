@@ -68,8 +68,7 @@ splits a `MutSpan[T]` into N disjoint sub-views and runs a non-escaping
 worker on each). v0.5 Task / Future / select / parallel are all
 synchronous (eager, no scheduler), giving correct sequential semantics
 with no real suspension. Remaining: channel recv/send and timeout
-`select` arms (need `Channel[T]` + a scheduler); `chunks()` / `split(at:)`
-as user-facing partition primitives; async + throws
+`select` arms (need `Channel[T]` + a scheduler); async + throws
 (`Task<expected<T,E>>`); spawn capture-by-value / move semantics +
 non-escapable futures; spawn of a void function; the `using Async` gate
 on `parallel`; a real scheduler / actual suspension; and the "no borrow
@@ -103,19 +102,21 @@ phase 7.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 
-Phase 1 (`b0727b9` / `e77f2e0`) is single-pass and linear. Three phase-2
+Phase 1 (`b0727b9` / `e77f2e0`) is single-pass and linear. Four phase-2
 slices shipped: the `split(at:)` partition primitive on Span/MutSpan;
 **branch-aware flow merging** in the ownership checker (each `if`/`match`
-branch forks and merges at the join); and **`linear` types** (`linear
+branch forks and merges at the join); **`linear` types** (`linear
 struct`, must-consume — a leak error for any linear binding still live at
 a scope exit, including one-sided branch consumption — built on the flow
-merge's per-path state). Remaining: linearity *transitivity* (a struct
-with a linear field is linear) and linear *parameters*; the iterator
-partitioner `chunks(n)`; cross-statement borrow liveness (exclusivity is
-per-call only today); partition *provenance* in `as_place`; and
-linear-in-loops soundness (the loop body is walked once). The remaining
-items are incremental; `chunks(n)` is the next runnable one, the rest are
-analysis-precision work.
+merge's per-path state); and the iterator partitioner **`chunks(of: n)`**
+(a lazy `ChunkIter` yielding consecutive disjoint sub-views, the
+size-based sibling of `split(at:)`). Remaining: linearity *transitivity*
+(a struct with a linear field is linear) and linear *parameters*; chunks
+as a first-class value (indexing, `.count` — today it's for-loop-only);
+cross-statement borrow liveness (exclusivity is per-call only today);
+partition *provenance* in `as_place`; and linear-in-loops soundness (the
+loop body is walked once). These remaining items are all
+analysis-precision work; the runnable partition primitives are done.
 
 ### 6. Capability narrowing + audit trail
 

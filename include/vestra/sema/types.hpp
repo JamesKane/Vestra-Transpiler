@@ -133,6 +133,9 @@ enum class TypeKind : std::uint16_t {
     TakeIter,
     MapIter,
     FilterIter,
+    // §5/§18.4 ChunkIter — yields consecutive disjoint sub-views of a
+    // Span[T] / MutSpan[T] (`s.chunks(of: n)`); inner_ is the sub-view type.
+    ChunkIter,
     // §A4 (§14.9) Atomic[T] — compiler-known wrapper that lowers to
     // std::atomic<T>. v0.5 supports primitive T only; load/store/
     // exchange/fetchAdd/fetchSub synthesized via lookup_method.
@@ -279,6 +282,10 @@ public:
     // produces Bool, which lookup_method synthesizes implicitly).
     [[nodiscard]] TypePtr make_map_iter(TypePtr elem_in, TypePtr elem_out);
     [[nodiscard]] TypePtr make_filter_iter(TypePtr elem);
+    // §5/§18.4 ChunkIter[Span[T]] — the iterator behind `s.chunks(of: n)`.
+    // Carries the sub-view element type (Span[T] / MutSpan[T]) it yields; the
+    // codegen runtime provides __vstr::Chunks<S> with a matching next().
+    [[nodiscard]] TypePtr make_chunk_iter(TypePtr elem);
     // §A4 (§14.9) Atomic[T] — wraps primitive T as a std::atomic.
     [[nodiscard]] TypePtr make_atomic(TypePtr inner);
     // §A4 (§14.9.3) CASResult[T] — returned by Atomic[T].compareExchange.

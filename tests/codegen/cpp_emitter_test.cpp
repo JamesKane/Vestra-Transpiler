@@ -2384,3 +2384,19 @@ TEST_CASE("split(at:) lowers to __vstr::split_at and destructures to auto [lo, h
     CHECK(f.out.source.find("auto [lo, hi] = __vstr::split_at(s, static_cast<std::intptr_t>(k))")
           != std::string::npos);
 }
+
+// ---- §5/§18.4 chunks(of:) partition primitive -----------------------------
+
+TEST_CASE("chunks(of:) lowers to a __vstr::Chunks iterator in a for-loop") {
+    SemaEmitFixture f("func f(_ s: MutSpan[Int32], _ n: Int) {\n"
+                      "    for chunk in s.chunks(of: n) {\n"
+                      "        var i = 0\n"
+                      "        while i < chunk.count {\n"
+                      "            chunk[i] = chunk[i] * 2\n"
+                      "            i = i + 1\n"
+                      "        }\n"
+                      "    }\n"
+                      "}\n");
+    CHECK(f.out.header.find("struct Chunks {") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::Chunks{s, static_cast<std::size_t>(n)}") != std::string::npos);
+}

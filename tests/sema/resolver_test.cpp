@@ -2426,3 +2426,49 @@ TEST_CASE("split on a non-span value is rejected") {
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("'split' on type Int32") != std::string::npos);
 }
+
+// ---- §5/§18.4 chunks(of:) partition primitive -----------------------------
+
+TEST_CASE("chunks(of:) on a Span yields an iterable of sub-views") {
+    CHECK(check_errors("func f(_ s: Span[Int32], _ n: Int) -> Int32 {\n"
+                       "    var t: Int32 = 0\n"
+                       "    for chunk in s.chunks(of: n) {\n"
+                       "        var i = 0\n"
+                       "        while i < chunk.count {\n"
+                       "            t = t + chunk[i]\n"
+                       "            i = i + 1\n"
+                       "        }\n"
+                       "    }\n"
+                       "    return t\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("chunks(of:) on a MutSpan binds a mutable sub-view in the loop") {
+    CHECK(check_errors("func f(_ s: MutSpan[Int32], _ n: Int) {\n"
+                       "    for chunk in s.chunks(of: n) {\n"
+                       "        var i = 0\n"
+                       "        while i < chunk.count {\n"
+                       "            chunk[i] = chunk[i] * 2\n"
+                       "            i = i + 1\n"
+                       "        }\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("chunks size must be an integer") {
+    auto r = check_detail("func f(_ s: Span[Int32]) {\n"
+                          "    for chunk in s.chunks(of: true) { }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("chunks size must be an integer") != std::string::npos);
+}
+
+TEST_CASE("chunks rejects a label other than 'of'") {
+    auto r = check_detail("func f(_ s: Span[Int32], _ n: Int) {\n"
+                          "    for chunk in s.chunks(at: n) { }\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("chunks expects the label 'of'") != std::string::npos);
+}

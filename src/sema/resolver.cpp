@@ -3186,6 +3186,42 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                 return types_->make_tuple({base_t, base_t});
             }
         }
+        // §5/§18.4 — `s.chunks(of: n)` on a Span[T] / MutSpan[T] is the
+        // size-based sibling of split(at:): it yields the consecutive,
+        // disjoint sub-views of length n (the last shorter when the length
+        // isn't a multiple of n). The result is a sequence of sub-views of
+        // the receiver's span kind — modelled as a Vector[Span[T]] /
+        // Vector[MutSpan[T]] so `for chunk in s.chunks(of: n)` binds
+        // chunk: Span[T]; codegen lowers the call directly to a
+        // std::vector<std::span<T>> so the runtime count (unknown at
+        // compile time) is honoured. Using the result as a first-class
+        // value (indexing it, `.count`) is a follow-on; the for-loop form
+        // is what v0.5 supports.
+        if (mem.member == "chunks" && mem.base != nullptr) {
+            auto base_t = check_expr(*mem.base);
+            if (base_t != nullptr
+                && (base_t->kind() == TypeKind::Span || base_t->kind() == TypeKind::MutSpan)) {
+                const auto elem = base_t->inner();
+                const auto sub = base_t->kind() == TypeKind::MutSpan ? types_->make_mut_span(elem)
+                                                                     : types_->make_span(elem);
+                if (c.args.size() != 1) {
+                    for (const auto& a : c.args) {
+                        (void)check_expr(*a.value);
+                    }
+                    error_at(c.range, "chunks(of: n) takes exactly one argument");
+                    return types_->make_chunk_iter(sub);
+                }
+                if (!c.args[0].label.empty() && c.args[0].label != "of") {
+                    error_at(c.args[0].value->range, "chunks expects the label 'of'");
+                }
+                auto sz = check_expr(*c.args[0].value, types_->primitive(TypeKind::Int));
+                if (sz != nullptr && !sz->is_error() && !sz->is_integer()) {
+                    error_at(c.args[0].value->range,
+                             std::format("chunks size must be an integer, got {}", sz->describe()));
+                }
+                return types_->make_chunk_iter(sub);
+            }
+        }
     }
 
     // §14.8 / §12.6 `cfg.option("name")` — comptime-folded build
@@ -4635,6 +4671,9 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
             return types_->make_function({}, types_->make_optional(owner_type->parts()[1]));
         }
         if (owner_type->kind() == TypeKind::FilterIter && owner_type->inner() != nullptr) {
+            return types_->make_function({}, types_->make_optional(owner_type->inner()));
+        }
+        if (owner_type->kind() == TypeKind::ChunkIter && owner_type->inner() != nullptr) {
             return types_->make_function({}, types_->make_optional(owner_type->inner()));
         }
     }

@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §5/§18.4 — the `chunks(of:)` partition primitive.
+//
+// `s.chunks(of: n)` on a Span[T] / MutSpan[T] is the size-based sibling of
+// `split(at:)`: it yields an iterator over the consecutive, disjoint
+// sub-views of length n — [0, n), [n, 2n), … — the last shorter when the
+// length isn't a multiple of n. A chunk size of 0 yields no chunks. Each
+// yielded sub-view keeps the receiver's span kind (read-only Span or
+// mutable MutSpan), so a `for chunk in s.chunks(of: n)` loop processes the
+// input one disjoint window at a time. This is the iterator partitioner
+// that pairs with the tuple-shaped `split(at:)` under ownership phase 2.
+
+module examples.chunks_demo
+
+// Sum a span in chunks of n. Chunking doesn't change the total; it just
+// walks the input one window at a time.
+func sumChunks(_ s: Span[Int32], _ n: Int) -> Int32 {
+    var total: Int32 = 0
+    for chunk in s.chunks(of: n) {
+        var i = 0
+        while i < chunk.count {
+            total = total + chunk[i]
+            i = i + 1
+        }
+    }
+    return total
+}
+
+// Double every element by mutating each chunk in place. Each chunk is a
+// disjoint MutSpan window over the original storage.
+func doubleChunks(_ s: MutSpan[Int32], _ n: Int) {
+    for chunk in s.chunks(of: n) {
+        var i = 0
+        while i < chunk.count {
+            chunk[i] = chunk[i] * 2
+            i = i + 1
+        }
+    }
+}

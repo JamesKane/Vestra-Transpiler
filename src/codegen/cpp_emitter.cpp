@@ -560,6 +560,26 @@ std::tuple<std::span<T>, std::span<T>> split_at(std::span<T> s, std::intptr_t at
     return {s.subspan(0, k), s.subspan(k)};
 }
 
+// §5/§18.4 Chunks: the iterator behind `s.chunks(of: n)`. `next()` yields the
+// consecutive, disjoint sub-views of length `n` ([0,n), [n,2n), …); the last
+// is shorter when the length isn't a multiple of `n`. A chunk size of 0 yields
+// no chunks rather than dividing by zero. S is the span type (std::span<const
+// T> for a read-only Span[T], std::span<T> for a MutSpan[T]); CTAD deduces it
+// from the first initializer at the call site (`__vstr::Chunks{data, n}`).
+template <class S>
+struct Chunks {
+    S data;
+    std::size_t step;
+    std::size_t off = 0;
+    std::optional<S> next() {
+        if (step == 0 || off >= data.size()) { return std::nullopt; }
+        const std::size_t len = (off + step <= data.size()) ? step : (data.size() - off);
+        S piece = data.subspan(off, len);
+        off += len;
+        return piece;
+    }
+};
+
 // §11 Channel<T>: a typed FIFO queue. `send` moves a value in; `recv`
 // returns the front value or std::nullopt when empty. The buffer is held
 // through a shared_ptr so copies of a channel handle share one queue
@@ -4151,6 +4171,22 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << ", static_cast<std::intptr_t>(";
                     emit_expr(os, *c.args[0].value);
                     os << "))";
+                    break;
+                }
+            }
+            // §5/§18.4 `s.chunks(of: n)` → the chunk iterator, which yields
+            // consecutive std::span sub-views (the last shorter than n when
+            // the length isn't a multiple). CTAD deduces the span type.
+            if (mem.member == "chunks" && c.args.size() == 1 && resolution_ != nullptr) {
+                auto base_t = resolution_->type_of(mem.base.get());
+                if (base_t != nullptr
+                    && (base_t->kind() == sema::TypeKind::Span
+                        || base_t->kind() == sema::TypeKind::MutSpan)) {
+                    os << "__vstr::Chunks{";
+                    emit_expr(os, *mem.base);
+                    os << ", static_cast<std::size_t>(";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")}";
                     break;
                 }
             }

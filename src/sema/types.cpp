@@ -182,6 +182,8 @@ std::string Type::describe() const {
     case TypeKind::FilterIter:
         return inner_ ? std::format("FilterIter[{}]", inner_->describe())
                       : std::string{"FilterIter"};
+    case TypeKind::ChunkIter:
+        return inner_ ? std::format("ChunkIter[{}]", inner_->describe()) : std::string{"ChunkIter"};
     case TypeKind::Atomic:
         return inner_ ? std::format("Atomic[{}]", inner_->describe()) : std::string{"Atomic"};
     case TypeKind::CasResult:
@@ -474,6 +476,14 @@ TypePtr TypeArena::make_filter_iter(TypePtr elem) {
     return p;
 }
 
+TypePtr TypeArena::make_chunk_iter(TypePtr elem) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::ChunkIter));
+    t->inner_ = elem;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
 TypePtr TypeArena::make_atomic(TypePtr inner) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::Atomic));
     t->inner_ = inner;
@@ -647,6 +657,7 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     case TypeKind::SysregHandleWO:
     case TypeKind::TakeIter:
     case TypeKind::FilterIter:
+    case TypeKind::ChunkIter:
     case TypeKind::Atomic:
     case TypeKind::CasResult:
     case TypeKind::AtomicTaggedPointer:
@@ -919,6 +930,10 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::FilterIter: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_filter_iter(inner);
+    }
+    case TypeKind::ChunkIter: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_chunk_iter(inner);
     }
     case TypeKind::Atomic: {
         auto inner = substitute(t->inner(), bindings);
