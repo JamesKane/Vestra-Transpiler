@@ -249,3 +249,69 @@ TEST_CASE("a binding moved in one match arm is moved after the match") {
                                 "}\n"));
     CHECK(r.error_count >= 1);
 }
+
+// ---- §5/§19.6 linear types: must-consume ----------------------------------
+
+namespace {
+// A `linear struct` plus a sink consumer and a maker.
+constexpr std::string_view LinearPrelude = R"(
+linear struct Token { var id: Int32 }
+func use_tok(_ t: sink Token) {}
+func mk_tok() -> Token { return Token(id: 0) }
+func noop() {}
+)";
+std::string with_linear(std::string body) {
+    return std::string{LinearPrelude} + std::move(body);
+}
+}  // namespace
+
+TEST_CASE("a linear value consumed once is fine") {
+    CHECK(check(with_linear("func ok() { let t = mk_tok()  use_tok(t) }\n")).error_count == 0);
+}
+
+TEST_CASE("a linear value never consumed is a leak") {
+    auto r = check(with_linear("func bad() { let t = mk_tok() }\n"));
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("linear value 't' is never consumed") != std::string::npos);
+}
+
+TEST_CASE("returning a linear value consumes it") {
+    CHECK(check(with_linear("func ok() -> Token { let t = mk_tok()  return t }\n")).error_count
+          == 0);
+}
+
+TEST_CASE("a linear value consumed on both branches is fine") {
+    CHECK(check(with_linear("func ok(_ c: Bool) {\n"
+                            "    let t = mk_tok()\n"
+                            "    if c { use_tok(t) } else { use_tok(t) }\n"
+                            "}\n"))
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a linear value consumed on only one branch leaks the other") {
+    auto r = check(with_linear("func bad(_ c: Bool) {\n"
+                               "    let t = mk_tok()\n"
+                               "    if c { use_tok(t) }\n"
+                               "}\n"));
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("consumed on some branches but leaks") != std::string::npos);
+}
+
+TEST_CASE("a linear value consumed in every match arm is fine") {
+    CHECK(check(with_linear("func ok(_ n: Int32) {\n"
+                            "    let t = mk_tok()\n"
+                            "    match n { case 0: use_tok(t)  default: use_tok(t) }\n"
+                            "}\n"))
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a linear value consumed in only one match arm leaks") {
+    auto r = check(with_linear("func bad(_ n: Int32) {\n"
+                               "    let t = mk_tok()\n"
+                               "    match n { case 0: use_tok(t)  default: noop() }\n"
+                               "}\n"));
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("consumed on some branches but leaks") != std::string::npos);
+}

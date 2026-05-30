@@ -754,6 +754,10 @@ struct FuncDecl : Decl {
 struct StructDecl : Decl {
     std::vector<Attribute> attributes;
     Visibility visibility = Visibility::Internal;
+    // §5/§19.6 — a `linear struct` value must be consumed before its scope
+    // ends (moved to a sink, returned, or destructured); dropping it is a
+    // compile error.
+    bool is_linear = false;
     std::string name;
     std::vector<GenericParam> generics;
 

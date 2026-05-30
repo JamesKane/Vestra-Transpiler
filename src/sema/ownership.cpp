@@ -64,6 +64,19 @@ void OwnershipChecker::check_func(const ast::FuncDecl& f) {
     // use — we don't need to pre-populate them.
     bindings_.clear();
     check_expr(*f.body);
+    // §5/§19.6 — any linear binding still live at the end of the function
+    // body is a leak: a linear value must be consumed before its scope ends.
+    for (const auto& [sym, info] : bindings_) {
+        if (info.state == State::Live && sym != nullptr && is_linear_type(sym->type)) {
+            reporter_->report(
+                diag::Diagnostic::error(
+                    std::format("linear value '{}' is never consumed; a linear value must be moved "
+                                "to a sink parameter, returned, or destructured before its scope "
+                                "ends",
+                                sym->name))
+                    .at(sym->definition_range));
+        }
+    }
 }
 
 // ============================================================================
@@ -77,6 +90,7 @@ void OwnershipChecker::check_stmt(const ast::Stmt& s) {
         if (l.value) {
             check_expr(*l.value);
         }
+        register_linear_binding(s);
         break;
     }
     case ast::NodeKind::VarStmt: {
@@ -84,6 +98,7 @@ void OwnershipChecker::check_stmt(const ast::Stmt& s) {
         if (v.value) {
             check_expr(*v.value);
         }
+        register_linear_binding(s);
         break;
     }
     case ast::NodeKind::ExprStmt:
@@ -233,6 +248,10 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
         if (i.else_branch) {
             check_expr(*i.else_branch);
         }
+        BindingMap else_state = bindings_;
+        // §5/§19.6 — a linear binding live before the if must be consumed on
+        // both paths or neither; consuming it on only one leaks the other.
+        report_linear_divergence(pre, {&then_state, &else_state}, e.range);
         // bindings_ is now the else-path state (or `pre` when there is no
         // else); union in the then-path's moves.
         merge_consumed(bindings_, then_state);
@@ -252,12 +271,23 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
         }
         BindingMap pre = bindings_;
         BindingMap merged = pre;
+        std::vector<BindingMap> arm_states;
         for (const auto& arm : m.arms) {
             if (arm.body) {
                 bindings_ = pre;
                 check_expr(*arm.body);
                 merge_consumed(merged, bindings_);
+                arm_states.push_back(bindings_);
             }
+        }
+        // §5/§19.6 — a linear binding must be consumed in every arm or none.
+        if (!arm_states.empty()) {
+            std::vector<const BindingMap*> ptrs;
+            ptrs.reserve(arm_states.size());
+            for (const auto& st : arm_states) {
+                ptrs.push_back(&st);
+            }
+            report_linear_divergence(pre, ptrs, e.range);
         }
         bindings_ = std::move(merged);
         break;
@@ -395,6 +425,50 @@ void OwnershipChecker::merge_consumed(BindingMap& dst, const BindingMap& branch)
         if (slot.state != State::Consumed) {
             slot.state = State::Consumed;
             slot.consume_site = info.consume_site;
+        }
+    }
+}
+
+bool OwnershipChecker::is_linear_type(TypePtr t) noexcept {
+    if (t == nullptr || t->kind() != TypeKind::Struct) {
+        return false;
+    }
+    const ast::Decl* d = t->nominal_decl();
+    return d != nullptr && d->kind == ast::NodeKind::Struct
+           && static_cast<const ast::StructDecl&>(*d).is_linear;
+}
+
+void OwnershipChecker::register_linear_binding(const ast::Stmt& s) {
+    const Symbol* sym = resolution_->binding_symbol(&s);
+    if (sym != nullptr && is_linear_type(sym->type)) {
+        bindings_[sym].state = State::Live;
+    }
+}
+
+void OwnershipChecker::report_linear_divergence(const BindingMap& pre,
+                                                const std::vector<const BindingMap*>& branches,
+                                                diag::SourceRange site) {
+    for (const auto& [sym, info] : pre) {
+        // Only bindings live going into the branch can leak on a path; one
+        // already consumed before the branch is fine.
+        if (info.state == State::Consumed || sym == nullptr || !is_linear_type(sym->type)) {
+            continue;
+        }
+        bool any = false;
+        bool all = true;
+        for (const auto* b : branches) {
+            auto it = b->find(sym);
+            const bool consumed = it != b->end() && it->second.state == State::Consumed;
+            any = any || consumed;
+            all = all && consumed;
+        }
+        if (any && !all) {
+            reporter_->report(
+                diag::Diagnostic::error(
+                    std::format("linear value '{}' is consumed on some branches but leaks on the "
+                                "path(s) that do not consume it",
+                                sym->name))
+                    .at(site));
         }
     }
 }

@@ -81,6 +81,23 @@ private:
     // it). Keeps the consume site for diagnostics.
     static void merge_consumed(BindingMap& dst, const BindingMap& branch);
 
+    // §5/§19.6 — does this type require linear consumption? True for a
+    // `linear struct` (transitivity through linear fields is a follow-on).
+    [[nodiscard]] static bool is_linear_type(TypePtr t) noexcept;
+
+    // §5/§19.6 — if this let/var statement binds a linear value, register
+    // it Live so the end-of-scope leak check sees it even when it is never
+    // otherwise touched.
+    void register_linear_binding(const ast::Stmt& s);
+
+    // §5/§19.6 — at a branch join, a linear binding that was live before
+    // the branch must be consumed on *every* path or *none*. If `pre`'s
+    // linear bindings are consumed on some `branches` but not all, the
+    // unconsumed paths leak — report each.
+    void report_linear_divergence(const BindingMap& pre,
+                                  const std::vector<const BindingMap*>& branches,
+                                  diag::SourceRange site);
+
     // Is this type a candidate for ownership tracking? Trivial types are
     // freely copied and never tracked.
     [[nodiscard]] static bool is_trivial(TypePtr t) noexcept;

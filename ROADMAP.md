@@ -103,19 +103,19 @@ phase 7.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 
-Phase 1 (`b0727b9` / `e77f2e0`) is single-pass and linear. Two phase-2
-slices shipped: the `split(at:)` partition primitive on Span/MutSpan (a
-`(prefix, suffix)` tuple of disjoint sub-views), and **branch-aware flow
-merging** in the ownership checker (each `if`/`match` branch is checked
-from a forked state and merged at the join — a move in one branch no
-longer poisons the other, while one-sided moves are still treated as
-moved). Remaining: `linear` types (`KwLinear` is tokenized but unparsed;
-must-consume — a `linear` value consumed on *every* path — builds
-directly on the per-path state the flow merge now computes, so it's the
-natural next slice); the iterator partitioner `chunks(n)`; cross-statement
-borrow liveness (exclusivity is per-call only today); and partition
-*provenance* in `as_place` (proving same-root sub-views disjoint, not
-just distinct bound symbols).
+Phase 1 (`b0727b9` / `e77f2e0`) is single-pass and linear. Three phase-2
+slices shipped: the `split(at:)` partition primitive on Span/MutSpan;
+**branch-aware flow merging** in the ownership checker (each `if`/`match`
+branch forks and merges at the join); and **`linear` types** (`linear
+struct`, must-consume — a leak error for any linear binding still live at
+a scope exit, including one-sided branch consumption — built on the flow
+merge's per-path state). Remaining: linearity *transitivity* (a struct
+with a linear field is linear) and linear *parameters*; the iterator
+partitioner `chunks(n)`; cross-statement borrow liveness (exclusivity is
+per-call only today); partition *provenance* in `as_place`; and
+linear-in-loops soundness (the loop body is walked once). The remaining
+items are incremental; `chunks(n)` is the next runnable one, the rest are
+analysis-precision work.
 
 ### 6. Capability narrowing + audit trail
 

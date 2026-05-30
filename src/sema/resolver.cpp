@@ -73,6 +73,15 @@ void Resolution::set_type(const ast::Expr* e, TypePtr t) {
 void Resolution::set_symbol(const ast::Expr* e, const Symbol* s) {
     expr_symbols_[e] = s;
 }
+
+const Symbol* Resolution::binding_symbol(const ast::Stmt* s) const {
+    auto it = binding_symbols_.find(s);
+    return it == binding_symbols_.end() ? nullptr : it->second;
+}
+
+void Resolution::set_binding_symbol(const ast::Stmt* s, const Symbol* sym) {
+    binding_symbols_[s] = sym;
+}
 const ComptimeValue* Resolution::folded_value(const ast::Expr* e) const {
     auto it = folded_.find(e);
     return it == folded_.end() ? nullptr : &it->second;
@@ -1522,6 +1531,9 @@ void Resolver::check_stmt(const ast::Stmt& s) {
             if (auto* prev = scopes_.current().insert(std::move(sym))) {
                 duplicate_definition(*prev, binding_name, binding_range);
             }
+            // §5/§19.6 — expose the bound Local so the ownership checker can
+            // register a linear binding at its declaration site.
+            resolution_.set_binding_symbol(&s, scopes_.current().lookup(binding_name));
         }
         // §6 tuple destructuring: `let (a, b) = pair` binds each
         // element of the tuple pattern to the corresponding tuple

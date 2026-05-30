@@ -567,6 +567,16 @@ ast::DeclPtr Parser::parse_decl(std::vector<ast::Attribute> attrs) {
     if (check(TokenKind::KwStruct)) {
         return parse_struct(std::move(attrs), vis);
     }
+    if (check(TokenKind::KwLinear)) {
+        // §5 `linear struct Foo { … }` — the value must be consumed before
+        // its scope ends. v0.5 admits the modifier on structs.
+        advance();  // 'linear'
+        if (!check(TokenKind::KwStruct)) {
+            emit_error(peek().range, "expected 'struct' after 'linear'");
+            return nullptr;
+        }
+        return parse_struct(std::move(attrs), vis, /*is_linear=*/true);
+    }
     if (check(TokenKind::KwEnum)) {
         return parse_enum(std::move(attrs), vis);
     }
@@ -673,13 +683,14 @@ void Parser::parse_where_opt(std::vector<ast::GenericParam>& generics) {
     } while (match(TokenKind::Comma));
 }
 
-std::unique_ptr<ast::StructDecl> Parser::parse_struct(std::vector<ast::Attribute> attrs,
-                                                      ast::Visibility vis) {
+std::unique_ptr<ast::StructDecl>
+Parser::parse_struct(std::vector<ast::Attribute> attrs, ast::Visibility vis, bool is_linear) {
     auto start = peek().range;
     advance();  // 'struct'
     auto s = std::make_unique<ast::StructDecl>();
     s->attributes = std::move(attrs);
     s->visibility = vis;
+    s->is_linear = is_linear;
     if (!check(TokenKind::Identifier)) {
         emit_error(peek().range, "expected struct name");
     } else {

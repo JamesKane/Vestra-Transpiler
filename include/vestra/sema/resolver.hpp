@@ -45,6 +45,11 @@ public:
     void set_folded_value(const ast::Expr* e, ComptimeValue v);
     void mark_gated_out(const ast::Decl* d);
     void set_do_catch_error_type(const ast::DoCatchExpr* dc, TypePtr t);
+    // §5/§19.6 — the Local Symbol a `let`/`var` statement binds, so the
+    // ownership checker can register a linear binding at its declaration
+    // (a never-used linear binding must still be flagged as a leak).
+    [[nodiscard]] const Symbol* binding_symbol(const ast::Stmt* s) const;
+    void set_binding_symbol(const ast::Stmt* s, const Symbol* sym);
 
 private:
     std::unordered_map<const ast::Expr*, TypePtr> expr_types_;
@@ -52,6 +57,7 @@ private:
     std::unordered_map<const ast::Expr*, ComptimeValue> folded_;
     std::unordered_set<const ast::Decl*> gated_decls_;
     std::unordered_map<const ast::DoCatchExpr*, TypePtr> do_catch_error_;
+    std::unordered_map<const ast::Stmt*, const Symbol*> binding_symbols_;
 };
 
 // The resolver. Run `.resolve()` once; afterwards `resolution()` carries the
