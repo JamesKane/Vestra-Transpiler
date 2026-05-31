@@ -102,21 +102,28 @@ phase 7.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 
-Phase 1 (`b0727b9` / `e77f2e0`) is single-pass and linear. Four phase-2
-slices shipped: the `split(at:)` partition primitive on Span/MutSpan;
-**branch-aware flow merging** in the ownership checker (each `if`/`match`
-branch forks and merges at the join); **`linear` types** (`linear
-struct`, must-consume — a leak error for any linear binding still live at
-a scope exit, including one-sided branch consumption — built on the flow
-merge's per-path state); and the iterator partitioner **`chunks(of: n)`**
-(a lazy `ChunkIter` yielding consecutive disjoint sub-views, the
-size-based sibling of `split(at:)`). Remaining: linearity *transitivity*
-(a struct with a linear field is linear) and linear *parameters*; chunks
+Phase 1 (`b0727b9` / `e77f2e0`) is single-pass and linear. Phase 2 is
+substantially complete. Shipped: the `split(at:)` partition primitive on
+Span/MutSpan; **branch-aware flow merging** (each `if`/`match` branch
+forks and merges at the join); the iterator partitioner **`chunks(of: n)`**
+(a lazy `ChunkIter` over consecutive disjoint sub-views); and the full
+**`linear` types** story — `linear struct` must-consume (a leak error for
+any linear binding still live at a scope exit, including one-sided branch
+consumption), **let-from-place move tracking** (`let c = b` moves `b`),
+**construction consumes its place arguments** (a constructor owns its
+inputs), **linearity transitivity** (a struct that owns a linear field is
+itself linear, closed to a fixpoint), and **sink parameters as terminal
+sinks** (taking ownership counts as consuming, so an empty consumer ends a
+linear chain).
+
+Remaining (all analysis-precision; the runnable surface is done): chunks
 as a first-class value (indexing, `.count` — today it's for-loop-only);
 cross-statement borrow liveness (exclusivity is per-call only today);
-partition *provenance* in `as_place`; and linear-in-loops soundness (the
-loop body is walked once). These remaining items are all
-analysis-precision work; the runnable partition primitives are done.
+partition *provenance* in `as_place`; linear-in-loops soundness (the loop
+body is walked once); and the larger destructure/deinit terminal form for
+linear values (sink params cover the common case today). Generic linear
+structs and linear obligations carried through wrapper types
+(Optional/Span/Box) are also follow-ons.
 
 ### 6. Capability narrowing + audit trail
 
