@@ -89,6 +89,10 @@ void OwnershipChecker::check_stmt(const ast::Stmt& s) {
         const auto& l = static_cast<const ast::LetStmt&>(s);
         if (l.value) {
             check_expr(*l.value);
+            // §5 — `let c = b` moves a non-trivial place: ownership transfers
+            // to the new binding, so `b` is consumed (use `copy b` to keep
+            // it). Symmetric with `return x` and sink-argument passing.
+            consume_place(*l.value, l.value->range);
         }
         register_linear_binding(s);
         break;
@@ -97,6 +101,7 @@ void OwnershipChecker::check_stmt(const ast::Stmt& s) {
         const auto& v = static_cast<const ast::VarStmt&>(s);
         if (v.value) {
             check_expr(*v.value);
+            consume_place(*v.value, v.value->range);
         }
         register_linear_binding(s);
         break;

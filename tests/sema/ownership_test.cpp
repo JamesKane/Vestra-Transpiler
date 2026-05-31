@@ -315,3 +315,57 @@ TEST_CASE("a linear value consumed in only one match arm leaks") {
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("consumed on some branches but leaks") != std::string::npos);
 }
+
+// ---- §5 let-from-place move tracking --------------------------------------
+
+TEST_CASE("`let c = b` moves b, so a later use of b is rejected") {
+    auto r = check(with_prelude("func bad() {\n"
+                                "    let b = make_buf()\n"
+                                "    let c = b\n"
+                                "    take(b)\n"
+                                "}\n"));
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("after it was moved") != std::string::npos);
+}
+
+TEST_CASE("`let c = copy b` keeps b live") {
+    CHECK(check(with_prelude("func ok() {\n"
+                             "    let b = make_buf()\n"
+                             "    let c = copy b\n"
+                             "    take(b)\n"
+                             "    take(c)\n"
+                             "}\n"))
+              .error_count
+          == 0);
+}
+
+TEST_CASE("`let c = b` then using c is fine") {
+    CHECK(check(with_prelude("func ok() {\n"
+                             "    let b = make_buf()\n"
+                             "    let c = b\n"
+                             "    take(c)\n"
+                             "}\n"))
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a linear value moved by `let` is consumed, not leaked") {
+    // The let-move both discharges the leak obligation on the source binding
+    // and transfers it to the destination, which is then consumed.
+    CHECK(check(with_linear("func ok() {\n"
+                            "    let t = mk_tok()\n"
+                            "    let u = t\n"
+                            "    use_tok(u)\n"
+                            "}\n"))
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a linear value rebound by `let` but never consumed still leaks") {
+    auto r = check(with_linear("func bad() {\n"
+                               "    let t = mk_tok()\n"
+                               "    let u = t\n"
+                               "}\n"));
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("is never consumed") != std::string::npos);
+}
