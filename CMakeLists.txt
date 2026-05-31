@@ -49,6 +49,11 @@ set(vestra_sources
     src/ast/nodes.cpp
     src/ast/printer.cpp
     src/parse/parser.cpp
+    src/parse/parser_decls.cpp
+    src/parse/parser_types.cpp
+    src/parse/parser_patterns.cpp
+    src/parse/parser_stmts.cpp
+    src/parse/parser_exprs.cpp
     src/sema/types.cpp
     src/sema/scope.cpp
     src/sema/resolver.cpp
