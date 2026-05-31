@@ -330,9 +330,19 @@ void OwnershipChecker::check_call(const ast::CallExpr& c) {
     // params behave as `sink` (the constructed value owns its inputs).
     const auto* callee_sym = resolution_->symbol_of(c.callee.get());
     const ast::FuncDecl* fn = nullptr;
-    if (callee_sym != nullptr && callee_sym->decl != nullptr
-        && callee_sym->decl->kind == ast::NodeKind::Func) {
-        fn = static_cast<const ast::FuncDecl*>(callee_sym->decl);
+    bool is_constructor = false;
+    if (callee_sym != nullptr) {
+        if (callee_sym->decl != nullptr && callee_sym->decl->kind == ast::NodeKind::Func) {
+            fn = static_cast<const ast::FuncDecl*>(callee_sym->decl);
+        } else if (callee_sym->kind == SymbolKind::Struct || callee_sym->kind == SymbolKind::Enum
+                   || callee_sym->kind == SymbolKind::EnumCase) {
+            // §5 — struct/enum construction owns its inputs: each field/payload
+            // argument is moved into the constructed value, so a non-trivial
+            // place argument is consumed (just like a `sink` param). This is
+            // what makes a struct with a linear field transitively linear —
+            // the field's consume obligation transfers to the whole value.
+            is_constructor = true;
+        }
     }
 
     for (std::size_t i = 0; i < c.args.size(); ++i) {
@@ -340,7 +350,9 @@ void OwnershipChecker::check_call(const ast::CallExpr& c) {
         check_expr(*arg.value);
 
         ast::ParamMode mode = ast::ParamMode::Read;
-        if (fn != nullptr && i < fn->params.size()) {
+        if (is_constructor) {
+            mode = ast::ParamMode::Sink;
+        } else if (fn != nullptr && i < fn->params.size()) {
             mode = fn->params[i].mode;
         } else if (arg.is_inout) {
             // An explicit `&x` at the call site signals an inout binding for

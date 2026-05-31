@@ -369,3 +369,41 @@ TEST_CASE("a linear value rebound by `let` but never consumed still leaks") {
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("is never consumed") != std::string::npos);
 }
+
+// ---- §5 struct/enum construction consumes its place arguments -------------
+
+TEST_CASE("constructing a struct from a binding moves that binding") {
+    auto r = check(with_prelude("struct Box1 { var b: Buf }\n"
+                                "func bad() {\n"
+                                "    let b = make_buf()\n"
+                                "    let w = Box1(b: b)\n"
+                                "    take(b)\n"
+                                "}\n"));
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("after it was moved") != std::string::npos);
+}
+
+TEST_CASE("constructing a struct and consuming the whole value is fine") {
+    CHECK(check(with_prelude("struct Box1 { var b: Buf }\n"
+                             "func useBox(_ w: sink Box1) {}\n"
+                             "func ok() {\n"
+                             "    let b = make_buf()\n"
+                             "    let w = Box1(b: b)\n"
+                             "    useBox(w)\n"
+                             "}\n"))
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a copied binding survives being placed into a struct") {
+    CHECK(check(with_prelude("struct Box1 { var b: Buf }\n"
+                             "func useBox(_ w: sink Box1) {}\n"
+                             "func ok() {\n"
+                             "    let b = make_buf()\n"
+                             "    let w = Box1(b: copy b)\n"
+                             "    take(b)\n"
+                             "    useBox(w)\n"
+                             "}\n"))
+              .error_count
+          == 0);
+}
