@@ -58,6 +58,10 @@ set(vestra_sources
     src/sema/comptime.cpp
     src/sema/builtins.cpp
     src/codegen/cpp_emitter.cpp
+    src/codegen/cpp_emitter_types.cpp
+    src/codegen/cpp_emitter_match.cpp
+    src/codegen/cpp_emitter_stmts.cpp
+    src/codegen/cpp_emitter_errors.cpp
     src/driver/driver.cpp)
 
 add_library(vestra_core STATIC ${vestra_sources})
