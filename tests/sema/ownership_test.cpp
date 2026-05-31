@@ -407,3 +407,59 @@ TEST_CASE("a copied binding survives being placed into a struct") {
               .error_count
           == 0);
 }
+
+// ---- §5/§19.6 linearity transitivity --------------------------------------
+
+namespace {
+// A linear Token, a plain Wrapper that owns one, and a DeepWrap that owns a
+// Wrapper — so linearity must propagate two levels.
+constexpr std::string_view TransPrelude = R"(
+linear struct Token { var id: Int32 }
+struct Wrapper { var t: Token }
+struct DeepWrap { var w: Wrapper }
+func use_w(_ w: sink Wrapper) {}
+func use_d(_ d: sink DeepWrap) {}
+func mk_tok() -> Token { return Token(id: 0) }
+)";
+std::string with_trans(std::string body) {
+    return std::string{TransPrelude} + std::move(body);
+}
+}  // namespace
+
+TEST_CASE("a struct owning a linear field is itself linear (leak rejected)") {
+    auto r = check(with_trans("func bad() {\n"
+                              "    let tok = mk_tok()\n"
+                              "    let w = Wrapper(t: tok)\n"
+                              "}\n"));
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("is never consumed") != std::string::npos);
+}
+
+TEST_CASE("a transitively-linear value consumed via sink is fine") {
+    CHECK(check(with_trans("func ok() {\n"
+                           "    let tok = mk_tok()\n"
+                           "    let w = Wrapper(t: tok)\n"
+                           "    use_w(w)\n"
+                           "}\n"))
+              .error_count
+          == 0);
+}
+
+TEST_CASE("linearity propagates two levels through nested ownership") {
+    auto r = check(with_trans("func bad() {\n"
+                              "    let tok = mk_tok()\n"
+                              "    let d = DeepWrap(w: Wrapper(t: tok))\n"
+                              "}\n"));
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("is never consumed") != std::string::npos);
+}
+
+TEST_CASE("a plain struct with no linear field is not linear") {
+    // Buf is an ordinary struct; dropping a Buf-owning struct is fine.
+    CHECK(check(with_prelude("struct Holder { var b: Buf }\n"
+                             "func ok() {\n"
+                             "    let h = Holder(b: make_buf())\n"
+                             "}\n"))
+              .error_count
+          == 0);
+}

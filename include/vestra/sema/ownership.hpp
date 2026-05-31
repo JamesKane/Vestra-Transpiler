@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace vestra::sema {
 
@@ -82,8 +83,15 @@ private:
     static void merge_consumed(BindingMap& dst, const BindingMap& branch);
 
     // §5/§19.6 — does this type require linear consumption? True for a
-    // `linear struct` (transitivity through linear fields is a follow-on).
-    [[nodiscard]] static bool is_linear_type(TypePtr t) noexcept;
+    // `linear struct` and, transitively, any struct that owns a linear
+    // field. Membership is precomputed into linear_decls_ by
+    // compute_linear_decls() at the start of check().
+    [[nodiscard]] bool is_linear_type(TypePtr t) const noexcept;
+
+    // §5/§19.6 — seed linear_decls_ with every `linear struct` in the unit,
+    // then close it under field ownership: a struct that has a field of a
+    // linear type is itself linear. Run once, before any function is checked.
+    void compute_linear_decls();
 
     // §5/§19.6 — if this let/var statement binds a linear value, register
     // it Live so the end-of-scope leak check sees it even when it is never
@@ -113,6 +121,11 @@ private:
     // Per-function: state of every tracked binding encountered so far. Reset
     // at the start of each function.
     std::unordered_map<const Symbol*, BindingInfo> bindings_;
+
+    // §5/§19.6 — every struct decl that requires linear consumption, whether
+    // directly (`linear struct`) or transitively (owns a linear field).
+    // Filled once by compute_linear_decls() at the start of check().
+    std::unordered_set<const ast::Decl*> linear_decls_;
 };
 
 }  // namespace vestra::sema

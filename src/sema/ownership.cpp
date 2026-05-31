@@ -10,6 +10,9 @@
 #include "vestra/sema/types.hpp"
 
 #include <format>
+#include <string>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 
 namespace vestra::sema {
@@ -19,6 +22,7 @@ namespace vestra::sema {
 // ============================================================================
 
 void OwnershipChecker::check() {
+    compute_linear_decls();
     for (const auto& d : unit_->decls) {
         check_decl(*d);
     }
@@ -446,13 +450,64 @@ void OwnershipChecker::merge_consumed(BindingMap& dst, const BindingMap& branch)
     }
 }
 
-bool OwnershipChecker::is_linear_type(TypePtr t) noexcept {
+bool OwnershipChecker::is_linear_type(TypePtr t) const noexcept {
     if (t == nullptr || t->kind() != TypeKind::Struct) {
         return false;
     }
     const ast::Decl* d = t->nominal_decl();
-    return d != nullptr && d->kind == ast::NodeKind::Struct
-           && static_cast<const ast::StructDecl&>(*d).is_linear;
+    return d != nullptr && linear_decls_.contains(d);
+}
+
+void OwnershipChecker::compute_linear_decls() {
+    // Index the unit's struct decls by name so a field type spelled `Foo` can
+    // be matched to its declaration. v0.5 has a single flat module namespace,
+    // so the last path component is enough; generic linear structs and
+    // cross-module references are follow-ons.
+    std::unordered_map<std::string_view, const ast::StructDecl*> by_name;
+    for (const auto& d : unit_->decls) {
+        if (d->kind == ast::NodeKind::Struct) {
+            const auto& s = static_cast<const ast::StructDecl&>(*d);
+            by_name.emplace(s.name, &s);
+            if (s.is_linear) {
+                linear_decls_.insert(d.get());
+            }
+        }
+    }
+
+    // The head-name of a field's type, or empty if it isn't a plain named
+    // type (Optional / Span / Box / tuple etc. hold their element by value
+    // but don't own a linear obligation through the wrapper in v0.5).
+    auto field_struct_name = [](const ast::Type* ty) -> std::string_view {
+        if (ty != nullptr && ty->kind == ast::NodeKind::NamedType) {
+            const auto& n = static_cast<const ast::NamedType&>(*ty);
+            if (!n.path.empty()) {
+                return n.path.back();
+            }
+        }
+        return {};
+    };
+
+    // Close the set under field ownership: a struct that has a field whose
+    // type is a (transitively) linear struct is itself linear. Iterate to a
+    // fixpoint so a chain Wrapper -> Inner -> Token propagates.
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto& d : unit_->decls) {
+            if (d->kind != ast::NodeKind::Struct || linear_decls_.contains(d.get())) {
+                continue;
+            }
+            const auto& s = static_cast<const ast::StructDecl&>(*d);
+            for (const auto& f : s.fields) {
+                auto it = by_name.find(field_struct_name(f.type.get()));
+                if (it != by_name.end() && linear_decls_.contains(it->second)) {
+                    linear_decls_.insert(d.get());
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
 }
 
 void OwnershipChecker::register_linear_binding(const ast::Stmt& s) {
