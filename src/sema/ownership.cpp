@@ -65,7 +65,12 @@ void OwnershipChecker::check_func(const ast::FuncDecl& f) {
         return;  // protocol requirement / declaration only — nothing to check
     }
     // Reset per-function state. Parameter bindings are added lazily on first
-    // use — we don't need to pre-populate them.
+    // use. A `sink` parameter takes ownership of its argument and is itself a
+    // terminal sink — the callee may move it onward (to another sink / a
+    // return) or simply drop it, which destroys the value. So a sink-linear
+    // parameter carries no must-consume obligation inside the body; only
+    // *local* linear bindings (let/var) and the linear values they own must
+    // be discharged before their scope ends.
     bindings_.clear();
     check_expr(*f.body);
     // §5/§19.6 — any linear binding still live at the end of the function

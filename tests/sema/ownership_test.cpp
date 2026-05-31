@@ -463,3 +463,29 @@ TEST_CASE("a plain struct with no linear field is not linear") {
               .error_count
           == 0);
 }
+
+// ---- §5/§19.6 a `sink` linear parameter is itself a terminal sink ---------
+
+TEST_CASE("a sink-linear parameter may be dropped by the callee") {
+    // Taking ownership via `sink` counts as consuming: the callee is free to
+    // destroy the value, so an empty terminal consumer is well-formed. This
+    // is what lets `use_tok(_ t: sink Token) {}` be the end of a linear chain.
+    CHECK(check(with_linear("func terminal(_ t: sink Token) {}\n")).error_count == 0);
+}
+
+TEST_CASE("a sink-linear parameter may be forwarded to another sink") {
+    CHECK(check(with_linear("func forward(_ t: sink Token) { use_tok(t) }\n")).error_count == 0);
+}
+
+TEST_CASE("a sink-linear parameter may be returned") {
+    CHECK(check(with_linear("func passthru(_ t: sink Token) -> Token { return t }\n")).error_count
+          == 0);
+}
+
+TEST_CASE("forwarding a sink-linear parameter twice is still a double-move") {
+    auto r = check(with_linear("func bad(_ t: sink Token) {\n"
+                               "    use_tok(t)\n"
+                               "    use_tok(t)\n"
+                               "}\n"));
+    CHECK(r.error_count >= 1);
+}
