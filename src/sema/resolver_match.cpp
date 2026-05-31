@@ -1,0 +1,424 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// Match / select / pattern checking and tuple-pattern binding.
+// Split out of resolver.cpp; see resolver_internal.hpp for the shared
+// free helpers.
+
+#include "vestra/ast/nodes.hpp"
+#include "vestra/sema/builtins.hpp"
+#include "vestra/sema/resolver.hpp"
+#include "vestra/sema/scope.hpp"
+#include "vestra/sema/types.hpp"
+
+#include "resolver_internal.hpp"
+
+#include <array>
+#include <cstdlib>
+#include <format>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace vestra::sema {
+
+using detail::named_type_param_count;
+
+void Resolver::bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type) {
+    if (value_type == nullptr || value_type->is_error()) {
+        return;  // suppress cascading errors
+    }
+    if (value_type->kind() != TypeKind::Tuple) {
+        error_at(
+            pat.range,
+            std::format("tuple pattern requires a tuple value, got {}", value_type->describe()));
+        return;
+    }
+    const auto& parts = value_type->parts();
+    if (parts.size() != pat.elements.size()) {
+        error_at(pat.range,
+                 std::format("tuple pattern has {} elements, value has {}",
+                             pat.elements.size(),
+                             parts.size()));
+        return;
+    }
+    for (std::size_t i = 0; i < pat.elements.size(); ++i) {
+        const auto& sub = pat.elements[i];
+        if (!sub) {
+            continue;
+        }
+        std::string_view name;
+        if (sub->kind == ast::NodeKind::IdentPat) {
+            name = static_cast<const ast::IdentPat&>(*sub).name;
+        } else if (sub->kind == ast::NodeKind::BindPat) {
+            name = static_cast<const ast::BindPat&>(*sub).name;
+        } else if (sub->kind == ast::NodeKind::WildcardPat) {
+            continue;
+        } else if (sub->kind == ast::NodeKind::TuplePat) {
+            bind_tuple_pattern(static_cast<const ast::TuplePat&>(*sub), parts[i]);
+            continue;
+        } else if (sub->kind == ast::NodeKind::LiteralPat || sub->kind == ast::NodeKind::RangePat
+                   || sub->kind == ast::NodeKind::OrPat) {
+            // §17.7 value-shape patterns inside a tuple pattern: each
+            // sub-pattern type-checks against the corresponding element
+            // type; no binding is introduced.
+            check_pattern(*sub, parts[i]);
+            continue;
+        } else {
+            error_at(sub->range,
+                     "v0.5 only supports identifier / `_` / nested-tuple / literal / "
+                     "range / or-pattern element kinds inside a tuple pattern");
+            continue;
+        }
+        if (name.empty()) {
+            continue;
+        }
+        Symbol sym;
+        sym.name = std::string{name};
+        sym.kind = SymbolKind::Local;
+        sym.type = parts[i];
+        sym.definition_range = sub->range;
+        if (auto* prev = scopes_.current().insert(std::move(sym))) {
+            duplicate_definition(*prev, sym.name, sub->range);
+        }
+    }
+}
+
+TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
+    auto scrutinee_type = check_expr(*m.scrutinee);
+
+    // Track which enum cases got covered for the exhaustiveness check.
+    const ast::EnumDecl* scrutinee_enum = nullptr;
+    if (scrutinee_type != nullptr && scrutinee_type->kind() == TypeKind::Enum
+        && scrutinee_type->nominal_decl() != nullptr) {
+        scrutinee_enum = &static_cast<const ast::EnumDecl&>(*scrutinee_type->nominal_decl());
+    }
+    std::vector<bool> case_seen(scrutinee_enum ? scrutinee_enum->cases.size() : 0, false);
+    bool saw_default = false;
+
+    // §17.7 enum-coverage walk: drain through OrPat alternatives so a
+    // `case .red | .green:` arm marks both cases as covered. Wildcard
+    // and unrelated patterns terminate the walk on this arm.
+    auto mark_enum_covered = [&](const ast::Pattern& p, auto& self) -> void {
+        if (scrutinee_enum == nullptr) {
+            return;
+        }
+        if (p.kind == ast::NodeKind::WildcardPat) {
+            for (auto&& s : case_seen) {
+                s = true;
+            }
+            return;
+        }
+        if (p.kind == ast::NodeKind::EnumPat) {
+            const auto& ep = static_cast<const ast::EnumPat&>(p);
+            for (std::size_t i = 0; i < scrutinee_enum->cases.size(); ++i) {
+                if (scrutinee_enum->cases[i].name == ep.case_name) {
+                    case_seen[i] = true;
+                    break;
+                }
+            }
+            return;
+        }
+        if (p.kind == ast::NodeKind::OrPat) {
+            for (const auto& alt : static_cast<const ast::OrPat&>(p).alternatives) {
+                self(*alt, self);
+            }
+        }
+    };
+
+    // §8 dead-code arm detection. Two flavors of unreachability we
+    // can pin at compile time:
+    //   - any arm after a default / catch-all wildcard is dead (the
+    //     default fires for everything that didn't match earlier).
+    //   - an enum-pattern arm whose case_name was already closed by
+    //     an earlier *unguarded* arm targeting the same case_name is
+    //     dead; the codegen groups arms by case_name and the
+    //     unguarded arm dominates anything after it in the group.
+    // The warning surfaces the user's mistake at compile time
+    // without failing the build; refactoring patterns where this
+    // happens silently is a footgun the §8 follow-up commit
+    // explicitly flagged for this slice to close.
+    bool seen_catchall = false;
+    std::unordered_set<std::string> closed_cases;
+    auto register_unguarded_cases = [&](const ast::Pattern& p, auto& self) -> void {
+        if (p.kind == ast::NodeKind::EnumPat) {
+            const auto& ep = static_cast<const ast::EnumPat&>(p);
+            closed_cases.insert(ep.case_name);
+            return;
+        }
+        if (p.kind == ast::NodeKind::OrPat) {
+            for (const auto& alt : static_cast<const ast::OrPat&>(p).alternatives) {
+                if (alt) {
+                    self(*alt, self);
+                }
+            }
+        }
+    };
+
+    TypePtr result_type = nullptr;
+    for (const auto& arm : m.arms) {
+        ScopeStack::Guard g(scopes_);
+        // §8 dead-arm warning before processing the arm. A previous
+        // catch-all dominates everything after it regardless of the
+        // current arm's pattern.
+        if (seen_catchall) {
+            // MatchArm itself has no range; anchor the warning on the
+            // best per-arm range available (body, pattern, or the
+            // surrounding match's range as the last resort).
+            diag::SourceRange anchor = arm.pattern ? arm.pattern->range
+                                       : arm.body  ? arm.body->range
+                                                   : m.range;
+            warn_at(anchor,
+                    "match arm is unreachable: a previous default/wildcard arm dominates "
+                    "every following case");
+        } else if (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::EnumPat
+                   && !arm.guard) {
+            const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
+            if (closed_cases.contains(ep.case_name)) {
+                warn_at(arm.pattern->range,
+                        std::format("match arm is unreachable: a previous unguarded arm for "
+                                    "case '.{}' dominates this one",
+                                    ep.case_name));
+            }
+        } else if (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::EnumPat
+                   && arm.guard) {
+            const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
+            if (closed_cases.contains(ep.case_name)) {
+                warn_at(arm.pattern->range,
+                        std::format("match arm is unreachable: a previous unguarded arm for "
+                                    "case '.{}' dominates this one (the guard never runs)",
+                                    ep.case_name));
+            }
+        }
+        if (arm.is_default) {
+            saw_default = true;
+            seen_catchall = true;
+        } else if (arm.pattern) {
+            check_pattern(*arm.pattern, scrutinee_type);
+            mark_enum_covered(*arm.pattern, mark_enum_covered);
+            // A wildcard arm closes everything (acts as default).
+            if (arm.pattern->kind == ast::NodeKind::WildcardPat) {
+                seen_catchall = true;
+            }
+            // §8 close the case_name(s) when the arm is unguarded.
+            // The closure walks through OrPat so `case .a | .b` closes
+            // both names; a single EnumPat closes its one name.
+            if (!arm.guard) {
+                register_unguarded_cases(*arm.pattern, register_unguarded_cases);
+            }
+        }
+        if (arm.guard) {
+            auto gt = check_expr(*arm.guard, types_->boolean());
+            if (gt != nullptr && gt->kind() != TypeKind::Bool && !gt->is_error()) {
+                error_at(arm.guard->range,
+                         std::format("match guard must be Bool, got {}", gt->describe()));
+            }
+        }
+        TypePtr arm_type = arm.body ? check_expr(*arm.body, expected) : types_->unit();
+        if (result_type == nullptr) {
+            result_type = arm_type;
+        } else if (arm_type != nullptr && !arm_type->is_never() && !result_type->is_never()
+                   && !TypeArena::equal(arm_type, result_type)) {
+            error_at(arm.body ? arm.body->range : m.range,
+                     std::format("match arms have different types: {} vs {}",
+                                 result_type->describe(),
+                                 arm_type->describe()));
+            result_type = types_->error();
+        }
+    }
+
+    // Exhaustiveness: when the scrutinee is an enum and there's no `default`,
+    // every case must be covered by at least one arm.
+    if (scrutinee_enum != nullptr && !saw_default) {
+        for (std::size_t i = 0; i < scrutinee_enum->cases.size(); ++i) {
+            if (!case_seen[i]) {
+                error_at(m.range,
+                         std::format("match is not exhaustive: case '{}' is not covered",
+                                     scrutinee_enum->cases[i].name));
+            }
+        }
+    }
+
+    return result_type != nullptr ? result_type : types_->unit();
+}
+
+TypePtr Resolver::check_select(const ast::SelectExpr& sel, TypePtr expected) {
+    TypePtr result_type = nullptr;
+    auto join = [&](TypePtr arm_type, diag::SourceRange r) {
+        if (result_type == nullptr) {
+            result_type = arm_type;
+        } else if (arm_type != nullptr && !arm_type->is_never() && !result_type->is_never()
+                   && !TypeArena::equal(arm_type, result_type)) {
+            error_at(r,
+                     std::format("select arms have different types: {} vs {}",
+                                 result_type->describe(),
+                                 arm_type->describe()));
+            result_type = types_->error();
+        }
+    };
+    for (const auto& arm : sel.arms) {
+        ScopeStack::Guard g(scopes_);
+        // §11 v0.5 — the only event kind that exists is a Future[T]
+        // (channels and timeout wait on the Channel slice + a scheduler).
+        TypePtr ev = arm.event ? check_expr(*arm.event) : types_->error();
+        if (ev != nullptr && !ev->is_error() && ev->kind() != TypeKind::Future) {
+            error_at(arm.event->range,
+                     std::format("select event must be a Future[T]; got {} (channels and timeout "
+                                 "are not yet supported)",
+                                 ev->describe()));
+        }
+        if (arm.pattern) {
+            TypePtr inner =
+                (ev != nullptr && ev->kind() == TypeKind::Future) ? ev->inner() : types_->error();
+            check_pattern(*arm.pattern, inner);
+        }
+        TypePtr arm_type = arm.body ? check_expr(*arm.body, expected) : types_->unit();
+        join(arm_type, arm.body ? arm.body->range : sel.range);
+    }
+    if (sel.default_body) {
+        join(check_expr(*sel.default_body, expected), sel.default_body->range);
+    }
+    return result_type != nullptr ? result_type : types_->unit();
+}
+
+void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
+    switch (p.kind) {
+    case ast::NodeKind::WildcardPat:
+        break;
+    case ast::NodeKind::LiteralPat: {
+        // §17.7 literal pattern: the literal must adapt to the
+        // scrutinee's type (Int literal in an Int32 slot, etc.).
+        // check_expr with the scrutinee as the expected hint does the
+        // adaptation, and assignable carries the natural-width rule.
+        const auto& lp = static_cast<const ast::LiteralPat&>(p);
+        if (lp.literal != nullptr) {
+            auto lt = check_expr(*lp.literal, scrutinee);
+            if (lt != nullptr && !lt->is_error() && scrutinee != nullptr && !scrutinee->is_error()
+                && !TypeArena::assignable(lt, scrutinee)) {
+                error_at(p.range,
+                         std::format("literal of type {} does not match scrutinee of type {}",
+                                     lt->describe(),
+                                     scrutinee->describe()));
+            }
+        }
+        break;
+    }
+    case ast::NodeKind::RangePat: {
+        // §17.7 range pattern: scrutinee must be integer; both bounds
+        // adapt to the scrutinee's width. Inclusive vs exclusive is a
+        // codegen concern — sema just types the bounds.
+        const auto& rp = static_cast<const ast::RangePat&>(p);
+        if (scrutinee != nullptr && !scrutinee->is_error() && !scrutinee->is_integer()) {
+            error_at(p.range,
+                     std::format("range pattern requires an integer scrutinee, got {}",
+                                 scrutinee->describe()));
+        }
+        auto check_bound = [&](const ast::Expr* b) {
+            if (b == nullptr) {
+                return;
+            }
+            auto bt = check_expr(*b, scrutinee);
+            if (bt != nullptr && !bt->is_error() && !bt->is_integer()) {
+                error_at(b->range,
+                         std::format("range bound must be integer, got {}", bt->describe()));
+            }
+        };
+        check_bound(rp.low.get());
+        check_bound(rp.high.get());
+        break;
+    }
+    case ast::NodeKind::OrPat: {
+        // §17.7 or-pattern: each alternative is checked against the
+        // scrutinee independently. v0.5 doesn't enforce the
+        // same-bindings-across-alts rule — a follow-on pass adds the
+        // diagnostic for `case .a(let x) | .b(let y):` style mismatch.
+        const auto& op = static_cast<const ast::OrPat&>(p);
+        for (const auto& alt : op.alternatives) {
+            if (alt) {
+                check_pattern(*alt, scrutinee);
+            }
+        }
+        break;
+    }
+    case ast::NodeKind::IdentPat: {
+        // Plain identifier patterns match by name; in match-arm position we
+        // treat them as a binding to the scrutinee's type.
+        const auto& ip = static_cast<const ast::IdentPat&>(p);
+        Symbol sym;
+        sym.name = ip.name;
+        sym.kind = SymbolKind::Local;
+        sym.type = scrutinee;
+        sym.definition_range = p.range;
+        (void)scopes_.current().insert(std::move(sym));
+        break;
+    }
+    case ast::NodeKind::BindPat: {
+        const auto& bp = static_cast<const ast::BindPat&>(p);
+        Symbol sym;
+        sym.name = bp.name;
+        sym.kind = SymbolKind::Local;
+        sym.type = scrutinee;
+        sym.definition_range = p.range;
+        (void)scopes_.current().insert(std::move(sym));
+        break;
+    }
+    case ast::NodeKind::TuplePat: {
+        // §6 tuple pattern in match-arm position. Two shapes:
+        //   * `match tup { case (a, b): ... }` — the scrutinee is a
+        //     tuple, the pattern destructures it directly.
+        //   * As an EnumPat child: `case .pair((a, b)):` — the enclosing
+        //     EnumPat case threads the payload field's type in as
+        //     `scrutinee` for this recursive call.
+        // Either way, bind_tuple_pattern walks the elements in parallel
+        // with the scrutinee's TupleType and reports arity / non-tuple
+        // mismatches.
+        bind_tuple_pattern(static_cast<const ast::TuplePat&>(p), scrutinee);
+        break;
+    }
+    case ast::NodeKind::EnumPat: {
+        const auto& ep = static_cast<const ast::EnumPat&>(p);
+        if (scrutinee == nullptr || scrutinee->kind() != TypeKind::Enum
+            || scrutinee->nominal_decl() == nullptr) {
+            error_at(p.range,
+                     std::format("enum pattern '.{}' used against non-enum type {}",
+                                 ep.case_name,
+                                 scrutinee ? scrutinee->describe() : "?"));
+            return;
+        }
+        const auto& enum_decl = static_cast<const ast::EnumDecl&>(*scrutinee->nominal_decl());
+        const auto* c = lookup_enum_case(enum_decl, ep.case_name);
+        if (c == nullptr) {
+            error_at(p.range,
+                     std::format("enum '{}' has no case '{}'", enum_decl.name, ep.case_name));
+            return;
+        }
+        if (ep.children.size() != c->payload.size()) {
+            error_at(p.range,
+                     std::format("case '{}' has {} payload field(s), pattern binds {}",
+                                 c->name,
+                                 c->payload.size(),
+                                 ep.children.size()));
+            return;
+        }
+        for (std::size_t i = 0; i < ep.children.size(); ++i) {
+            // §7 generics phase 2 — substitute the scrutinee instance's
+            // type arguments (scrutinee->parts()) for the enum's params so
+            // `case .some(let x):` over an `Option[Int32]` binds x as Int32.
+            TypePtr payload_type = c->payload[i].second
+                                       ? resolve_member_type_with_generics(enum_decl.generics,
+                                                                           *c->payload[i].second,
+                                                                           scrutinee->parts())
+                                       : types_->error();
+            check_pattern(*ep.children[i], payload_type);
+        }
+        break;
+    }
+    default:
+        // Tuple/struct/slice patterns: not yet typed against `scrutinee`.
+        break;
+    }
+}
+
+}  // namespace vestra::sema

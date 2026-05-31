@@ -52,6 +52,14 @@ set(vestra_sources
     src/sema/types.cpp
     src/sema/scope.cpp
     src/sema/resolver.cpp
+    src/sema/resolver_builtins.cpp
+    src/sema/resolver_decls.cpp
+    src/sema/resolver_exprs.cpp
+    src/sema/resolver_call.cpp
+    src/sema/resolver_types.cpp
+    src/sema/resolver_members.cpp
+    src/sema/resolver_match.cpp
+    src/sema/resolver_generics.cpp
     src/sema/ownership.cpp
     src/sema/exclusivity.cpp
     src/sema/capability.cpp
