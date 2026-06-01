@@ -772,6 +772,9 @@ void Resolver::check_stmt(const ast::Stmt& s) {
             TypePtr bind_t = annot_type != nullptr ? annot_type : value_type;
             bind_tuple_pattern(static_cast<const ast::TuplePat&>(*pat), bind_t);
         }
+        // §5/§18.4 — record sub-view provenance (split / chunks / alias) so the
+        // exclusivity checker can flag a borrow that aliases the parent place.
+        record_partition_provenance(pat, initializer);
         break;
     }
     case ast::NodeKind::ReturnStmt: {

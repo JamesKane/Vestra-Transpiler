@@ -86,6 +86,76 @@ void Resolver::bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type) 
     }
 }
 
+// §5/§18.4 partition provenance. Annotates the parent-place provenance of a
+// `split(at:)` / `chunks(of:)` binding (or a plain alias of an existing
+// sub-view) directly on the bound Symbol, so the exclusivity checker can flag
+// a borrow of a sub-view that aliases a borrow of its parent.
+void Resolver::record_partition_provenance(const ast::Pattern* pat, const ast::Expr* init) {
+    if (pat == nullptr || init == nullptr) {
+        return;
+    }
+    // Unwrap a parenthesized initializer.
+    while (init->kind == ast::NodeKind::ParenExpr) {
+        init = static_cast<const ast::ParenExpr&>(*init).inner.get();
+    }
+
+    // Annotate the binding a single-name pattern introduces. Looked up
+    // mutably in the current scope (the caller has just inserted it).
+    auto annotate = [&](const ast::Pattern& p, const Symbol* root, std::string segment) {
+        std::string_view nm;
+        if (p.kind == ast::NodeKind::IdentPat) {
+            nm = static_cast<const ast::IdentPat&>(p).name;
+        } else if (p.kind == ast::NodeKind::BindPat) {
+            nm = static_cast<const ast::BindPat&>(p).name;
+        }
+        if (nm.empty()) {
+            return;
+        }
+        if (Symbol* leaf = scopes_.current().lookup_mutable(nm)) {
+            leaf->provenance_root = root;
+            leaf->provenance_segment = std::move(segment);
+        }
+    };
+
+    // Case 1/2: the initializer is a `split` / `chunks` member-call on a place.
+    if (init->kind == ast::NodeKind::CallExpr) {
+        const auto& call = static_cast<const ast::CallExpr&>(*init);
+        if (call.callee != nullptr && call.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*call.callee);
+            if (mem.base != nullptr) {
+                const Symbol* parent = resolution_.symbol_of(mem.base.get());
+                if (parent != nullptr
+                    && (parent->kind == SymbolKind::Local
+                        || parent->kind == SymbolKind::Parameter)) {
+                    if (mem.member == "split" && pat->kind == ast::NodeKind::TuplePat) {
+                        const auto& tp = static_cast<const ast::TuplePat&>(*pat);
+                        for (std::size_t i = 0; i < tp.elements.size(); ++i) {
+                            if (tp.elements[i] != nullptr) {
+                                annotate(*tp.elements[i], parent, "@split" + std::to_string(i));
+                            }
+                        }
+                        return;
+                    }
+                    if (mem.member == "chunks") {
+                        annotate(*pat, parent, "@chunks");
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    // Case 3: a plain alias `let x = derived` where `derived` is itself a
+    // tracked sub-view. The alias inherits the same (root, segment), so it
+    // conflicts with the parent exactly as `derived` does.
+    if (init->kind == ast::NodeKind::IdentExpr) {
+        if (const Symbol* src = resolution_.symbol_of(init);
+            src != nullptr && src->provenance_root != nullptr) {
+            annotate(*pat, src->provenance_root, src->provenance_segment);
+        }
+    }
+}
+
 TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
     auto scrutinee_type = check_expr(*m.scrutinee);
 

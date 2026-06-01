@@ -275,9 +275,9 @@ void ExclusivityChecker::check_call(const ast::CallExpr& c) {
             }
             auto same_place = a.place.path == b.place.path;
             auto reason = same_place
-                              ? std::format("'{}' is borrowed twice with incompatible modes",
+                              ? std::format("{} is borrowed twice with incompatible modes",
                                             render_place(a.place))
-                              : std::format("'{}' and '{}' overlap with incompatible borrow modes",
+                              : std::format("{} and {} overlap with incompatible borrow modes",
                                             render_place(a.place),
                                             render_place(b.place));
             auto d = diag::Diagnostic::error(std::move(reason)).at(b.site);
@@ -315,6 +315,15 @@ std::optional<ExclusivityChecker::Place> ExclusivityChecker::as_place(const ast:
             return std::nullopt;
         }
         (void)ident;
+        // §5/§18.4 partition provenance: a sub-view binding (a `split` half or
+        // a `chunks` iterator) maps to a place rooted at its *parent* with a
+        // synthetic discriminator segment. A borrow of the sub-view then
+        // overlaps a borrow of the parent (the parent's empty path is a prefix
+        // of the segment), while disjoint split halves carry distinct segments
+        // and so don't overlap each other.
+        if (sym->provenance_root != nullptr) {
+            return Place{sym->provenance_root, {sym->provenance_segment}};
+        }
         return Place{sym, {}};
     }
     case ast::NodeKind::MemberExpr: {
@@ -353,10 +362,19 @@ bool ExclusivityChecker::conflict(Access a, Access b) noexcept {
 }
 
 std::string ExclusivityChecker::render_place(const Place& p) {
-    std::string s = (p.root != nullptr) ? p.root->name : std::string{"?"};
+    const std::string root = (p.root != nullptr) ? p.root->name : std::string{"?"};
+    // §5/§18.4 — a synthetic partition segment ("@split0" / "@chunks") renders
+    // as a readable "sub-view of '<root>'" rather than the internal spelling.
+    // The returned string is fully display-formatted (quotes included), so the
+    // call sites don't wrap it again.
+    if (p.path.size() == 1 && !p.path[0].empty() && p.path[0][0] == '@') {
+        return std::format("a sub-view of '{}'", root);
+    }
+    std::string s = "'" + root;
     for (const auto& seg : p.path) {
         s += seg;
     }
+    s += "'";
     return s;
 }
 

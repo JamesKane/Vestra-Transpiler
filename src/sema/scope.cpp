@@ -29,6 +29,16 @@ const Symbol* Scope::lookup(std::string_view name) const {
     return nullptr;
 }
 
+Symbol* Scope::lookup_mutable(std::string_view name) {
+    for (auto* s = this; s != nullptr; s = s->parent_) {
+        auto it = s->symbols_.find(std::string{name});
+        if (it != s->symbols_.end()) {
+            return &it->second;
+        }
+    }
+    return nullptr;
+}
+
 const Symbol* Scope::lookup_local(std::string_view name) const {
     auto it = symbols_.find(std::string{name});
     return it == symbols_.end() ? nullptr : &it->second;

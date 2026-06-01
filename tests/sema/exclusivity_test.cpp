@@ -200,3 +200,49 @@ TEST_CASE("the ownership example checks clean under exclusivity too") {
               .error_count
           == 0);
 }
+
+// ---- §5/§18.4 partition provenance -----------------------------------------
+
+namespace {
+// A MutSpan two-inout consumer plus a sink consumer, for partition tests.
+constexpr std::string_view SpanPrelude = R"(
+func mut_two(_ a: inout MutSpan[Int32], _ b: inout MutSpan[Int32]) {}
+func mut_one(_ a: inout MutSpan[Int32]) {}
+)";
+std::string with_span(std::string body) {
+    return std::string{SpanPrelude} + std::move(body);
+}
+}  // namespace
+
+TEST_CASE("inout borrow of a split half conflicts with inout borrow of the parent") {
+    auto r = check(with_span("func bad(_ s: MutSpan[Int32]) {\n"
+                             "    var sv = s\n"
+                             "    let (lo, hi) = sv.split(at: 2)\n"
+                             "    var lov = lo\n"
+                             "    mut_two(&sv, &lov)\n"
+                             "}\n"));
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("sub-view of") != std::string::npos);
+}
+
+TEST_CASE("the two halves of a split are disjoint and borrow independently") {
+    CHECK(check(with_span("func ok(_ s: MutSpan[Int32]) {\n"
+                          "    let (lo, hi) = s.split(at: 2)\n"
+                          "    var lov = lo\n"
+                          "    var hiv = hi\n"
+                          "    mut_two(&lov, &hiv)\n"
+                          "}\n"))
+              .error_count
+          == 0);
+}
+
+TEST_CASE("an alias of a split half inherits its parent provenance") {
+    auto r = check(with_span("func bad(_ s: MutSpan[Int32]) {\n"
+                             "    var sv = s\n"
+                             "    let (lo, hi) = sv.split(at: 2)\n"
+                             "    var alias = lo\n"
+                             "    mut_two(&sv, &alias)\n"
+                             "}\n"));
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("sub-view of") != std::string::npos);
+}

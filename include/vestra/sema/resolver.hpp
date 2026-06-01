@@ -228,6 +228,13 @@ private:
     // BindPat shape that LetStmt's single-name path uses.
     void bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type);
 
+    // §5/§18.4 partition provenance — if `init` is a `split(at:)` /
+    // `chunks(of:)` call on a place, or a plain alias `let x = derived` of an
+    // existing sub-view, annotate the binding(s) `pat` introduces with their
+    // parent-place provenance so the exclusivity checker can flag a borrow
+    // that aliases the parent. No-op otherwise.
+    void record_partition_provenance(const ast::Pattern* pat, const ast::Expr* init);
+
     // §4 Display-conformance check: is a value of this type usable in
     // a `"\(...)"` interpolation splice? Primitives (numerics, Bool,
     // Char, string-likes) are always OK; user types must derive

@@ -40,6 +40,18 @@ struct Symbol {
     // Visibility level recorded for top-level decls. For locals/params the
     // value is meaningless and stays at the default.
     ast::Visibility visibility = ast::Visibility::Internal;
+    // §5/§18.4 partition provenance. When this binding is a sub-view derived
+    // from a parent place — a `split(at:)` half or a `chunks(of:)` iterator —
+    // `provenance_root` is the parent's Symbol and `provenance_segment` is a
+    // synthetic discriminator ("@split0", "@split1", "@chunks"). The
+    // exclusivity checker maps the sub-view to a place rooted at the parent
+    // with that segment, so a borrow of the sub-view conflicts with a borrow
+    // of the parent, while disjoint split halves (distinct segments) do not
+    // conflict with each other. Stored on the Symbol (not a side table) so the
+    // resolver writer and the exclusivity reader reach it through the
+    // identical, scope-stable object.
+    const Symbol* provenance_root = nullptr;
+    std::string provenance_segment;
 };
 
 // A lexical scope. The owner uses `enter()` / `leave()` (or the RAII
@@ -60,6 +72,10 @@ public:
 
     // Look up by name, walking parents.
     [[nodiscard]] const Symbol* lookup(std::string_view name) const;
+
+    // Mutable lookup, walking parents — used to annotate a binding in place
+    // (e.g. §5/§18.4 partition provenance) after it has been inserted.
+    [[nodiscard]] Symbol* lookup_mutable(std::string_view name);
 
     // Look up in this scope only.
     [[nodiscard]] const Symbol* lookup_local(std::string_view name) const;
