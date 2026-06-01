@@ -392,21 +392,58 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    return *std::forward<Exp>(r);\n";
     hdr << "}\n\n";
     // §11 async runtime: a Vestra `async func` lowers to a C++20 coroutine
-    // returning Task<T>. v0.5 has no scheduler — a Task starts eagerly
-    // (initial_suspend is suspend_never) and, with no real suspension point,
-    // runs to completion synchronously; `co_await` on a completed Task just
-    // hands back its value, giving correct sequential semantics. `.get()`
-    // lets a non-async (C++) caller drive a Task to its result.
-    hdr << R"__task(template <class T>
+    // returning Task<T>. v0.5 runs on a cooperative single-threaded
+    // scheduler — a Task is *lazy* (initial_suspend is suspend_always): it
+    // doesn't start until it's awaited or driven. `co_await task` uses
+    // symmetric transfer to run the awaited task inline and continue when it
+    // completes; `.get()` lets a non-async (C++) caller drive a Task to its
+    // result, pumping the scheduler's ready queue so any tasks `spawn`ed
+    // along the way also run. Suspension is real now (a task can park itself
+    // on the scheduler and be resumed later), which is what blocking channel
+    // recv / timeout select build on; with no parking point a task still
+    // runs straight through, preserving the earlier sequential semantics.
+    hdr << R"__task(// Cooperative single-threaded scheduler: a FIFO ready queue of suspended
+// coroutine handles. A task parks itself by enqueueing its handle (e.g. a
+// blocking channel recv waiting for a sender) and is resumed when run() pops
+// it. run() drains the queue; pump() makes progress until a predicate holds.
+struct Scheduler {
+    std::deque<std::coroutine_handle<>> ready;
+    static Scheduler& instance() {
+        static thread_local Scheduler s;
+        return s;
+    }
+    void schedule(std::coroutine_handle<> h) { ready.push_back(h); }
+    void run() {
+        while (!ready.empty()) {
+            auto h = ready.front();
+            ready.pop_front();
+            if (h && !h.done()) { h.resume(); }
+        }
+    }
+};
+
+template <class T>
 struct Task {
     using __vstr_task_value = T;  // marks this as a Task for spawn_future
     struct promise_type {
         T value{};
+        std::coroutine_handle<> continuation{};  // resumed at final_suspend
         Task get_return_object() {
             return Task{std::coroutine_handle<promise_type>::from_promise(*this)};
         }
-        std::suspend_never initial_suspend() noexcept { return {}; }
-        std::suspend_always final_suspend() noexcept { return {}; }
+        std::suspend_always initial_suspend() noexcept { return {}; }
+        // Symmetric transfer: on completion, hand control to whoever awaited
+        // this task (its continuation), or to noop if it was driven directly.
+        struct FinalAwaiter {
+            [[nodiscard]] bool await_ready() const noexcept { return false; }
+            std::coroutine_handle<> await_suspend(
+                std::coroutine_handle<promise_type> h) noexcept {
+                auto c = h.promise().continuation;
+                return c ? c : std::noop_coroutine();
+            }
+            void await_resume() const noexcept {}
+        };
+        FinalAwaiter final_suspend() noexcept { return {}; }
         void return_value(T v) { value = std::move(v); }
         void unhandled_exception() { std::abort(); }
     };
@@ -421,19 +458,40 @@ struct Task {
     Task& operator=(const Task&) = delete;
     ~Task() { if (h_) { h_.destroy(); } }
     [[nodiscard]] bool await_ready() const noexcept { return !h_ || h_.done(); }
-    void await_suspend(std::coroutine_handle<>) const noexcept {}
+    // Awaiting a task records the caller as the task's continuation and
+    // transfers control into the task (symmetric transfer — no stack growth).
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
+        h_.promise().continuation = caller;
+        return h_;
+    }
     T await_resume() { return std::move(h_.promise().value); }
-    [[nodiscard]] T get() { return std::move(h_.promise().value); }
+    // Drive to completion from a non-async caller: start the task if it
+    // hasn't begun, then pump the scheduler until it finishes.
+    [[nodiscard]] T get() {
+        if (h_ && !h_.done()) { h_.resume(); }
+        while (h_ && !h_.done()) { Scheduler::instance().run(); }
+        return std::move(h_.promise().value);
+    }
 };
 
 template <>
 struct Task<void> {
     struct promise_type {
+        std::coroutine_handle<> continuation{};
         Task get_return_object() {
             return Task{std::coroutine_handle<promise_type>::from_promise(*this)};
         }
-        std::suspend_never initial_suspend() noexcept { return {}; }
-        std::suspend_always final_suspend() noexcept { return {}; }
+        std::suspend_always initial_suspend() noexcept { return {}; }
+        struct FinalAwaiter {
+            [[nodiscard]] bool await_ready() const noexcept { return false; }
+            std::coroutine_handle<> await_suspend(
+                std::coroutine_handle<promise_type> h) noexcept {
+                auto c = h.promise().continuation;
+                return c ? c : std::noop_coroutine();
+            }
+            void await_resume() const noexcept {}
+        };
+        FinalAwaiter final_suspend() noexcept { return {}; }
         void return_void() {}
         void unhandled_exception() { std::abort(); }
     };
@@ -448,30 +506,51 @@ struct Task<void> {
     Task& operator=(const Task&) = delete;
     ~Task() { if (h_) { h_.destroy(); } }
     [[nodiscard]] bool await_ready() const noexcept { return !h_ || h_.done(); }
-    void await_suspend(std::coroutine_handle<>) const noexcept {}
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
+        h_.promise().continuation = caller;
+        return h_;
+    }
     void await_resume() const noexcept {}
-    void get() const noexcept {}
+    void get() {
+        if (h_ && !h_.done()) { h_.resume(); }
+        while (h_ && !h_.done()) { Scheduler::instance().run(); }
+    }
 };
 
-// §11 Future<T>: what `spawn` yields. v0.5 has no scheduler, so the value
-// is already computed and held by value; the Future is an always-ready
-// awaiter (so `co_await future` hands back the T) and also exposes `.get()`
-// for a non-async caller. `spawn_future` boxes the spawned expression —
-// driving an async-call `Task<T>` to completion, or storing a plain T.
+// §11 Future<T>: what `spawn` yields. The Future owns the spawned Task
+// (keeping its coroutine frame alive) and drives it to a result the first
+// time it is forced — by `await future` in an async context, or `.get()`
+// from a non-async caller. v0.5 is single-threaded and cooperative, so a
+// spawned task makes no progress until it is forced; forcing it pumps the
+// scheduler so any tasks it in turn spawns also run. A plain (non-Task)
+// spawn argument is already a value and is stored directly.
 template <class T>
 struct Future {
-    T value_;
+    std::optional<Task<T>> task_;  // present until forced
+    std::optional<T> value_;       // the resolved result, cached once forced
+    explicit Future(Task<T> t) : task_(std::move(t)) {}
+    explicit Future(T v) : value_(std::move(v)) {}
+    T force() {
+        if (!value_.has_value()) {
+            value_ = task_->get();
+            task_.reset();
+        }
+        return *value_;
+    }
     [[nodiscard]] bool await_ready() const noexcept { return true; }
     void await_suspend(std::coroutine_handle<>) const noexcept {}
-    T await_resume() { return std::move(value_); }
-    [[nodiscard]] T get() { return std::move(value_); }
+    T await_resume() { return force(); }
+    [[nodiscard]] T get() { return force(); }
 };
 
+// `spawn e`: if e is a Task<T> (an async call), hand back a Future<T> owning
+// the (not-yet-started) task; otherwise wrap the plain value.
 template <class E>
 auto spawn_future(E&& e) {
     using D = std::decay_t<E>;
     if constexpr (requires { typename D::__vstr_task_value; }) {
-        return Future<typename D::__vstr_task_value>{std::move(e).get()};
+        using V = typename D::__vstr_task_value;
+        return Future<V>{std::forward<E>(e)};
     } else {
         return Future<D>{std::forward<E>(e)};
     }

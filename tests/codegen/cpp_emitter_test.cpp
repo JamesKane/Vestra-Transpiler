@@ -2321,6 +2321,20 @@ TEST_CASE("async func lowers to a Task<T> coroutine with co_return / co_await") 
     CHECK(f.out.source.find("co_return co_await (leaf(1));") != std::string::npos);
 }
 
+TEST_CASE("the async runtime ships a cooperative scheduler with lazy tasks") {
+    // §11 scheduler: Task is lazy (initial_suspend == suspend_always) and the
+    // preamble carries a single-threaded ready-queue Scheduler; completion
+    // uses symmetric transfer through a `continuation` handle. (Earlier the
+    // model was eager / suspend_never with no scheduler.)
+    SemaEmitFixture f("async func leaf(_ x: Int32) -> Int32 { return x + 1 }\n");
+    CHECK(f.out.header.find("struct Scheduler {") != std::string::npos);
+    CHECK(f.out.header.find("std::deque<std::coroutine_handle<>> ready;") != std::string::npos);
+    CHECK(f.out.header.find("std::suspend_always initial_suspend()") != std::string::npos);
+    CHECK(f.out.header.find("std::coroutine_handle<> continuation") != std::string::npos);
+    // The eager spelling is gone.
+    CHECK(f.out.header.find("std::suspend_never initial_suspend()") == std::string::npos);
+}
+
 TEST_CASE("a void async func lowers to Task<void> with a trailing co_return") {
     SemaEmitFixture f("async func leaf() -> Int32 { return 1 }\n"
                       "async func touch() { await leaf() }\n");
