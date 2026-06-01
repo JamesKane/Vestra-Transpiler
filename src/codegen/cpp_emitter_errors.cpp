@@ -341,7 +341,53 @@ void CppEmitter::emit_match_in_lambda(std::ostream& os, const ast::MatchExpr& m,
     auto scrutinee_type = resolution_->type_of(m.scrutinee.get());
     if (scrutinee_type == nullptr || scrutinee_type->kind() != sema::TypeKind::Enum
         || scrutinee_type->nominal_decl() == nullptr) {
-        unsupported(os, "match over non-enum scrutinee in cond-hoist", m.range);
+        // §8/§9 value-scrutinee match in a cond-hoist: an if-else-if chain
+        // over the per-arm predicates, binding the scrutinee to a uniquely
+        // named local so a `try` in an arm body returns from the enclosing
+        // cond-hoist lambda (return_value=true), mirroring the enum forms
+        // below. Reuses the same predicate / binding helpers as the ordinary
+        // value-scrutinee lowering (emit_match_value_scrutinee).
+        write_indent(os, indent);
+        os << "auto&& __vstr_mh = ";
+        emit_expr(os, *m.scrutinee);
+        os << ";\n";
+        bool first = true;
+        const ast::MatchArm* default_arm = nullptr;
+        for (const auto& arm : m.arms) {
+            if (arm.is_default
+                || (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::WildcardPat)) {
+                default_arm = &arm;
+                continue;
+            }
+            if (arm.pattern == nullptr || arm.body == nullptr) {
+                continue;
+            }
+            write_indent(os, indent);
+            os << (first ? "if (" : "else if (");
+            emit_pat_predicate(os, *arm.pattern, "__vstr_mh");
+            if (arm.guard) {
+                os << " && (";
+                emit_expr(os, *arm.guard);
+                os << ")";
+            }
+            os << ") {\n";
+            emit_pat_bindings(os, *arm.pattern, "__vstr_mh", indent + 1);
+            write_indent(os, indent + 1);
+            emit_stmt_expr(os, *arm.body, /*return_value=*/true);
+            write_indent(os, indent);
+            os << "}\n";
+            first = false;
+        }
+        write_indent(os, indent);
+        if (default_arm != nullptr && default_arm->body != nullptr) {
+            os << (first ? "{\n" : "else {\n");
+            write_indent(os, indent + 1);
+            emit_stmt_expr(os, *default_arm->body, /*return_value=*/true);
+            write_indent(os, indent);
+            os << "}\n";
+        } else {
+            os << (first ? "std::unreachable();\n" : "else { std::unreachable(); }\n");
+        }
         return;
     }
     const auto& enum_decl = static_cast<const ast::EnumDecl&>(*scrutinee_type->nominal_decl());

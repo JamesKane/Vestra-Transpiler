@@ -74,3 +74,17 @@ func area(_ s: Shape) throws(E) -> Int32 {
         case .empty:               0
     }
 }
+
+// ---- value (non-enum) scrutinee with try in arms ----
+
+// An integer scrutinee can't use switch (arbitrary patterns) or
+// std::visit (not a variant), so the cond-hoist emits an if-else-if
+// chain over the arm predicates, each arm `return`ing into the
+// cond-hoist lambda so the `try` propagates.
+func classify(_ n: Int32) throws(E) -> Int32 {
+    return match n {
+        case 0:      defaultValue()
+        case 1 | 2:  try tryDouble(n)
+        default:     throw E.bad
+    }
+}

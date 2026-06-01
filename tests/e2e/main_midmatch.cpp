@@ -62,6 +62,20 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // --- value (non-enum) scrutinee -------------------------------
+    if (classify(0).value() != 0) {  // case 0 → defaultValue() = 0
+        std::println("classify 0 wrong");
+        return EXIT_FAILURE;
+    }
+    if (classify(1).value() != 2 || classify(2).value() != 4) {  // 1|2 → tryDouble(n)
+        std::println("classify or-arm wrong");
+        return EXIT_FAILURE;
+    }
+    if (classify(9).has_value()) {  // default → throw
+        std::println("classify default leaked");
+        return EXIT_FAILURE;
+    }
+
     std::println("midmatch OK");
     return EXIT_SUCCESS;
 }

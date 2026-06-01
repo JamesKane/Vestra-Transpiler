@@ -2072,6 +2072,32 @@ TEST_CASE("payloaded match with try-in-arms uses std::holds_alternative chain") 
     CHECK(f.out.source.find("std::get<Shape::empty_t>", pos_empty) > pos_unreach);
 }
 
+TEST_CASE("value-scrutinee match with try-in-arms hoists via an if-else-if chain") {
+    // A non-enum (integer) scrutinee in a cond-hoist context: the std::visit
+    // and switch forms don't apply, so emit_match_in_lambda lowers to an
+    // if-else-if chain over the per-arm predicates, with each arm body
+    // return_value'd so a `try` propagates from the cond-hoist lambda.
+    SemaEmitFixture f("enum E { case bad }\n"
+                      "func parse(_ x: Int32) throws(E) -> Int32 { return x }\n"
+                      "func via(_ n: Int32, _ a: Int32) throws(E) -> Int32 {\n"
+                      "    return match n {\n"
+                      "        case 0: try parse(a)\n"
+                      "        default: 0\n"
+                      "    }\n"
+                      "}\n");
+    // Lifted into a cond-hoist lambda returning expected<T,E>.
+    CHECK(f.out.source.find("[&]() -> std::expected<std::int32_t, E>") != std::string::npos);
+    // If-chain over the scrutinee bound to the cond-hoist-local name.
+    CHECK(f.out.source.find("auto&& __vstr_mh = n;") != std::string::npos);
+    CHECK(f.out.source.find("if ((__vstr_mh == 0))") != std::string::npos);
+    // The try arm propagates from the cond-hoist lambda, not a nested one.
+    CHECK(f.out.source.find("return std::unexpected{__vstr_r.error()};") != std::string::npos);
+    // No std::visit on this path.
+    CHECK(f.out.source.find("std::visit([&](auto&& __vstr_alt)") == std::string::npos);
+    // No unsupported marker leaked.
+    CHECK(f.out.source.find("does not yet support") == std::string::npos);
+}
+
 TEST_CASE("try inside a sub-expression of an if branch fires the branch-local hoist") {
     // The branch body `(try f()) + 1` is a BinaryExpr — emit_stmt_expr's
     // generic tail now collects local try-hoists and pre-emits them
