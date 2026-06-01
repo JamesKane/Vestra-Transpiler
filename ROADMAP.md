@@ -219,11 +219,14 @@ rather than what the build linked).
 
 ### Pattern-matching + try carry-forwards (§8 / §10)
 
-- Nested tuple destructuring codegen: `let ((a, b), c) = …` type-checks
-  in sema but codegen binds only the outer level (C++ structured
-  bindings are single-level; needs a sibling-statement hoist).
-- Or-patterns with bindings, payloaded-enum or-patterns, and string
-  literal patterns (the `ec26138` carry-forwards).
+- ~~Nested tuple destructuring codegen~~ — shipped: `let ((a, b), c) = …`
+  lowers via a placeholder + sibling `auto [a, b] = __vstr_tpN`
+  structured-binding hoist (verified end to end).
+- ~~String-literal patterns~~ — shipped (`f1a6637`): the §4 string lattice
+  (StrConst → Str → String) lets a literal match a Str/String scrutinee;
+  the value-scrutinee if-chain lowering already handled the compare.
+- Or-patterns with bindings and payloaded-enum or-patterns (the remaining
+  `ec26138` carry-forwards).
 - Mid-expression `try` inside an if/match arm: general per-branch
   hoist contexts (the `e3ad4ec` walk refuses to descend into
   conditional contexts).
