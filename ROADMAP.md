@@ -60,21 +60,27 @@ swings (async, macros, ownership phase 2) or the annex deepening.
 
 ### 2. `async` / `spawn` / `select` / `parallel` (§11) (multi-session)
 
-Four slices shipped: `async func` + `await` over a `__vstr::Task<T>`
-coroutine shim (the host libc++ ships `<execution>` policies but not
-P2300 senders), `spawn` → `Future[T]` consumed by `await`, `select` over
-future arms (an `await_ready` IIFE), and `parallel` (a builtin that
-splits a `MutSpan[T]` into N disjoint sub-views and runs a non-escaping
-worker on each). v0.5 Task / Future / select / parallel are all
-synchronous (eager, no scheduler), giving correct sequential semantics
-with no real suspension. Remaining: channel recv/send and timeout
-`select` arms (need `Channel[T]` + a scheduler); async + throws
+Slices shipped: `async func` + `await` over a `__vstr::Task<T>` coroutine
+shim (the host libc++ ships `<execution>` policies but not P2300
+senders), `spawn` → `Future[T]` consumed by `await`, `select` over future
+arms (an `await_ready` IIFE), `parallel` (a builtin that splits a
+`MutSpan[T]` into N disjoint sub-views and runs a non-escaping worker on
+each), and — **scheduler slice 1** (`6cb4df6`) — a real cooperative
+single-threaded scheduler with *lazy* Task (initial_suspend ==
+suspend_always) and symmetric-transfer completion, replacing the earlier
+eager/suspend_never model. The codegen lowering is unchanged; the
+inversion lives entirely in the runtime preamble. With no parking point a
+task still runs straight through when forced, so the prior sequential
+semantics hold and all three §11 e2e demos pass unchanged.
+
+Scheduler slices remaining: blocking channel `recv` (suspends until a
+sender runs) + channel/timeout `select` arms — the first observable use
+of real suspension; a parking point so a `spawn`ed task makes progress
+before it is awaited. Other §11 carry-forwards: async + throws
 (`Task<expected<T,E>>`); spawn capture-by-value / move semantics +
 non-escapable futures; spawn of a void function; the `using Async` gate
-on `parallel`; a real scheduler / actual suspension; and the "no borrow
-across await" §11 rule. `Channel[T]` (roadmap #3, which unblocks the
-remaining `select` arms) is the natural next §11 step; senders/receivers
-can replace the coroutine shims if/when libc++ ships P2300.
+on `parallel`; and the "no borrow across await" rule. (senders/receivers
+can replace the coroutine shims if/when libc++ ships P2300.)
 
 ### 3. `Channel[T]` + `parallel` library (§11) — shipped
 
