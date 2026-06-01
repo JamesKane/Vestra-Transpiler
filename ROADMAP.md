@@ -103,7 +103,7 @@ phase 7.
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 
 Phase 1 (`b0727b9` / `e77f2e0`) is single-pass and linear. Phase 2 is
-substantially complete. Shipped: the `split(at:)` partition primitive on
+complete. Shipped: the `split(at:)` partition primitive on
 Span/MutSpan; **branch-aware flow merging** (each `if`/`match` branch
 forks and merges at the join); the iterator partitioner **`chunks(of: n)`**
 (a lazy `ChunkIter` over consecutive disjoint sub-views); and the full
@@ -120,14 +120,20 @@ Also shipped: **chunks as a first-class value** — a `chunks(of: n)`
 result can be bound and accessed randomly (`.count`, `cs[i]`), not only
 consumed by `for`.
 
-Remaining (all exclusivity-precision; the runnable surface is done):
-cross-statement borrow liveness (exclusivity is per-call only today) and
-partition *provenance* in `as_place` (proving same-root sub-views
-disjoint). Deferred analysis follow-ons: linear-in-loops soundness (the
-loop body is walked once), the larger destructure/deinit terminal form
-for linear values (sink params cover the common case today), and generic
-linear structs / linear obligations carried through wrapper types
-(Optional/Span/Box).
+Also shipped: **partition provenance** in the exclusivity checker — a
+`split(at:)` half or `chunks(of:)` iterator records its parent place on
+the bound Symbol, so an `inout` borrow of a sub-view that aliases the
+parent is rejected while the two halves of a split still borrow
+independently.
+
+Ownership/exclusivity phase 2 is **complete**. General cross-statement
+borrow liveness was moot (v0.5 has no persistent borrow form — `&x` is
+admitted only directly in argument position, so no borrow's lifetime
+spans statements). Deferred analysis follow-ons, none blocking: linear-in-
+loops soundness (the loop body is walked once), the larger
+destructure/deinit terminal form for linear values (sink params cover the
+common case today), and generic linear structs / linear obligations
+carried through wrapper types (Optional/Span/Box).
 
 ### 6. Capability narrowing + audit trail
 
