@@ -56,6 +56,12 @@ int main() {
     if (quadrant(std::tuple<std::int32_t, std::int32_t>{3, 4}) != 3)
         return EXIT_FAILURE;
 
+    // --- string-literal scrutinee ---
+    if (answer("yes") != 1 || answer("no") != 0 || answer("maybe") != -1) {
+        std::println("string match wrong");
+        return EXIT_FAILURE;
+    }
+
     std::println("match patterns OK");
     return EXIT_SUCCESS;
 }

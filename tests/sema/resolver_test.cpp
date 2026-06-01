@@ -322,6 +322,52 @@ TEST_CASE("match arms with mismatched result types are reported") {
     CHECK(r.error_count >= 1);
 }
 
+// ---- §4 string lattice (StrConst -> Str -> String) -------------------------
+
+TEST_CASE("a string literal is assignable to a String binding") {
+    CHECK(check_errors("func f() -> String {\n"
+                       "    let s: String = \"hi\"\n"
+                       "    return s\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("a string literal is assignable to a Str binding") {
+    CHECK(check_errors("func f() -> Str {\n"
+                       "    let s: Str = \"hi\"\n"
+                       "    return s\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("a Str widens to a String but not the reverse") {
+    CHECK(check_errors("func widen(_ v: Str) -> String { return v }\n") == 0);
+    auto r = check_detail("func narrow(_ v: String) -> Str { return v }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("String") != std::string::npos);
+}
+
+TEST_CASE("string-literal patterns match a string scrutinee") {
+    CHECK(check_errors("func classify(_ s: Str) -> Int32 {\n"
+                       "    return match s {\n"
+                       "        case \"yes\": 1\n"
+                       "        case \"no\": 0\n"
+                       "        default: -1\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("string-literal patterns match a String scrutinee too") {
+    CHECK(check_errors("func classify(_ s: String) -> Int32 {\n"
+                       "    return match s {\n"
+                       "        case \"yes\": 1\n"
+                       "        default: -1\n"
+                       "    }\n"
+                       "}\n")
+          == 0);
+}
+
 // ---- §9 Optional ----------------------------------------------------------
 
 TEST_CASE("nil is assignable to any Optional<T> slot") {

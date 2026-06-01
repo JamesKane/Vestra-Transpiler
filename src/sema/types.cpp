@@ -843,6 +843,34 @@ bool TypeArena::assignable(TypePtr from, TypePtr to) noexcept {
         && equal(from->parts()[0], to->inner())) {
         return true;
     }
+    // §4 string lattice. A string literal is `StrConst`; the borrowed view
+    // `Str` and the owning `String` are wider. Every narrowing→widening step
+    // is a safe C++ conversion: StrConst/Str both lower to std::string_view
+    // (identity), and a string_view flows into std::string via its converting
+    // constructor. So StrConst → Str → String and StrConst → String all hold;
+    // the reverse (String → Str) does not, since a string_view borrowing a
+    // temporary std::string would dangle.
+    {
+        auto is_strish = [](TypeKind k) {
+            return k == TypeKind::StrConst || k == TypeKind::Str || k == TypeKind::String;
+        };
+        auto rank = [](TypeKind k) -> int {
+            switch (k) {
+            case TypeKind::StrConst:
+                return 0;
+            case TypeKind::Str:
+                return 1;
+            case TypeKind::String:
+                return 2;
+            default:
+                return -1;
+            }
+        };
+        if (is_strish(from->kind()) && is_strish(to->kind())
+            && rank(from->kind()) <= rank(to->kind())) {
+            return true;
+        }
+    }
     return equal(from, to);
 }
 

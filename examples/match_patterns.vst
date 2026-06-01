@@ -69,3 +69,16 @@ func quadrant(_ p: (Int32, Int32)) -> Int32 {
         default: 3
     }
 }
+
+// --- string-literal scrutinee --------------------------------------------
+
+// §4 string lattice: a string literal (StrConst) matches a Str / String
+// scrutinee. Non-enum scrutinee, so this lowers to an if-else-if chain of
+// std::string_view equality comparisons.
+func answer(_ s: Str) -> Int32 {
+    return match s {
+        case "yes": 1
+        case "no": 0
+        default: -1
+    }
+}
