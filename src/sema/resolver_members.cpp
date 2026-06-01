@@ -613,6 +613,12 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m, TypePtr expected) {
     if (lookup_base->kind() == TypeKind::MmioRegion && m.member == "count") {
         return finish(types_->primitive(TypeKind::Int));
     }
+    // §5/§18.4 ChunkIter as a first-class value: `.count: Int` is the number
+    // of chunks, so a `chunks(of:)` result can be indexed in a counted loop,
+    // not only consumed by `for`.
+    if (lookup_base->kind() == TypeKind::ChunkIter && m.member == "count") {
+        return finish(types_->primitive(TypeKind::Int));
+    }
 
     // Field on a struct.
     if (auto field_type = lookup_field(lookup_base, m.member)) {

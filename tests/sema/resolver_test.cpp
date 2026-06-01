@@ -2472,3 +2472,27 @@ TEST_CASE("chunks rejects a label other than 'of'") {
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("chunks expects the label 'of'") != std::string::npos);
 }
+
+TEST_CASE("a chunks result is a first-class value: .count and indexing") {
+    CHECK(check_errors("func f(_ s: Span[Int32], _ n: Int) -> Int32 {\n"
+                       "    let cs = s.chunks(of: n)\n"
+                       "    var total: Int32 = 0\n"
+                       "    var i = 0\n"
+                       "    while i < cs.count {\n"
+                       "        let c = cs[i]\n"
+                       "        total = total + c.count\n"
+                       "        i = i + 1\n"
+                       "    }\n"
+                       "    return total\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("indexing a chunks result yields a mutable sub-view for a MutSpan") {
+    CHECK(check_errors("func f(_ s: MutSpan[Int32], _ n: Int) {\n"
+                       "    let cs = s.chunks(of: n)\n"
+                       "    let c = cs[0]\n"
+                       "    c[0] = 9\n"
+                       "}\n")
+          == 0);
+}

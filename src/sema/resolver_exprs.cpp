@@ -652,6 +652,11 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         case TypeKind::MutSpan:
             t = base_t->inner();
             break;
+        // §5/§18.4 indexing a ChunkIter yields one sub-view (its inner Span /
+        // MutSpan type) — the random-access counterpart to `for c in chunks`.
+        case TypeKind::ChunkIter:
+            t = base_t->inner();
+            break;
         default:
             error_at(e.range, std::format("type {} is not indexable", base_t->describe()));
             t = types_->error();

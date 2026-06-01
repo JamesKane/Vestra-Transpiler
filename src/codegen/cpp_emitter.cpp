@@ -527,6 +527,20 @@ struct Chunks {
         off += len;
         return piece;
     }
+    // First-class (non-mutating) accessors: count() is the number of chunks
+    // (ceil(size/step)); operator[] returns the i-th sub-view. Neither touches
+    // the `off` cursor, so random access and a `for` consume are independent
+    // (the for-loop copies the struct anyway). The index is the caller's
+    // responsibility, matching std::span's unchecked operator[].
+    [[nodiscard]] std::intptr_t count() const {
+        if (step == 0) { return 0; }
+        return static_cast<std::intptr_t>((data.size() + step - 1) / step);
+    }
+    [[nodiscard]] S operator[](std::size_t i) const {
+        const std::size_t start = i * step;
+        const std::size_t len = (start + step <= data.size()) ? step : (data.size() - start);
+        return data.subspan(start, len);
+    }
 };
 
 // §11 Channel<T>: a typed FIFO queue. `send` moves a value in; `recv`
@@ -3428,6 +3442,16 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 break;
             }
         }
+        // §5/§18.4 ChunkIter `.count` → the runtime struct's count() accessor.
+        if (resolution_ != nullptr && m.member == "count") {
+            auto bt = resolution_->type_of(m.base.get());
+            if (bt != nullptr && bt->kind() == sema::TypeKind::ChunkIter) {
+                os << "(";
+                emit_expr(os, *m.base);
+                os << ").count()";
+                break;
+            }
+        }
         // §A4 (§14.9.2 / §14.9.3) Atomic method renames: the Vestra
         // camelCase spellings `fetchAdd` / `fetchSub` / `fetchAnd` /
         // `fetchOr` / `fetchXor` lower to std::atomic's snake_case
@@ -3468,9 +3492,13 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         bool span_base = false;
         if (resolution_ != nullptr && ix.base != nullptr) {
             auto bt = resolution_->type_of(ix.base.get());
+            // Span / MutSpan operator[] and ChunkIter operator[] both take
+            // std::size_t — cast the (signed) Int index to keep
+            // -Wsign-conversion quiet.
             span_base =
                 bt != nullptr
-                && (bt->kind() == sema::TypeKind::Span || bt->kind() == sema::TypeKind::MutSpan);
+                && (bt->kind() == sema::TypeKind::Span || bt->kind() == sema::TypeKind::MutSpan
+                    || bt->kind() == sema::TypeKind::ChunkIter);
         }
         emit_expr(os, *ix.base);
         os << "[";

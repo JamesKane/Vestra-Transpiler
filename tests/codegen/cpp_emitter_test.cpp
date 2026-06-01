@@ -2400,3 +2400,17 @@ TEST_CASE("chunks(of:) lowers to a __vstr::Chunks iterator in a for-loop") {
     CHECK(f.out.header.find("struct Chunks {") != std::string::npos);
     CHECK(f.out.source.find("__vstr::Chunks{s, static_cast<std::size_t>(n)}") != std::string::npos);
 }
+
+TEST_CASE("a chunks result used as a value lowers .count to count() and indexes it") {
+    SemaEmitFixture f("func g(_ s: Span[Int32], _ n: Int) -> Int32 {\n"
+                      "    let cs = s.chunks(of: n)\n"
+                      "    let c = cs[0]\n"
+                      "    return cs.count + c.count\n"
+                      "}\n");
+    // The Chunks struct gains the first-class accessors in the runtime header.
+    CHECK(f.out.header.find("count() const") != std::string::npos);
+    CHECK(f.out.header.find("operator[](std::size_t i) const") != std::string::npos);
+    // `.count` on the ChunkIter value lowers to count(); indexing casts.
+    CHECK(f.out.source.find("(cs).count()") != std::string::npos);
+    CHECK(f.out.source.find("cs[static_cast<std::size_t>(") != std::string::npos);
+}

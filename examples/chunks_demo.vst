@@ -39,3 +39,22 @@ func doubleChunks(_ s: MutSpan[Int32], _ n: Int) {
         }
     }
 }
+
+// §5/§18.4 — a chunks(of:) result is a first-class value: bind it, ask for
+// its `.count`, and index it. Here we sum only the even-indexed chunks,
+// which a forward-only `for` loop can't express without its own counter.
+func sumEvenChunks(_ s: Span[Int32], _ n: Int) -> Int32 {
+    let cs = s.chunks(of: n)
+    var total: Int32 = 0
+    var c = 0
+    while c < cs.count {
+        let chunk = cs[c]
+        var i = 0
+        while i < chunk.count {
+            total = total + chunk[i]
+            i = i + 1
+        }
+        c = c + 2
+    }
+    return total
+}

@@ -23,6 +23,10 @@ int main() {
     // A chunk size of 0 yields no chunks: sum 0.
     assert(cd::sumChunks(std::span<const std::int32_t>(a), 0) == 0);
 
+    // first-class: chunks of 2 are [1,2] [3,4] [5]; even-indexed (0, 2) are
+    // [1,2] and [5] -> 1+2+5 = 8, via random access (.count + [])
+    assert(cd::sumEvenChunks(std::span<const std::int32_t>(a), 2) == 8);
+
     // Mutate every element through the disjoint mutable chunks.
     cd::doubleChunks(std::span<std::int32_t>(a), 2);
     assert(a[0] == 2 && a[1] == 4 && a[2] == 6 && a[3] == 8 && a[4] == 10);
