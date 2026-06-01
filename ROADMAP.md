@@ -116,14 +116,18 @@ itself linear, closed to a fixpoint), and **sink parameters as terminal
 sinks** (taking ownership counts as consuming, so an empty consumer ends a
 linear chain).
 
-Remaining (all analysis-precision; the runnable surface is done): chunks
-as a first-class value (indexing, `.count` — today it's for-loop-only);
-cross-statement borrow liveness (exclusivity is per-call only today);
-partition *provenance* in `as_place`; linear-in-loops soundness (the loop
-body is walked once); and the larger destructure/deinit terminal form for
-linear values (sink params cover the common case today). Generic linear
-structs and linear obligations carried through wrapper types
-(Optional/Span/Box) are also follow-ons.
+Also shipped: **chunks as a first-class value** — a `chunks(of: n)`
+result can be bound and accessed randomly (`.count`, `cs[i]`), not only
+consumed by `for`.
+
+Remaining (all exclusivity-precision; the runnable surface is done):
+cross-statement borrow liveness (exclusivity is per-call only today) and
+partition *provenance* in `as_place` (proving same-root sub-views
+disjoint). Deferred analysis follow-ons: linear-in-loops soundness (the
+loop body is walked once), the larger destructure/deinit terminal form
+for linear values (sink params cover the common case today), and generic
+linear structs / linear obligations carried through wrapper types
+(Optional/Span/Box).
 
 ### 6. Capability narrowing + audit trail
 
