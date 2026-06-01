@@ -217,21 +217,24 @@ that walks the *generated* artifact's external-symbol references
 (today's `vestra audit` is source-level, seeing what the user declared
 rather than what the build linked).
 
-### Pattern-matching + try carry-forwards (§8 / §10)
+### Pattern-matching + try carry-forwards (§8 / §10) — complete
 
-- ~~Nested tuple destructuring codegen~~ — shipped: `let ((a, b), c) = …`
-  lowers via a placeholder + sibling `auto [a, b] = __vstr_tpN`
-  structured-binding hoist (verified end to end).
-- ~~String-literal patterns~~ — shipped (`f1a6637`): the §4 string lattice
+All four carry-forwards are shipped:
+
+- ~~Nested tuple destructuring codegen~~ — `let ((a, b), c) = …` lowers via
+  a placeholder + sibling `auto [a, b] = __vstr_tpN` structured-binding
+  hoist (verified end to end).
+- ~~String-literal patterns~~ (`f1a6637`) — the §4 string lattice
   (StrConst → Str → String) lets a literal match a Str/String scrutinee;
   the value-scrutinee if-chain lowering already handled the compare.
-- ~~Or-patterns over payloaded-enum cases~~ — shipped (`df9ef1d`): each
-  alternative of `case .a(x) | .b(x):` expands into its own constexpr-if
-  branch in the std::visit lowering, sharing the arm body and binding its
-  own payload field to the common name.
-- Mid-expression `try` inside an if/match arm: general per-branch
-  hoist contexts (the `e3ad4ec` walk refuses to descend into
-  conditional contexts). This is the last open item in this section.
+- ~~Or-patterns over payloaded-enum cases~~ (`df9ef1d`) — each alternative
+  of `case .a(x) | .b(x):` expands into its own constexpr-if branch in the
+  std::visit lowering, sharing the arm body and binding its own payload
+  field to the common name.
+- ~~Mid-expression `try` inside an if/match arm~~ (`9a08a57`) — the if-expr
+  and enum-match cond-hoist forms already worked; the last gap was a `try`
+  inside a *value-scrutinee* match arm, now lowered as an if-else-if chain
+  inside the cond-hoist lambda so propagation escapes correctly.
 
 ---
 
