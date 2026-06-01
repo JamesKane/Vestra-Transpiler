@@ -32,6 +32,14 @@ int main() {
         return EXIT_FAILURE;
     }
 
+    // §17.7 or-pattern over payloaded-enum cases: keyDown / keyUp share the
+    // arm body and each binds its own payload field to `n`.
+    if (keycode(Event{Event::keyDown_t{65}}) != 65 || keycode(Event{Event::keyUp_t{66}}) != 66
+        || keycode(Event{Event::quit_t{}}) != -1) {
+        std::println("or-pattern keycode dispatch wrong");
+        return EXIT_FAILURE;
+    }
+
     std::println("match OK: total = {:.6f}", total);
     return EXIT_SUCCESS;
 }

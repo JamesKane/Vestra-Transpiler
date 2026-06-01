@@ -284,26 +284,56 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
     // branches for the same case_t leave the second dead. Grouping
     // up front lets each case's arm list run as an ordinary
     // if-else chain at runtime.
-    std::vector<std::pair<std::string, std::vector<const ast::MatchArm*>>> groups;
+    // Each case group entry pairs the source arm (for its body + guard) with
+    // the specific EnumPat it matched. For a plain `case .a(x):` the pattern
+    // *is* the EnumPat; for an or-pattern `case .a(x) | .b(x):` each
+    // alternative is its own EnumPat that shares the arm's body, so the arm
+    // appears once per case it covers (each binding its own payload field to
+    // the common name sema validated).
+    struct ArmCase {
+        const ast::MatchArm* arm;
+        const ast::EnumPat* ep;
+    };
+    std::vector<std::pair<std::string, std::vector<ArmCase>>> groups;
     const ast::MatchArm* default_arm = nullptr;
+    auto add_case = [&](const ast::MatchArm& arm, const ast::EnumPat& ep) {
+        auto it = std::find_if(
+            groups.begin(), groups.end(), [&](const auto& g) { return g.first == ep.case_name; });
+        if (it == groups.end()) {
+            groups.push_back({ep.case_name, {ArmCase{&arm, &ep}}});
+        } else {
+            it->second.push_back(ArmCase{&arm, &ep});
+        }
+    };
     for (const auto& arm : m.arms) {
         if (arm.is_default
             || (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::WildcardPat)) {
             default_arm = &arm;
             continue;
         }
-        if (arm.pattern == nullptr || arm.pattern->kind != ast::NodeKind::EnumPat) {
-            unsupported(os, "match arm pattern over payloaded enum", m.range);
+        if (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::EnumPat) {
+            add_case(arm, static_cast<const ast::EnumPat&>(*arm.pattern));
             continue;
         }
-        const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
-        auto it = std::find_if(
-            groups.begin(), groups.end(), [&](const auto& g) { return g.first == ep.case_name; });
-        if (it == groups.end()) {
-            groups.push_back({ep.case_name, {&arm}});
-        } else {
-            it->second.push_back(&arm);
+        // §17.7 or-pattern over payloaded-enum cases: expand each alternative
+        // into its own case group, all sharing this arm's body.
+        if (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::OrPat) {
+            const auto& op = static_cast<const ast::OrPat&>(*arm.pattern);
+            bool all_enum = !op.alternatives.empty();
+            for (const auto& alt : op.alternatives) {
+                if (alt == nullptr || alt->kind != ast::NodeKind::EnumPat) {
+                    all_enum = false;
+                    break;
+                }
+            }
+            if (all_enum) {
+                for (const auto& alt : op.alternatives) {
+                    add_case(arm, static_cast<const ast::EnumPat&>(*alt));
+                }
+                continue;
+            }
         }
+        unsupported(os, "match arm pattern over payloaded enum", m.range);
     }
 
     auto emit_payload_bindings = [&](const ast::EnumPat& ep, const ast::EnumDecl::Case& case_decl) {
@@ -355,7 +385,7 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
             }
         }
         if (case_decl == nullptr) {
-            unsupported(os, "match arm references unknown enum case", arms.front()->pattern->range);
+            unsupported(os, "match arm references unknown enum case", arms.front().ep->range);
             continue;
         }
 
@@ -382,8 +412,9 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
         // `if (guard) { return body; }`; an unguarded arm fires its
         // return unconditionally and dominates anything after it.
         bool seen_unguarded = false;
-        for (const auto* arm : arms) {
-            const auto& ep = static_cast<const ast::EnumPat&>(*arm->pattern);
+        for (const auto& ac : arms) {
+            const ast::MatchArm* arm = ac.arm;
+            const ast::EnumPat& ep = *ac.ep;
             write_indent(os, 3);
             os << "{\n";
             emit_payload_bindings(ep, *case_decl);

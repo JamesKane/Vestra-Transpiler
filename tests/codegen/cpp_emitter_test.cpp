@@ -108,6 +108,24 @@ TEST_CASE("match over a payloaded enum lowers to std::visit") {
     CHECK(f.out.source.find("std::unreachable()") != std::string::npos);
 }
 
+TEST_CASE("an or-pattern over payloaded-enum cases expands to one branch per case") {
+    SemaEmitFixture f("enum E { case a(Int32); case b(Int32); case c }\n"
+                      "func f(_ e: E) -> Int32 {\n"
+                      "    return match e {\n"
+                      "        case .a(x) | .b(x): x\n"
+                      "        case .c: 0\n"
+                      "    }\n"
+                      "}\n");
+    // Each alternative becomes its own constexpr-if branch, and each binds its
+    // own payload to the shared name `x`.
+    CHECK(f.out.source.find("std::is_same_v<__vstr_alt_t, E::a_t>") != std::string::npos);
+    CHECK(f.out.source.find("std::is_same_v<__vstr_alt_t, E::b_t>") != std::string::npos);
+    // The body `return x;` appears for both alternatives.
+    CHECK(f.out.source.find("auto&& x = __vstr_alt._0") != std::string::npos);
+    // No unsupported marker leaked into the output.
+    CHECK(f.out.source.find("does not yet support") == std::string::npos);
+}
+
 TEST_CASE("where-guard on a payloaded enum arm wraps the body in a runtime if") {
     SemaEmitFixture f("enum Shape {\n"
                       "    case circle(radius: Int32)\n"

@@ -41,3 +41,20 @@ func sample_total() -> Float64 {
     let p: Shape = Shape.point
     return area(c) + area(r) + area(p)
 }
+
+// §17.7 or-pattern over payloaded-enum cases: two alternatives that bind the
+// same payload name share one arm body. Each alternative becomes its own
+// constexpr-if branch over the variant, binding its own field to `n`.
+enum Event {
+    case keyDown(Int32)
+    case keyUp(Int32)
+    case quit
+}
+
+// A key event (down or up) yields its keycode; quit yields -1.
+func keycode(_ e: Event) -> Int32 {
+    return match e {
+        case .keyDown(n) | .keyUp(n): n
+        case .quit: -1
+    }
+}
