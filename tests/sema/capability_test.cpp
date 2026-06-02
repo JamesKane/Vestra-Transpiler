@@ -454,6 +454,30 @@ TEST_CASE("select binds a future arm's value and admits a default") {
           == 0);
 }
 
+TEST_CASE("a no-default channel select outside an async context is rejected") {
+    // A blocking channel select co_awaits a SelectAwaiter, so it needs Async
+    // in scope — the same gate as `await`. A non-async function lacks it.
+    auto r = check("func bad(_ ch: Channel[Int32]) -> Int32 {\n"
+                   "    return select {\n"
+                   "        on let v = ch.receive(): v ?? -1\n"
+                   "    }\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Async") != std::string::npos);
+}
+
+TEST_CASE("a channel select with a default is allowed in a sync function") {
+    // With a default the select polls (no co_await), so it needs no Async.
+    CHECK(check("func poll(_ ch: Channel[Int32]) -> Int32 {\n"
+                "    return select {\n"
+                "        on let v = ch.receive(): v ?? -1\n"
+                "        default: 0\n"
+                "    }\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 TEST_CASE("a select event that is not a future is rejected") {
     auto r = check("async func f(_ n: Int32) -> Int32 {\n"
                    "    return select { on let x = n: x  default: 0 }\n"

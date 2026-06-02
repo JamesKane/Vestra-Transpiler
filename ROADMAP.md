@@ -159,10 +159,16 @@ each), and the cooperative scheduler:
     fired at `final_suspend` for parity. (A void future as a *select* arm
     is still unsupported — the dispatch would bind `auto&& v = f.get()` to a
     void — but that combination is nonsensical and out of scope.)
+  * **slice 9** — **async-context gate for a blocking select**: a
+    no-default select with a channel (or timeout) arm co_awaits a
+    SelectAwaiter internally, so the capability checker now requires the
+    `Async` capability for it — the same gate `await` / `spawn` carry. This
+    turns a confusing downstream C++ "co_await in a non-coroutine" error
+    into a source-level `missing capability 'Async'` diagnostic. A select
+    *with* a default (or a pure-future select) polls and is still allowed
+    in a sync function.
 
-Scheduler / §11 carry-forwards: a sema-level async-context gate for a
-no-default channel select (today the generated `co_await` enforces it at
-C++ compile time, mirroring `await`); spawn capture-by-value / move
+Scheduler / §11 carry-forwards: spawn capture-by-value / move
 semantics + non-escapable futures; the
 `using Async` gate on `parallel`; and the sema-level "no borrow across
 await" rule (the runtime is now safe by-copy; sema doesn't yet *reject* a

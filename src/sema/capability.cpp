@@ -409,12 +409,22 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
         break;
     }
     case ast::NodeKind::SelectExpr: {
-        // §11 — recurse into each arm's event and body (and the default)
-        // so capabilities used inside a select are still discharged.
+        // §11 — recurse into each arm's event and body (the default and the
+        // timeout arm too) so capabilities used inside a select are
+        // discharged.
         const auto& sel = static_cast<const ast::SelectExpr&>(e);
+        bool any_channel = false;
         for (const auto& arm : sel.arms) {
             if (arm.event) {
                 check_expr(*arm.event);
+                // A channel arm is syntactically `<chan>.receive()`.
+                if (arm.event->kind == ast::NodeKind::CallExpr) {
+                    const auto& call = static_cast<const ast::CallExpr&>(*arm.event);
+                    if (call.callee != nullptr && call.callee->kind == ast::NodeKind::MemberExpr
+                        && static_cast<const ast::MemberExpr&>(*call.callee).member == "receive") {
+                        any_channel = true;
+                    }
+                }
             }
             if (arm.body) {
                 check_expr(*arm.body);
@@ -422,6 +432,21 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
         }
         if (sel.default_body) {
             check_expr(*sel.default_body);
+        }
+        if (sel.timeout_delay) {
+            check_expr(*sel.timeout_delay);
+        }
+        if (sel.timeout_body) {
+            check_expr(*sel.timeout_body);
+        }
+        // A no-default select with a channel (or timeout) arm *blocks*: it
+        // co_awaits a SelectAwaiter internally, so — like `await` — it is only
+        // valid where the Async capability is in scope. (A select with a
+        // default, or a pure-future select, polls and needs no co_await.)
+        const bool blocking =
+            sel.default_body == nullptr && (any_channel || sel.timeout_body != nullptr);
+        if (blocking && !in_scope(AsyncCap)) {
+            missing_capability(AsyncCap, e.range);
         }
         break;
     }
