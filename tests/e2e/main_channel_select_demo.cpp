@@ -25,6 +25,14 @@ int main() {
     // parked select wakes on the `b` arm and binds 22.
     assert(cs::selectPicks().get() == 22);
 
+    // A timeout arm fires when no channel delivers: nothing feeds the channel,
+    // so once the run-loop goes idle the 1ms wall-clock timer wins → -9.
+    assert(cs::selectTimes().get() == -9);
+
+    // A channel that delivers before the deadline beats the timeout: `b` is fed
+    // before the run-loop goes idle, so the `b` arm wins over the 100ms timeout.
+    assert(cs::selectBeatsTimeout().get() == 22);
+
     std::puts("channel_select_demo OK");
     return 0;
 }

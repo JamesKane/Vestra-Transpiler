@@ -298,8 +298,10 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
         hdr << "// vestra: no_libc = true\n";
     }
     hdr << "#pragma once\n\n";
+    hdr << "#include <algorithm>\n";  // §11 scheduler timer queue min_element / erase_if
     hdr << "#include <atomic>\n";     // §A4 Atomic[T] lowers to std::atomic
     hdr << "#include <bit>\n";        // §A6 MmioWireView std::byteswap / std::endian
+    hdr << "#include <chrono>\n";     // §11 timeout select arm wall-clock deadlines
     hdr << "#include <concepts>\n";   // §7 generic bounds lower to requires-clauses
     hdr << "#include <coroutine>\n";  // §11 async func / await lower to coroutines
     hdr << "#include <deque>\n";      // §11 Channel[T] backs onto a deque
@@ -314,6 +316,7 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "#include <span>\n";        // §10 Span[T] / MutSpan[T] views
     hdr << "#include <string>\n";
     hdr << "#include <string_view>\n";
+    hdr << "#include <thread>\n";       // §11 timeout select arm sleep_until
     hdr << "#include <tuple>\n";        // §6 tuple types / literals
     hdr << "#include <type_traits>\n";  // match-over-payloaded-enum constexpr-if
     hdr << "#include <utility>\n";      // std::move at sink call sites
@@ -402,27 +405,7 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     // on the scheduler and be resumed later), which is what blocking channel
     // recv / timeout select build on; with no parking point a task still
     // runs straight through, preserving the earlier sequential semantics.
-    hdr << R"__task(// Cooperative single-threaded scheduler: a FIFO ready queue of suspended
-// coroutine handles. A task parks itself by enqueueing its handle (e.g. a
-// blocking channel recv waiting for a sender) and is resumed when run() pops
-// it. run() drains the queue; pump() makes progress until a predicate holds.
-struct Scheduler {
-    std::deque<std::coroutine_handle<>> ready;
-    static Scheduler& instance() {
-        static thread_local Scheduler s;
-        return s;
-    }
-    void schedule(std::coroutine_handle<> h) { ready.push_back(h); }
-    void run() {
-        while (!ready.empty()) {
-            auto h = ready.front();
-            ready.pop_front();
-            if (h && !h.done()) { h.resume(); }
-        }
-    }
-};
-
-// A parked receiver/selector. Shared (through shared_ptr) between the waiting
+    hdr << R"__task(// A parked receiver/selector. Shared (through shared_ptr) between the waiting
 // task and every channel it parked on. `fired` makes waking idempotent: the
 // first channel to wake it schedules the handle and sets fired; later channels
 // (e.g. when several arms of a select become ready at once) see fired and skip,
@@ -430,6 +413,58 @@ struct Scheduler {
 struct Waiter {
     std::coroutine_handle<> h;
     bool fired = false;
+};
+
+// Cooperative single-threaded scheduler: a FIFO ready queue of suspended
+// coroutine handles. A task parks itself by enqueueing its handle (e.g. a
+// blocking channel recv waiting for a sender) and is resumed when run() pops
+// it. run() drains the ready queue, then services timers: when every task is
+// parked it sleeps to the earliest live deadline and fires that waiter — this
+// is what a §11 timeout select arm waits on.
+struct Scheduler {
+    std::deque<std::coroutine_handle<>> ready;
+    // A timeout select registers a timer tied to its parked Waiter. A timer
+    // whose Waiter already fired (a channel arm won the race) is dropped
+    // without sleeping.
+    struct Timer {
+        std::chrono::steady_clock::time_point deadline;
+        std::shared_ptr<Waiter> w;
+    };
+    std::vector<Timer> timers;
+    static Scheduler& instance() {
+        static thread_local Scheduler s;
+        return s;
+    }
+    void schedule(std::coroutine_handle<> h) { ready.push_back(h); }
+    void add_timer(std::chrono::steady_clock::time_point dl, std::shared_ptr<Waiter> w) {
+        timers.push_back({dl, std::move(w)});
+    }
+    void run() {
+        for (;;) {
+            if (!ready.empty()) {
+                auto h = ready.front();
+                ready.pop_front();
+                if (h && !h.done()) { h.resume(); }
+                continue;
+            }
+            // Ready queue empty: service timers. Drop any already fired (their
+            // select resumed via a channel arm), then sleep to the earliest.
+            std::erase_if(timers, [](const Timer& t) { return t.w->fired; });
+            if (timers.empty()) { return; }
+            auto it = std::min_element(
+                timers.begin(), timers.end(), [](const Timer& a, const Timer& b) {
+                    return a.deadline < b.deadline;
+                });
+            auto dl = it->deadline;
+            auto w = it->w;
+            timers.erase(it);
+            std::this_thread::sleep_until(dl);
+            if (!w->fired) {
+                w->fired = true;
+                ready.push_back(w->h);
+            }
+        }
+    }
 };
 
 // Non-template base of every Channel's State: the parked-waiter queue, the
@@ -785,6 +820,12 @@ struct Channel {
 struct SelectAwaiter {
     std::vector<std::shared_ptr<SelectableState>> states;
     std::shared_ptr<Waiter> w;  // set on suspend; nil if an arm was already ready
+    // §11 timeout arm: when present, also register a wall-clock timer on
+    // suspend; if it fires before any channel, the select resumes with
+    // `timeout_index` (== states.size(), the arm past the last channel).
+    bool has_timeout = false;
+    std::int64_t timeout_ms = 0;
+    int timeout_index = 0;
     [[nodiscard]] int first_ready() const {
         for (int i = 0; i < static_cast<int>(states.size()); ++i) {
             if (states[i]->ready()) { return i; }
@@ -795,13 +836,18 @@ struct SelectAwaiter {
     std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
         w = std::make_shared<Waiter>(Waiter{h, false});
         for (auto& s : states) { s->park(w); }
+        if (has_timeout) {
+            auto dl = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+            Scheduler::instance().add_timer(dl, w);
+        }
         return std::noop_coroutine();
     }
     int await_resume() {
         if (w) {
             for (auto& s : states) { s->unpark(w.get()); }
         }
-        return first_ready();
+        const int r = first_ready();
+        return r >= 0 ? r : timeout_index;  // no channel ready → the timer fired
     }
 };
 

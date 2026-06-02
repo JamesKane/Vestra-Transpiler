@@ -451,6 +451,11 @@ struct SelectArm {
 struct SelectExpr : Expr {
     std::vector<SelectArm> arms;
     ExprPtr default_body;  // optional
+    // §11 `timeout <ms>: body` arm — fires after the wall-clock delay if no
+    // channel arm delivers first. `timeout_delay` is an Int expression of
+    // milliseconds; both null when there is no timeout arm.
+    ExprPtr timeout_delay;
+    ExprPtr timeout_body;
     SelectExpr() : Expr(NodeKind::SelectExpr) {}
 };
 

@@ -47,7 +47,8 @@ void CppEmitter::emit_select(std::ostream& os, const ast::SelectExpr& sel) {
     // whose arms are all channel receives and has no default *blocks*: it
     // co_awaits a SelectAwaiter that parks on every channel and wakes on the
     // first ready one. (Channels and Futures aren't mixed in one select.)
-    bool all_channel = !sel.arms.empty();
+    const bool has_timeout = sel.timeout_body != nullptr;
+    bool all_channel = true;  // vacuously true for an arm-less timeout select
     for (const auto& arm : sel.arms) {
         if (select_channel_base(arm.event.get()) == nullptr) {
             all_channel = false;
@@ -55,11 +56,13 @@ void CppEmitter::emit_select(std::ostream& os, const ast::SelectExpr& sel) {
         }
     }
 
-    if (all_channel && sel.default_body == nullptr) {
+    if (all_channel && sel.default_body == nullptr && (!sel.arms.empty() || has_timeout)) {
         // Blocking select: lower to a nested Task<RT> coroutine that the
         // enclosing async function co_awaits. The inner coroutine parks on all
         // channels (co_await SelectAwaiter → winning index), then dispatches to
-        // that arm: take its value, bind the pattern, co_return the body.
+        // that arm: take its value, bind the pattern, co_return the body. A
+        // timeout arm registers a wall-clock timer; if it fires first the
+        // awaiter returns the index just past the last channel.
         os << "co_await [&]() -> __vstr::Task<";
         if (rt != nullptr) {
             emit_sema_type(os, rt);
@@ -76,7 +79,14 @@ void CppEmitter::emit_select(std::ostream& os, const ast::SelectExpr& sel) {
             emit_expr(os, *select_channel_base(sel.arms[i].event.get()));
             os << ".sel_state()";
         }
-        os << "}, nullptr};\n";
+        if (has_timeout) {
+            // states, w(nullptr), has_timeout(true), timeout_ms, timeout_index.
+            os << "}, nullptr, true, static_cast<std::int64_t>(";
+            emit_expr(os, *sel.timeout_delay);
+            os << "), " << sel.arms.size() << "};\n";
+        } else {
+            os << "}, nullptr};\n";
+        }
         for (std::size_t i = 0; i < sel.arms.size(); ++i) {
             const auto& arm = sel.arms[i];
             write_indent(os, 2);
@@ -93,6 +103,16 @@ void CppEmitter::emit_select(std::ostream& os, const ast::SelectExpr& sel) {
             if (arm.body) {
                 emit_expr(os, *arm.body);
             }
+            os << ";\n";
+            write_indent(os, 2);
+            os << "}\n";
+        }
+        if (has_timeout) {
+            write_indent(os, 2);
+            os << "if (__vstr_selw == " << sel.arms.size() << ") {\n";
+            write_indent(os, 3);
+            os << "co_return ";
+            emit_expr(os, *sel.timeout_body);
             os << ";\n";
             write_indent(os, 2);
             os << "}\n";

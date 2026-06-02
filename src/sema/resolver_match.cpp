@@ -340,19 +340,22 @@ TypePtr Resolver::check_select(const ast::SelectExpr& sel, TypePtr expected) {
         return call.callee != nullptr && call.callee->kind == ast::NodeKind::MemberExpr
                && static_cast<const ast::MemberExpr&>(*call.callee).member == "receive";
     };
+    bool all_channel_arms = true;  // vacuously true for an arm-less timeout select
     for (const auto& arm : sel.arms) {
         ScopeStack::Guard g(scopes_);
         // §11 — an event is either a Future[T] (from `spawn`) or a blocking
-        // channel receive `ch.receive()` (type T?). Timeout arms are still
-        // unsupported.
+        // channel receive `ch.receive()` (type T?).
         TypePtr ev = arm.event ? check_expr(*arm.event) : types_->error();
         const bool is_future = ev != nullptr && ev->kind() == TypeKind::Future;
         const bool is_chan = ev != nullptr && ev->kind() == TypeKind::Optional && arm.event
                              && is_channel_receive(*arm.event);
+        if (!is_chan) {
+            all_channel_arms = false;
+        }
         if (ev != nullptr && !ev->is_error() && !is_future && !is_chan) {
             error_at(arm.event->range,
                      std::format("select event must be a Future[T] or a channel receive "
-                                 "(ch.receive()); got {} (timeout arms are not yet supported)",
+                                 "(ch.receive()); got {}",
                                  ev->describe()));
         }
         if (arm.pattern) {
@@ -365,6 +368,31 @@ TypePtr Resolver::check_select(const ast::SelectExpr& sel, TypePtr expected) {
     }
     if (sel.default_body) {
         join(check_expr(*sel.default_body, expected), sel.default_body->range);
+    }
+    // §11 timeout arm: the delay is an Int (milliseconds); the body joins the
+    // arm result type. A timeout blocks, so it only pairs with channel arms and
+    // never with a `default` (which makes the select a non-blocking poll).
+    if (sel.timeout_body != nullptr) {
+        if (sel.timeout_delay != nullptr) {
+            TypePtr d = check_expr(*sel.timeout_delay);
+            if (d != nullptr && !d->is_error() && !d->is_integer()) {
+                error_at(sel.timeout_delay->range,
+                         std::format("select timeout delay must be an integer (milliseconds); "
+                                     "got {}",
+                                     d->describe()));
+            }
+        }
+        if (sel.default_body != nullptr) {
+            error_at(sel.timeout_body->range,
+                     "a select cannot have both a 'timeout' arm and a 'default' (a default makes "
+                     "the select non-blocking, which a timeout contradicts)");
+        }
+        if (!all_channel_arms) {
+            error_at(sel.timeout_body->range,
+                     "a 'timeout' arm is only valid on a blocking select whose arms are all "
+                     "channel receives (ch.receive())");
+        }
+        join(check_expr(*sel.timeout_body, expected), sel.timeout_body->range);
     }
     return result_type != nullptr ? result_type : types_->unit();
 }

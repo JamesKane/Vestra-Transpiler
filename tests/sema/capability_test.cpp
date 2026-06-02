@@ -434,6 +434,55 @@ TEST_CASE("a select event that is not a future is rejected") {
     CHECK(r.first_message.find("select event must be a Future[T]") != std::string::npos);
 }
 
+TEST_CASE("a blocking channel select with a timeout arm checks clean") {
+    CHECK(check("async func pick(_ a: Channel[Int32], _ b: Channel[Int32]) -> Int32 {\n"
+                "    return select {\n"
+                "        on let av = a.receive(): av ?? -1\n"
+                "        on let bv = b.receive(): bv ?? -2\n"
+                "        timeout 100: -9\n"
+                "    }\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a timeout arm together with a default is rejected") {
+    auto r = check("async func pick(_ a: Channel[Int32]) -> Int32 {\n"
+                   "    return select {\n"
+                   "        on let av = a.receive(): av ?? -1\n"
+                   "        timeout 100: -9\n"
+                   "        default: 0\n"
+                   "    }\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("both a 'timeout' arm and a 'default'") != std::string::npos);
+}
+
+TEST_CASE("a timeout arm on a future select is rejected") {
+    auto r = check("async func leaf(_ x: Int32) -> Int32 { return x + 1 }\n"
+                   "async func pick() -> Int32 {\n"
+                   "    let a = spawn leaf(1)\n"
+                   "    return select {\n"
+                   "        on let x = a: x\n"
+                   "        timeout 100: -9\n"
+                   "    }\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("'timeout' arm is only valid on a blocking select")
+          != std::string::npos);
+}
+
+TEST_CASE("a non-integer timeout delay is rejected") {
+    auto r = check("async func pick(_ a: Channel[Int32]) -> Int32 {\n"
+                   "    return select {\n"
+                   "        on let av = a.receive(): av ?? -1\n"
+                   "        timeout true: -9\n"
+                   "    }\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("timeout delay must be an integer") != std::string::npos);
+}
+
 // ---- §11.2 parallel --------------------------------------------------------
 
 TEST_CASE("parallel over a MutSpan with a worker closure checks clean") {

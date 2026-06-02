@@ -2415,6 +2415,41 @@ TEST_CASE("a no-default channel select blocks: co_awaits a SelectAwaiter parking
     CHECK(f.out.header.find("struct SelectableState {") != std::string::npos);
 }
 
+TEST_CASE("a channel select with a timeout arm registers a wall-clock timer") {
+    SemaEmitFixture f("async func pick(_ a: Channel[Int32], _ b: Channel[Int32]) -> Int32 {\n"
+                      "    return select {\n"
+                      "        on let av = a.receive(): av ?? -1\n"
+                      "        on let bv = b.receive(): bv ?? -2\n"
+                      "        timeout 100: -9\n"
+                      "    }\n"
+                      "}\n");
+    // The SelectAwaiter is built with the timeout fields: has_timeout=true, the
+    // ms delay (cast to int64), and timeout_index == the channel-arm count (2).
+    CHECK(f.out.source.find("__vstr::SelectAwaiter{{a.sel_state(), b.sel_state()}, nullptr, "
+                            "true, static_cast<std::int64_t>(100), 2}")
+          != std::string::npos);
+    // The timeout body dispatches on the index past the last channel arm.
+    CHECK(f.out.source.find("if (__vstr_selw == 2) {") != std::string::npos);
+    CHECK(f.out.source.find("co_return -9;") != std::string::npos);
+    // The scheduler shim grows a timer queue + deadline sleep.
+    CHECK(f.out.header.find("std::vector<Timer> timers;") != std::string::npos);
+    CHECK(f.out.header.find("std::this_thread::sleep_until") != std::string::npos);
+}
+
+TEST_CASE("an arm-less timeout select still blocks on the timer") {
+    SemaEmitFixture f("async func wait() -> Int32 {\n"
+                      "    return select {\n"
+                      "        timeout 5: 7\n"
+                      "    }\n"
+                      "}\n");
+    // No channel states; the awaiter is pure-timeout (timeout_index 0).
+    CHECK(f.out.source.find("__vstr::SelectAwaiter{{}, nullptr, true, "
+                            "static_cast<std::int64_t>(5), 0}")
+          != std::string::npos);
+    CHECK(f.out.source.find("if (__vstr_selw == 0) {") != std::string::npos);
+    CHECK(f.out.source.find("co_return 7;") != std::string::npos);
+}
+
 TEST_CASE("a channel select with a default polls once via sel_state()->ready()") {
     SemaEmitFixture f("func poll(_ a: Channel[Int32]) -> Int32 {\n"
                       "    return select {\n"

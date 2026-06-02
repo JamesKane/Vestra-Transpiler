@@ -91,3 +91,34 @@ async func selectPicks() -> Int32 {
     let fed = await feeder
     return await sel
 }
+
+// §11 timeout arm: a blocking select with `timeout <ms>: body` fires the
+// timeout body if no channel arm delivers within the wall-clock delay. Here
+// nothing feeds `a`, so once the run-loop goes idle the 1ms timer wins → -9.
+async func selectTimes() -> Int32 {
+    let a: Channel[Int32] = Channel.new()
+    return select {
+        on let av = a.receive(): av ?? -1
+        timeout 1: -9
+    }
+}
+
+// A channel that delivers before the deadline beats the timeout: `b` is fed
+// before the run-loop ever goes idle, so the `b` arm wins over the 100ms
+// timeout → 22.
+async func selectOneOrTimeout(_ a: Channel[Int32], _ b: Channel[Int32]) -> Int32 {
+    return select {
+        on let av = a.receive(): av ?? -1
+        on let bv = b.receive(): bv ?? -2
+        timeout 100: -9
+    }
+}
+
+async func selectBeatsTimeout() -> Int32 {
+    let a: Channel[Int32] = Channel.new()
+    let b: Channel[Int32] = Channel.new()
+    let sel = spawn selectOneOrTimeout(a, b)
+    let feeder = spawn feedB(b)
+    let fed = await feeder
+    return await sel
+}

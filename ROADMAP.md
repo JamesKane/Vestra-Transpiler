@@ -92,12 +92,23 @@ each), and the cooperative scheduler:
     stays a non-blocking poll (now `sel_state()->ready()` for channel
     arms, `await_ready()` for future arms). Channels and futures aren't
     mixed in one select.
+  * **slice 4** — **timeout select arm**: `timeout <ms>: body` (a
+    contextual keyword) on a blocking channel select fires its body if no
+    channel arm delivers within the wall-clock delay. The scheduler gains
+    a timer queue; when the ready queue drains (every task parked) `run()`
+    sleeps (`std::this_thread::sleep_until`) to the earliest live deadline
+    and fires that waiter. The `SelectAwaiter` registers the timer on
+    suspend tied to the same shared `Waiter`, so a channel arm winning the
+    race marks the timer fired (dropped without sleeping); if the timer
+    fires first the awaiter returns the index past the last channel arm.
+    Sema rejects `timeout` + `default` (contradictory), `timeout` on a
+    future select, and a non-integer delay.
 
-Scheduler / §11 carry-forwards: a timeout select arm; mixed
-channel/future select arms; a sema-level async-context gate for a
-no-default channel select (today the generated `co_await` enforces it at
-C++ compile time, mirroring `await`); spawn of a void function
-(`Future<void>` — needs an
+Scheduler / §11 carry-forwards: mixed channel/future select arms; a
+sema-level async-context gate for a no-default channel select (today the
+generated `co_await` enforces it at C++ compile time, mirroring `await`);
+a `Duration` type (the timeout delay is a bare ms integer for now); spawn
+of a void function (`Future<void>` — needs an
 `optional<void>`-free path); async + throws (`Task<expected<T,E>>`);
 spawn capture-by-value / move semantics + non-escapable futures; the
 `using Async` gate on `parallel`; and the sema-level "no borrow across
@@ -113,9 +124,9 @@ queue, lowered to a `__vstr::Channel<T>` over a shared deque, with `send`
 ch.receive() -> T?` (scheduler slice 2), and `close()` (a closed flag
 distinct from empty: nil from `receive` means closed-and-drained). v0.5
 is single-threaded and unbounded. A blocking `select` over channel
-receives ships under §11 above (slice 3). Remaining (tracked under §11
-above): bounded capacity / back-pressure, `send` as a true call-site
-move, and the timeout `select` arm.
+receives ships under §11 above (slice 3), with a wall-clock `timeout`
+arm (slice 4). Remaining (tracked under §11 above): bounded capacity /
+back-pressure, and `send` as a true call-site move.
 
 ### 4. Quote / splice / declaration macros (§12.4) (multi-session)
 

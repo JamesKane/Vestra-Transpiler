@@ -505,10 +505,12 @@ ast::ExprPtr Parser::parse_primary() {
         return m;
     }
     case TokenKind::KwSelect: {
-        // §11 `select { on (let pat =)? event : body  …  default: body }`.
-        // v0.5 events are `Future[T]` (channels / timeout wait on the
-        // Channel slice + a scheduler); the binding form `on let msg = fut`
-        // unwraps the future's value into the arm body.
+        // §11 `select { on (let pat =)? event : body  …
+        //                 timeout <ms>: body  default: body }`.
+        // An event is a `Future[T]` (the binding form `on let msg = fut`
+        // unwraps the future's value) or a blocking channel `ch.receive()`.
+        // A `timeout <ms>` arm fires after a wall-clock delay; `default`
+        // makes the select a non-blocking poll.
         advance();
         auto sel = std::make_unique<ast::SelectExpr>();
         expect(TokenKind::LBrace, "'{' to open select body");
@@ -520,8 +522,22 @@ ast::ExprPtr Parser::parse_primary() {
                 skip_newlines();
                 continue;
             }
+            // §11 `timeout <ms>: body` — a contextual keyword (not reserved
+            // elsewhere) at arm-start position, where only `on`/`default`/
+            // `timeout` are legal, so a bare `timeout` is unambiguous here.
+            if (check(TokenKind::Identifier) && peek().lexeme == "timeout") {
+                advance();
+                if (sel->timeout_body != nullptr) {
+                    emit_error(peek().range, "a select may have at most one 'timeout' arm");
+                }
+                sel->timeout_delay = parse_expr();
+                expect(TokenKind::Colon, "':' after select timeout delay");
+                sel->timeout_body = parse_expr();
+                skip_newlines();
+                continue;
+            }
             if (!match(TokenKind::KwOn)) {
-                emit_error(peek().range, "expected 'on' or 'default' in select arm");
+                emit_error(peek().range, "expected 'on', 'timeout', or 'default' in select arm");
                 break;
             }
             ast::SelectArm arm;
