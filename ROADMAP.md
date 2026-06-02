@@ -65,32 +65,42 @@ shim (the host libc++ ships `<execution>` policies but not P2300
 senders), `spawn` → `Future[T]` consumed by `await`, `select` over future
 arms (an `await_ready` IIFE), `parallel` (a builtin that splits a
 `MutSpan[T]` into N disjoint sub-views and runs a non-escaping worker on
-each), and — **scheduler slice 1** (`6cb4df6`) — a real cooperative
-single-threaded scheduler with *lazy* Task (initial_suspend ==
-suspend_always) and symmetric-transfer completion, replacing the earlier
-eager/suspend_never model. The codegen lowering is unchanged; the
-inversion lives entirely in the runtime preamble. With no parking point a
-task still runs straight through when forced, so the prior sequential
-semantics hold and all three §11 e2e demos pass unchanged.
+each), and the cooperative scheduler:
 
-Scheduler slices remaining: blocking channel `recv` (suspends until a
-sender runs) + channel/timeout `select` arms — the first observable use
-of real suspension; a parking point so a `spawn`ed task makes progress
-before it is awaited. Other §11 carry-forwards: async + throws
-(`Task<expected<T,E>>`); spawn capture-by-value / move semantics +
-non-escapable futures; spawn of a void function; the `using Async` gate
-on `parallel`; and the "no borrow across await" rule. (senders/receivers
-can replace the coroutine shims if/when libc++ ships P2300.)
+  * **slice 1** (`6cb4df6`) — a real single-threaded scheduler with *lazy*
+    Task (initial_suspend == suspend_always) and symmetric-transfer
+    completion, replacing the earlier eager/suspend_never model. Codegen
+    lowering unchanged; the inversion lives in the runtime preamble.
+  * **slice 2** (`e981743`) — **blocking channel receive**, the first
+    observable use of real suspension: `await ch.receive()` parks the task
+    on an empty open channel; `send` wakes one parked receiver, `close`
+    wakes all (nil == closed-and-drained). `spawn` now schedules its task
+    on the run-loop so a parked consumer and a running producer coexist.
+    Also the foundational **coroutine param-lifetime fix** (caught by
+    ASan): an `async func` emits its read params *by value* (not `const
+    T&`), since a coroutine doesn't copy reference params into its frame —
+    the codegen half of "no borrow across await".
+
+Scheduler / §11 carry-forwards: `select` arms that *wait on* a channel
+(the suspending counterpart to today's poll-style select); a timeout
+select arm; spawn of a void function (`Future<void>` — needs an
+`optional<void>`-free path); async + throws (`Task<expected<T,E>>`);
+spawn capture-by-value / move semantics + non-escapable futures; the
+`using Async` gate on `parallel`; and the sema-level "no borrow across
+await" rule (the runtime is now safe by-copy; sema doesn't yet *reject* a
+borrow held across an await). (senders/receivers can replace the
+coroutine shims if/when libc++ ships P2300.)
 
 ### 3. `Channel[T]` + `parallel` library (§11) — shipped
 
 Both shipped: `parallel` (under §11 above) and `Channel[T]` — a typed
-queue with `send` (a sink) and `recv() -> T?`, lowered to a
-`__vstr::Channel<T>` over a shared deque. v0.5 is single-threaded and
-unbounded. Remaining (tracked under §11 above): bounded capacity /
-back-pressure, a closed-channel state distinct from empty, `send` as a
-true call-site move, and the channel/timeout `select` arms this
-unblocks.
+queue, lowered to a `__vstr::Channel<T>` over a shared deque, with `send`
+(a sink), the non-blocking `recv() -> T?` poll, the suspending `await
+ch.receive() -> T?` (scheduler slice 2), and `close()` (a closed flag
+distinct from empty: nil from `receive` means closed-and-drained). v0.5
+is single-threaded and unbounded. Remaining (tracked under §11 above):
+bounded capacity / back-pressure, `send` as a true call-site move, and
+the channel/timeout `select` arms.
 
 ### 4. Quote / splice / declaration macros (§12.4) (multi-session)
 
