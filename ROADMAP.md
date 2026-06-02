@@ -116,11 +116,15 @@ each), and the cooperative scheduler:
     collide with the ratio: there is no int<->Duration conversion), so
     codegen still emits a straight `a <op> b`. The `timeout` arm now takes
     a `Duration` (e.g. `timeout .milliseconds(250):`), extracting whole
-    milliseconds via `.in_milliseconds()`.
+    milliseconds via `.in_milliseconds()`. Property accessors
+    `.nanoseconds` / `.microseconds` / `.milliseconds` / `.seconds` read
+    the total whole count in that unit as `Int` (truncating; accessed, not
+    called — distinct from the same-named factory), lowering to
+    `static_cast<std::intptr_t>(d.in_<unit>())` like Span's `.count`.
 
-Scheduler / §11 carry-forwards: Duration accessors (`.milliseconds` as a
-property) and `Duration * Float`/`/ Float` fractional scaling; mixed
-channel/future select arms; a sema-level async-context gate for a
+Scheduler / §11 carry-forwards: `Duration * Float` / `/ Float` fractional
+scaling; mixed channel/future select arms; a sema-level async-context gate
+for a
 no-default channel select (today the generated `co_await` enforces it at
 C++ compile time, mirroring `await`); spawn of a void function
 (`Future<void>` — needs an

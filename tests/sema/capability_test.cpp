@@ -558,6 +558,18 @@ TEST_CASE("scaling a Duration by a non-integer is rejected") {
     CHECK(r.first_message.find("may only be scaled by an integer") != std::string::npos);
 }
 
+TEST_CASE("Duration unit accessors type as Int") {
+    // `.nanoseconds` / `.microseconds` / `.milliseconds` / `.seconds` read the
+    // whole count in that unit (accessed, not called — distinct from the
+    // same-named factory).
+    CHECK(check("func a() -> Int {\n"
+                "    let d: Duration = .seconds(2)\n"
+                "    return d.milliseconds + d.seconds + d.microseconds + d.nanoseconds\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 // ---- §11.2 parallel --------------------------------------------------------
 
 TEST_CASE("parallel over a MutSpan with a worker closure checks clean") {

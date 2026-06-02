@@ -143,6 +143,19 @@ func durationScaled() -> Float64 {
     return up2 / down
 }
 
+// Accessors read the total whole count in a unit as Int (truncating). 2s is
+// 2000 whole milliseconds.
+func durationMillis() -> Int {
+    let d: Duration = .seconds(2)
+    return d.milliseconds
+}
+
+// 1500ms truncates to 1 whole second; the sub-second remainder is dropped.
+func durationSecondsTrunc() -> Int {
+    let d: Duration = .milliseconds(1500)
+    return d.seconds
+}
+
 async func selectBeatsTimeout() -> Int32 {
     let a: Channel[Int32] = Channel.new()
     let b: Channel[Int32] = Channel.new()

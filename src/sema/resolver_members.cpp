@@ -626,6 +626,16 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m, TypePtr expected) {
     if (lookup_base->kind() == TypeKind::ChunkIter && m.member == "count") {
         return finish(types_->primitive(TypeKind::Int));
     }
+    // §11 Duration accessors: `.nanoseconds` / `.microseconds` /
+    // `.milliseconds` / `.seconds` read the total whole count in that unit as
+    // Int (truncating toward zero). These are accessed, not called — distinct
+    // from the same-named `.seconds(n)` *factory*. Codegen renders them as
+    // `static_cast<std::intptr_t>(d.in_<unit>())`.
+    if (lookup_base->kind() == TypeKind::Duration
+        && (m.member == "nanoseconds" || m.member == "microseconds" || m.member == "milliseconds"
+            || m.member == "seconds")) {
+        return finish(types_->primitive(TypeKind::Int));
+    }
 
     // Field on a struct.
     if (auto field_type = lookup_field(lookup_base, m.member)) {

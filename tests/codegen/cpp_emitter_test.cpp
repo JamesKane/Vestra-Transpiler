@@ -2487,6 +2487,23 @@ TEST_CASE("Duration scalar scaling lowers to straight operators") {
           != std::string::npos);
 }
 
+TEST_CASE("Duration accessors lower to in_<unit>() casts") {
+    SemaEmitFixture f("func a() -> Int {\n"
+                      "    let d: Duration = .seconds(2)\n"
+                      "    return d.nanoseconds + d.microseconds + d.milliseconds + d.seconds\n"
+                      "}\n");
+    // Each property reads the runtime in_<unit>(), cast to the signed Int type.
+    CHECK(f.out.source.find("static_cast<std::intptr_t>((d).in_nanoseconds())")
+          != std::string::npos);
+    CHECK(f.out.source.find("static_cast<std::intptr_t>((d).in_microseconds())")
+          != std::string::npos);
+    CHECK(f.out.source.find("static_cast<std::intptr_t>((d).in_milliseconds())")
+          != std::string::npos);
+    CHECK(f.out.source.find("static_cast<std::intptr_t>((d).in_seconds())") != std::string::npos);
+    // The runtime shim carries the matching accessors.
+    CHECK(f.out.header.find("in_seconds()") != std::string::npos);
+}
+
 TEST_CASE("a channel select with a default polls once via sel_state()->ready()") {
     SemaEmitFixture f("func poll(_ a: Channel[Int32]) -> Int32 {\n"
                       "    return select {\n"

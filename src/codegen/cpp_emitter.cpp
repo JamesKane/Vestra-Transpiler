@@ -416,7 +416,12 @@ struct Duration {
     static constexpr Duration microseconds(std::int64_t n) { return Duration{n * 1'000}; }
     static constexpr Duration milliseconds(std::int64_t n) { return Duration{n * 1'000'000}; }
     static constexpr Duration seconds(std::int64_t n) { return Duration{n * 1'000'000'000}; }
+    // Total whole count in each unit (truncating toward zero) — what the
+    // `.milliseconds` / `.seconds` / … property accessors read.
+    [[nodiscard]] constexpr std::int64_t in_nanoseconds() const { return nanos_; }
+    [[nodiscard]] constexpr std::int64_t in_microseconds() const { return nanos_ / 1'000; }
     [[nodiscard]] constexpr std::int64_t in_milliseconds() const { return nanos_ / 1'000'000; }
+    [[nodiscard]] constexpr std::int64_t in_seconds() const { return nanos_ / 1'000'000'000; }
     constexpr Duration operator+(Duration o) const { return Duration{nanos_ + o.nanos_}; }
     constexpr Duration operator-(Duration o) const { return Duration{nanos_ - o.nanos_}; }
     constexpr double operator/(Duration o) const {
@@ -3823,6 +3828,20 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << "(";
                 emit_expr(os, *m.base);
                 os << ").count()";
+                break;
+            }
+        }
+        // §11 Duration accessors `.nanoseconds` / `.microseconds` /
+        // `.milliseconds` / `.seconds` → the runtime `in_<unit>()` method,
+        // cast to the signed `Int`-equivalent (mirrors Span `.count`).
+        if (resolution_ != nullptr
+            && (m.member == "nanoseconds" || m.member == "microseconds"
+                || m.member == "milliseconds" || m.member == "seconds")) {
+            auto bt = resolution_->type_of(m.base.get());
+            if (bt != nullptr && bt->kind() == sema::TypeKind::Duration) {
+                os << "static_cast<std::intptr_t>((";
+                emit_expr(os, *m.base);
+                os << ").in_" << m.member << "())";
                 break;
             }
         }

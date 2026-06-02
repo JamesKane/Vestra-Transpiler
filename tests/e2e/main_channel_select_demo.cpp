@@ -42,6 +42,11 @@ int main() {
     // yield a Duration; 1000ms scaled to 2000ms, divided by 250ms = 8.0.
     assert(cs::durationScaled() == 8.0);
 
+    // Accessors read the total whole count in a unit as Int (truncating):
+    // 2s == 2000ms; 1500ms truncates to 1 whole second.
+    assert(cs::durationMillis() == 2000);
+    assert(cs::durationSecondsTrunc() == 1);
+
     std::puts("channel_select_demo OK");
     return 0;
 }
