@@ -2646,6 +2646,22 @@ TEST_CASE("an expression-context quote materializes its body with splices substi
     CHECK(f.out.source.find("return (a) * (x) + (y);") != std::string::npos);
 }
 
+TEST_CASE("an expression macro expands to its quote template with args substituted") {
+    SemaEmitFixture f("comptime func twice(_ x: Expr) -> Expr { return quote { $x + $x } }\n"
+                      "comptime func sb(_ x: Expr, _ b: Expr) -> Expr {\n"
+                      "    return quote { $x * $x + $b }\n"
+                      "}\n"
+                      "func useT(_ n: Int32) -> Int32 { return @twice(n) }\n"
+                      "func useSb(_ p: Int32, _ k: Int32) -> Int32 { return @sb(p + 1, k) }\n");
+    // @twice(n) -> (n + n); the call lowers to its expansion (parenthesized).
+    CHECK(f.out.source.find("return ((n) + (n));") != std::string::npos);
+    // spliced compound arg keeps grouping: @sb(p+1, k) -> (p+1)*(p+1) + k.
+    CHECK(f.out.source.find("return ((p + 1) * (p + 1) + (k));") != std::string::npos);
+    // The comptime macro funcs are not emitted.
+    CHECK(f.out.source.find("twice(") == std::string::npos);
+    CHECK(f.out.source.find(" sb(") == std::string::npos);
+}
+
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------
 
 TEST_CASE("split(at:) lowers to __vstr::split_at and destructures to auto [lo, hi]") {

@@ -20,12 +20,206 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace vestra::sema {
 
 using detail::named_type_param_count;
+
+namespace {
+
+using SpliceSubs = std::unordered_map<std::string, const ast::Expr*>;
+
+// §12.4 deep-clone an expression-macro template, substituting each `$param`
+// splice with a fresh clone of the matching argument. Covers the expression
+// kinds a v0.5 macro template uses; an unsupported kind returns nullptr so the
+// caller can report it. Arguments are cloned with no further substitution (they
+// are final use-site expressions, never containing splices).
+ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs) {
+    using namespace ast;
+    switch (src.kind) {
+    case NodeKind::SpliceExpr: {
+        const auto& sp = static_cast<const SpliceExpr&>(src);
+        if (sp.inner != nullptr && sp.inner->kind == NodeKind::IdentExpr) {
+            auto it = subs.find(static_cast<const IdentExpr&>(*sp.inner).name);
+            if (it != subs.end()) {
+                auto arg = clone_macro_template(*it->second, {});  // splice in the arg
+                if (!arg) {
+                    return nullptr;
+                }
+                // Parenthesize so a spliced compound argument keeps its
+                // grouping inside the template (e.g. `$a * $a` with a = `p + 1`
+                // is `(p + 1) * (p + 1)`, not `p + 1 * p + 1`).
+                auto paren = std::make_unique<ParenExpr>();
+                paren->inner = std::move(arg);
+                paren->range = src.range;
+                return paren;
+            }
+        }
+        return nullptr;  // v0.5 templates support only `$param` splices
+    }
+    case NodeKind::IntLit: {
+        auto n = std::make_unique<IntLit>();
+        n->text = static_cast<const IntLit&>(src).text;
+        n->range = src.range;
+        return n;
+    }
+    case NodeKind::FloatLit: {
+        auto n = std::make_unique<FloatLit>();
+        n->text = static_cast<const FloatLit&>(src).text;
+        n->range = src.range;
+        return n;
+    }
+    case NodeKind::StringLit: {
+        auto n = std::make_unique<StringLit>();
+        n->text = static_cast<const StringLit&>(src).text;
+        n->range = src.range;
+        return n;
+    }
+    case NodeKind::CharLit: {
+        auto n = std::make_unique<CharLit>();
+        n->text = static_cast<const CharLit&>(src).text;
+        n->range = src.range;
+        return n;
+    }
+    case NodeKind::BoolLit: {
+        auto n = std::make_unique<BoolLit>();
+        n->value = static_cast<const BoolLit&>(src).value;
+        n->range = src.range;
+        return n;
+    }
+    case NodeKind::NilLit: {
+        auto n = std::make_unique<NilLit>();
+        n->range = src.range;
+        return n;
+    }
+    case NodeKind::IdentExpr: {
+        auto n = std::make_unique<IdentExpr>();
+        n->name = static_cast<const IdentExpr&>(src).name;
+        n->range = src.range;
+        return n;
+    }
+    case NodeKind::ParenExpr: {
+        const auto& p = static_cast<const ParenExpr&>(src);
+        if (!p.inner) {
+            return nullptr;
+        }
+        auto inner = clone_macro_template(*p.inner, subs);
+        if (!inner) {
+            return nullptr;
+        }
+        auto n = std::make_unique<ParenExpr>();
+        n->inner = std::move(inner);
+        n->range = src.range;
+        return n;
+    }
+    case NodeKind::UnaryExpr: {
+        const auto& u = static_cast<const UnaryExpr&>(src);
+        if (!u.operand) {
+            return nullptr;
+        }
+        auto operand = clone_macro_template(*u.operand, subs);
+        if (!operand) {
+            return nullptr;
+        }
+        auto n = std::make_unique<UnaryExpr>();
+        n->op = u.op;
+        n->operand = std::move(operand);
+        n->range = src.range;
+        return n;
+    }
+    case NodeKind::BinaryExpr: {
+        const auto& b = static_cast<const BinaryExpr&>(src);
+        if (!b.lhs || !b.rhs) {
+            return nullptr;
+        }
+        auto lhs = clone_macro_template(*b.lhs, subs);
+        auto rhs = clone_macro_template(*b.rhs, subs);
+        if (!lhs || !rhs) {
+            return nullptr;
+        }
+        auto n = std::make_unique<BinaryExpr>();
+        n->op = b.op;
+        n->lhs = std::move(lhs);
+        n->rhs = std::move(rhs);
+        n->range = src.range;
+        return n;
+    }
+    case NodeKind::MemberExpr: {
+        const auto& m = static_cast<const MemberExpr&>(src);
+        if (!m.base) {
+            return nullptr;
+        }
+        auto base = clone_macro_template(*m.base, subs);
+        if (!base) {
+            return nullptr;
+        }
+        auto n = std::make_unique<MemberExpr>();
+        n->base = std::move(base);
+        n->member = m.member;
+        n->is_optional_chain = m.is_optional_chain;
+        n->range = src.range;
+        return n;
+    }
+    case NodeKind::CallExpr: {
+        const auto& c = static_cast<const CallExpr&>(src);
+        if (!c.callee || !c.type_args.empty()) {
+            return nullptr;  // explicit call type-args unsupported in a v0.5 template
+        }
+        auto callee = clone_macro_template(*c.callee, subs);
+        if (!callee) {
+            return nullptr;
+        }
+        auto n = std::make_unique<CallExpr>();
+        n->callee = std::move(callee);
+        for (const auto& a : c.args) {
+            if (!a.value) {
+                return nullptr;
+            }
+            auto v = clone_macro_template(*a.value, subs);
+            if (!v) {
+                return nullptr;
+            }
+            CallExpr::Arg na;
+            na.label = a.label;
+            na.is_inout = a.is_inout;
+            na.value = std::move(v);
+            n->args.push_back(std::move(na));
+        }
+        n->range = src.range;
+        return n;
+    }
+    default:
+        return nullptr;
+    }
+}
+
+// §12.4 the `quote { … }` template an expression macro returns: the QuoteExpr
+// of a `return quote { … }` (or a bare trailing quote) in the macro body.
+const ast::QuoteExpr* macro_template(const ast::FuncDecl& fn) {
+    if (!fn.body) {
+        return nullptr;
+    }
+    if (fn.body->kind == ast::NodeKind::QuoteExpr) {
+        return static_cast<const ast::QuoteExpr*>(fn.body.get());
+    }
+    if (fn.body->kind == ast::NodeKind::BlockExpr) {
+        const auto& blk = static_cast<const ast::BlockExpr&>(*fn.body);
+        for (const auto& s : blk.stmts) {
+            if (s->kind == ast::NodeKind::ReturnStmt) {
+                const auto& r = static_cast<const ast::ReturnStmt&>(*s);
+                if (r.value && r.value->kind == ast::NodeKind::QuoteExpr) {
+                    return static_cast<const ast::QuoteExpr*>(r.value.get());
+                }
+            }
+        }
+    }
+    return nullptr;
+}
+
+}  // namespace
 
 TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
     TypePtr t = nullptr;
@@ -318,14 +512,21 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         break;
     }
     case ast::NodeKind::QuoteExpr: {
-        // §12.4 v0.5 — an expression-context quote types as its body
-        // expression (with splices resolved against the surrounding
-        // scope). The body is checked with quote depth raised so a `$`
-        // splice inside is admitted.
         const auto& q = static_cast<const ast::QuoteExpr&>(e);
-        ++quote_depth_;
-        t = q.inner ? check_expr(*q.inner, expected) : types_->error();
-        --quote_depth_;
+        if (expected != nullptr && expected->kind() == TypeKind::AstExpr) {
+            // §12.4 macro context: the quote is a deferred AST template, typed
+            // as `Expr`. Its body is *not* checked as a runtime expression here
+            // — it is re-checked after the macro expands at each call site (so
+            // `quote { $x + $x }` doesn't try to add two `Expr` values).
+            t = types_->primitive(TypeKind::AstExpr);
+        } else {
+            // §12.4 v0.5 identity quote — types as its body expression (with
+            // splices resolved against the surrounding scope). The body is
+            // checked with quote depth raised so a `$` splice is admitted.
+            ++quote_depth_;
+            t = q.inner ? check_expr(*q.inner, expected) : types_->error();
+            --quote_depth_;
+        }
         break;
     }
     case ast::NodeKind::SpliceExpr: {
@@ -337,6 +538,82 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
             error_at(e.range, "a `$` splice is only valid inside a `quote { … }`");
         }
         t = sp.inner ? check_expr(*sp.inner, expected) : types_->error();
+        break;
+    }
+    case ast::NodeKind::MacroCallExpr: {
+        // §12.4 expression macro `@name(args)`. The macro is a comptime func
+        // `(Expr, …) -> Expr` whose body is a `quote { … }` template; expand by
+        // substituting each argument for the matching `$param` splice, then
+        // type-check the expansion as ordinary code (the spec's "re-checked").
+        const auto& mc = static_cast<const ast::MacroCallExpr&>(e);
+        for (const auto& a : mc.args) {  // check args in the use-site scope
+            if (a) {
+                check_expr(*a);
+            }
+        }
+        const Symbol* sym = scopes_.current().lookup(mc.name);
+        const ast::FuncDecl* fn =
+            (sym != nullptr && sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Func)
+                ? static_cast<const ast::FuncDecl*>(sym->decl)
+                : nullptr;
+        if (fn == nullptr) {
+            error_at(e.range, std::format("unknown macro '{}'", mc.name));
+            t = types_->error();
+            break;
+        }
+        // A macro is a comptime func taking and returning `Expr`.
+        TypePtr ft = sym->type;
+        bool shape_ok = fn->is_comptime && ft != nullptr && ft->kind() == TypeKind::Function
+                        && ft->result() != nullptr && ft->result()->kind() == TypeKind::AstExpr;
+        if (shape_ok) {
+            for (TypePtr pt : ft->parts()) {
+                if (pt == nullptr || pt->kind() != TypeKind::AstExpr) {
+                    shape_ok = false;
+                    break;
+                }
+            }
+        }
+        if (!shape_ok) {
+            error_at(e.range,
+                     std::format("'{}' is not an expression macro — a macro is a `comptime func` "
+                                 "taking and returning `Expr`",
+                                 mc.name));
+            t = types_->error();
+            break;
+        }
+        if (mc.args.size() != fn->params.size()) {
+            error_at(e.range,
+                     std::format("macro '{}' expects {} argument(s), got {}",
+                                 mc.name,
+                                 fn->params.size(),
+                                 mc.args.size()));
+            t = types_->error();
+            break;
+        }
+        const ast::QuoteExpr* tmpl = macro_template(*fn);
+        if (tmpl == nullptr || tmpl->inner == nullptr) {
+            error_at(e.range,
+                     std::format("macro '{}' must return a `quote {{ … }}` template", mc.name));
+            t = types_->error();
+            break;
+        }
+        SpliceSubs subs;
+        for (std::size_t i = 0; i < fn->params.size(); ++i) {
+            subs[fn->params[i].name] = mc.args[i].get();
+        }
+        ast::ExprPtr expansion = clone_macro_template(*tmpl->inner, subs);
+        if (!expansion) {
+            error_at(e.range,
+                     std::format("macro '{}' uses an expression form not supported in a v0.5 "
+                                 "template",
+                                 mc.name));
+            t = types_->error();
+            break;
+        }
+        // Type-check the expansion as ordinary code; it becomes what codegen
+        // emits in place of the macro call.
+        t = check_expr(*expansion, expected);
+        const_cast<ast::MacroCallExpr&>(mc).expansion = std::move(expansion);
         break;
     }
     case ast::NodeKind::AwaitExpr: {

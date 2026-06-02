@@ -4266,6 +4266,20 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         os << ")";
         break;
     }
+    case ast::NodeKind::MacroCallExpr: {
+        // §12.4 — an expression macro lowers to its expansion (the macro's
+        // quote template with arguments substituted for the `$param` splices),
+        // filled in by the resolver and parenthesized so it composes in place.
+        const auto& mc = static_cast<const ast::MacroCallExpr&>(e);
+        if (mc.expansion) {
+            os << "(";
+            emit_expr(os, *mc.expansion);
+            os << ")";
+        } else {
+            unsupported(os, "macro call without a resolved expansion", e.range);
+        }
+        break;
+    }
     case ast::NodeKind::SpawnExpr: {
         // §11 — `spawn e` yields a `Future[T]`. v0.5 runs the spawned call
         // eagerly and boxes its result: `__vstr::spawn_future(e)` overloads

@@ -2454,6 +2454,27 @@ TEST_CASE("a splice outside a quote is rejected") {
     CHECK(r.first_message.find("`$` splice is only valid inside a `quote") != std::string::npos);
 }
 
+TEST_CASE("an expression macro type-checks via its expansion") {
+    // @twice(n) expands to (n + n) : Int32, so useT returns Int32 cleanly.
+    CHECK(check_errors("comptime func twice(_ x: Expr) -> Expr { return quote { $x + $x } }\n"
+                       "func useT(_ n: Int32) -> Int32 { return @twice(n) }\n")
+          == 0);
+}
+
+TEST_CASE("an unknown macro is rejected") {
+    auto r = check_detail("func f() -> Int32 { return @nope(1) }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("unknown macro 'nope'") != std::string::npos);
+}
+
+TEST_CASE("invoking a non-macro function as a macro is rejected") {
+    // `plain` is an ordinary func, not a comptime Expr->Expr macro.
+    auto r = check_detail("func plain(_ x: Int32) -> Int32 { return x }\n"
+                          "func f() -> Int32 { return @plain(1) }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("is not an expression macro") != std::string::npos);
+}
+
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------
 
 TEST_CASE("split(at:) on a MutSpan yields a tuple of two sub-views") {

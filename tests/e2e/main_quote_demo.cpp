@@ -18,6 +18,11 @@ int main() {
     assert(qd::clampLow(1, 5) == 5);  // 1 < 5 -> lo
     assert(qd::clampLow(9, 5) == 9);  // 9 < 5 false -> v
 
+    // §12.4 expression macros: @twice(n) -> n + n; @scaleBias(p+1, k) ->
+    // (p+1)*(p+1) + k, the splice parens preserving precedence.
+    assert(qd::useTwice(21) == 42);        // 21 + 21
+    assert(qd::useScaleBias(2, 5) == 14);  // (2+1)*(2+1) + 5
+
     std::puts("quote_demo OK");
     return 0;
 }

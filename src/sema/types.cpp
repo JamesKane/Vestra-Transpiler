@@ -137,6 +137,8 @@ std::string Type::describe() const {
         return inner_ ? std::format("Channel[{}]", inner_->describe()) : std::string{"Channel"};
     case TypeKind::Duration:
         return "Duration";
+    case TypeKind::AstExpr:
+        return "Expr";
     case TypeKind::Span:
         return inner_ ? std::format("Span[{}]", inner_->describe()) : std::string{"Span"};
     case TypeKind::MutSpan:
@@ -297,7 +299,7 @@ TypeArena::TypeArena() {
                    TypeKind::UInt64,   TypeKind::UInt,    TypeKind::Int128, TypeKind::UInt128,
                    TypeKind::Float32,  TypeKind::Float64, TypeKind::Bool,   TypeKind::Char,
                    TypeKind::Unit,     TypeKind::String,  TypeKind::Str,    TypeKind::StrConst,
-                   TypeKind::Duration, TypeKind::Never,   TypeKind::Error}) {
+                   TypeKind::Duration, TypeKind::AstExpr, TypeKind::Never,  TypeKind::Error}) {
         auto t = std::unique_ptr<Type>(new Type(k));
         primitives_.emplace(k, t.get());
         owned_.push_back(std::move(t));
@@ -620,6 +622,7 @@ TypeKind TypeArena::primitive_kind_by_name(std::string_view name) noexcept {
         {"Str", TypeKind::Str},
         {"StrConst", TypeKind::StrConst},
         {"Duration", TypeKind::Duration},  // §11 Swift-like time span
+        {"Expr", TypeKind::AstExpr},       // §12.4 macro AST-value type
         // §10 `Never` is normally inferred from diverging expressions
         // (panic / throw / unreachable), but `-> Never` is admissible
         // as an explicit annotation — the §A10 @panic_handler is the

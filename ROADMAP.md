@@ -217,14 +217,26 @@ back-pressure, and `send` as a true call-site move.
 First slice shipped: the `$`-splice syntax (`$ident` / `$(expr)`), a
 `SpliceExpr` AST, and an expression-context `quote { EXPR }` that
 materializes its body with splices substituted in place (an identity
-template — the value is the reusable syntax + AST + type rule). The bulk
-remains: a deferred typed-AST value model (`Decl` / `Expr` / `[Decl]`
-comptime values), declaration / statement quotes, `comptime func`
-declaration macros invoked via `@macro` with AST substitution and
-re-checking, hygiene, the builder API, and `vestra expand`. The
-AST-as-comptime-value layer is the large prerequisite and the natural
-next unit; it composes with the comptime folder that ships through
-phase 7.
+template).
+
+Second slice shipped — **expression macros**: a `comptime func(Expr, …)
+-> Expr` whose body is a `quote { … }` template, invoked in expression
+position as `@name(args)`. The `Expr` AST-value type (`TypeKind::AstExpr`)
+was added; a `quote` types as `Expr` when its expected type is `Expr` (its
+body then deferred, not checked as a runtime expression) and otherwise
+keeps the slice-1 identity behaviour. A macro call resolves by cloning the
+macro's template and substituting each argument for the matching `$param`
+splice (spliced args parenthesized to preserve precedence), then the
+expansion is type-checked as ordinary code (the spec's "re-checked") and
+lowered in place; the comptime macro func itself is never emitted. The
+comptime evaluator already executes `comptime func` bodies (loops, locals,
+recursion), so the engine was in place; this slice added the AST-as-value
+representation and the invoke/expand loop for the template form.
+
+Remaining: declaration macros (`@macro`/`@bitField` on a struct/func
+returning `[Decl]`, with a `Decl` reflection API + decl-context quote),
+comptime macro bodies with control flow building quotes (not just a single
+template), hygiene, the builder API, and `vestra expand`.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 

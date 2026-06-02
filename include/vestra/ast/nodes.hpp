@@ -79,6 +79,7 @@ enum class NodeKind : std::uint16_t {
     InterpStringExpr,
     QuoteExpr,
     SpliceExpr,
+    MacroCallExpr,
     TryExpr,
     DoCatchExpr,
     AwaitExpr,
@@ -508,6 +509,17 @@ struct QuoteExpr : Expr {
 struct SpliceExpr : Expr {
     ExprPtr inner;
     SpliceExpr() : Expr(NodeKind::SpliceExpr) {}
+};
+// §12.4 expression macro invocation: `@name(args)` in expression position.
+// `name` is a `comptime func(... : Expr) -> Expr` whose body is a `quote { … }`
+// template; the call expands by substituting each argument for the matching
+// `$param` splice in the template. The expansion (filled in during sema) is the
+// ordinary expression the macro stands for, type-checked and lowered in place.
+struct MacroCallExpr : Expr {
+    std::string name;
+    std::vector<ExprPtr> args;
+    ExprPtr expansion;  // set during resolution; what sema/codegen actually use
+    MacroCallExpr() : Expr(NodeKind::MacroCallExpr) {}
 };
 struct AwaitExpr : Expr {
     ExprPtr inner;

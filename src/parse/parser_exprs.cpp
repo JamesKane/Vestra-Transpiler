@@ -670,24 +670,20 @@ ast::ExprPtr Parser::parse_primary() {
             e->range = merge(start, last_range());
             return e;
         }
-        emit_error(start, std::format("unknown intrinsic '@{}'", intr_name));
-        // Best-effort recover: skip an optional (...) so we don't trip the
-        // outer expression parser on the leftover paren.
-        if (match(TokenKind::LParen)) {
-            int depth = 1;
-            while (depth > 0 && !at_end()) {
-                if (check(TokenKind::LParen)) {
-                    ++depth;
-                } else if (check(TokenKind::RParen)) {
-                    --depth;
-                }
-                advance();
-            }
+        // §12.4 anything else is an expression macro invocation `@name(args)` —
+        // `name` is a `comptime func(Expr, …) -> Expr` resolved + expanded by
+        // sema. (Intrinsics like @embed are matched above first.)
+        auto m = std::make_unique<ast::MacroCallExpr>();
+        m->name = std::move(intr_name);
+        expect(TokenKind::LParen, "'(' after macro name");
+        if (!check(TokenKind::RParen)) {
+            do {
+                m->args.push_back(parse_expr());
+            } while (match(TokenKind::Comma));
         }
-        auto stub = std::make_unique<ast::IdentExpr>();
-        stub->name = "<error>";
-        stub->range = merge(start, last_range());
-        return stub;
+        expect(TokenKind::RParen, "')' closing macro arguments");
+        m->range = merge(start, last_range());
+        return m;
     }
     default:
         emit_error(peek().range,

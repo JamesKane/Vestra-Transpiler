@@ -6,11 +6,11 @@
 // `quote { EXPR }` is a code template; `$x` splices an identifier and
 // `$(expr)` splices a parenthesized expression into the template. In this
 // v0.5 slice a quote is used directly in expression position, so its body
-// is materialized in place with the splices substituted. The `$`-splice
-// syntax and the type-checking (a splice is only legal inside a quote) are
-// the foundation; the declaration-macro layer (a `comptime func` taking a
-// declaration and returning `[Decl]`, invoked via `@macro`), the deferred
-// typed-AST value model, and hygiene are follow-on slices.
+// is materialized in place with the splices substituted. Expression macros
+// (below) build on this: a `comptime func(Expr, …) -> Expr` whose body is a
+// `quote` template, invoked as `@name(args)`. The declaration-macro layer (a
+// `comptime func` taking a declaration and returning `[Decl]`) and hygiene are
+// follow-on slices.
 
 module examples.quote_demo
 
@@ -28,4 +28,27 @@ func axpy(_ a: Int32, _ x: Int32, _ y: Int32) -> Int32 {
 // operands spliced in.
 func clampLow(_ v: Int32, _ lo: Int32) -> Int32 {
     return quote { if $(v) < $(lo) { $(lo) } else { $(v) } }
+}
+
+// §12.4 expression macros. A `comptime func(Expr, …) -> Expr` whose body is a
+// `quote` template; invoked as `@name(args)`, the call expands to the template
+// with each argument substituted for the matching `$param` splice, then the
+// expansion is type-checked and lowered in place. The macro func is comptime-
+// only (never emitted to C++).
+comptime func twice(_ x: Expr) -> Expr {
+    return quote { $x + $x }
+}
+
+// Spliced arguments are parenthesized, so a compound argument keeps its
+// grouping: `@scaleBias(p + 1, k)` expands to `(p + 1) * (p + 1) + (k)`.
+comptime func scaleBias(_ x: Expr, _ b: Expr) -> Expr {
+    return quote { $x * $x + $b }
+}
+
+func useTwice(_ n: Int32) -> Int32 {
+    return @twice(n)
+}
+
+func useScaleBias(_ p: Int32, _ k: Int32) -> Int32 {
+    return @scaleBias(p + 1, k)
 }

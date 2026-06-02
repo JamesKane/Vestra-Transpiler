@@ -58,6 +58,11 @@ enum class TypeKind : std::uint16_t {
     // `.seconds(n)` / `.milliseconds(n)` / … factories and consumed by the
     // `timeout` select arm.
     Duration,
+    // §12.4 the AST-value type `Expr` — what a `quote { … }` produces in a
+    // macro context and what an expression macro's params/result are. Comptime-
+    // only: it never reaches codegen (macro funcs aren't emitted; a macro call
+    // lowers to its expansion).
+    AstExpr,
     // bookkeeping
     Never,
     Error,
