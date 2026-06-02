@@ -16,6 +16,8 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -473,6 +475,122 @@ bool Resolver::gated_out(const ast::Decl& decl) {
         }
     }
     return false;
+}
+
+// ----- §12.4 declaration-macro expansion ---------------------------------
+
+namespace {
+
+// The `quote { <decl> … }` template a declaration macro returns: the
+// QuoteDeclExpr of a `return quote { … }` (or a bare trailing quote) body.
+ast::QuoteDeclExpr* decl_macro_template(ast::FuncDecl& fn) {
+    if (!fn.body) {
+        return nullptr;
+    }
+    if (fn.body->kind == ast::NodeKind::QuoteDeclExpr) {
+        return static_cast<ast::QuoteDeclExpr*>(fn.body.get());
+    }
+    if (fn.body->kind == ast::NodeKind::BlockExpr) {
+        for (auto& s : static_cast<ast::BlockExpr&>(*fn.body).stmts) {
+            if (s->kind == ast::NodeKind::ReturnStmt) {
+                auto& r = static_cast<ast::ReturnStmt&>(*s);
+                if (r.value && r.value->kind == ast::NodeKind::QuoteDeclExpr) {
+                    return static_cast<ast::QuoteDeclExpr*>(r.value.get());
+                }
+            }
+        }
+    }
+    return nullptr;
+}
+
+// The mutable attribute list of an annotatable top-level decl (struct / func /
+// enum), or nullptr for kinds that don't carry attributes.
+std::vector<ast::Attribute>* decl_attributes(ast::Decl& d) {
+    switch (d.kind) {
+    case ast::NodeKind::Struct:
+        return &static_cast<ast::StructDecl&>(d).attributes;
+    case ast::NodeKind::Func:
+        return &static_cast<ast::FuncDecl&>(d).attributes;
+    case ast::NodeKind::Enum:
+        return &static_cast<ast::EnumDecl&>(d).attributes;
+    default:
+        return nullptr;
+    }
+}
+
+}  // namespace
+
+void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticReporter& rep) {
+    // Collect declaration macros by name: a `comptime func` whose body is a
+    // declaration-context quote.
+    std::unordered_map<std::string, ast::FuncDecl*> macros;
+    for (auto& d : unit.decls) {
+        if (d->kind == ast::NodeKind::Func) {
+            auto& fn = static_cast<ast::FuncDecl&>(*d);
+            if (fn.is_comptime && decl_macro_template(fn) != nullptr) {
+                macros[fn.name] = &fn;
+            }
+        }
+    }
+    if (macros.empty()) {
+        return;
+    }
+
+    std::vector<ast::DeclPtr> out;
+    std::unordered_set<std::string> used;
+    out.reserve(unit.decls.size());
+    for (auto& d : unit.decls) {
+        // Drop the macro definitions themselves (comptime-only).
+        if (d->kind == ast::NodeKind::Func) {
+            auto it = macros.find(static_cast<ast::FuncDecl&>(*d).name);
+            if (it != macros.end() && it->second == &static_cast<ast::FuncDecl&>(*d)) {
+                continue;
+            }
+        }
+        // Find a macro attribute on this declaration.
+        std::vector<ast::Attribute>* attrs = decl_attributes(*d);
+        ast::FuncDecl* macro = nullptr;
+        std::size_t attr_idx = 0;
+        if (attrs != nullptr) {
+            for (std::size_t i = 0; i < attrs->size(); ++i) {
+                auto it = macros.find((*attrs)[i].name);
+                if (it != macros.end()) {
+                    macro = it->second;
+                    attr_idx = i;
+                    break;
+                }
+            }
+        }
+        if (macro == nullptr) {
+            out.push_back(std::move(d));
+            continue;
+        }
+        // v0.5: a declaration macro's template is moved into place, so it can
+        // back exactly one expansion site.
+        if (!used.insert(macro->name).second) {
+            rep.report(diag::Diagnostic::error(
+                           std::format("declaration macro '{}' is applied more than once "
+                                       "(v0.5 expands each macro at a single site)",
+                                       macro->name))
+                           .at((*attrs)[attr_idx].range));
+            out.push_back(std::move(d));
+            continue;
+        }
+        // Strip the macro attribute from the annotated decl so the spliced
+        // copy isn't re-validated as an unknown attribute.
+        attrs->erase(attrs->begin() + static_cast<std::ptrdiff_t>(attr_idx));
+        // Expand: each template item is either `$d` (splice the annotated decl)
+        // or a generated declaration (moved into the unit).
+        ast::QuoteDeclExpr* tmpl = decl_macro_template(*macro);
+        for (auto& item : tmpl->decls) {
+            if (item->kind == ast::NodeKind::SpliceDecl) {
+                out.push_back(std::move(d));  // $d → the annotated declaration
+            } else {
+                out.push_back(std::move(item));
+            }
+        }
+    }
+    unit.decls = std::move(out);
 }
 
 }  // namespace vestra::sema

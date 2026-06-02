@@ -28,6 +28,7 @@ std::size_t check_errors(std::string source) {
     if (rep.has_errors()) {
         return rep.error_count();
     }
+    vestra::sema::expand_declaration_macros(unit, rep);  // §12.4
     vestra::sema::TypeArena arena;
     vestra::sema::Resolver res(unit, arena, rep);
     res.resolve();
@@ -50,6 +51,7 @@ CheckResult check_detail(std::string source) {
     vestra::parse::Parser p(tokens, rep);
     auto unit = p.parse_unit();
     if (!rep.has_errors()) {
+        vestra::sema::expand_declaration_macros(unit, rep);  // §12.4
         vestra::sema::TypeArena arena;
         vestra::sema::Resolver res(unit, arena, rep);
         res.resolve();
@@ -2473,6 +2475,30 @@ TEST_CASE("invoking a non-macro function as a macro is rejected") {
                           "func f() -> Int32 { return @plain(1) }\n");
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("is not an expression macro") != std::string::npos);
+}
+
+TEST_CASE("a declaration macro expands and the generated decls check clean") {
+    // @addC replaces the struct with itself ($d) + a companion func; both are
+    // ordinary decls that type-check, and the macro func is gone after expand.
+    CHECK(check_errors("comptime func addC(_ d: Decl) -> [Decl] {\n"
+                       "    return quote { $d  func companion() -> Int32 { return 0 } }\n"
+                       "}\n"
+                       "@addC\n"
+                       "struct Point { var x: Int32 }\n"
+                       "func use() -> Int32 { let p = Point(x: 1)  return companion() + p.x }\n")
+          == 0);
+}
+
+TEST_CASE("a declaration macro applied twice is rejected (v0.5)") {
+    auto r = check_detail("comptime func addC(_ d: Decl) -> [Decl] {\n"
+                          "    return quote { $d  func c() -> Int32 { return 0 } }\n"
+                          "}\n"
+                          "@addC\n"
+                          "struct A { var x: Int32 }\n"
+                          "@addC\n"
+                          "struct B { var y: Int32 }\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("applied more than once") != std::string::npos);
 }
 
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------

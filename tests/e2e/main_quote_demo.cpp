@@ -23,6 +23,12 @@ int main() {
     assert(qd::useTwice(21) == 42);        // 21 + 21
     assert(qd::useScaleBias(2, 5) == 14);  // (2+1)*(2+1) + 5
 
+    // §12.4 declaration macro: @withOrigin kept `struct Marker` ($d) and added
+    // a companion `origin()`.
+    qd::Marker mk{.tag = 7};
+    assert(mk.tag == 7);
+    assert(qd::origin() == 0);
+
     std::puts("quote_demo OK");
     return 0;
 }

@@ -383,4 +383,12 @@ private:
     TargetContext target_;
 };
 
+// §12.4 declaration macros. Rewrites `unit.decls` in place before resolution:
+// each top-level decl annotated with a declaration-macro attribute (a
+// `comptime func(Decl) -> [Decl]` whose body is a `quote { … }` of decls) is
+// replaced by that template's declarations, with the `$d` item splicing the
+// annotated decl. The macro funcs themselves are dropped (comptime-only). The
+// resulting decls are ordinary and are checked + lowered normally.
+void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticReporter& rep);
+
 }  // namespace vestra::sema

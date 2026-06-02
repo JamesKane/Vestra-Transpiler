@@ -63,6 +63,9 @@ enum class TypeKind : std::uint16_t {
     // only: it never reaches codegen (macro funcs aren't emitted; a macro call
     // lowers to its expansion).
     AstExpr,
+    // §12.4 `Decl` — a declaration AST value; a declaration macro is a
+    // `comptime func(Decl) -> [Decl]`. Comptime-only, like AstExpr.
+    AstDecl,
     // bookkeeping
     Never,
     Error,

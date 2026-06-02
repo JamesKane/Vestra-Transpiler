@@ -46,6 +46,7 @@ struct SemaEmitFixture {
         vestra::parse::Parser p(tokens, rep);
         unit = std::make_unique<vestra::ast::CompilationUnit>(p.parse_unit());
         REQUIRE_FALSE(rep.has_errors());
+        vestra::sema::expand_declaration_macros(*unit, rep);  // §12.4
         resolver = std::make_unique<vestra::sema::Resolver>(*unit, arena, rep);
         resolver->resolve();
         REQUIRE_FALSE(rep.has_errors());
@@ -2660,6 +2661,19 @@ TEST_CASE("an expression macro expands to its quote template with args substitut
     // The comptime macro funcs are not emitted.
     CHECK(f.out.source.find("twice(") == std::string::npos);
     CHECK(f.out.source.find(" sb(") == std::string::npos);
+}
+
+TEST_CASE("a declaration macro replaces the decl with its quoted template") {
+    SemaEmitFixture f("comptime func addC(_ d: Decl) -> [Decl] {\n"
+                      "    return quote { $d  func companion() -> Int32 { return 0 } }\n"
+                      "}\n"
+                      "@addC\n"
+                      "struct Point { var x: Int32 }\n");
+    // The annotated struct is kept ($d) and the companion decl is generated.
+    CHECK(f.out.header.find("struct Point {") != std::string::npos);
+    CHECK(f.out.source.find("companion()") != std::string::npos);
+    // The comptime macro func itself is not emitted.
+    CHECK(f.out.source.find("addC(") == std::string::npos);
 }
 
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------

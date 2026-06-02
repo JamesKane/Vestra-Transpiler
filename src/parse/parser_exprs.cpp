@@ -603,14 +603,58 @@ ast::ExprPtr Parser::parse_primary() {
         return c;
     }
     case TokenKind::KwQuote: {
-        // §12.4 v0.5: an expression-context quote, `quote { EXPR }`, whose
-        // body is a single expression. `$x` / `$(expr)` inside it are
-        // splice points. (Declaration / statement quotes and the typed-AST
-        // value model are follow-on slices.)
+        // §12.4 quote. An expression-context quote `quote { EXPR }` carries a
+        // single expression; a declaration-context quote `quote { <decl> … }`
+        // (a declaration-macro template) carries a list of declarations and may
+        // splice the annotated decl as a `$d` item. Disambiguated by scanning
+        // the braces for a declaration keyword at brace-depth 1.
         advance();
-        auto q = std::make_unique<ast::QuoteExpr>();
+        bool is_decl_quote = false;
+        {
+            int depth = 0;
+            for (std::size_t i = 0;; ++i) {
+                const auto& tk = peek(i);
+                if (tk.kind == TokenKind::Eof) {
+                    break;
+                }
+                if (tk.kind == TokenKind::LBrace) {
+                    ++depth;
+                } else if (tk.kind == TokenKind::RBrace) {
+                    if (--depth == 0) {
+                        break;
+                    }
+                } else if (depth == 1
+                           && (tk.kind == TokenKind::KwFunc || tk.kind == TokenKind::KwStruct
+                               || tk.kind == TokenKind::KwEnum || tk.kind == TokenKind::KwProtocol
+                               || tk.kind == TokenKind::KwExtension || tk.kind == TokenKind::KwConst
+                               || tk.kind == TokenKind::KwStatic)) {
+                    is_decl_quote = true;
+                    break;
+                }
+            }
+        }
         expect(TokenKind::LBrace, "'{' to open quote body");
         skip_newlines();
+        if (is_decl_quote) {
+            // §12.4 declaration-macro template: a sequence of declarations,
+            // each either a real decl or a `$d` splice item.
+            auto q = std::make_unique<ast::QuoteDeclExpr>();
+            while (!check(TokenKind::RBrace) && !at_end()) {
+                if (check(TokenKind::Dollar)) {
+                    auto sd = std::make_unique<ast::SpliceDecl>();
+                    sd->splice = parse_prefix();  // the `$d` SpliceExpr
+                    sd->range = sd->splice ? sd->splice->range : peek().range;
+                    q->decls.push_back(std::move(sd));
+                } else {
+                    q->decls.push_back(parse_decl(parse_attributes()));
+                }
+                skip_newlines();
+            }
+            expect(TokenKind::RBrace, "'}' to close quote body");
+            q->range = merge(start, last_range());
+            return q;
+        }
+        auto q = std::make_unique<ast::QuoteExpr>();
         q->inner = parse_expr();
         skip_newlines();
         expect(TokenKind::RBrace, "'}' to close quote body");

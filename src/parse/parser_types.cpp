@@ -54,19 +54,34 @@ ast::TypePtr Parser::parse_type() {
         it->range = merge(start, last_range());
         base = std::move(it);
     } else if (match(TokenKind::LBracket)) {
-        // [N]T  — fixed vector
-        auto v = std::make_unique<ast::VectorType>();
-        if (check(TokenKind::IntLit)) {
-            v->length = std::stoll(std::string{advance().lexeme});
-        } else if (check(TokenKind::Identifier)) {
-            v->length_ident = std::string{advance().lexeme};
+        // §12.4 list of the AST value types — `[Decl]` / `[Expr]` (a
+        // declaration macro is `(Decl) -> [Decl]`). Distinguished from a
+        // fixed `[N]T` vector by holding a single AST type name immediately
+        // followed by `]` (no element type after). Comptime-only; macro funcs
+        // are expanded away before the resolver, so this only needs to parse.
+        if (check(TokenKind::Identifier) && (peek().lexeme == "Decl" || peek().lexeme == "Expr")
+            && peek(1).kind == TokenKind::RBracket) {
+            auto v = std::make_unique<ast::VectorType>();
+            v->element = parse_type();  // the Decl / Expr named type
+            v->length = -1;             // list marker (never resolved)
+            expect(TokenKind::RBracket, "']' in AST-list type");
+            v->range = merge(start, last_range());
+            base = std::move(v);
         } else {
-            emit_error(peek().range, "expected vector length (integer or identifier)");
+            // [N]T  — fixed vector
+            auto v = std::make_unique<ast::VectorType>();
+            if (check(TokenKind::IntLit)) {
+                v->length = std::stoll(std::string{advance().lexeme});
+            } else if (check(TokenKind::Identifier)) {
+                v->length_ident = std::string{advance().lexeme};
+            } else {
+                emit_error(peek().range, "expected vector length (integer or identifier)");
+            }
+            expect(TokenKind::RBracket, "']' in vector type");
+            v->element = parse_type();
+            v->range = merge(start, last_range());
+            base = std::move(v);
         }
-        expect(TokenKind::RBracket, "']' in vector type");
-        v->element = parse_type();
-        v->range = merge(start, last_range());
-        base = std::move(v);
     } else if (match(TokenKind::LParen)) {
         // Either a tuple type or a function type: `(T,...) using ... throws(...) -> R`.
         std::vector<ast::TypePtr> parts;

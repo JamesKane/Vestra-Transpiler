@@ -233,10 +233,25 @@ comptime evaluator already executes `comptime func` bodies (loops, locals,
 recursion), so the engine was in place; this slice added the AST-as-value
 representation and the invoke/expand loop for the template form.
 
-Remaining: declaration macros (`@macro`/`@bitField` on a struct/func
-returning `[Decl]`, with a `Decl` reflection API + decl-context quote),
-comptime macro bodies with control flow building quotes (not just a single
-template), hygiene, the builder API, and `vestra expand`.
+Third slice shipped — **declaration macros** (replace form): a `comptime
+func(Decl) -> [Decl]` whose body is a declaration-context `quote { … }`,
+applied as `@name` on a top-level struct/func. A pre-resolution pass
+(`expand_declaration_macros`, run from the driver before the resolver)
+rewrites `unit.decls`: the annotated decl is replaced by the macro's
+template declarations, with a `$d` item (a `SpliceDecl`) splicing the
+annotated decl back in; the macro func itself is dropped (comptime-only),
+and the generated decls are then checked + lowered as ordinary code. The
+quote parser disambiguates a declaration-context quote (a decl keyword at
+brace depth 1) from the expression quote; `[Decl]` / `[Expr]` parse as
+length-less AST-list types. To avoid a full decl cloner, the template is
+*moved* into the expansion site, so a macro backs a single application
+(applying it twice is a diagnosed v0.5 limitation).
+
+Remaining: a `Decl` reflection API (`.name`, `.attribute(...).arg(...)`,
+`.fields`) so a macro can read the annotated decl (today it can only
+splice it whole as `$d`); comptime macro bodies with control flow building
+quotes (not just a single template); multi-application (needs the decl
+cloner); hygiene; the builder API; and `vestra expand`.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 

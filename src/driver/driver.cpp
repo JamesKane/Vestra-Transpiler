@@ -196,6 +196,10 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
     parse::Parser parser(tokens, rep);
     auto unit = parser.parse_unit();
 
+    // §12.4 expand declaration macros before resolution: the generated decls
+    // are then checked and lowered as ordinary code.
+    sema::expand_declaration_macros(unit, rep);
+
     if (opts.dump_ast) {
         ast::Printer pr;
         pr.print_to(out, unit);
@@ -293,6 +297,7 @@ int run_check(const std::filesystem::path& input, std::ostream& out, std::ostrea
     auto tokens = lex.tokenize();
     parse::Parser parser(tokens, rep);
     auto unit = parser.parse_unit();
+    sema::expand_declaration_macros(unit, rep);  // §12.4
     if (!rep.has_errors()) {
         sema::TypeArena arena;
         sema::Resolver resolver(unit, arena, rep);

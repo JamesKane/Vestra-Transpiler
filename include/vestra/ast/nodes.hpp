@@ -31,6 +31,7 @@ enum class NodeKind : std::uint16_t {
     Const,
     Static,
     Derive,
+    SpliceDecl,
     // ---- types ----
     NamedType,
     VectorType,
@@ -78,6 +79,7 @@ enum class NodeKind : std::uint16_t {
     EmbedExpr,
     InterpStringExpr,
     QuoteExpr,
+    QuoteDeclExpr,
     SpliceExpr,
     MacroCallExpr,
     TryExpr,
@@ -502,6 +504,18 @@ struct InterpStringExpr : Expr {
 struct QuoteExpr : Expr {
     ExprPtr inner;
     QuoteExpr() : Expr(NodeKind::QuoteExpr) {}
+};
+// §12.4 declaration-context quote: `quote { <decl> … }` yields a list of
+// declarations ([Decl]). A declaration macro's template; a `$d` item
+// (SpliceDecl) splices the annotated declaration, other items are generated.
+struct QuoteDeclExpr : Expr {
+    std::vector<DeclPtr> decls;
+    QuoteDeclExpr() : Expr(NodeKind::QuoteDeclExpr) {}
+};
+// §12.4 a `$d` splice in declaration position inside a declaration quote.
+struct SpliceDecl : Decl {
+    ExprPtr splice;  // a SpliceExpr whose inner names the spliced declaration
+    SpliceDecl() : Decl(NodeKind::SpliceDecl) {}
 };
 // §12.4 splice point inside a `quote { … }`: `$x` (inner is an IdentExpr)
 // or `$(expr)` (inner is the parenthesized expression). The spliced value
