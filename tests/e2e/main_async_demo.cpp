@@ -26,6 +26,10 @@ int main() {
     // Void async function runs to completion.
     ad::touch(0).get();
 
+    // spawn of a void async fn → Future[Unit] (lowered to Future<void>);
+    // awaiting it completes the task, then the caller continues. 41 -> 42.
+    assert(ad::awaitVoidSpawn(41).get() == 42);
+
     // spawn → Future[T], consumed by await.
     assert(ad::sumSpawned(10, 20).get() == 32);  // (10+1) + (20+1)
 

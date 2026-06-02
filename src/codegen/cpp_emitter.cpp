@@ -653,8 +653,10 @@ struct Task {
 
 template <>
 struct Task<void> {
+    using __vstr_task_value = void;  // marks this as a Task for spawn_future
     struct promise_type {
         std::coroutine_handle<> continuation{};
+        std::shared_ptr<Waiter> select_waiter{};  // fired on completion (§11 select)
         Task get_return_object() {
             return Task{std::coroutine_handle<promise_type>::from_promise(*this)};
         }
@@ -663,6 +665,11 @@ struct Task<void> {
             [[nodiscard]] bool await_ready() const noexcept { return false; }
             std::coroutine_handle<> await_suspend(
                 std::coroutine_handle<promise_type> h) noexcept {
+                auto& w = h.promise().select_waiter;
+                if (w && !w->fired) {
+                    w->fired = true;
+                    Scheduler::instance().schedule(w->h);
+                }
                 auto c = h.promise().continuation;
                 return c ? c : std::noop_coroutine();
             }
@@ -750,6 +757,63 @@ struct Future {
             return;
         }
         ensure_scheduled();  // make sure the task will run (and complete)
+        task_->h_.promise().select_waiter = std::move(w);
+    }
+    void sel_disarm() {
+        if (task_ && task_->h_ && !task_->h_.done()) { task_->h_.promise().select_waiter = nullptr; }
+    }
+    ~Future() {
+        if (task_ && task_->h_ && !task_->h_.done()) {
+            ensure_scheduled();
+            while (task_->h_ && !task_->h_.done()) { Scheduler::instance().run(); }
+        }
+    }
+};
+
+// §11 Future<void>: what `spawn` of a Unit-returning async fn yields. There is
+// no value to cache (std::optional<void> is ill-formed), so a `forced_` flag
+// stands in for "completed"; forcing pumps the scheduler to completion. Awaits
+// and `.get()` yield void. Mirrors Future<T>'s scheduling, select hooks, and
+// fire-and-forget destructor.
+template <>
+struct Future<void> {
+    std::optional<Task<void>> task_;
+    bool forced_ = false;
+    bool scheduled_ = false;
+    explicit Future(Task<void> t) : task_(std::move(t)) {}
+    Future(Future&&) = default;
+    Future& operator=(Future&&) = default;
+    Future(const Future&) = delete;
+    Future& operator=(const Future&) = delete;
+    void ensure_scheduled() {
+        if (task_ && task_->h_ && !task_->h_.done() && !scheduled_) {
+            Scheduler::instance().schedule(task_->h_);
+            scheduled_ = true;
+        }
+    }
+    void force() {
+        if (!forced_) {
+            ensure_scheduled();
+            while (task_->h_ && !task_->h_.done()) { Scheduler::instance().run(); }
+            forced_ = true;
+        }
+    }
+    [[nodiscard]] bool await_ready() const noexcept { return true; }
+    void await_suspend(std::coroutine_handle<>) const noexcept {}
+    void await_resume() { force(); }
+    void get() { force(); }
+    [[nodiscard]] bool sel_ready() const {
+        return forced_ || (task_ && task_->h_ && task_->h_.done());
+    }
+    void sel_arm(std::shared_ptr<Waiter> w) {
+        if (sel_ready()) {
+            if (w && !w->fired) {
+                w->fired = true;
+                Scheduler::instance().schedule(w->h);
+            }
+            return;
+        }
+        ensure_scheduled();
         task_->h_.promise().select_waiter = std::move(w);
     }
     void sel_disarm() {

@@ -39,6 +39,15 @@ async func touch(_ x: Int32) {
     await increment(x)
 }
 
+// `spawn` of a void async fn yields a Future[Unit] (lowered to
+// `__vstr::Future<void>` — no value to cache); `await` drives it to
+// completion, then the caller continues. awaitVoidSpawn(41) == 42.
+async func awaitVoidSpawn(_ x: Int32) -> Int32 {
+    let f = spawn touch(x)
+    await f
+    return x + 1
+}
+
 // `spawn f(args)` runs the call and yields a `Future[T]`; `await` consumes
 // the future for its result. v0.5 has no scheduler, so a spawn runs
 // eagerly, but the surface is the §11 one: spawn both, then await both.

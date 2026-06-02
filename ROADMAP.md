@@ -149,13 +149,21 @@ each), and the cooperative scheduler:
     lambda body. Sema already typed `await f()` of an async throws fn as
     `Result<T, E>` (await is transparent on non-Future), which a `try`
     unwraps; no sema change was needed.
+  * **slice 8** — **`Future[void]` for void spawn**: `spawn` of a
+    Unit-returning async fn now yields a `Future[Unit]`, lowered to a
+    `__vstr::Future<void>` specialization (no `std::optional<void>`; a
+    `forced_` flag stands in for "completed", forcing pumps to completion,
+    awaits/`.get()` yield void). `Task<void>` now advertises
+    `__vstr_task_value = void` so `spawn_future` recognizes it (previously
+    it mis-wrapped as `Future<Task<void>>`) and carries a `select_waiter`
+    fired at `final_suspend` for parity. (A void future as a *select* arm
+    is still unsupported — the dispatch would bind `auto&& v = f.get()` to a
+    void — but that combination is nonsensical and out of scope.)
 
 Scheduler / §11 carry-forwards: a sema-level async-context gate for a
 no-default channel select (today the generated `co_await` enforces it at
-C++ compile time, mirroring `await`); spawn of a void function
-(`Future<void>` — needs an
-`optional<void>`-free path); spawn capture-by-value / move semantics +
-non-escapable futures; the
+C++ compile time, mirroring `await`); spawn capture-by-value / move
+semantics + non-escapable futures; the
 `using Async` gate on `parallel`; and the sema-level "no borrow across
 await" rule (the runtime is now safe by-copy; sema doesn't yet *reject* a
 borrow held across an await). (senders/receivers can replace the

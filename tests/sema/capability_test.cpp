@@ -150,6 +150,18 @@ TEST_CASE("an async throws function with a propagating try-await checks clean") 
           == 0);
 }
 
+TEST_CASE("spawning a void async fn and awaiting it checks clean") {
+    // `spawn poke(x)` is a Future[Unit]; awaiting it yields Unit (discarded).
+    CHECK(check("async func poke(_ x: Int32) { let y = x }\n"
+                "async func run(_ x: Int32) -> Int32 {\n"
+                "    let f = spawn poke(x)\n"
+                "    await f\n"
+                "    return x + 1\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 TEST_CASE("spawn yields a Future that await unwraps to the inner type") {
     // `spawn leaf()` is a Future[Int32]; awaiting it gives back the Int32,
     // so the addition and the Int32 return both type-check.

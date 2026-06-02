@@ -2381,6 +2381,21 @@ TEST_CASE("spawn lowers to __vstr::spawn_future and await consumes the future") 
     CHECK(f.out.source.find("co_return co_await (fut);") != std::string::npos);
 }
 
+TEST_CASE("spawn of a void async fn yields Future<void>") {
+    SemaEmitFixture f("async func poke(_ x: Int32) { let y = x }\n"
+                      "async func run(_ x: Int32) -> Int32 {\n"
+                      "    let f = spawn poke(x)\n"
+                      "    await f\n"
+                      "    return x + 1\n"
+                      "}\n");
+    CHECK(f.out.source.find("auto f = __vstr::spawn_future(poke(x));") != std::string::npos);
+    CHECK(f.out.source.find("co_await (f);") != std::string::npos);
+    // The runtime ships a Future<void> specialization, and Task<void> is now a
+    // spawnable Task (advertises __vstr_task_value).
+    CHECK(f.out.header.find("struct Future<void> {") != std::string::npos);
+    CHECK(f.out.header.find("using __vstr_task_value = void;") != std::string::npos);
+}
+
 TEST_CASE("a Future[T] type annotation lowers to __vstr::Future<T>") {
     SemaEmitFixture f("async func leaf() -> Int32 { return 1 }\n"
                       "async func use() -> Int32 {\n"
