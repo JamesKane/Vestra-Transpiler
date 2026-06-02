@@ -427,13 +427,39 @@ struct Duration {
     constexpr double operator/(Duration o) const {
         return static_cast<double>(nanos_) / static_cast<double>(o.nanos_);
     }
-    // Scalar scaling: `Duration * Int` / `Int * Duration` / `Duration / Int`,
-    // each yielding a Duration. The integral overloads don't collide with the
-    // Duration / Duration ratio above — there is no int<->Duration conversion.
-    constexpr Duration operator*(std::int64_t k) const { return Duration{nanos_ * k}; }
-    constexpr Duration operator/(std::int64_t k) const { return Duration{nanos_ / k}; }
-    friend constexpr Duration operator*(std::int64_t k, Duration d) {
-        return Duration{d.nanos_ * k};
+    // Scalar scaling by an integer OR a floating-point factor, each yielding a
+    // Duration (`Duration * Int/Float`, `Int/Float * Duration`, `Duration /
+    // Int/Float`). Constrained templates keep the integral and floating
+    // overloads from colliding on an integer literal — `int -> int64` and
+    // `int -> double` are equal-rank standard conversions, so plain overloads
+    // would make `d * 3` ambiguous. Fractional arithmetic runs in double. None
+    // collide with the `Duration / Duration` ratio (no int/float<->Duration
+    // conversion exists).
+    template <std::integral I>
+    constexpr Duration operator*(I k) const {
+        return Duration{nanos_ * static_cast<std::int64_t>(k)};
+    }
+    template <std::floating_point F>
+    constexpr Duration operator*(F f) const {
+        return Duration{
+            static_cast<std::int64_t>(static_cast<double>(nanos_) * static_cast<double>(f))};
+    }
+    template <std::integral I>
+    constexpr Duration operator/(I k) const {
+        return Duration{nanos_ / static_cast<std::int64_t>(k)};
+    }
+    template <std::floating_point F>
+    constexpr Duration operator/(F f) const {
+        return Duration{
+            static_cast<std::int64_t>(static_cast<double>(nanos_) / static_cast<double>(f))};
+    }
+    template <std::integral I>
+    friend constexpr Duration operator*(I k, Duration d) {
+        return d * k;
+    }
+    template <std::floating_point F>
+    friend constexpr Duration operator*(F f, Duration d) {
+        return d * f;
     }
     // A defaulted <=> implicitly supplies == / != as well.
     constexpr auto operator<=>(const Duration&) const = default;

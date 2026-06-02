@@ -156,6 +156,17 @@ func durationSecondsTrunc() -> Int {
     return d.seconds
 }
 
+// Fractional scaling: `Duration * Float`, `Float * Duration`, `Duration /
+// Float` all yield a Duration. 1s * 1.5 = 1500ms, doubled = 3000ms, / 1.5 =
+// 2000ms.
+func durationFractional() -> Int {
+    let oneSec: Duration = .seconds(1)
+    let half = oneSec * 1.5
+    let scaled = 2.0 * half
+    let back = scaled / 1.5
+    return back.milliseconds
+}
+
 async func selectBeatsTimeout() -> Int32 {
     let a: Channel[Int32] = Channel.new()
     let b: Channel[Int32] = Channel.new()

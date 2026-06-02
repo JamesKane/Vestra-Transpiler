@@ -548,14 +548,27 @@ TEST_CASE("multiplying two Durations is rejected") {
     CHECK(r.first_message.find("cannot multiply two Durations") != std::string::npos);
 }
 
-TEST_CASE("scaling a Duration by a non-integer is rejected") {
+TEST_CASE("Duration fractional scaling types as Duration") {
+    // Duration * Float, Float * Duration, and Duration / Float all yield a
+    // Duration (alongside the Int forms and the Duration / Duration ratio).
+    CHECK(check("func scaled() -> Duration {\n"
+                "    let one: Duration = .seconds(1)\n"
+                "    let a = one * 1.5\n"
+                "    let b = 2.0 * a\n"
+                "    return b / 1.5\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("scaling a Duration by a non-numeric value is rejected") {
     auto r = check("func bad() -> Duration {\n"
                    "    let a: Duration = .seconds(1)\n"
-                   "    let f: Float64 = 2.5\n"
-                   "    return a * f\n"
+                   "    return a * true\n"
                    "}\n");
     CHECK(r.error_count >= 1);
-    CHECK(r.first_message.find("may only be scaled by an integer") != std::string::npos);
+    CHECK(r.first_message.find("scaled by an integer or floating-point factor")
+          != std::string::npos);
 }
 
 TEST_CASE("Duration unit accessors type as Int") {

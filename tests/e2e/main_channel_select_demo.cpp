@@ -47,6 +47,9 @@ int main() {
     assert(cs::durationMillis() == 2000);
     assert(cs::durationSecondsTrunc() == 1);
 
+    // Fractional scaling: 1s * 1.5 = 1500ms, * 2.0 = 3000ms, / 1.5 = 2000ms.
+    assert(cs::durationFractional() == 2000);
+
     std::puts("channel_select_demo OK");
     return 0;
 }

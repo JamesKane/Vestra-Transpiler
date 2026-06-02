@@ -110,21 +110,24 @@ each), and the cooperative scheduler:
     against the expected type) and the explicit `Duration.seconds(n)`
     form. Arithmetic mirrors Swift: `Duration / Duration -> Float64` (a
     dimensionless ratio), `Duration +/- Duration -> Duration`, and
-    comparisons -> `Bool`, plus scalar scaling `Duration * Int` / `Int *
-    Duration` / `Duration / Int -> Duration` — all riding the C++
-    `__vstr::Duration` operator overloads (the integral overloads don't
-    collide with the ratio: there is no int<->Duration conversion), so
-    codegen still emits a straight `a <op> b`. The `timeout` arm now takes
-    a `Duration` (e.g. `timeout .milliseconds(250):`), extracting whole
-    milliseconds via `.in_milliseconds()`. Property accessors
-    `.nanoseconds` / `.microseconds` / `.milliseconds` / `.seconds` read
-    the total whole count in that unit as `Int` (truncating; accessed, not
-    called — distinct from the same-named factory), lowering to
+    comparisons -> `Bool`, plus scalar scaling `Duration * (Int|Float)` /
+    `(Int|Float) * Duration` / `Duration / (Int|Float) -> Duration` — all
+    riding the C++ `__vstr::Duration` operator overloads, so codegen still
+    emits a straight `a <op> b`. The scalar overloads are constrained
+    templates (`std::integral` vs `std::floating_point`) so an integer
+    literal stays unambiguous against the floating overload (`int->int64`
+    and `int->double` are equal-rank conversions); none collide with the
+    `Duration / Duration` ratio (no int/float<->Duration conversion
+    exists). The `timeout` arm now takes a `Duration` (e.g. `timeout
+    .milliseconds(250):`), extracting whole milliseconds via
+    `.in_milliseconds()`. Property accessors `.nanoseconds` /
+    `.microseconds` / `.milliseconds` / `.seconds` read the total whole
+    count in that unit as `Int` (truncating; accessed, not called —
+    distinct from the same-named factory), lowering to
     `static_cast<std::intptr_t>(d.in_<unit>())` like Span's `.count`.
 
-Scheduler / §11 carry-forwards: `Duration * Float` / `/ Float` fractional
-scaling; mixed channel/future select arms; a sema-level async-context gate
-for a
+Scheduler / §11 carry-forwards: mixed channel/future select arms; a
+sema-level async-context gate for a
 no-default channel select (today the generated `co_await` enforces it at
 C++ compile time, mirroring `await`); spawn of a void function
 (`Future<void>` — needs an

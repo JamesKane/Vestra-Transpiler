@@ -2481,9 +2481,29 @@ TEST_CASE("Duration scalar scaling lowers to straight operators") {
     CHECK(f.out.source.find("2 * up") != std::string::npos);
     CHECK(f.out.source.find("up2 / 8") != std::string::npos);
     CHECK(f.out.source.find("up2 / down") != std::string::npos);
-    // The runtime shim carries the scalar overloads.
-    CHECK(f.out.header.find("Duration operator*(std::int64_t k) const") != std::string::npos);
-    CHECK(f.out.header.find("friend constexpr Duration operator*(std::int64_t k, Duration d)")
+    // The runtime shim carries the constrained scalar overloads (templated on
+    // std::integral / std::floating_point so an integer literal stays
+    // unambiguous against the floating overload).
+    CHECK(f.out.header.find("template <std::integral I>") != std::string::npos);
+    CHECK(f.out.header.find("template <std::floating_point F>") != std::string::npos);
+    CHECK(f.out.header.find("friend constexpr Duration operator*(I k, Duration d)")
+          != std::string::npos);
+}
+
+TEST_CASE("Duration fractional scaling lowers to straight operators") {
+    SemaEmitFixture f("func s() -> Int {\n"
+                      "    let one: Duration = .seconds(1)\n"
+                      "    let up = one * 1.5\n"
+                      "    let up2 = 2.0 * up\n"
+                      "    let down = up2 / 1.5\n"
+                      "    return down.milliseconds\n"
+                      "}\n");
+    // Float scaling is also a straight `a <op> b`; the floating_point operator
+    // overloads resolve it.
+    CHECK(f.out.source.find("one * 1.5") != std::string::npos);
+    CHECK(f.out.source.find("2.0 * up") != std::string::npos);
+    CHECK(f.out.source.find("up2 / 1.5") != std::string::npos);
+    CHECK(f.out.header.find("friend constexpr Duration operator*(F f, Duration d)")
           != std::string::npos);
 }
 

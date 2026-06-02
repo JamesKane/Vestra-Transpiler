@@ -805,22 +805,24 @@ TypePtr Resolver::check_binary(const ast::BinaryExpr& b, TypePtr expected) {
             }
             return types_->primitive(TypeKind::Duration);
         case ast::BinaryOp::Mul: {
-            // Duration * Int or Int * Duration (never Duration * Duration).
+            // Duration * (Int|Float) or (Int|Float) * Duration — scaling. Never
+            // Duration * Duration.
             if (both) {
                 error_at(b.range, "cannot multiply two Durations");
                 return types_->error();
             }
             TypePtr scalar = l_dur ? rhs : lhs;
-            if (scalar == nullptr || !scalar->is_integer()) {
+            if (scalar == nullptr || !(scalar->is_integer() || scalar->is_float())) {
                 error_at(b.range,
-                         std::format("a Duration may only be scaled by an integer, got {}",
+                         std::format("a Duration may only be scaled by an integer or "
+                                     "floating-point factor, got {}",
                                      scalar != nullptr ? scalar->describe() : "?"));
                 return types_->error();
             }
             return types_->primitive(TypeKind::Duration);
         }
         case ast::BinaryOp::Div:
-            // Duration / Duration is a ratio; Duration / Int scales.
+            // Duration / Duration is a ratio; Duration / (Int|Float) scales.
             if (both) {
                 return types_->primitive(TypeKind::Float64);
             }
@@ -828,10 +830,10 @@ TypePtr Resolver::check_binary(const ast::BinaryExpr& b, TypePtr expected) {
                 error_at(b.range, std::format("cannot divide {} by a Duration", lhs->describe()));
                 return types_->error();
             }
-            if (!rhs->is_integer()) {
+            if (!(rhs->is_integer() || rhs->is_float())) {
                 error_at(b.range,
                          std::format("a Duration may only be divided by a Duration (ratio) or "
-                                     "an integer (scaling), got {}",
+                                     "an integer/floating-point factor (scaling), got {}",
                                      rhs->describe()));
                 return types_->error();
             }
