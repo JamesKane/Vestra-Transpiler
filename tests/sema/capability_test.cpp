@@ -667,7 +667,7 @@ TEST_CASE("Duration unit accessors type as Int") {
 // ---- §11.2 parallel --------------------------------------------------------
 
 TEST_CASE("parallel over a MutSpan with a worker closure checks clean") {
-    CHECK(check("func bump(_ data: MutSpan[Int32], _ n: Int) {\n"
+    CHECK(check("func bump(_ data: MutSpan[Int32], _ n: Int) using Async {\n"
                 "    parallel(data, n, { slice =>\n"
                 "        var i = 0\n"
                 "        while i < slice.count { slice[i] = slice[i] + 1  i = i + 1 }\n"
@@ -675,6 +675,17 @@ TEST_CASE("parallel over a MutSpan with a worker closure checks clean") {
                 "}\n")
               .error_count
           == 0);
+}
+
+TEST_CASE("parallel without the Async capability is rejected") {
+    auto r = check("func bump(_ data: MutSpan[Int32], _ n: Int) {\n"
+                   "    parallel(data, n, { slice =>\n"
+                   "        var i = 0\n"
+                   "        while i < slice.count { slice[i] = slice[i] + 1  i = i + 1 }\n"
+                   "    })\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("Async") != std::string::npos);
 }
 
 TEST_CASE("parallel rejects a non-MutSpan first argument") {

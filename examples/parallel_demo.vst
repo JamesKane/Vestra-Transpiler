@@ -15,7 +15,9 @@
 module examples.parallel_demo
 
 // Increment every element, working over `chunks` disjoint sub-views.
-func incrementAll(_ data: MutSpan[Int32], _ chunks: Int) {
+// `parallel` dispatches onto the async runtime, so the caller declares
+// `using Async` (the concurrent contract, even though v0.5 runs sequentially).
+func incrementAll(_ data: MutSpan[Int32], _ chunks: Int) using Async {
     parallel(data, chunks, { slice =>
         var i = 0
         while i < slice.count {
@@ -26,7 +28,7 @@ func incrementAll(_ data: MutSpan[Int32], _ chunks: Int) {
 }
 
 // A second worker over the same partition shape, multiplying in place.
-func scaleAll(_ data: MutSpan[Int32], _ chunks: Int, _ factor: Int32) {
+func scaleAll(_ data: MutSpan[Int32], _ chunks: Int, _ factor: Int32) using Async {
     parallel(data, chunks, { slice =>
         var i = 0
         while i < slice.count {

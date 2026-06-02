@@ -266,6 +266,17 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
             if (raw_memory_builtins.contains(bi.name) && !in_scope("RawMemory")) {
                 missing_capability("RawMemory", c.range);
             }
+            // §11.2 `parallel(data, chunks, body)` dispatches its worker onto
+            // the async runtime — v0.5 runs the chunks sequentially, but the
+            // surface commits to the concurrent contract — so it requires the
+            // Async capability, the same gate `spawn` / a blocking `select`
+            // carry. (A user symbol named `parallel` would have resolved the
+            // call to itself; the bare-ident builtin shape only matches here
+            // when nothing shadows it.)
+            if (bi.name == "parallel" && resolution_ != nullptr
+                && resolution_->symbol_of(c.callee.get()) == nullptr && !in_scope(AsyncCap)) {
+                missing_capability(AsyncCap, c.range);
+            }
         }
         // §A7 (§14.13) — call-shape rules inside an InterruptsOff
         // region. Five of the seven §14.13 rules are static; the

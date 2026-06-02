@@ -2605,7 +2605,7 @@ TEST_CASE("a mixed channel/future select blocks via a SelectAwaiter over both ar
 // ---- §11.2 parallel -------------------------------------------------------
 
 TEST_CASE("parallel lowers to __vstr::parallel over a worker closure") {
-    SemaEmitFixture f("func bump(_ data: MutSpan[Int32], _ n: Int) {\n"
+    SemaEmitFixture f("func bump(_ data: MutSpan[Int32], _ n: Int) using Async {\n"
                       "    parallel(data, n, { slice =>\n"
                       "        var i = 0\n"
                       "        while i < slice.count {\n"

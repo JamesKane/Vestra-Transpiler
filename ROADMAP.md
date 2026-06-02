@@ -167,10 +167,16 @@ each), and the cooperative scheduler:
     into a source-level `missing capability 'Async'` diagnostic. A select
     *with* a default (or a pure-future select) polls and is still allowed
     in a sync function.
+  * **slice 10** — **`using Async` gate on `parallel`**: `parallel(data,
+    chunks, body)` dispatches its worker onto the async runtime (v0.5 runs
+    the chunks sequentially, but the surface commits to the concurrent
+    contract), so the capability checker now requires the `Async`
+    capability at the call — the same gate `spawn` / a blocking `select`
+    carry. Callers declare `using Async` (or open `with Async = …`); the
+    bare-ident builtin shape only gates when nothing shadows `parallel`.
 
 Scheduler / §11 carry-forwards: spawn capture-by-value / move
-semantics + non-escapable futures; the
-`using Async` gate on `parallel`; and the sema-level "no borrow across
+semantics + non-escapable futures; and the sema-level "no borrow across
 await" rule (the runtime is now safe by-copy; sema doesn't yet *reject* a
 borrow held across an await). (senders/receivers can replace the
 coroutine shims if/when libc++ ships P2300.)
