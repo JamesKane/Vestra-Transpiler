@@ -2315,7 +2315,10 @@ TEST_CASE("async func lowers to a Task<T> coroutine with co_return / co_await") 
     SemaEmitFixture f("async func leaf(_ x: Int32) -> Int32 { return x + 1 }\n"
                       "async func use() -> Int32 { return await leaf(1) }\n");
     CHECK(f.out.header.find("struct Task {") != std::string::npos);  // runtime shim present
-    CHECK(f.out.source.find("__vstr::Task<std::int32_t> leaf(const std::int32_t& x)")
+    // §11 — an async func takes its read params *by value* (not const T&): a
+    // coroutine doesn't copy reference params into its frame, so a const& bound
+    // to a caller temporary would dangle across a suspension.
+    CHECK(f.out.source.find("__vstr::Task<std::int32_t> leaf(std::int32_t x)")
           != std::string::npos);
     CHECK(f.out.source.find("co_return x + 1;") != std::string::npos);
     CHECK(f.out.source.find("co_return co_await (leaf(1));") != std::string::npos);

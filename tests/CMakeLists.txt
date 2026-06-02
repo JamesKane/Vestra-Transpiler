@@ -2181,6 +2181,31 @@ set_tests_properties(e2e_channel_demo_run PROPERTIES
     DEPENDS                e2e_channel_demo_compile
     PASS_REGULAR_EXPRESSION "channel_demo OK")
 
+# §11 blocking channel receive (scheduler slice 2).
+set(e2e_chansel_input  ${CMAKE_SOURCE_DIR}/examples/channel_select_demo.vst)
+set(e2e_chansel_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_channel_select_demo.cpp)
+
+add_test(
+    NAME    e2e_channel_select_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_chansel_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_channel_select_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_chansel_driver} ${e2e_workdir}/channel_select_demo.cpp
+            -o ${e2e_workdir}/channel_select_demo_app)
+set_tests_properties(e2e_channel_select_demo_compile PROPERTIES
+    DEPENDS e2e_channel_select_demo_transpile)
+
+add_test(
+    NAME    e2e_channel_select_demo_run
+    COMMAND ${e2e_workdir}/channel_select_demo_app)
+set_tests_properties(e2e_channel_select_demo_run PROPERTIES
+    DEPENDS                e2e_channel_select_demo_compile
+    PASS_REGULAR_EXPRESSION "channel_select_demo OK")
+
 # §12.4 quote / splice (expression context).
 set(e2e_quote_input  ${CMAKE_SOURCE_DIR}/examples/quote_demo.vst)
 set(e2e_quote_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_quote_demo.cpp)

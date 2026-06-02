@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §11 blocking channel receive — the first §11 feature that exercises real
+// suspension on the cooperative scheduler.
+//
+// `await ch.receive()` parks the running task when the channel is empty and
+// open; a later `ch.send(v)` on another task wakes one parked receiver
+// (scheduling it on the run-loop), and `ch.close()` wakes all of them so
+// they observe the closed-and-drained `nil`. (The non-blocking `ch.recv()`
+// poll — front value, or nil when empty — is still available unchanged.)
+//
+// Because a coroutine doesn't copy reference parameters into its frame, an
+// `async func` takes its read params by value, so a value passed across a
+// suspension point (here, the channel handle and the counters) stays valid.
+
+module examples.channel_select_demo
+
+// Consumer: block on `receive` exactly `n` times, summing what arrives.
+async func drainN(_ ch: Channel[Int32], _ n: Int32) -> Int32 {
+    var total: Int32 = 0
+    var i: Int32 = 0
+    while i < n {
+        let v = await ch.receive()
+        if let x = v {
+            total = total + x
+        }
+        i = i + 1
+    }
+    return total
+}
+
+// Producer: send three values into the channel.
+async func produce(_ ch: Channel[Int32]) -> Int32 {
+    ch.send(1)
+    ch.send(2)
+    ch.send(3)
+    return 3
+}
+
+// Spawn the consumer first: it parks on the empty channel. The producer
+// then sends, waking the consumer once per value. Total = 1 + 2 + 3 = 6.
+async func pipeline() -> Int32 {
+    let ch: Channel[Int32] = Channel.new()
+    let consumer = spawn drainN(ch, 3)
+    let producer = spawn produce(ch)
+    let sent = await producer
+    return await consumer
+}
+
+// `close` wakes a parked receiver so a blocking `receive` on a drained,
+// closed channel returns nil rather than hanging.
+async func closeWakes() -> Int32 {
+    let ch: Channel[Int32] = Channel.new()
+    let waiter = spawn awaitOne(ch)
+    ch.close()
+    return await waiter
+}
+
+// Receives once; on a closed-and-empty channel this yields nil → -1.
+async func awaitOne(_ ch: Channel[Int32]) -> Int32 {
+    let v = await ch.receive()
+    if let x = v {
+        return x
+    }
+    return -1
+}

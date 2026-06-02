@@ -518,21 +518,37 @@ struct Task<void> {
 };
 
 // §11 Future<T>: what `spawn` yields. The Future owns the spawned Task
-// (keeping its coroutine frame alive) and drives it to a result the first
-// time it is forced — by `await future` in an async context, or `.get()`
-// from a non-async caller. v0.5 is single-threaded and cooperative, so a
-// spawned task makes no progress until it is forced; forcing it pumps the
-// scheduler so any tasks it in turn spawns also run. A plain (non-Task)
-// spawn argument is already a value and is stored directly.
+// (keeping its coroutine frame alive). `spawn` schedules the task on the
+// run-loop so it makes progress cooperatively — interleaving with the
+// spawner and with other spawned tasks — rather than only when awaited; this
+// is what lets a parked consumer and a running producer coexist. Forcing the
+// future (`await future`, or `.get()` from a non-async caller) pumps the
+// scheduler until the task completes and caches its value. A plain (non-Task)
+// spawn argument is already a value and is stored directly. The destructor
+// drives a scheduled-but-never-awaited task to completion so it can't leave a
+// dangling handle in the ready queue (fire-and-forget cleanup).
 template <class T>
 struct Future {
     std::optional<Task<T>> task_;  // present until forced
     std::optional<T> value_;       // the resolved result, cached once forced
+    bool scheduled_ = false;
     explicit Future(Task<T> t) : task_(std::move(t)) {}
     explicit Future(T v) : value_(std::move(v)) {}
+    Future(Future&&) = default;
+    Future& operator=(Future&&) = default;
+    Future(const Future&) = delete;
+    Future& operator=(const Future&) = delete;
+    void ensure_scheduled() {
+        if (task_ && task_->h_ && !task_->h_.done() && !scheduled_) {
+            Scheduler::instance().schedule(task_->h_);
+            scheduled_ = true;
+        }
+    }
     T force() {
         if (!value_.has_value()) {
-            value_ = task_->get();
+            ensure_scheduled();
+            while (task_->h_ && !task_->h_.done()) { Scheduler::instance().run(); }
+            value_ = std::move(task_->h_.promise().value);
             task_.reset();
         }
         return *value_;
@@ -541,16 +557,25 @@ struct Future {
     void await_suspend(std::coroutine_handle<>) const noexcept {}
     T await_resume() { return force(); }
     [[nodiscard]] T get() { return force(); }
+    ~Future() {
+        if (task_ && task_->h_ && !task_->h_.done()) {
+            ensure_scheduled();
+            while (task_->h_ && !task_->h_.done()) { Scheduler::instance().run(); }
+        }
+    }
 };
 
 // `spawn e`: if e is a Task<T> (an async call), hand back a Future<T> owning
-// the (not-yet-started) task; otherwise wrap the plain value.
+// the task and schedule it so it runs cooperatively; otherwise wrap the plain
+// value.
 template <class E>
 auto spawn_future(E&& e) {
     using D = std::decay_t<E>;
     if constexpr (requires { typename D::__vstr_task_value; }) {
         using V = typename D::__vstr_task_value;
-        return Future<V>{std::forward<E>(e)};
+        Future<V> f{std::forward<E>(e)};
+        f.ensure_scheduled();
+        return f;
     } else {
         return Future<D>{std::forward<E>(e)};
     }
@@ -622,22 +647,70 @@ struct Chunks {
     }
 };
 
-// §11 Channel<T>: a typed FIFO queue. `send` moves a value in; `recv`
-// returns the front value or std::nullopt when empty. The buffer is held
-// through a shared_ptr so copies of a channel handle share one queue
-// (the share-nothing model passes the handle between tasks). v0.5 is
-// single-threaded and unbounded — bounded back-pressure waits on a
-// scheduler.
+// §11 Channel<T>: a typed FIFO queue connecting cooperative tasks. The
+// shared State (queue + parked receivers + closed flag) is held through a
+// shared_ptr so every copy of a channel handle names one channel. v0.5 is
+// single-threaded and unbounded.
+//
+// Two receive flavors:
+//   * `recv() -> T?`        — non-blocking: front value, or nil if empty.
+//   * `await receive() -> T?` — suspending: parks the task on an empty, open
+//     channel until a `send` wakes it (or `close` drains it). nil means the
+//     channel is closed *and* drained — the canonical "no more values" signal
+//     that lets a `while let v = await ch.receive()` loop terminate.
+// `send` wakes one parked receiver (scheduling it on the run-loop); `close`
+// wakes all parked receivers so they observe the closed-and-empty nil.
 template <class T>
 struct Channel {
-    std::shared_ptr<std::deque<T>> q_ = std::make_shared<std::deque<T>>();
-    void send(T v) { q_->push_back(std::move(v)); }
-    std::optional<T> recv() {
-        if (q_->empty()) { return std::nullopt; }
-        T v = std::move(q_->front());
-        q_->pop_front();
+    struct State {
+        std::deque<T> q;
+        std::deque<std::coroutine_handle<>> waiters;
+        bool closed = false;
+    };
+    std::shared_ptr<State> s_ = std::make_shared<State>();
+    // A channel is a handle: these mutate the shared State through s_, not the
+    // handle itself, so they are const (callable on a read-borrowed channel
+    // passed as a `const Channel&` parameter — the share-nothing model passes
+    // handles between tasks by read-borrow).
+    void send(T v) const {
+        s_->q.push_back(std::move(v));
+        if (!s_->waiters.empty()) {
+            auto h = s_->waiters.front();
+            s_->waiters.pop_front();
+            Scheduler::instance().schedule(h);
+        }
+    }
+    void close() const {
+        s_->closed = true;
+        while (!s_->waiters.empty()) {
+            auto h = s_->waiters.front();
+            s_->waiters.pop_front();
+            Scheduler::instance().schedule(h);
+        }
+    }
+    std::optional<T> recv() const {  // non-blocking poll
+        if (s_->q.empty()) { return std::nullopt; }
+        T v = std::move(s_->q.front());
+        s_->q.pop_front();
         return v;
     }
+    // Suspending receive — co_await it. Ready when a value is queued or the
+    // channel is closed; otherwise parks the awaiting task as a waiter.
+    struct ReceiveAwaiter {
+        std::shared_ptr<State> s;
+        [[nodiscard]] bool await_ready() const noexcept { return !s->q.empty() || s->closed; }
+        std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) noexcept {
+            s->waiters.push_back(h);
+            return std::noop_coroutine();  // park: control returns to the scheduler
+        }
+        std::optional<T> await_resume() {
+            if (s->q.empty()) { return std::nullopt; }  // closed and drained
+            T v = std::move(s->q.front());
+            s->q.pop_front();
+            return v;
+        }
+    };
+    ReceiveAwaiter receive() const { return ReceiveAwaiter{s_}; }
 };
 
 )__task";
@@ -1642,6 +1715,19 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
                         emit_type(os, *p.type);
                     }
                     os << " " << pname;
+                } else if (f.is_async) {
+                    // §11 — a coroutine does NOT copy by-reference parameters
+                    // into its frame, so a `const T&` read param bound to a
+                    // caller temporary (a literal arg, `a + b`, …) dangles
+                    // once the coroutine suspends and the caller's
+                    // full-expression ends. Emit read params of an `async
+                    // func` by value so the frame owns a copy that survives
+                    // suspension. (This is the codegen half of "no borrow
+                    // across await": references can't cross a suspension.)
+                    if (p.type) {
+                        emit_type(os, *p.type);
+                    }
+                    os << " " << pname;
                 } else {
                     os << "const ";
                     if (p.type) {
@@ -1899,11 +1985,21 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
             const auto& p = fn.params[i];
             switch (p.mode) {
             case ast::ParamMode::Read:
-                hdr << "const ";
-                if (p.type) {
-                    emit_type(hdr, *p.type);
+                // §11 — an async method copies read params into its coroutine
+                // frame (by value), since a `const T&` would dangle across a
+                // suspension; a plain method keeps the canonical `const T&`.
+                if (fn.is_async) {
+                    if (p.type) {
+                        emit_type(hdr, *p.type);
+                    }
+                    hdr << " " << p.name;
+                } else {
+                    hdr << "const ";
+                    if (p.type) {
+                        emit_type(hdr, *p.type);
+                    }
+                    hdr << "& " << p.name;
                 }
-                hdr << "& " << p.name;
                 break;
             case ast::ParamMode::Inout:
                 if (p.type) {

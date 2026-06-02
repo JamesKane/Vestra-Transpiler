@@ -73,14 +73,21 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
             return types_->make_function({owner_type->inner()}, types_->unit());
         }
     }
-    // §11 Channel[T] — `send(T) -> Unit` (the value is moved into the
-    // queue) and `recv() -> T?` (the front value, or nil when empty).
+    // §11 Channel[T] — `send(T) -> Unit` (the value is moved into the queue),
+    // `recv() -> T?` (non-blocking: front value, or nil when empty),
+    // `receive() -> T?` (suspending: `await ch.receive()` parks the task on an
+    // empty open channel until a send wakes it; nil means closed-and-drained),
+    // and `close() -> Unit` (mark the channel closed and wake parked
+    // receivers).
     if (owner_type->kind() == TypeKind::Channel && owner_type->inner() != nullptr) {
         if (name == "send") {
             return types_->make_function({owner_type->inner()}, types_->unit());
         }
-        if (name == "recv") {
+        if (name == "recv" || name == "receive") {
             return types_->make_function({}, types_->make_optional(owner_type->inner()));
+        }
+        if (name == "close") {
+            return types_->make_function({}, types_->unit());
         }
     }
     if (owner_type->kind() == TypeKind::PerCpu && owner_type->inner() != nullptr) {
