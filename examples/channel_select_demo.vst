@@ -114,6 +114,35 @@ async func selectOneOrTimeout(_ a: Channel[Int32], _ b: Channel[Int32]) -> Int32
     }
 }
 
+// §11 mixed select: channel arms and future arms in one select, with poll
+// semantics. A ready channel (first in source order) wins; otherwise the
+// always-ready future is forced. leafInc is a trivial future source.
+async func leafInc(_ x: Int32) -> Int32 {
+    return x + 1
+}
+
+// Nothing feeds `ch`, so its arm isn't ready; the future arm is forced → 11.
+async func mixedFutureWins() -> Int32 {
+    let ch: Channel[Int32] = Channel.new()
+    let f = spawn leafInc(10)
+    return select {
+        on let v = ch.receive(): v ?? -1
+        on let r = f: r
+    }
+}
+
+// `ch` already holds a value, so its arm (first in source order) wins over the
+// future → 7.
+async func mixedChannelWins() -> Int32 {
+    let ch: Channel[Int32] = Channel.new()
+    ch.send(7)
+    let f = spawn leafInc(10)
+    return select {
+        on let v = ch.receive(): v ?? -1
+        on let r = f: r
+    }
+}
+
 // §11 Duration is Swift-like: typed `.seconds(n)` / `.milliseconds(n)`
 // factories, and arithmetic where `Duration / Duration` is a dimensionless
 // ratio (Float64) while `+` / `-` act span-wise. 10s / 2s = 5.0.

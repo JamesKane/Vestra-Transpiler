@@ -458,6 +458,35 @@ TEST_CASE("a timeout arm together with a default is rejected") {
     CHECK(r.first_message.find("both a 'timeout' arm and a 'default'") != std::string::npos);
 }
 
+TEST_CASE("a mixed channel/future select checks clean") {
+    CHECK(check("async func leaf(_ x: Int32) -> Int32 { return x + 1 }\n"
+                "async func pick(_ ch: Channel[Int32]) -> Int32 {\n"
+                "    let fut = spawn leaf(10)\n"
+                "    return select {\n"
+                "        on let v = ch.receive(): v ?? -1\n"
+                "        on let r = fut: r\n"
+                "    }\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a timeout arm on a mixed select is rejected") {
+    // A timeout needs the all-channel blocking form; a future arm disqualifies.
+    auto r = check("async func leaf(_ x: Int32) -> Int32 { return x + 1 }\n"
+                   "async func pick(_ ch: Channel[Int32]) -> Int32 {\n"
+                   "    let fut = spawn leaf(10)\n"
+                   "    return select {\n"
+                   "        on let v = ch.receive(): v ?? -1\n"
+                   "        on let r = fut: r\n"
+                   "        timeout .milliseconds(100): -9\n"
+                   "    }\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("'timeout' arm is only valid on a blocking select")
+          != std::string::npos);
+}
+
 TEST_CASE("a timeout arm on a future select is rejected") {
     auto r = check("async func leaf(_ x: Int32) -> Int32 { return x + 1 }\n"
                    "async func pick() -> Int32 {\n"

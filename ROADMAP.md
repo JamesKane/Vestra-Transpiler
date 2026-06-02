@@ -90,8 +90,17 @@ each), and the cooperative scheduler:
     over a non-template `SelectableState` base, so arms over channels of
     differing element types park uniformly. A select *with* a default
     stays a non-blocking poll (now `sel_state()->ready()` for channel
-    arms, `await_ready()` for future arms). Channels and futures aren't
-    mixed in one select.
+    arms, `await_ready()` for future arms).
+  * **slice 6** — **mixed channel/future select arms**, with *poll*
+    semantics (the chosen v0.5 model). A select that mixes `ch.receive()`
+    arms and future arms takes the poll lowering: source-order, first
+    ready arm wins. A future is always ready (it can be forced), so a
+    not-yet-ready channel can't win a race it isn't already holding — the
+    future is forced. (True blocking-join semantics — park until a channel
+    delivers *or* a future completes — would need a completion-waiter slot
+    on the Task promise and a type-erased Selectable shared by channels and
+    futures; deferred.) A `timeout` arm still requires the all-channel
+    blocking form, so it is rejected on a mixed select.
   * **slice 4** — **timeout select arm**: `timeout <ms>: body` (a
     contextual keyword) on a blocking channel select fires its body if no
     channel arm delivers within the wall-clock delay. The scheduler gains
@@ -126,8 +135,9 @@ each), and the cooperative scheduler:
     distinct from the same-named factory), lowering to
     `static_cast<std::intptr_t>(d.in_<unit>())` like Span's `.count`.
 
-Scheduler / §11 carry-forwards: mixed channel/future select arms; a
-sema-level async-context gate for a
+Scheduler / §11 carry-forwards: blocking-join semantics for a mixed
+select (park until a channel delivers or a future completes — see slice 6;
+today mixing is poll-only); a sema-level async-context gate for a
 no-default channel select (today the generated `co_await` enforces it at
 C++ compile time, mirroring `await`); spawn of a void function
 (`Future<void>` — needs an

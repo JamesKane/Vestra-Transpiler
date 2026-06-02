@@ -2540,6 +2540,26 @@ TEST_CASE("a channel select with a default polls once via sel_state()->ready()")
     CHECK(f.out.source.find("co_await") == std::string::npos);
 }
 
+TEST_CASE("a mixed channel/future select lowers to the source-order poll") {
+    SemaEmitFixture f("async func leaf(_ x: Int32) -> Int32 { return x + 1 }\n"
+                      "async func pick(_ ch: Channel[Int32]) -> Int32 {\n"
+                      "    let fut = spawn leaf(10)\n"
+                      "    return select {\n"
+                      "        on let v = ch.receive(): v ?? -1\n"
+                      "        on let r = fut: r\n"
+                      "    }\n"
+                      "}\n");
+    // Mixed arms take the poll lowering, not the blocking co_await SelectAwaiter:
+    // the channel arm polls sel_state()->ready()/sel_take(), the future arm polls
+    // await_ready()/get(), in source order.
+    CHECK(f.out.source.find(".sel_state()->ready()") != std::string::npos);
+    CHECK(f.out.source.find(".sel_take()") != std::string::npos);
+    CHECK(f.out.source.find(".await_ready()") != std::string::npos);
+    CHECK(f.out.source.find(".get()") != std::string::npos);
+    // No blocking SelectAwaiter is emitted for a mixed select.
+    CHECK(f.out.source.find("SelectAwaiter") == std::string::npos);
+}
+
 // ---- §11.2 parallel -------------------------------------------------------
 
 TEST_CASE("parallel lowers to __vstr::parallel over a worker closure") {

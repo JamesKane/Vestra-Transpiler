@@ -44,9 +44,13 @@ void CppEmitter::emit_select(std::ostream& os, const ast::SelectExpr& sel) {
     // Two arm flavors (§11). A Future[T] arm is an always-ready awaiter polled
     // with `.await_ready()` / `.get()`. A channel arm is `ch.receive()`, polled
     // via `ch.sel_state()->ready()` and taken with `ch.sel_take()`. A select
-    // whose arms are all channel receives and has no default *blocks*: it
+    // whose arms are *all* channel receives and has no default *blocks*: it
     // co_awaits a SelectAwaiter that parks on every channel and wakes on the
-    // first ready one. (Channels and Futures aren't mixed in one select.)
+    // first ready one. Any other shape (a default present, or a mix of future
+    // and channel arms) takes the poll lowering below: source-order, first
+    // ready arm wins. In a mixed select a future arm is always ready, so a
+    // not-yet-ready channel can't win a race it isn't already holding — the
+    // future is forced (this is the poll semantics, not a blocking join).
     const bool has_timeout = sel.timeout_body != nullptr;
     bool all_channel = true;  // vacuously true for an arm-less timeout select
     for (const auto& arm : sel.arms) {
