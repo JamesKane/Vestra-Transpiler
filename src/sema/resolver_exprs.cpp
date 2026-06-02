@@ -783,34 +783,76 @@ TypePtr Resolver::check_binary(const ast::BinaryExpr& b, TypePtr expected) {
 
     // §11 Duration arithmetic (Swift-like). `Duration +/- Duration -> Duration`;
     // `Duration / Duration -> Float64` (a dimensionless ratio); comparisons ->
-    // Bool. The C++ `__vstr::Duration` overloads these operators, so codegen
-    // still emits a straight `a <op> b` — only the result type is pinned here.
-    // (Scalar scaling `Duration * Int` is a carry-forward.)
+    // Bool; and scalar scaling `Duration * Int` / `Int * Duration` /
+    // `Duration / Int -> Duration`. The C++ `__vstr::Duration` overloads all of
+    // these, so codegen still emits a straight `a <op> b` — only the result
+    // type is pinned here.
     if (lhs->kind() == TypeKind::Duration || rhs->kind() == TypeKind::Duration) {
-        const bool both = lhs->kind() == TypeKind::Duration && rhs->kind() == TypeKind::Duration;
-        if (!both) {
-            error_at(b.range,
-                     std::format("Duration operator requires both operands to be Duration, "
-                                 "got {} and {}",
-                                 lhs->describe(),
-                                 rhs->describe()));
-            return types_->error();
-        }
+        const bool l_dur = lhs->kind() == TypeKind::Duration;
+        const bool r_dur = rhs->kind() == TypeKind::Duration;
+        const bool both = l_dur && r_dur;
         switch (b.op) {
         case ast::BinaryOp::Add:
         case ast::BinaryOp::Sub:
+            if (!both) {
+                error_at(b.range,
+                         std::format("Duration {} requires both operands to be Duration, "
+                                     "got {} and {}",
+                                     b.op == ast::BinaryOp::Add ? "+" : "-",
+                                     lhs->describe(),
+                                     rhs->describe()));
+                return types_->error();
+            }
             return types_->primitive(TypeKind::Duration);
+        case ast::BinaryOp::Mul: {
+            // Duration * Int or Int * Duration (never Duration * Duration).
+            if (both) {
+                error_at(b.range, "cannot multiply two Durations");
+                return types_->error();
+            }
+            TypePtr scalar = l_dur ? rhs : lhs;
+            if (scalar == nullptr || !scalar->is_integer()) {
+                error_at(b.range,
+                         std::format("a Duration may only be scaled by an integer, got {}",
+                                     scalar != nullptr ? scalar->describe() : "?"));
+                return types_->error();
+            }
+            return types_->primitive(TypeKind::Duration);
+        }
         case ast::BinaryOp::Div:
-            return types_->primitive(TypeKind::Float64);
+            // Duration / Duration is a ratio; Duration / Int scales.
+            if (both) {
+                return types_->primitive(TypeKind::Float64);
+            }
+            if (!l_dur) {
+                error_at(b.range, std::format("cannot divide {} by a Duration", lhs->describe()));
+                return types_->error();
+            }
+            if (!rhs->is_integer()) {
+                error_at(b.range,
+                         std::format("a Duration may only be divided by a Duration (ratio) or "
+                                     "an integer (scaling), got {}",
+                                     rhs->describe()));
+                return types_->error();
+            }
+            return types_->primitive(TypeKind::Duration);
         case ast::BinaryOp::Eq:
         case ast::BinaryOp::Ne:
         case ast::BinaryOp::Lt:
         case ast::BinaryOp::Le:
         case ast::BinaryOp::Gt:
         case ast::BinaryOp::Ge:
+            if (!both) {
+                error_at(b.range,
+                         std::format("Duration comparison requires both operands to be "
+                                     "Duration, got {} and {}",
+                                     lhs->describe(),
+                                     rhs->describe()));
+                return types_->error();
+            }
             return types_->boolean();
         default:
-            error_at(b.range, "operator not supported on Duration (only + - / and comparisons)");
+            error_at(b.range, "operator not supported on Duration (only + - * / and comparisons)");
             return types_->error();
         }
     }

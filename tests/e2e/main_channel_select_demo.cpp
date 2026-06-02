@@ -38,6 +38,10 @@ int main() {
     assert(cs::durationRatio() == 5.0);
     assert(cs::durationSum() == 2.0);
 
+    // Scalar scaling: Duration * Int / Int * Duration / Duration / Int all
+    // yield a Duration; 1000ms scaled to 2000ms, divided by 250ms = 8.0.
+    assert(cs::durationScaled() == 8.0);
+
     std::puts("channel_select_demo OK");
     return 0;
 }

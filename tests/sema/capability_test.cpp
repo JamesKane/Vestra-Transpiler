@@ -520,6 +520,44 @@ TEST_CASE("an unknown Duration factory is rejected") {
     CHECK(r.first_message.find("unknown Duration factory") != std::string::npos);
 }
 
+TEST_CASE("Duration scalar scaling types as Duration") {
+    // Duration * Int, Int * Duration, and Duration / Int all yield a Duration;
+    // a Duration / Duration ratio in the same function still types as Float64.
+    CHECK(check("func scaled() -> Duration {\n"
+                "    let q: Duration = .milliseconds(250)\n"
+                "    let n: Int32 = 4\n"
+                "    let a = q * n\n"
+                "    let b = n * q\n"
+                "    return (a + b) / 2\n"
+                "}\n"
+                "func ratio() -> Float64 {\n"
+                "    let q: Duration = .seconds(2)\n"
+                "    return (q * 3) / q\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("multiplying two Durations is rejected") {
+    auto r = check("func bad() -> Duration {\n"
+                   "    let a: Duration = .seconds(1)\n"
+                   "    let b: Duration = .seconds(2)\n"
+                   "    return a * b\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("cannot multiply two Durations") != std::string::npos);
+}
+
+TEST_CASE("scaling a Duration by a non-integer is rejected") {
+    auto r = check("func bad() -> Duration {\n"
+                   "    let a: Duration = .seconds(1)\n"
+                   "    let f: Float64 = 2.5\n"
+                   "    return a * f\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("may only be scaled by an integer") != std::string::npos);
+}
+
 // ---- §11.2 parallel --------------------------------------------------------
 
 TEST_CASE("parallel over a MutSpan with a worker closure checks clean") {

@@ -2467,6 +2467,26 @@ TEST_CASE("Duration factories lower to __vstr::Duration static constructors") {
     CHECK(f.out.header.find("in_milliseconds()") != std::string::npos);
 }
 
+TEST_CASE("Duration scalar scaling lowers to straight operators") {
+    SemaEmitFixture f("func s() -> Float64 {\n"
+                      "    let q: Duration = .milliseconds(250)\n"
+                      "    let up = q * 4\n"
+                      "    let up2 = 2 * up\n"
+                      "    let down = up2 / 8\n"
+                      "    return up2 / down\n"
+                      "}\n");
+    // Scalar ops are emitted as straight C++ — the runtime operator overloads
+    // do the work (Duration*Int, Int*Duration, Duration/Int → Duration).
+    CHECK(f.out.source.find("q * 4") != std::string::npos);
+    CHECK(f.out.source.find("2 * up") != std::string::npos);
+    CHECK(f.out.source.find("up2 / 8") != std::string::npos);
+    CHECK(f.out.source.find("up2 / down") != std::string::npos);
+    // The runtime shim carries the scalar overloads.
+    CHECK(f.out.header.find("Duration operator*(std::int64_t k) const") != std::string::npos);
+    CHECK(f.out.header.find("friend constexpr Duration operator*(std::int64_t k, Duration d)")
+          != std::string::npos);
+}
+
 TEST_CASE("a channel select with a default polls once via sel_state()->ready()") {
     SemaEmitFixture f("func poll(_ a: Channel[Int32]) -> Int32 {\n"
                       "    return select {\n"

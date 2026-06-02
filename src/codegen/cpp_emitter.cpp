@@ -422,6 +422,14 @@ struct Duration {
     constexpr double operator/(Duration o) const {
         return static_cast<double>(nanos_) / static_cast<double>(o.nanos_);
     }
+    // Scalar scaling: `Duration * Int` / `Int * Duration` / `Duration / Int`,
+    // each yielding a Duration. The integral overloads don't collide with the
+    // Duration / Duration ratio above — there is no int<->Duration conversion.
+    constexpr Duration operator*(std::int64_t k) const { return Duration{nanos_ * k}; }
+    constexpr Duration operator/(std::int64_t k) const { return Duration{nanos_ / k}; }
+    friend constexpr Duration operator*(std::int64_t k, Duration d) {
+        return Duration{d.nanos_ * k};
+    }
     // A defaulted <=> implicitly supplies == / != as well.
     constexpr auto operator<=>(const Duration&) const = default;
 };

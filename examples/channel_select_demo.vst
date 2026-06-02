@@ -132,6 +132,17 @@ func durationSum() -> Float64 {
     return total / oneSec
 }
 
+// Scalar scaling: `Duration * Int` and `Int * Duration` scale up, `Duration /
+// Int` scales down, all yielding a Duration; `Duration / Duration` stays a
+// Float64 ratio. up = 1000ms, up2 = 2000ms, down = 250ms, so 2000/250 = 8.0.
+func durationScaled() -> Float64 {
+    let quarter: Duration = .milliseconds(250)
+    let up = quarter * 4
+    let up2 = 2 * up
+    let down = up2 / 8
+    return up2 / down
+}
+
 async func selectBeatsTimeout() -> Int32 {
     let a: Channel[Int32] = Channel.new()
     let b: Channel[Int32] = Channel.new()

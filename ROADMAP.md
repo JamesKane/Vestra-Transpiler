@@ -110,14 +110,17 @@ each), and the cooperative scheduler:
     against the expected type) and the explicit `Duration.seconds(n)`
     form. Arithmetic mirrors Swift: `Duration / Duration -> Float64` (a
     dimensionless ratio), `Duration +/- Duration -> Duration`, and
-    comparisons -> `Bool` — all riding the C++ `__vstr::Duration` operator
-    overloads, so codegen still emits a straight `a <op> b`. The `timeout`
-    arm now takes a `Duration` (e.g. `timeout .milliseconds(250):`),
-    extracting whole milliseconds via `.in_milliseconds()`.
+    comparisons -> `Bool`, plus scalar scaling `Duration * Int` / `Int *
+    Duration` / `Duration / Int -> Duration` — all riding the C++
+    `__vstr::Duration` operator overloads (the integral overloads don't
+    collide with the ratio: there is no int<->Duration conversion), so
+    codegen still emits a straight `a <op> b`. The `timeout` arm now takes
+    a `Duration` (e.g. `timeout .milliseconds(250):`), extracting whole
+    milliseconds via `.in_milliseconds()`.
 
-Scheduler / §11 carry-forwards: scalar `Duration * Int` / `Duration /
-Int` scaling and Duration accessors (`.milliseconds` as a property);
-mixed channel/future select arms; a sema-level async-context gate for a
+Scheduler / §11 carry-forwards: Duration accessors (`.milliseconds` as a
+property) and `Duration * Float`/`/ Float` fractional scaling; mixed
+channel/future select arms; a sema-level async-context gate for a
 no-default channel select (today the generated `co_await` enforces it at
 C++ compile time, mirroring `await`); spawn of a void function
 (`Future<void>` — needs an
