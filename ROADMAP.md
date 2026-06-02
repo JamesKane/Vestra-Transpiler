@@ -174,11 +174,17 @@ each), and the cooperative scheduler:
     capability at the call — the same gate `spawn` / a blocking `select`
     carry. Callers declare `using Async` (or open `with Async = …`); the
     bare-ident builtin shape only gates when nothing shadows `parallel`.
+  * **slice 11** — **no borrow across await** (the sema half; codegen's
+    by-copy read params were the runtime half). Vestra borrows are
+    transient (call-argument boundaries), so the only borrow that can span
+    a suspension is an `inout` parameter of the async fn itself — and
+    unlike a read param (copied into the frame) an `inout` must stay a
+    write-back reference into the caller, which can't survive the
+    coroutine's suspension. The exclusivity checker now rejects an `inout`
+    parameter on an `async func` at its signature.
 
 Scheduler / §11 carry-forwards: spawn capture-by-value / move
-semantics + non-escapable futures; and the sema-level "no borrow across
-await" rule (the runtime is now safe by-copy; sema doesn't yet *reject* a
-borrow held across an await). (senders/receivers can replace the
+semantics + non-escapable futures. (senders/receivers can replace the
 coroutine shims if/when libc++ ships P2300.)
 
 ### 3. `Channel[T]` + `parallel` library (§11) — shipped

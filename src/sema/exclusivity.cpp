@@ -57,6 +57,26 @@ void ExclusivityChecker::check_decl(const ast::Decl& d) {
 }
 
 void ExclusivityChecker::check_func(const ast::FuncDecl& f) {
+    // §11 "no borrow across await": an `async func` lowers to a coroutine that
+    // suspends (at minimum at its initial suspend point, and at every `await`),
+    // so a mutable borrow held for the function's duration cannot survive. Read
+    // params are made safe by copying into the frame (codegen emits them by
+    // value); an `inout` param must stay a reference into the caller to write
+    // back, so it would dangle across a suspension. Reject it at the signature.
+    if (f.is_async) {
+        for (const auto& p : f.params) {
+            if (p.mode == ast::ParamMode::Inout) {
+                reporter_->report(
+                    diag::Diagnostic::error(
+                        std::format("async function '{}' cannot take an `inout` parameter "
+                                    "('{}') — a mutable borrow cannot survive a suspension "
+                                    "(no borrow across await)",
+                                    f.name,
+                                    p.name.empty() ? p.label : p.name))
+                        .at(p.range));
+            }
+        }
+    }
     if (!f.body) {
         return;
     }

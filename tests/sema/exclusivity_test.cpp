@@ -246,3 +246,25 @@ TEST_CASE("an alias of a split half inherits its parent provenance") {
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("sub-view of") != std::string::npos);
 }
+
+// ---- §11 no borrow across await -------------------------------------------
+
+TEST_CASE("an async func with an inout parameter is rejected") {
+    // A mutable borrow can't survive the coroutine's suspension; codegen makes
+    // read params safe by copying, but inout must stay a write-back reference.
+    auto r = check(with_prelude("async func bad(_ c: inout Cell) {\n"
+                                "    c.v = c.v + 1\n"
+                                "}\n"));
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("no borrow across await") != std::string::npos);
+}
+
+TEST_CASE("an async func with a read parameter is fine") {
+    // Read params are copied into the coroutine frame, so they survive
+    // suspension — no borrow is held across the await.
+    CHECK(check(with_prelude("async func ok(_ c: Cell) -> Int32 {\n"
+                             "    return read_cell(c)\n"
+                             "}\n"))
+              .error_count
+          == 0);
+}
