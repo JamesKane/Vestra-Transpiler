@@ -2420,13 +2420,13 @@ TEST_CASE("a channel select with a timeout arm registers a wall-clock timer") {
                       "    return select {\n"
                       "        on let av = a.receive(): av ?? -1\n"
                       "        on let bv = b.receive(): bv ?? -2\n"
-                      "        timeout 100: -9\n"
+                      "        timeout .milliseconds(100): -9\n"
                       "    }\n"
                       "}\n");
     // The SelectAwaiter is built with the timeout fields: has_timeout=true, the
-    // ms delay (cast to int64), and timeout_index == the channel-arm count (2).
+    // Duration's whole-ms count, and timeout_index == the channel-arm count (2).
     CHECK(f.out.source.find("__vstr::SelectAwaiter{{a.sel_state(), b.sel_state()}, nullptr, "
-                            "true, static_cast<std::int64_t>(100), 2}")
+                            "true, (__vstr::Duration::milliseconds(100)).in_milliseconds(), 2}")
           != std::string::npos);
     // The timeout body dispatches on the index past the last channel arm.
     CHECK(f.out.source.find("if (__vstr_selw == 2) {") != std::string::npos);
@@ -2439,15 +2439,32 @@ TEST_CASE("a channel select with a timeout arm registers a wall-clock timer") {
 TEST_CASE("an arm-less timeout select still blocks on the timer") {
     SemaEmitFixture f("async func wait() -> Int32 {\n"
                       "    return select {\n"
-                      "        timeout 5: 7\n"
+                      "        timeout .milliseconds(5): 7\n"
                       "    }\n"
                       "}\n");
     // No channel states; the awaiter is pure-timeout (timeout_index 0).
     CHECK(f.out.source.find("__vstr::SelectAwaiter{{}, nullptr, true, "
-                            "static_cast<std::int64_t>(5), 0}")
+                            "(__vstr::Duration::milliseconds(5)).in_milliseconds(), 0}")
           != std::string::npos);
     CHECK(f.out.source.find("if (__vstr_selw == 0) {") != std::string::npos);
     CHECK(f.out.source.find("co_return 7;") != std::string::npos);
+}
+
+TEST_CASE("Duration factories lower to __vstr::Duration static constructors") {
+    SemaEmitFixture f("func mk() -> Float64 {\n"
+                      "    let a: Duration = .seconds(10)\n"
+                      "    let b = Duration.milliseconds(500)\n"
+                      "    return a / b\n"
+                      "}\n");
+    // Leading-dot factory in a Duration context, and the explicit form.
+    CHECK(f.out.source.find("__vstr::Duration a = __vstr::Duration::seconds(10)")
+          != std::string::npos);
+    CHECK(f.out.source.find("__vstr::Duration::milliseconds(500)") != std::string::npos);
+    // Duration / Duration is a straight C++ `a / b` (the runtime overload yields
+    // a double), and the runtime shim carries the value type.
+    CHECK(f.out.source.find("return a / b;") != std::string::npos);
+    CHECK(f.out.header.find("struct Duration {") != std::string::npos);
+    CHECK(f.out.header.find("in_milliseconds()") != std::string::npos);
 }
 
 TEST_CASE("a channel select with a default polls once via sel_state()->ready()") {

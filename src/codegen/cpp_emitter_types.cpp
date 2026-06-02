@@ -106,6 +106,9 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         emit_sema_type(os, t->inner());
         os << ">";
         return;
+    case TypeKind::Duration:
+        os << "__vstr::Duration";
+        return;
     case TypeKind::Span:
         // Read-only borrowed view → `std::span<const T>`. The const on
         // the element pins the read-only side of the type system at
@@ -469,6 +472,11 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
             // shadowing isn't supported in v0.5.
             if (n.path[0] == "Context" && n.type_args.empty()) {
                 os << "__vstr::Context";
+                return;
+            }
+            // §11 `Duration` (no type args) → the runtime value type.
+            if (n.path[0] == "Duration" && n.type_args.empty()) {
+                os << "__vstr::Duration";
                 return;
             }
             // §A4 (§14.9) `Atomic[T]` lowers to `std::atomic<T>`.

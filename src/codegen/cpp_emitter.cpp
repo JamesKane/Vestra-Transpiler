@@ -405,7 +405,28 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     // on the scheduler and be resumed later), which is what blocking channel
     // recv / timeout select build on; with no parking point a task still
     // runs straight through, preserving the earlier sequential semantics.
-    hdr << R"__task(// A parked receiver/selector. Shared (through shared_ptr) between the waiting
+    hdr << R"__task(// §11 Duration: a Swift-like time span as a signed nanosecond count.
+// Built with the static factories (seconds / milliseconds / microseconds /
+// nanoseconds); `Duration / Duration` is a dimensionless ratio (double), while
+// + / - and comparisons act span-wise. in_milliseconds() is what a `timeout`
+// select arm consumes. Trivial and constexpr — a plain value type.
+struct Duration {
+    std::int64_t nanos_ = 0;
+    static constexpr Duration nanoseconds(std::int64_t n) { return Duration{n}; }
+    static constexpr Duration microseconds(std::int64_t n) { return Duration{n * 1'000}; }
+    static constexpr Duration milliseconds(std::int64_t n) { return Duration{n * 1'000'000}; }
+    static constexpr Duration seconds(std::int64_t n) { return Duration{n * 1'000'000'000}; }
+    [[nodiscard]] constexpr std::int64_t in_milliseconds() const { return nanos_ / 1'000'000; }
+    constexpr Duration operator+(Duration o) const { return Duration{nanos_ + o.nanos_}; }
+    constexpr Duration operator-(Duration o) const { return Duration{nanos_ - o.nanos_}; }
+    constexpr double operator/(Duration o) const {
+        return static_cast<double>(nanos_) / static_cast<double>(o.nanos_);
+    }
+    // A defaulted <=> implicitly supplies == / != as well.
+    constexpr auto operator<=>(const Duration&) const = default;
+};
+
+// A parked receiver/selector. Shared (through shared_ptr) between the waiting
 // task and every channel it parked on. `fired` makes waking idempotent: the
 // first channel to wake it schedules the handle and sets fired; later channels
 // (e.g. when several arms of a select become ready at once) see fired and skip,
@@ -827,8 +848,8 @@ struct SelectAwaiter {
     std::int64_t timeout_ms = 0;
     int timeout_index = 0;
     [[nodiscard]] int first_ready() const {
-        for (int i = 0; i < static_cast<int>(states.size()); ++i) {
-            if (states[i]->ready()) { return i; }
+        for (std::size_t i = 0; i < states.size(); ++i) {
+            if (states[i]->ready()) { return static_cast<int>(i); }
         }
         return -1;
     }
@@ -3128,6 +3149,20 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     break;
                 }
             }
+            // §11 `Duration.seconds(n)` (also milliseconds / microseconds /
+            // nanoseconds) lowers to the static factory
+            // `__vstr::Duration::seconds(n)`. Guarded on the call resolving to
+            // Duration so it can't shadow an unrelated `.member(...)` call.
+            if (mem.base && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "Duration"
+                && c.args.size() == 1 && resolution_ != nullptr
+                && resolution_->type_of(&e) != nullptr
+                && resolution_->type_of(&e)->kind() == sema::TypeKind::Duration) {
+                os << "__vstr::Duration::" << mem.member << "(";
+                emit_expr(os, *c.args[0].value);
+                os << ")";
+                break;
+            }
             // §A11 (§14.8) `PerCpu.new(value)` heap-allocates a
             // 64-byte-aligned __vstr::PerCpu<T> wrapping `value` and
             // returns a unique_ptr. The brace-init around `value`
@@ -3480,6 +3515,24 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                         }
                     }
                 }
+            }
+        }
+        // §11 leading-dot Duration factory: `.seconds(10)` in a Duration
+        // context (a `: Duration` binding, a `timeout` arm, …) lowers to the
+        // static factory `__vstr::Duration::seconds(10)`.
+        if (resolution_ != nullptr && c.callee->kind == ast::NodeKind::LeadingDotExpr) {
+            auto inst = resolution_->type_of(&c);
+            if (inst != nullptr && inst->kind() == sema::TypeKind::Duration) {
+                const auto& d = static_cast<const ast::LeadingDotExpr&>(*c.callee);
+                os << "__vstr::Duration::" << d.name << "(";
+                for (std::size_t i = 0; i < c.args.size(); ++i) {
+                    if (i != 0) {
+                        os << ", ";
+                    }
+                    emit_expr(os, *c.args[i].value);
+                }
+                os << ")";
+                break;
             }
         }
         // Payloaded-enum case construction via the leading-dot form:

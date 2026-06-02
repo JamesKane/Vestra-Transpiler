@@ -102,13 +102,25 @@ each), and the cooperative scheduler:
     race marks the timer fired (dropped without sleeping); if the timer
     fires first the awaiter returns the index past the last channel arm.
     Sema rejects `timeout` + `default` (contradictory), `timeout` on a
-    future select, and a non-integer delay.
+    future select, and a non-Duration delay.
+  * **slice 5** — **`Duration` type** (Swift-like). A non-generic value
+    type lowered to `__vstr::Duration` (a signed nanosecond count).
+    Construction via the typed leading-dot factories `.seconds(n)` /
+    `.milliseconds(n)` / `.microseconds(n)` / `.nanoseconds(n)` (resolved
+    against the expected type) and the explicit `Duration.seconds(n)`
+    form. Arithmetic mirrors Swift: `Duration / Duration -> Float64` (a
+    dimensionless ratio), `Duration +/- Duration -> Duration`, and
+    comparisons -> `Bool` — all riding the C++ `__vstr::Duration` operator
+    overloads, so codegen still emits a straight `a <op> b`. The `timeout`
+    arm now takes a `Duration` (e.g. `timeout .milliseconds(250):`),
+    extracting whole milliseconds via `.in_milliseconds()`.
 
-Scheduler / §11 carry-forwards: mixed channel/future select arms; a
-sema-level async-context gate for a no-default channel select (today the
-generated `co_await` enforces it at C++ compile time, mirroring `await`);
-a `Duration` type (the timeout delay is a bare ms integer for now); spawn
-of a void function (`Future<void>` — needs an
+Scheduler / §11 carry-forwards: scalar `Duration * Int` / `Duration /
+Int` scaling and Duration accessors (`.milliseconds` as a property);
+mixed channel/future select arms; a sema-level async-context gate for a
+no-default channel select (today the generated `co_await` enforces it at
+C++ compile time, mirroring `await`); spawn of a void function
+(`Future<void>` — needs an
 `optional<void>`-free path); async + throws (`Task<expected<T,E>>`);
 spawn capture-by-value / move semantics + non-escapable futures; the
 `using Async` gate on `parallel`; and the sema-level "no borrow across

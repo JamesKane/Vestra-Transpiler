@@ -439,7 +439,7 @@ TEST_CASE("a blocking channel select with a timeout arm checks clean") {
                 "    return select {\n"
                 "        on let av = a.receive(): av ?? -1\n"
                 "        on let bv = b.receive(): bv ?? -2\n"
-                "        timeout 100: -9\n"
+                "        timeout .milliseconds(100): -9\n"
                 "    }\n"
                 "}\n")
               .error_count
@@ -450,7 +450,7 @@ TEST_CASE("a timeout arm together with a default is rejected") {
     auto r = check("async func pick(_ a: Channel[Int32]) -> Int32 {\n"
                    "    return select {\n"
                    "        on let av = a.receive(): av ?? -1\n"
-                   "        timeout 100: -9\n"
+                   "        timeout .milliseconds(100): -9\n"
                    "        default: 0\n"
                    "    }\n"
                    "}\n");
@@ -464,7 +464,7 @@ TEST_CASE("a timeout arm on a future select is rejected") {
                    "    let a = spawn leaf(1)\n"
                    "    return select {\n"
                    "        on let x = a: x\n"
-                   "        timeout 100: -9\n"
+                   "        timeout .milliseconds(100): -9\n"
                    "    }\n"
                    "}\n");
     CHECK(r.error_count >= 1);
@@ -472,15 +472,52 @@ TEST_CASE("a timeout arm on a future select is rejected") {
           != std::string::npos);
 }
 
-TEST_CASE("a non-integer timeout delay is rejected") {
+TEST_CASE("a non-Duration timeout delay is rejected") {
+    // The delay used to be a bare ms integer; it is now a Duration.
     auto r = check("async func pick(_ a: Channel[Int32]) -> Int32 {\n"
                    "    return select {\n"
                    "        on let av = a.receive(): av ?? -1\n"
-                   "        timeout true: -9\n"
+                   "        timeout 100: -9\n"
                    "    }\n"
                    "}\n");
     CHECK(r.error_count >= 1);
-    CHECK(r.first_message.find("timeout delay must be an integer") != std::string::npos);
+    CHECK(r.first_message.find("timeout delay must be a Duration") != std::string::npos);
+}
+
+TEST_CASE("Duration arithmetic types Swift-like — ratio is Float64, sum is Duration") {
+    // `.seconds(n)` leading-dot factory, the explicit `Duration.milliseconds(n)`
+    // form, `Duration / Duration -> Float64`, and `Duration + Duration ->
+    // Duration` all check clean.
+    CHECK(check("func ratio() -> Float64 {\n"
+                "    let a: Duration = .seconds(10)\n"
+                "    let b: Duration = .seconds(2)\n"
+                "    return a / b\n"
+                "}\n"
+                "func total() -> Duration {\n"
+                "    let a = Duration.milliseconds(500)\n"
+                "    return a + a\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("Duration mixed with a non-Duration operand is rejected") {
+    auto r = check("func bad() -> Duration {\n"
+                   "    let a: Duration = .seconds(1)\n"
+                   "    let n: Int32 = 1\n"
+                   "    return a + n\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("requires both operands to be Duration") != std::string::npos);
+}
+
+TEST_CASE("an unknown Duration factory is rejected") {
+    auto r = check("func bad() -> Duration {\n"
+                   "    let d: Duration = .fortnights(2)\n"
+                   "    return d\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("unknown Duration factory") != std::string::npos);
 }
 
 // ---- §11.2 parallel --------------------------------------------------------

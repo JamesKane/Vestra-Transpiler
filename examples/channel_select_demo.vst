@@ -99,7 +99,7 @@ async func selectTimes() -> Int32 {
     let a: Channel[Int32] = Channel.new()
     return select {
         on let av = a.receive(): av ?? -1
-        timeout 1: -9
+        timeout .milliseconds(1): -9
     }
 }
 
@@ -110,8 +110,26 @@ async func selectOneOrTimeout(_ a: Channel[Int32], _ b: Channel[Int32]) -> Int32
     return select {
         on let av = a.receive(): av ?? -1
         on let bv = b.receive(): bv ?? -2
-        timeout 100: -9
+        timeout .milliseconds(100): -9
     }
+}
+
+// §11 Duration is Swift-like: typed `.seconds(n)` / `.milliseconds(n)`
+// factories, and arithmetic where `Duration / Duration` is a dimensionless
+// ratio (Float64) while `+` / `-` act span-wise. 10s / 2s = 5.0.
+func durationRatio() -> Float64 {
+    let d1: Duration = .seconds(10)
+    let d2: Duration = .seconds(2)
+    return d1 / d2
+}
+
+// 500ms + 1500ms = 2000ms; divided by 1s gives 2.0.
+func durationSum() -> Float64 {
+    let a: Duration = .milliseconds(500)
+    let b: Duration = .milliseconds(1500)
+    let total = a + b
+    let oneSec: Duration = .seconds(1)
+    return total / oneSec
 }
 
 async func selectBeatsTimeout() -> Int32 {

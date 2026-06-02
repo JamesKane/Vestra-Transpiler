@@ -53,6 +53,11 @@ enum class TypeKind : std::uint16_t {
     String,
     Str,
     StrConst,
+    // §11 Duration — a Swift-like time span (signed nanosecond count). A
+    // non-generic value type lowered to `__vstr::Duration`; constructed via
+    // `.seconds(n)` / `.milliseconds(n)` / … factories and consumed by the
+    // `timeout` select arm.
+    Duration,
     // bookkeeping
     Never,
     Error,

@@ -135,6 +135,8 @@ std::string Type::describe() const {
         return inner_ ? std::format("Future[{}]", inner_->describe()) : std::string{"Future"};
     case TypeKind::Channel:
         return inner_ ? std::format("Channel[{}]", inner_->describe()) : std::string{"Channel"};
+    case TypeKind::Duration:
+        return "Duration";
     case TypeKind::Span:
         return inner_ ? std::format("Span[{}]", inner_->describe()) : std::string{"Span"};
     case TypeKind::MutSpan:
@@ -290,12 +292,12 @@ std::string Type::describe() const {
 
 TypeArena::TypeArena() {
     // Pre-intern every primitive so calls to primitive(...) are O(1) hash hits.
-    for (auto k : {TypeKind::Int8,    TypeKind::Int16,   TypeKind::Int32,  TypeKind::Int64,
-                   TypeKind::Int,     TypeKind::UInt8,   TypeKind::UInt16, TypeKind::UInt32,
-                   TypeKind::UInt64,  TypeKind::UInt,    TypeKind::Int128, TypeKind::UInt128,
-                   TypeKind::Float32, TypeKind::Float64, TypeKind::Bool,   TypeKind::Char,
-                   TypeKind::Unit,    TypeKind::String,  TypeKind::Str,    TypeKind::StrConst,
-                   TypeKind::Never,   TypeKind::Error}) {
+    for (auto k : {TypeKind::Int8,     TypeKind::Int16,   TypeKind::Int32,  TypeKind::Int64,
+                   TypeKind::Int,      TypeKind::UInt8,   TypeKind::UInt16, TypeKind::UInt32,
+                   TypeKind::UInt64,   TypeKind::UInt,    TypeKind::Int128, TypeKind::UInt128,
+                   TypeKind::Float32,  TypeKind::Float64, TypeKind::Bool,   TypeKind::Char,
+                   TypeKind::Unit,     TypeKind::String,  TypeKind::Str,    TypeKind::StrConst,
+                   TypeKind::Duration, TypeKind::Never,   TypeKind::Error}) {
         auto t = std::unique_ptr<Type>(new Type(k));
         primitives_.emplace(k, t.get());
         owned_.push_back(std::move(t));
@@ -617,6 +619,7 @@ TypeKind TypeArena::primitive_kind_by_name(std::string_view name) noexcept {
         {"String", TypeKind::String},
         {"Str", TypeKind::Str},
         {"StrConst", TypeKind::StrConst},
+        {"Duration", TypeKind::Duration},  // §11 Swift-like time span
         // §10 `Never` is normally inferred from diverging expressions
         // (panic / throw / unreachable), but `-> Never` is admissible
         // as an explicit annotation — the §A10 @panic_handler is the

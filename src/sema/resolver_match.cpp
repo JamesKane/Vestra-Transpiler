@@ -374,11 +374,11 @@ TypePtr Resolver::check_select(const ast::SelectExpr& sel, TypePtr expected) {
     // never with a `default` (which makes the select a non-blocking poll).
     if (sel.timeout_body != nullptr) {
         if (sel.timeout_delay != nullptr) {
-            TypePtr d = check_expr(*sel.timeout_delay);
-            if (d != nullptr && !d->is_error() && !d->is_integer()) {
+            TypePtr d = check_expr(*sel.timeout_delay, types_->primitive(TypeKind::Duration));
+            if (d != nullptr && !d->is_error() && d->kind() != TypeKind::Duration) {
                 error_at(sel.timeout_delay->range,
-                         std::format("select timeout delay must be an integer (milliseconds); "
-                                     "got {}",
+                         std::format("select timeout delay must be a Duration "
+                                     "(e.g. `.milliseconds(250)`); got {}",
                                      d->describe()));
             }
         }

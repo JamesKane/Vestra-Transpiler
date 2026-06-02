@@ -33,6 +33,11 @@ int main() {
     // before the run-loop goes idle, so the `b` arm wins over the 100ms timeout.
     assert(cs::selectBeatsTimeout().get() == 22);
 
+    // Duration is Swift-like: `.seconds(n)` factories, and `Duration / Duration`
+    // is a dimensionless Float64 ratio. 10s / 2s = 5.0; (500+1500)ms / 1s = 2.0.
+    assert(cs::durationRatio() == 5.0);
+    assert(cs::durationSum() == 2.0);
+
     std::puts("channel_select_demo OK");
     return 0;
 }

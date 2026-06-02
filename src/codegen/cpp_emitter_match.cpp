@@ -81,9 +81,10 @@ void CppEmitter::emit_select(std::ostream& os, const ast::SelectExpr& sel) {
         }
         if (has_timeout) {
             // states, w(nullptr), has_timeout(true), timeout_ms, timeout_index.
-            os << "}, nullptr, true, static_cast<std::int64_t>(";
+            // The delay is a Duration; the awaiter wants whole milliseconds.
+            os << "}, nullptr, true, (";
             emit_expr(os, *sel.timeout_delay);
-            os << "), " << sel.arms.size() << "};\n";
+            os << ").in_milliseconds(), " << sel.arms.size() << "};\n";
         } else {
             os << "}, nullptr};\n";
         }

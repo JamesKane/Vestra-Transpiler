@@ -88,6 +88,60 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
+    // §11 Duration factories — Swift-like `.seconds(n)` / `.milliseconds(n)` /
+    // `.microseconds(n)` / `.nanoseconds(n)`, each taking one integer (a count
+    // in that unit) and yielding a Duration. Both the explicit
+    // `Duration.<unit>(n)` form and the leading-dot `.<unit>(n)` form (resolved
+    // against an expected Duration, e.g. a `: Duration` binding or a `timeout`
+    // arm) are accepted; handled before generic callee resolution so the bare
+    // `Duration` name isn't looked up as a value.
+    {
+        std::string_view factory;
+        bool is_duration_factory = false;
+        if (c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            if (mem.base != nullptr && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "Duration"
+                && scopes_.current().lookup("Duration") == nullptr) {
+                factory = mem.member;
+                is_duration_factory = true;
+            }
+        } else if (c.callee->kind == ast::NodeKind::LeadingDotExpr && expected != nullptr
+                   && expected->kind() == TypeKind::Duration) {
+            factory = static_cast<const ast::LeadingDotExpr&>(*c.callee).name;
+            is_duration_factory = true;
+        }
+        if (is_duration_factory) {
+            const bool known = factory == "seconds" || factory == "milliseconds"
+                               || factory == "microseconds" || factory == "nanoseconds";
+            if (!known) {
+                for (const auto& a : c.args) {
+                    (void)check_expr(*a.value);
+                }
+                error_at(c.range,
+                         std::format("unknown Duration factory '.{}' (expected seconds, "
+                                     "milliseconds, microseconds, or nanoseconds)",
+                                     factory));
+            } else if (c.args.size() != 1 || !c.args[0].label.empty()) {
+                for (const auto& a : c.args) {
+                    (void)check_expr(*a.value);
+                }
+                error_at(c.range,
+                         std::format("Duration.{}(n) takes exactly one unlabeled integer argument",
+                                     factory));
+            } else {
+                auto at = check_expr(*c.args[0].value);
+                if (at != nullptr && !at->is_error() && !at->is_integer()) {
+                    error_at(c.args[0].value->range,
+                             std::format("Duration.{} expects an integer, got {}",
+                                         factory,
+                                         at->describe()));
+                }
+            }
+            return types_->primitive(TypeKind::Duration);
+        }
+    }
+
     // §9 `result.mapError(f)` — explicit error-type widening between
     // throws functions. `result` must be Result<T, E>; `f` must be
     // a callable `(E) -> E'`. The call types as Result<T, E'>; the

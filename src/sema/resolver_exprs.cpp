@@ -781,6 +781,40 @@ TypePtr Resolver::check_binary(const ast::BinaryExpr& b, TypePtr expected) {
         return types_->error();
     }
 
+    // §11 Duration arithmetic (Swift-like). `Duration +/- Duration -> Duration`;
+    // `Duration / Duration -> Float64` (a dimensionless ratio); comparisons ->
+    // Bool. The C++ `__vstr::Duration` overloads these operators, so codegen
+    // still emits a straight `a <op> b` — only the result type is pinned here.
+    // (Scalar scaling `Duration * Int` is a carry-forward.)
+    if (lhs->kind() == TypeKind::Duration || rhs->kind() == TypeKind::Duration) {
+        const bool both = lhs->kind() == TypeKind::Duration && rhs->kind() == TypeKind::Duration;
+        if (!both) {
+            error_at(b.range,
+                     std::format("Duration operator requires both operands to be Duration, "
+                                 "got {} and {}",
+                                 lhs->describe(),
+                                 rhs->describe()));
+            return types_->error();
+        }
+        switch (b.op) {
+        case ast::BinaryOp::Add:
+        case ast::BinaryOp::Sub:
+            return types_->primitive(TypeKind::Duration);
+        case ast::BinaryOp::Div:
+            return types_->primitive(TypeKind::Float64);
+        case ast::BinaryOp::Eq:
+        case ast::BinaryOp::Ne:
+        case ast::BinaryOp::Lt:
+        case ast::BinaryOp::Le:
+        case ast::BinaryOp::Gt:
+        case ast::BinaryOp::Ge:
+            return types_->boolean();
+        default:
+            error_at(b.range, "operator not supported on Duration (only + - / and comparisons)");
+            return types_->error();
+        }
+    }
+
     // For arithmetic / bitwise / comparison, the operands must share a
     // numeric type. The §17 natural-width rule (see TypeArena::assignable)
     // applies symmetrically — `Int + Int32` yields Int32 (the sized side
