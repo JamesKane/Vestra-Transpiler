@@ -2412,7 +2412,7 @@ TEST_CASE("a no-default channel select blocks: co_awaits a SelectAwaiter parking
     CHECK(f.out.source.find("std::unreachable();") != std::string::npos);
     // The runtime shim grows the select machinery.
     CHECK(f.out.header.find("struct SelectAwaiter {") != std::string::npos);
-    CHECK(f.out.header.find("struct SelectableState {") != std::string::npos);
+    CHECK(f.out.header.find("struct SelectableState : Selectable {") != std::string::npos);
 }
 
 TEST_CASE("a channel select with a timeout arm registers a wall-clock timer") {
@@ -2540,7 +2540,7 @@ TEST_CASE("a channel select with a default polls once via sel_state()->ready()")
     CHECK(f.out.source.find("co_await") == std::string::npos);
 }
 
-TEST_CASE("a mixed channel/future select lowers to the source-order poll") {
+TEST_CASE("a mixed channel/future select blocks via a SelectAwaiter over both arms") {
     SemaEmitFixture f("async func leaf(_ x: Int32) -> Int32 { return x + 1 }\n"
                       "async func pick(_ ch: Channel[Int32]) -> Int32 {\n"
                       "    let fut = spawn leaf(10)\n"
@@ -2549,15 +2549,20 @@ TEST_CASE("a mixed channel/future select lowers to the source-order poll") {
                       "        on let r = fut: r\n"
                       "    }\n"
                       "}\n");
-    // Mixed arms take the poll lowering, not the blocking co_await SelectAwaiter:
-    // the channel arm polls sel_state()->ready()/sel_take(), the future arm polls
-    // await_ready()/get(), in source order.
-    CHECK(f.out.source.find(".sel_state()->ready()") != std::string::npos);
-    CHECK(f.out.source.find(".sel_take()") != std::string::npos);
-    CHECK(f.out.source.find(".await_ready()") != std::string::npos);
-    CHECK(f.out.source.find(".get()") != std::string::npos);
-    // No blocking SelectAwaiter is emitted for a mixed select.
-    CHECK(f.out.source.find("SelectAwaiter") == std::string::npos);
+    // A no-default mixed select blocks: the nested Task<RT> coroutine arms the
+    // channel state and a FutureSelectable over the materialized future local.
+    CHECK(f.out.source.find("co_await [&]() -> __vstr::Task<std::int32_t> {") != std::string::npos);
+    CHECK(f.out.source.find("auto&& __vstr_fut1 = fut;") != std::string::npos);
+    CHECK(
+        f.out.source.find("co_await __vstr::SelectAwaiter{{ch.sel_state(), "
+                          "std::make_shared<__vstr::FutureSelectable<std::int32_t>>(&__vstr_fut1)}")
+        != std::string::npos);
+    // Dispatch: channel arm via sel_take(), future arm via .get().
+    CHECK(f.out.source.find("auto&& __vstr_selv = ch.sel_take();") != std::string::npos);
+    CHECK(f.out.source.find("auto&& __vstr_selv = __vstr_fut1.get();") != std::string::npos);
+    // The runtime shim carries the future-arm machinery.
+    CHECK(f.out.header.find("struct FutureSelectable") != std::string::npos);
+    CHECK(f.out.header.find("std::shared_ptr<Waiter> select_waiter") != std::string::npos);
 }
 
 // ---- §11.2 parallel -------------------------------------------------------

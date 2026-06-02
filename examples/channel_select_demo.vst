@@ -143,6 +143,34 @@ async func mixedChannelWins() -> Int32 {
     }
 }
 
+// A future that parks on its source channel until fed (stays pending while the
+// select is parked).
+async func slowEcho(_ src: Channel[Int32]) -> Int32 {
+    let v = await src.receive()
+    return v ?? -100
+}
+
+async func sendVal(_ ch: Channel[Int32], _ v: Int32) -> Int32 {
+    ch.send(v)
+    return 0
+}
+
+// The blocking join the poll lowering can't express: the select parks (ch
+// empty, slowEcho pending on src), then a producer feeds ch and the channel
+// arm wakes the parked select and wins — even though the future arm is still
+// pending. `src` is fed too so slowEcho can finish (no destructor hang). → 7.
+async func mixedChannelBeatsFuture() -> Int32 {
+    let ch: Channel[Int32] = Channel.new()
+    let src: Channel[Int32] = Channel.new()
+    let slow = spawn slowEcho(src)
+    let feedSrc = spawn sendVal(src, 99)
+    let producer = spawn sendVal(ch, 7)
+    return select {
+        on let v = ch.receive(): v ?? -1
+        on let r = slow: r
+    }
+}
+
 // §11 Duration is Swift-like: typed `.seconds(n)` / `.milliseconds(n)`
 // factories, and arithmetic where `Duration / Duration` is a dimensionless
 // ratio (Float64) while `+` / `-` act span-wise. 10s / 2s = 5.0.

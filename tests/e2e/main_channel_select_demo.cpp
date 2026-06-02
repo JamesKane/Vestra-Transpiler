@@ -50,11 +50,13 @@ int main() {
     // Fractional scaling: 1s * 1.5 = 1500ms, * 2.0 = 3000ms, / 1.5 = 2000ms.
     assert(cs::durationFractional() == 2000);
 
-    // Mixed channel/future select (poll semantics): an empty channel isn't
-    // ready, so the always-ready future wins (11); a pre-loaded channel arm,
-    // first in source order, beats the future (7).
+    // Mixed channel/future select (blocking join): an empty channel parks the
+    // select until the future completes (11); a pre-loaded channel arm wins
+    // immediately (7); and a producer feeding the channel wakes the parked
+    // select and wins over a still-pending future (7).
     assert(cs::mixedFutureWins().get() == 11);
     assert(cs::mixedChannelWins().get() == 7);
+    assert(cs::mixedChannelBeatsFuture().get() == 7);
 
     std::puts("channel_select_demo OK");
     return 0;

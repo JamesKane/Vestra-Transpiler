@@ -527,20 +527,35 @@ struct Scheduler {
     }
 };
 
+// What a `select` can wait on: a channel state or a future. The select arms
+// one shared Waiter on each arm; whichever becomes ready first fires it (once,
+// via the Waiter's `fired` flag). This non-template interface lets a select
+// hold a homogeneous list of arms regardless of element type or arm kind.
+struct Selectable {
+    virtual ~Selectable() = default;
+    [[nodiscard]] virtual bool sel_ready() const = 0;
+    virtual void sel_arm(std::shared_ptr<Waiter> w) = 0;
+    virtual void sel_disarm(const Waiter* w) = 0;
+};
+
 // Non-template base of every Channel's State: the parked-waiter queue, the
 // closed flag, and the park/unpark/wake machinery live here so a `select` can
 // hold a homogeneous list of channel states regardless of element type. The
 // one element-type-dependent query, `has_value()`, is virtual and overridden
-// by the typed State to report whether its queue is non-empty.
-struct SelectableState {
+// by the typed State to report whether its queue is non-empty. It is a
+// Selectable: arming parks a waiter, disarming removes it, readiness is
+// `ready()`.
+struct SelectableState : Selectable {
     std::deque<std::shared_ptr<Waiter>> waiters;
     bool closed = false;
-    virtual ~SelectableState() = default;
     [[nodiscard]] virtual bool has_value() const = 0;
     // Ready to receive: a value is queued, or the channel is closed (a closed,
     // drained channel is "ready" so a blocked receiver observes the nil).
     [[nodiscard]] bool ready() const { return has_value() || closed; }
-    void park(const std::shared_ptr<Waiter>& w) { waiters.push_back(w); }
+    [[nodiscard]] bool sel_ready() const override { return ready(); }
+    void sel_arm(std::shared_ptr<Waiter> w) override { park(std::move(w)); }
+    void sel_disarm(const Waiter* w) override { unpark(w); }
+    void park(std::shared_ptr<Waiter> w) { waiters.push_back(std::move(w)); }
     void unpark(const Waiter* w) {
         for (auto it = waiters.begin(); it != waiters.end(); ++it) {
             if (it->get() == w) {
@@ -580,6 +595,11 @@ struct Task {
     struct promise_type {
         T value{};
         std::coroutine_handle<> continuation{};  // resumed at final_suspend
+        // §11 select: when this task is a future arm of a blocking select, the
+        // select parks one shared Waiter here; completing the task fires it
+        // (idempotently — the Waiter's `fired` flag dedups against a channel
+        // arm that may also have woken the same select).
+        std::shared_ptr<Waiter> select_waiter{};
         Task get_return_object() {
             return Task{std::coroutine_handle<promise_type>::from_promise(*this)};
         }
@@ -590,6 +610,11 @@ struct Task {
             [[nodiscard]] bool await_ready() const noexcept { return false; }
             std::coroutine_handle<> await_suspend(
                 std::coroutine_handle<promise_type> h) noexcept {
+                auto& w = h.promise().select_waiter;
+                if (w && !w->fired) {
+                    w->fired = true;
+                    Scheduler::instance().schedule(w->h);
+                }
                 auto c = h.promise().continuation;
                 return c ? c : std::noop_coroutine();
             }
@@ -709,12 +734,45 @@ struct Future {
     void await_suspend(std::coroutine_handle<>) const noexcept {}
     T await_resume() { return force(); }
     [[nodiscard]] T get() { return force(); }
+    // §11 select support: a future arm is ready once its task has completed
+    // (or the value is already cached). Arming registers the select's Waiter on
+    // the task's promise so completing the task fires it; if the future is
+    // already ready, fire immediately so the select doesn't park forever.
+    [[nodiscard]] bool sel_ready() const {
+        return value_.has_value() || (task_ && task_->h_ && task_->h_.done());
+    }
+    void sel_arm(std::shared_ptr<Waiter> w) {
+        if (sel_ready()) {
+            if (w && !w->fired) {
+                w->fired = true;
+                Scheduler::instance().schedule(w->h);
+            }
+            return;
+        }
+        ensure_scheduled();  // make sure the task will run (and complete)
+        task_->h_.promise().select_waiter = std::move(w);
+    }
+    void sel_disarm() {
+        if (task_ && task_->h_ && !task_->h_.done()) { task_->h_.promise().select_waiter = nullptr; }
+    }
     ~Future() {
         if (task_ && task_->h_ && !task_->h_.done()) {
             ensure_scheduled();
             while (task_->h_ && !task_->h_.done()) { Scheduler::instance().run(); }
         }
     }
+};
+
+// §11 a future as a select arm. Type-erases a `Future<T>*` (which lives in the
+// select's coroutine frame) behind the Selectable interface so a blocking
+// select can hold channel states and futures in one homogeneous list.
+template <class T>
+struct FutureSelectable : Selectable {
+    Future<T>* f;
+    explicit FutureSelectable(Future<T>* fp) : f(fp) {}
+    [[nodiscard]] bool sel_ready() const override { return f->sel_ready(); }
+    void sel_arm(std::shared_ptr<Waiter> w) override { f->sel_arm(std::move(w)); }
+    void sel_disarm(const Waiter*) override { f->sel_disarm(); }
 };
 
 // `spawn e`: if e is a Task<T> (an async call), hand back a Future<T> owning
@@ -870,32 +928,33 @@ struct Channel {
     }
 };
 
-// §11 blocking select: parks one shared Waiter on every arm's channel state and
-// resumes when any becomes ready, yielding the index of the first ready arm (in
-// source order, so earlier arms win ties). await_ready short-circuits when an
-// arm is already ready (no suspension). On resume it unparks the Waiter from
-// every channel — the wake fired it on one, but the others still hold it — then
-// recomputes the winner. The generated code then calls sel_take() on the
-// winning channel and runs that arm's body.
+// §11 blocking select: arms one shared Waiter on every arm (channel state or
+// future) and resumes when any becomes ready, yielding the index of the first
+// ready arm (in source order, so earlier arms win ties). await_ready short-
+// circuits when an arm is already ready (no suspension). On resume it disarms
+// the Waiter from every arm — the wake fired it on one, but the others still
+// hold it — then recomputes the winner. The generated code then takes the
+// winning arm's value (sel_take() for a channel, .get() for a future) and runs
+// that arm's body. A timeout arm (channels only) registers a wall-clock timer.
 struct SelectAwaiter {
-    std::vector<std::shared_ptr<SelectableState>> states;
+    std::vector<std::shared_ptr<Selectable>> arms;
     std::shared_ptr<Waiter> w;  // set on suspend; nil if an arm was already ready
     // §11 timeout arm: when present, also register a wall-clock timer on
-    // suspend; if it fires before any channel, the select resumes with
-    // `timeout_index` (== states.size(), the arm past the last channel).
+    // suspend; if it fires before any arm, the select resumes with
+    // `timeout_index` (== arms.size(), the arm past the last channel).
     bool has_timeout = false;
     std::int64_t timeout_ms = 0;
     int timeout_index = 0;
     [[nodiscard]] int first_ready() const {
-        for (std::size_t i = 0; i < states.size(); ++i) {
-            if (states[i]->ready()) { return static_cast<int>(i); }
+        for (std::size_t i = 0; i < arms.size(); ++i) {
+            if (arms[i]->sel_ready()) { return static_cast<int>(i); }
         }
         return -1;
     }
     [[nodiscard]] bool await_ready() const noexcept { return first_ready() >= 0; }
     std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
         w = std::make_shared<Waiter>(Waiter{h, false});
-        for (auto& s : states) { s->park(w); }
+        for (auto& s : arms) { s->sel_arm(w); }
         if (has_timeout) {
             auto dl = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
             Scheduler::instance().add_timer(dl, w);
@@ -904,10 +963,10 @@ struct SelectAwaiter {
     }
     int await_resume() {
         if (w) {
-            for (auto& s : states) { s->unpark(w.get()); }
+            for (auto& s : arms) { s->sel_disarm(w.get()); }
         }
         const int r = first_ready();
-        return r >= 0 ? r : timeout_index;  // no channel ready → the timer fired
+        return r >= 0 ? r : timeout_index;  // no arm ready → the timer fired
     }
 };
 

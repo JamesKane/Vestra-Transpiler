@@ -41,32 +41,39 @@ static const ast::Expr* select_channel_base(const ast::Expr* event) {
 void CppEmitter::emit_select(std::ostream& os, const ast::SelectExpr& sel) {
     sema::TypePtr rt = resolution_ != nullptr ? resolution_->type_of(&sel) : nullptr;
 
-    // Two arm flavors (§11). A Future[T] arm is an always-ready awaiter polled
-    // with `.await_ready()` / `.get()`. A channel arm is `ch.receive()`, polled
-    // via `ch.sel_state()->ready()` and taken with `ch.sel_take()`. A select
-    // whose arms are *all* channel receives and has no default *blocks*: it
-    // co_awaits a SelectAwaiter that parks on every channel and wakes on the
-    // first ready one. Any other shape (a default present, or a mix of future
-    // and channel arms) takes the poll lowering below: source-order, first
-    // ready arm wins. In a mixed select a future arm is always ready, so a
-    // not-yet-ready channel can't win a race it isn't already holding — the
-    // future is forced (this is the poll semantics, not a blocking join).
+    // Two arm flavors (§11). A channel arm is `ch.receive()`; a future arm is a
+    // Future[T] (from `spawn`). A no-default select whose arms are all
+    // selectable (channel or future) and has at least one channel arm (or a
+    // timeout) *blocks*: it co_awaits a SelectAwaiter that arms one shared
+    // Waiter on every arm and wakes on the first to become ready — a channel
+    // delivering or a future's task completing (a true blocking join). A select
+    // *with* a default, or a pure-future select, takes the poll lowering below
+    // (source-order, first ready arm wins; a future is always ready there).
     const bool has_timeout = sel.timeout_body != nullptr;
-    bool all_channel = true;  // vacuously true for an arm-less timeout select
+    auto future_inner = [&](const ast::Expr* event) -> sema::TypePtr {
+        sema::TypePtr et = resolution_ != nullptr ? resolution_->type_of(event) : nullptr;
+        return (et != nullptr && et->kind() == sema::TypeKind::Future) ? et->inner() : nullptr;
+    };
+    bool all_selectable = true;
+    bool any_channel = false;
     for (const auto& arm : sel.arms) {
-        if (select_channel_base(arm.event.get()) == nullptr) {
-            all_channel = false;
-            break;
+        if (select_channel_base(arm.event.get()) != nullptr) {
+            any_channel = true;
+        } else if (future_inner(arm.event.get()) == nullptr) {
+            all_selectable = false;  // neither a channel nor a Future — poll it
         }
     }
 
-    if (all_channel && sel.default_body == nullptr && (!sel.arms.empty() || has_timeout)) {
+    if (all_selectable && sel.default_body == nullptr && (any_channel || has_timeout)) {
         // Blocking select: lower to a nested Task<RT> coroutine that the
-        // enclosing async function co_awaits. The inner coroutine parks on all
-        // channels (co_await SelectAwaiter → winning index), then dispatches to
-        // that arm: take its value, bind the pattern, co_return the body. A
-        // timeout arm registers a wall-clock timer; if it fires first the
-        // awaiter returns the index just past the last channel.
+        // enclosing async function co_awaits. The inner coroutine arms every
+        // arm (co_await SelectAwaiter → winning index), then dispatches to that
+        // arm: take its value (sel_take() for a channel, .get() for a future),
+        // bind the pattern, co_return the body. A timeout arm (channels only)
+        // registers a wall-clock timer; if it fires first the awaiter returns
+        // the index just past the last arm. Future arms are materialized as
+        // stable locals first so the FutureSelectable can hold a pointer to one
+        // across the suspension.
         os << "co_await [&]() -> __vstr::Task<";
         if (rt != nullptr) {
             emit_sema_type(os, rt);
@@ -74,17 +81,32 @@ void CppEmitter::emit_select(std::ostream& os, const ast::SelectExpr& sel) {
             os << "auto";
         }
         os << "> {\n";
+        for (std::size_t i = 0; i < sel.arms.size(); ++i) {
+            if (select_channel_base(sel.arms[i].event.get()) == nullptr) {
+                write_indent(os, 2);
+                os << "auto&& __vstr_fut" << i << " = ";
+                emit_expr(os, *sel.arms[i].event);
+                os << ";\n";
+            }
+        }
         write_indent(os, 2);
         os << "int __vstr_selw = co_await __vstr::SelectAwaiter{{";
         for (std::size_t i = 0; i < sel.arms.size(); ++i) {
             if (i != 0) {
                 os << ", ";
             }
-            emit_expr(os, *select_channel_base(sel.arms[i].event.get()));
-            os << ".sel_state()";
+            const ast::Expr* chan = select_channel_base(sel.arms[i].event.get());
+            if (chan != nullptr) {
+                emit_expr(os, *chan);
+                os << ".sel_state()";
+            } else {
+                os << "std::make_shared<__vstr::FutureSelectable<";
+                emit_sema_type(os, future_inner(sel.arms[i].event.get()));
+                os << ">>(&__vstr_fut" << i << ")";
+            }
         }
         if (has_timeout) {
-            // states, w(nullptr), has_timeout(true), timeout_ms, timeout_index.
+            // arms, w(nullptr), has_timeout(true), timeout_ms, timeout_index.
             // The delay is a Duration; the awaiter wants whole milliseconds.
             os << "}, nullptr, true, (";
             emit_expr(os, *sel.timeout_delay);
@@ -94,12 +116,17 @@ void CppEmitter::emit_select(std::ostream& os, const ast::SelectExpr& sel) {
         }
         for (std::size_t i = 0; i < sel.arms.size(); ++i) {
             const auto& arm = sel.arms[i];
+            const ast::Expr* chan = select_channel_base(arm.event.get());
             write_indent(os, 2);
             os << "if (__vstr_selw == " << i << ") {\n";
             write_indent(os, 3);
             os << "auto&& __vstr_selv = ";
-            emit_expr(os, *select_channel_base(arm.event.get()));
-            os << ".sel_take();\n";
+            if (chan != nullptr) {
+                emit_expr(os, *chan);
+                os << ".sel_take();\n";
+            } else {
+                os << "__vstr_fut" << i << ".get();\n";
+            }
             if (arm.pattern) {
                 emit_pat_bindings(os, *arm.pattern, "__vstr_selv", 3);
             }
