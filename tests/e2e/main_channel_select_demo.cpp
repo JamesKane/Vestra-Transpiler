@@ -21,6 +21,10 @@ int main() {
     // channel yields nil → -1 (rather than hanging the run-loop).
     assert(cs::closeWakes().get() == -1);
 
+    // A no-default select parks on both channels; only `b` is fed, so the
+    // parked select wakes on the `b` arm and binds 22.
+    assert(cs::selectPicks().get() == 22);
+
     std::puts("channel_select_demo OK");
     return 0;
 }

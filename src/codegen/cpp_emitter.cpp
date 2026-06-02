@@ -422,6 +422,63 @@ struct Scheduler {
     }
 };
 
+// A parked receiver/selector. Shared (through shared_ptr) between the waiting
+// task and every channel it parked on. `fired` makes waking idempotent: the
+// first channel to wake it schedules the handle and sets fired; later channels
+// (e.g. when several arms of a select become ready at once) see fired and skip,
+// so the handle is never scheduled — and hence resumed — more than once.
+struct Waiter {
+    std::coroutine_handle<> h;
+    bool fired = false;
+};
+
+// Non-template base of every Channel's State: the parked-waiter queue, the
+// closed flag, and the park/unpark/wake machinery live here so a `select` can
+// hold a homogeneous list of channel states regardless of element type. The
+// one element-type-dependent query, `has_value()`, is virtual and overridden
+// by the typed State to report whether its queue is non-empty.
+struct SelectableState {
+    std::deque<std::shared_ptr<Waiter>> waiters;
+    bool closed = false;
+    virtual ~SelectableState() = default;
+    [[nodiscard]] virtual bool has_value() const = 0;
+    // Ready to receive: a value is queued, or the channel is closed (a closed,
+    // drained channel is "ready" so a blocked receiver observes the nil).
+    [[nodiscard]] bool ready() const { return has_value() || closed; }
+    void park(const std::shared_ptr<Waiter>& w) { waiters.push_back(w); }
+    void unpark(const Waiter* w) {
+        for (auto it = waiters.begin(); it != waiters.end(); ++it) {
+            if (it->get() == w) {
+                waiters.erase(it);
+                return;
+            }
+        }
+    }
+    // Wake one parked waiter (the next not-yet-fired one), scheduling it.
+    void wake_one() {
+        while (!waiters.empty()) {
+            auto w = waiters.front();
+            waiters.pop_front();
+            if (!w->fired) {
+                w->fired = true;
+                Scheduler::instance().schedule(w->h);
+                return;
+            }
+        }
+    }
+    // Wake every parked waiter (used by close()).
+    void wake_all() {
+        while (!waiters.empty()) {
+            auto w = waiters.front();
+            waiters.pop_front();
+            if (!w->fired) {
+                w->fired = true;
+                Scheduler::instance().schedule(w->h);
+            }
+        }
+    }
+};
+
 template <class T>
 struct Task {
     using __vstr_task_value = T;  // marks this as a Task for spawn_future
@@ -662,10 +719,9 @@ struct Chunks {
 // wakes all parked receivers so they observe the closed-and-empty nil.
 template <class T>
 struct Channel {
-    struct State {
+    struct State : SelectableState {
         std::deque<T> q;
-        std::deque<std::coroutine_handle<>> waiters;
-        bool closed = false;
+        [[nodiscard]] bool has_value() const override { return !q.empty(); }
     };
     std::shared_ptr<State> s_ = std::make_shared<State>();
     // A channel is a handle: these mutate the shared State through s_, not the
@@ -674,19 +730,11 @@ struct Channel {
     // handles between tasks by read-borrow).
     void send(T v) const {
         s_->q.push_back(std::move(v));
-        if (!s_->waiters.empty()) {
-            auto h = s_->waiters.front();
-            s_->waiters.pop_front();
-            Scheduler::instance().schedule(h);
-        }
+        s_->wake_one();  // wake one parked receiver, if any
     }
     void close() const {
         s_->closed = true;
-        while (!s_->waiters.empty()) {
-            auto h = s_->waiters.front();
-            s_->waiters.pop_front();
-            Scheduler::instance().schedule(h);
-        }
+        s_->wake_all();  // every parked receiver observes the closed-and-drained nil
     }
     std::optional<T> recv() const {  // non-blocking poll
         if (s_->q.empty()) { return std::nullopt; }
@@ -695,22 +743,66 @@ struct Channel {
         return v;
     }
     // Suspending receive — co_await it. Ready when a value is queued or the
-    // channel is closed; otherwise parks the awaiting task as a waiter.
+    // channel is closed; otherwise parks the awaiting task via a shared Waiter.
     struct ReceiveAwaiter {
         std::shared_ptr<State> s;
-        [[nodiscard]] bool await_ready() const noexcept { return !s->q.empty() || s->closed; }
-        std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) noexcept {
-            s->waiters.push_back(h);
+        std::shared_ptr<Waiter> w;  // set on suspend; nil if we never parked
+        [[nodiscard]] bool await_ready() const noexcept { return s->ready(); }
+        std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
+            w = std::make_shared<Waiter>(Waiter{h, false});
+            s->park(w);
             return std::noop_coroutine();  // park: control returns to the scheduler
         }
         std::optional<T> await_resume() {
+            if (w) { s->unpark(w.get()); }
             if (s->q.empty()) { return std::nullopt; }  // closed and drained
             T v = std::move(s->q.front());
             s->q.pop_front();
             return v;
         }
     };
-    ReceiveAwaiter receive() const { return ReceiveAwaiter{s_}; }
+    ReceiveAwaiter receive() const { return ReceiveAwaiter{s_, nullptr}; }
+    // §11 select support. sel_state() hands the select its type-erased state so
+    // a select over channels of differing element types can park on all of them
+    // uniformly; sel_take() pops the front value (the typed step, done in the
+    // generated dispatch once the winning arm is known). nil if drained.
+    [[nodiscard]] std::shared_ptr<SelectableState> sel_state() const { return s_; }
+    std::optional<T> sel_take() const {
+        if (s_->q.empty()) { return std::nullopt; }
+        T v = std::move(s_->q.front());
+        s_->q.pop_front();
+        return v;
+    }
+};
+
+// §11 blocking select: parks one shared Waiter on every arm's channel state and
+// resumes when any becomes ready, yielding the index of the first ready arm (in
+// source order, so earlier arms win ties). await_ready short-circuits when an
+// arm is already ready (no suspension). On resume it unparks the Waiter from
+// every channel — the wake fired it on one, but the others still hold it — then
+// recomputes the winner. The generated code then calls sel_take() on the
+// winning channel and runs that arm's body.
+struct SelectAwaiter {
+    std::vector<std::shared_ptr<SelectableState>> states;
+    std::shared_ptr<Waiter> w;  // set on suspend; nil if an arm was already ready
+    [[nodiscard]] int first_ready() const {
+        for (int i = 0; i < static_cast<int>(states.size()); ++i) {
+            if (states[i]->ready()) { return i; }
+        }
+        return -1;
+    }
+    [[nodiscard]] bool await_ready() const noexcept { return first_ready() >= 0; }
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
+        w = std::make_shared<Waiter>(Waiter{h, false});
+        for (auto& s : states) { s->park(w); }
+        return std::noop_coroutine();
+    }
+    int await_resume() {
+        if (w) {
+            for (auto& s : states) { s->unpark(w.get()); }
+        }
+        return first_ready();
+    }
 };
 
 )__task";

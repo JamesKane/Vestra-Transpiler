@@ -65,3 +65,29 @@ async func awaitOne(_ ch: Channel[Int32]) -> Int32 {
     }
     return -1
 }
+
+// §11 blocking select: with no `default`, the select parks on *every* arm's
+// channel and resumes on the first one to deliver. Each arm binds the
+// received `Int32?` (nil when that channel is closed-and-drained). The arms
+// are tried in source order on a tie, so an earlier ready arm wins.
+async func selectOne(_ a: Channel[Int32], _ b: Channel[Int32]) -> Int32 {
+    return select {
+        on let av = a.receive(): av ?? -1
+        on let bv = b.receive(): bv ?? -2
+    }
+}
+
+// Only `b` is fed, so the parked select wakes on the `b` arm → 22.
+async func feedB(_ b: Channel[Int32]) -> Int32 {
+    b.send(22)
+    return 0
+}
+
+async func selectPicks() -> Int32 {
+    let a: Channel[Int32] = Channel.new()
+    let b: Channel[Int32] = Channel.new()
+    let sel = spawn selectOne(a, b)
+    let feeder = spawn feedB(b)
+    let fed = await feeder
+    return await sel
+}

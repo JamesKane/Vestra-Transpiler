@@ -2390,6 +2390,47 @@ TEST_CASE("select lowers to an ordered await_ready IIFE binding the future value
     CHECK(f.out.source.find("return 0;") != std::string::npos);
 }
 
+TEST_CASE("a no-default channel select blocks: co_awaits a SelectAwaiter parking on every arm") {
+    SemaEmitFixture f("async func pick(_ a: Channel[Int32], _ b: Channel[Int32]) -> Int32 {\n"
+                      "    return select {\n"
+                      "        on let av = a.receive(): av ?? -1\n"
+                      "        on let bv = b.receive(): bv ?? -2\n"
+                      "    }\n"
+                      "}\n");
+    // Blocking lowering: a nested Task<RT> coroutine co_awaited by the caller,
+    // parking one SelectAwaiter on each arm's channel state.
+    CHECK(f.out.source.find("co_return co_await [&]() -> __vstr::Task<std::int32_t> {")
+          != std::string::npos);
+    CHECK(
+        f.out.source.find("co_await __vstr::SelectAwaiter{{a.sel_state(), b.sel_state()}, nullptr}")
+        != std::string::npos);
+    // Each arm dispatches on the winning index, taking that channel's value.
+    CHECK(f.out.source.find("if (__vstr_selw == 0) {") != std::string::npos);
+    CHECK(f.out.source.find("auto&& __vstr_selv = a.sel_take();") != std::string::npos);
+    CHECK(f.out.source.find("auto&& av = __vstr_selv;") != std::string::npos);
+    // No default arm → std::unreachable closes the dispatch.
+    CHECK(f.out.source.find("std::unreachable();") != std::string::npos);
+    // The runtime shim grows the select machinery.
+    CHECK(f.out.header.find("struct SelectAwaiter {") != std::string::npos);
+    CHECK(f.out.header.find("struct SelectableState {") != std::string::npos);
+}
+
+TEST_CASE("a channel select with a default polls once via sel_state()->ready()") {
+    SemaEmitFixture f("func poll(_ a: Channel[Int32]) -> Int32 {\n"
+                      "    return select {\n"
+                      "        on let av = a.receive(): av ?? -1\n"
+                      "        default:                 0\n"
+                      "    }\n"
+                      "}\n");
+    // With a default the select is non-blocking: a plain IIFE that polls
+    // readiness and falls through to the default — no co_await.
+    CHECK(f.out.source.find("[&]() -> std::int32_t {") != std::string::npos);
+    CHECK(f.out.source.find(".sel_state()->ready()") != std::string::npos);
+    CHECK(f.out.source.find("auto&& __vstr_selv = __vstr_sel0.sel_take();") != std::string::npos);
+    CHECK(f.out.source.find("return 0;") != std::string::npos);
+    CHECK(f.out.source.find("co_await") == std::string::npos);
+}
+
 // ---- §11.2 parallel -------------------------------------------------------
 
 TEST_CASE("parallel lowers to __vstr::parallel over a worker closure") {

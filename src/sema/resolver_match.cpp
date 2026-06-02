@@ -328,20 +328,36 @@ TypePtr Resolver::check_select(const ast::SelectExpr& sel, TypePtr expected) {
             result_type = types_->error();
         }
     };
+    // A channel-receive arm event is syntactically `<chan>.receive()` — a call
+    // whose callee is a `.receive` member access. Its type is the channel's
+    // T? (slice 2), and the arm pattern binds to that whole optional (nil means
+    // the channel is closed and drained), matching `await ch.receive()`.
+    auto is_channel_receive = [](const ast::Expr& ev) {
+        if (ev.kind != ast::NodeKind::CallExpr) {
+            return false;
+        }
+        const auto& call = static_cast<const ast::CallExpr&>(ev);
+        return call.callee != nullptr && call.callee->kind == ast::NodeKind::MemberExpr
+               && static_cast<const ast::MemberExpr&>(*call.callee).member == "receive";
+    };
     for (const auto& arm : sel.arms) {
         ScopeStack::Guard g(scopes_);
-        // §11 v0.5 — the only event kind that exists is a Future[T]
-        // (channels and timeout wait on the Channel slice + a scheduler).
+        // §11 — an event is either a Future[T] (from `spawn`) or a blocking
+        // channel receive `ch.receive()` (type T?). Timeout arms are still
+        // unsupported.
         TypePtr ev = arm.event ? check_expr(*arm.event) : types_->error();
-        if (ev != nullptr && !ev->is_error() && ev->kind() != TypeKind::Future) {
+        const bool is_future = ev != nullptr && ev->kind() == TypeKind::Future;
+        const bool is_chan = ev != nullptr && ev->kind() == TypeKind::Optional && arm.event
+                             && is_channel_receive(*arm.event);
+        if (ev != nullptr && !ev->is_error() && !is_future && !is_chan) {
             error_at(arm.event->range,
-                     std::format("select event must be a Future[T]; got {} (channels and timeout "
-                                 "are not yet supported)",
+                     std::format("select event must be a Future[T] or a channel receive "
+                                 "(ch.receive()); got {} (timeout arms are not yet supported)",
                                  ev->describe()));
         }
         if (arm.pattern) {
-            TypePtr inner =
-                (ev != nullptr && ev->kind() == TypeKind::Future) ? ev->inner() : types_->error();
+            // Future[T] unwraps to T; a channel receive binds the whole T?.
+            TypePtr inner = is_future ? ev->inner() : (is_chan ? ev : types_->error());
             check_pattern(*arm.pattern, inner);
         }
         TypePtr arm_type = arm.body ? check_expr(*arm.body, expected) : types_->unit();

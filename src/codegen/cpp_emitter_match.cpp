@@ -23,13 +23,91 @@ namespace vestra::codegen {
 using detail::enum_is_sum_type;
 using detail::write_indent;
 
+// A channel-receive arm event is `<chan>.receive()`; this returns the <chan>
+// sub-expression so codegen can call `.sel_state()` / `.sel_take()` on it. Null
+// if the event isn't a `.receive()` call (a Future arm).
+static const ast::Expr* select_channel_base(const ast::Expr* event) {
+    if (event == nullptr || event->kind != ast::NodeKind::CallExpr) {
+        return nullptr;
+    }
+    const auto& call = static_cast<const ast::CallExpr&>(*event);
+    if (call.callee == nullptr || call.callee->kind != ast::NodeKind::MemberExpr) {
+        return nullptr;
+    }
+    const auto& mem = static_cast<const ast::MemberExpr&>(*call.callee);
+    return mem.member == "receive" ? mem.base.get() : nullptr;
+}
+
 void CppEmitter::emit_select(std::ostream& os, const ast::SelectExpr& sel) {
-    // §11 v0.5 — every event is a Future[T] (an always-ready awaiter in the
-    // synchronous model). Lower to an IIFE that, in source order, takes the
-    // first arm whose event is ready, binds the value, and runs the body;
-    // the default (or std::unreachable) covers "nothing ready". The lambda
-    // uses plain `return` (not co_return) — it is not itself a coroutine.
     sema::TypePtr rt = resolution_ != nullptr ? resolution_->type_of(&sel) : nullptr;
+
+    // Two arm flavors (§11). A Future[T] arm is an always-ready awaiter polled
+    // with `.await_ready()` / `.get()`. A channel arm is `ch.receive()`, polled
+    // via `ch.sel_state()->ready()` and taken with `ch.sel_take()`. A select
+    // whose arms are all channel receives and has no default *blocks*: it
+    // co_awaits a SelectAwaiter that parks on every channel and wakes on the
+    // first ready one. (Channels and Futures aren't mixed in one select.)
+    bool all_channel = !sel.arms.empty();
+    for (const auto& arm : sel.arms) {
+        if (select_channel_base(arm.event.get()) == nullptr) {
+            all_channel = false;
+            break;
+        }
+    }
+
+    if (all_channel && sel.default_body == nullptr) {
+        // Blocking select: lower to a nested Task<RT> coroutine that the
+        // enclosing async function co_awaits. The inner coroutine parks on all
+        // channels (co_await SelectAwaiter → winning index), then dispatches to
+        // that arm: take its value, bind the pattern, co_return the body.
+        os << "co_await [&]() -> __vstr::Task<";
+        if (rt != nullptr) {
+            emit_sema_type(os, rt);
+        } else {
+            os << "auto";
+        }
+        os << "> {\n";
+        write_indent(os, 2);
+        os << "int __vstr_selw = co_await __vstr::SelectAwaiter{{";
+        for (std::size_t i = 0; i < sel.arms.size(); ++i) {
+            if (i != 0) {
+                os << ", ";
+            }
+            emit_expr(os, *select_channel_base(sel.arms[i].event.get()));
+            os << ".sel_state()";
+        }
+        os << "}, nullptr};\n";
+        for (std::size_t i = 0; i < sel.arms.size(); ++i) {
+            const auto& arm = sel.arms[i];
+            write_indent(os, 2);
+            os << "if (__vstr_selw == " << i << ") {\n";
+            write_indent(os, 3);
+            os << "auto&& __vstr_selv = ";
+            emit_expr(os, *select_channel_base(arm.event.get()));
+            os << ".sel_take();\n";
+            if (arm.pattern) {
+                emit_pat_bindings(os, *arm.pattern, "__vstr_selv", 3);
+            }
+            write_indent(os, 3);
+            os << "co_return ";
+            if (arm.body) {
+                emit_expr(os, *arm.body);
+            }
+            os << ";\n";
+            write_indent(os, 2);
+            os << "}\n";
+        }
+        write_indent(os, 2);
+        os << "std::unreachable();\n";
+        write_indent(os, 1);
+        os << "}()";
+        return;
+    }
+
+    // Poll lowering (Future arms, or channel arms with a default): an IIFE that,
+    // in source order, takes the first ready arm, binds, and runs its body; the
+    // default (or std::unreachable) covers "nothing ready". Plain `return` — the
+    // lambda is not itself a coroutine.
     os << "[&]() -> ";
     if (rt != nullptr) {
         emit_sema_type(os, rt);
@@ -39,20 +117,25 @@ void CppEmitter::emit_select(std::ostream& os, const ast::SelectExpr& sel) {
     os << " {\n";
     int idx = 0;
     for (const auto& arm : sel.arms) {
+        const ast::Expr* chan = select_channel_base(arm.event.get());
         const std::string ev = std::format("__vstr_sel{}", idx++);
         write_indent(os, 2);
         os << "{\n";
         write_indent(os, 3);
         os << "auto&& " << ev << " = ";
-        if (arm.event) {
-            emit_expr(os, *arm.event);
+        if (chan != nullptr) {
+            emit_expr(os, *chan);  // the channel handle
+        } else if (arm.event) {
+            emit_expr(os, *arm.event);  // the Future awaiter
         }
         os << ";\n";
         write_indent(os, 3);
-        os << "if (" << ev << ".await_ready()) {\n";
+        os << "if (" << ev
+           << (chan != nullptr ? ".sel_state()->ready()) {\n" : ".await_ready()) {\n");
         if (arm.pattern) {
             write_indent(os, 4);
-            os << "auto&& __vstr_selv = " << ev << ".get();\n";
+            os << "auto&& __vstr_selv = " << ev
+               << (chan != nullptr ? ".sel_take();\n" : ".get();\n");
             emit_pat_bindings(os, *arm.pattern, "__vstr_selv", 4);
         }
         write_indent(os, 4);

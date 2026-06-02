@@ -80,10 +80,24 @@ each), and the cooperative scheduler:
     ASan): an `async func` emits its read params *by value* (not `const
     T&`), since a coroutine doesn't copy reference params into its frame —
     the codegen half of "no borrow across await".
+  * **slice 3** — **blocking channel select**: a `select` whose arms are
+    channel receives (`on let v = ch.receive(): …`) and has *no* default
+    parks on *every* arm's channel and resumes on the first to deliver,
+    binding that arm's `T?` (nil == closed-and-drained); ties go to the
+    earlier arm. Lowers to a nested `Task<RT>` coroutine the caller
+    co_awaits, parking one shared `Waiter` (a `fired` flag makes a
+    multi-arm wake idempotent — no double-resume) via a `SelectAwaiter`
+    over a non-template `SelectableState` base, so arms over channels of
+    differing element types park uniformly. A select *with* a default
+    stays a non-blocking poll (now `sel_state()->ready()` for channel
+    arms, `await_ready()` for future arms). Channels and futures aren't
+    mixed in one select.
 
-Scheduler / §11 carry-forwards: `select` arms that *wait on* a channel
-(the suspending counterpart to today's poll-style select); a timeout
-select arm; spawn of a void function (`Future<void>` — needs an
+Scheduler / §11 carry-forwards: a timeout select arm; mixed
+channel/future select arms; a sema-level async-context gate for a
+no-default channel select (today the generated `co_await` enforces it at
+C++ compile time, mirroring `await`); spawn of a void function
+(`Future<void>` — needs an
 `optional<void>`-free path); async + throws (`Task<expected<T,E>>`);
 spawn capture-by-value / move semantics + non-escapable futures; the
 `using Async` gate on `parallel`; and the sema-level "no borrow across
@@ -98,9 +112,10 @@ queue, lowered to a `__vstr::Channel<T>` over a shared deque, with `send`
 (a sink), the non-blocking `recv() -> T?` poll, the suspending `await
 ch.receive() -> T?` (scheduler slice 2), and `close()` (a closed flag
 distinct from empty: nil from `receive` means closed-and-drained). v0.5
-is single-threaded and unbounded. Remaining (tracked under §11 above):
-bounded capacity / back-pressure, `send` as a true call-site move, and
-the channel/timeout `select` arms.
+is single-threaded and unbounded. A blocking `select` over channel
+receives ships under §11 above (slice 3). Remaining (tracked under §11
+above): bounded capacity / back-pressure, `send` as a true call-site
+move, and the timeout `select` arm.
 
 ### 4. Quote / splice / declaration macros (§12.4) (multi-session)
 
