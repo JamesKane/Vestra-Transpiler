@@ -162,6 +162,30 @@ TEST_CASE("spawning a void async fn and awaiting it checks clean") {
           == 0);
 }
 
+TEST_CASE("spawn of a call with a borrowed-view parameter is rejected") {
+    // A spawned task captures its args by value into the coroutine frame; a
+    // Span / MutSpan parameter would capture a view, not the data, so it's
+    // rejected (use `parallel` to run work over a borrowed view).
+    auto r = check("async func sumView(_ s: Span[Int32]) -> Int32 { return 0 }\n"
+                   "async func run() -> Int32 {\n"
+                   "    var data: [3]Int32 = [1, 2, 3]\n"
+                   "    let f = spawn sumView(data)\n"
+                   "    return await f\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("captures its arguments by value") != std::string::npos);
+}
+
+TEST_CASE("spawn of a call with only owned arguments checks clean") {
+    CHECK(check("async func leaf(_ x: Int32) -> Int32 { return x + 1 }\n"
+                "async func run(_ x: Int32) -> Int32 {\n"
+                "    let f = spawn leaf(x)\n"
+                "    return await f\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 TEST_CASE("spawn yields a Future that await unwraps to the inner type") {
     // `spawn leaf()` is a Future[Int32]; awaiting it gives back the Int32,
     // so the addition and the Int32 return both type-check.

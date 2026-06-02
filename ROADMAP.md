@@ -182,10 +182,23 @@ each), and the cooperative scheduler:
     write-back reference into the caller, which can't survive the
     coroutine's suspension. The exclusivity checker now rejects an `inout`
     parameter on an `async func` at its signature.
+  * **slice 12** — **spawn captures by value / non-escapable futures**.
+    Capture-by-value of *owned* args already held (the by-value read-param
+    fix copies them into the coroutine frame — a spawned task sees the
+    value as of spawn time, not later mutations). The remaining gap was a
+    borrowed *view*: a `Span` / `MutSpan` parameter is captured as a view,
+    not the data, so a Future that outlives the view's backing would
+    dangle. The resolver now rejects `spawn`ing a call with a `Span` /
+    `MutSpan` parameter (keyed on the parameter type, since an array arg
+    coerces to a view only at the param boundary), pointing at the
+    offending argument. With views barred from capture, a Future owns its
+    whole frame and is safe to outlive its spawning scope; `parallel`
+    remains the way to run work over a borrowed view (it can't let the view
+    escape).
 
-Scheduler / §11 carry-forwards: spawn capture-by-value / move
-semantics + non-escapable futures. (senders/receivers can replace the
-coroutine shims if/when libc++ ships P2300.)
+§11 is feature-complete for v0.5. (senders/receivers can replace the
+coroutine shims if/when libc++ ships P2300; a real thread pool can replace
+the cooperative scheduler behind the same surface.)
 
 ### 3. `Channel[T]` + `parallel` library (§11) — shipped
 

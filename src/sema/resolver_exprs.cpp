@@ -348,11 +348,46 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         t = (inner != nullptr && inner->kind() == TypeKind::Future) ? inner->inner() : inner;
         break;
     }
-    case ast::NodeKind::SpawnExpr:
+    case ast::NodeKind::SpawnExpr: {
         // §11 `spawn f(args)` runs the call and yields a `Future[T]` where
         // T is the call's result type.
-        t = types_->make_future(check_expr(*static_cast<const ast::SpawnExpr&>(e).inner));
+        const auto& sp = static_cast<const ast::SpawnExpr&>(e);
+        t = types_->make_future(check_expr(*sp.inner));
+        // §10/§11 "spawn captures by value": the spawned task copies its read
+        // parameters into the coroutine frame, so each must be an owned value.
+        // A non-escapable borrowed view (Span / MutSpan) parameter would copy
+        // the view, not the data — and the Future may outlive the view's
+        // backing — so a spawned call with a view parameter is rejected. (Keyed
+        // on the *parameter* type: an array argument coerces to a Span only at
+        // the param boundary.) `parallel` is the safe way to run work over a
+        // borrowed view — it can't let the view escape.
+        if (sp.inner != nullptr && sp.inner->kind == ast::NodeKind::CallExpr) {
+            const auto& call = static_cast<const ast::CallExpr&>(*sp.inner);
+            TypePtr ft = call.callee ? resolution_.type_of(call.callee.get()) : nullptr;
+            if (ft != nullptr && ft->kind() == TypeKind::Function) {
+                const auto& params = ft->parts();
+                for (std::size_t i = 0; i < params.size(); ++i) {
+                    TypePtr pt = params[i];
+                    if (pt == nullptr
+                        || (pt->kind() != TypeKind::Span && pt->kind() != TypeKind::MutSpan)) {
+                        continue;
+                    }
+                    // Point at the matching argument when present, else the call.
+                    const diag::SourceRange where =
+                        (i < call.args.size() && call.args[i].value != nullptr)
+                            ? call.args[i].value->range
+                            : sp.inner->range;
+                    error_at(where,
+                             std::format("cannot `spawn` a call with a {} parameter — a spawned "
+                                         "task captures its arguments by value, but a borrowed "
+                                         "view can't be owned (use `parallel` to run work over a "
+                                         "view)",
+                                         pt->describe()));
+                }
+            }
+        }
         break;
+    }
     case ast::NodeKind::ThrowExpr: {
         // §9: `throw e` is only valid inside a throws(E) function; e must
         // be assignable to E. The expression's static type is Never.
