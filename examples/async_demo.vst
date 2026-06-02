@@ -8,10 +8,12 @@
 // Async is in scope (the capability checker already enforces this). This
 // slice adds the codegen: an `async func` lowers to a C++20 coroutine
 // returning `__vstr::Task<T>`, each `return` becomes `co_return`, and each
-// `await e` becomes `co_await (e)`. v0.5 has no scheduler — a Task runs
-// eagerly to completion, so without a real suspension point the awaits
-// resolve synchronously with correct sequential semantics. `spawn`,
-// `select`, `parallel`, and async + throws wait on later slices.
+// `await e` becomes `co_await (e)`. An `async func` that also `throws(E)`
+// lowers to `__vstr::Task<std::expected<T, E>>`: `throw` and a propagating
+// `try` `co_return std::unexpected{…}` (a plain return is ill-formed in a
+// coroutine), and a `return v` co_returns through the expected converting
+// ctor. The cooperative scheduler, channels, select, and timeouts live in
+// examples/channel_select_demo.vst.
 
 module examples.async_demo
 
@@ -57,4 +59,24 @@ async func firstReady(_ a: Int32, _ b: Int32) -> Int32 {
         on let y = fb: y
         default:       0
     }
+}
+
+// async + throws(E): lowers to `Task[expected[T, E]]`. `throw` co_returns the
+// error; `return` co_returns the value through the expected converting ctor.
+enum MathError { case negative }
+
+async func checkedInc(_ x: Int32) throws(MathError) -> Int32 {
+    if x < 0 {
+        throw MathError.negative
+    }
+    return await increment(x)
+}
+
+// A propagating `try await` co_returns the error if the awaited call fails,
+// otherwise binds the unwrapped value. checkedInc(5) -> 6 -> 7; a negative
+// input propagates MathError.negative out of incTwice.
+async func incTwice(_ x: Int32) throws(MathError) -> Int32 {
+    let a = try await checkedInc(x)
+    let b = try await checkedInc(a)
+    return b
 }

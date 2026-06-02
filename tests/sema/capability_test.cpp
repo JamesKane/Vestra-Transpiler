@@ -134,6 +134,22 @@ TEST_CASE("an async function may await") {
           == 0);
 }
 
+TEST_CASE("an async throws function with a propagating try-await checks clean") {
+    // `await f(x)` of an async throws fn yields Result<Int32, E>; the `try`
+    // unwraps it (propagating the error) in g's own throws context.
+    CHECK(check("enum E { case bad }\n"
+                "async func f(_ x: Int32) throws(E) -> Int32 {\n"
+                "    if x < 0 { throw E.bad }\n"
+                "    return x + 1\n"
+                "}\n"
+                "async func g(_ x: Int32) throws(E) -> Int32 {\n"
+                "    let a = try await f(x)\n"
+                "    return a + 1\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 TEST_CASE("spawn yields a Future that await unwraps to the inner type") {
     // `spawn leaf()` is a Future[Int32]; awaiting it gives back the Int32,
     // so the addition and the Int32 return both type-check.

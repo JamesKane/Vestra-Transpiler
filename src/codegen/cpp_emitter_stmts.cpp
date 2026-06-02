@@ -422,8 +422,11 @@ void CppEmitter::emit_stmt_expr(std::ostream& os, const ast::Expr& expr, bool re
     // Everything else falls back to plain `expr;` / `return expr;`.
     switch (expr.kind) {
     case ast::NodeKind::ThrowExpr: {
+        // §11 — inside an `async func` the body is a coroutine, so the error
+        // exit must be `co_return std::unexpected{e}` (a plain `return` is
+        // ill-formed in a coroutine). A non-async throws fn uses `return`.
         const auto& th = static_cast<const ast::ThrowExpr&>(expr);
-        os << "return std::unexpected{";
+        os << (current_func_is_async_ ? "co_return std::unexpected{" : "return std::unexpected{");
         emit_expr(os, *th.inner);
         os << "};\n";
         return;
@@ -437,11 +440,15 @@ void CppEmitter::emit_stmt_expr(std::ostream& os, const ast::Expr& expr, bool re
             if (lookup_try_hoist(&tx) != nullptr) {
                 break;  // fall through to generic `<expr>;` / `return <expr>;`
             }
+            // Both exits are function-level returns, so they co_return inside
+            // an async throws coroutine (and `return` otherwise).
+            const char* ret = current_func_is_async_ ? "co_return " : "return ";
             os << "{ auto __vstr_r = ";
             emit_expr(os, *tx.inner);
-            os << "; if (!__vstr_r.has_value()) { return std::unexpected{__vstr_r.error()}; } ";
+            os << "; if (!__vstr_r.has_value()) { " << ret
+               << "std::unexpected{__vstr_r.error()}; } ";
             if (return_value) {
-                os << "return *__vstr_r;";
+                os << ret << "*__vstr_r;";
             } else {
                 os << "(void)*__vstr_r;";
             }

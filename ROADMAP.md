@@ -138,13 +138,24 @@ each), and the cooperative scheduler:
     count in that unit as `Int` (truncating; accessed, not called —
     distinct from the same-named factory), lowering to
     `static_cast<std::intptr_t>(d.in_<unit>())` like Span's `.count`.
+  * **slice 7** — **async + throws**: an `async func … throws(E) -> T`
+    lowers to `__vstr::Task<std::expected<T, E>>` (the return-type nesting
+    was already in place). The body is a coroutine, so every function-level
+    error exit co_returns: `throw e` → `co_return std::unexpected{e}`, and a
+    propagating `try` (statement-position and the try-hoist prelude) →
+    `co_return std::unexpected{…}` / `co_return *r`. Escapes inside a
+    cond-hoist's IIFE lambda stay plain `return` (the lambda isn't a
+    coroutine) — handled by suppressing the async flag while emitting that
+    lambda body. Sema already typed `await f()` of an async throws fn as
+    `Result<T, E>` (await is transparent on non-Future), which a `try`
+    unwraps; no sema change was needed.
 
 Scheduler / §11 carry-forwards: a sema-level async-context gate for a
 no-default channel select (today the generated `co_await` enforces it at
 C++ compile time, mirroring `await`); spawn of a void function
 (`Future<void>` — needs an
-`optional<void>`-free path); async + throws (`Task<expected<T,E>>`);
-spawn capture-by-value / move semantics + non-escapable futures; the
+`optional<void>`-free path); spawn capture-by-value / move semantics +
+non-escapable futures; the
 `using Async` gate on `parallel`; and the sema-level "no borrow across
 await" rule (the runtime is now safe by-copy; sema doesn't yet *reject* a
 borrow held across an await). (senders/receivers can replace the

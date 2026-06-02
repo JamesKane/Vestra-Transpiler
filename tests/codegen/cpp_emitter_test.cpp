@@ -2346,6 +2346,28 @@ TEST_CASE("a void async func lowers to Task<void> with a trailing co_return") {
     CHECK(f.out.source.find("co_return;") != std::string::npos);
 }
 
+TEST_CASE("an async throws func lowers to Task<expected<T, E>> with co_return escapes") {
+    SemaEmitFixture f("enum E { case bad }\n"
+                      "async func f(_ x: Int32) throws(E) -> Int32 {\n"
+                      "    if x < 0 { throw E.bad }\n"
+                      "    return x + 1\n"
+                      "}\n"
+                      "async func g(_ x: Int32) throws(E) -> Int32 {\n"
+                      "    let a = try await f(x)\n"
+                      "    return a + 1\n"
+                      "}\n");
+    // Combined return type: Task wrapping expected.
+    CHECK(f.out.source.find("__vstr::Task<std::expected<std::int32_t, E>> f(")
+          != std::string::npos);
+    // throw is a coroutine return, not a plain return.
+    CHECK(f.out.source.find("co_return std::unexpected{E::bad}") != std::string::npos);
+    // return v co_returns through the expected converting ctor.
+    CHECK(f.out.source.find("co_return x + 1;") != std::string::npos);
+    // A propagating `try await` co_awaits the call and co_returns the error.
+    CHECK(f.out.source.find("co_await (f(x))") != std::string::npos);
+    CHECK(f.out.source.find("co_return std::unexpected{") != std::string::npos);
+}
+
 // ---- §11 spawn → Future[T] -------------------------------------------------
 
 TEST_CASE("spawn lowers to __vstr::spawn_future and await consumes the future") {

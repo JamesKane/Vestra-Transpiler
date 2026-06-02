@@ -32,6 +32,13 @@ int main() {
     // select over two ready futures: the first arm wins.
     assert(ad::firstReady(10, 20).get() == 11);  // increment(10)
 
+    // async + throws -> Task<expected<T, E>>. Success carries the value; a
+    // throw / propagated error surfaces as an errored expected.
+    assert(ad::checkedInc(5).get().value() == 6);
+    assert(!ad::checkedInc(-1).get().has_value());  // throw -> error
+    assert(ad::incTwice(5).get().value() == 7);     // 5 -> 6 -> 7
+    assert(!ad::incTwice(-1).get().has_value());    // try propagates the error
+
     std::puts("async_demo OK");
     return 0;
 }

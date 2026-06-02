@@ -1903,9 +1903,10 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         // §11 an `async func` lowers to a C++20 coroutine returning
         // `__vstr::Task<R>` (std::execution senders aren't in the host
         // libc++; coroutines are). The `await` sites become `co_await` and
-        // the returns become `co_return`. v0.5 covers async without
-        // throws(E); the two combined would nest as Task<expected<…>> and
-        // wait on a follow-on.
+        // the returns become `co_return`. An `async func` that also
+        // `throws(E)` nests as `__vstr::Task<std::expected<T, E>>`; there
+        // `throw` / propagating `try` `co_return std::unexpected{…}` (a plain
+        // return is ill-formed in a coroutine — see cpp_emitter_stmts.cpp).
         if (f.is_async) {
             os << "__vstr::Task<";
         }

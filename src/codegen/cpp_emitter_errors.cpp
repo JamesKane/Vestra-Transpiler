@@ -260,7 +260,10 @@ void CppEmitter::emit_try_hoist(std::ostream& os, const TryHoist& h, int indent)
         emit_expr(os, *tx.inner);
         os << ";\n";
         write_indent(os, indent);
-        os << "if (!" << r << ".has_value()) { return std::unexpected{" << r << ".error()}; }\n";
+        // Function-level escape: co_return inside an async throws coroutine.
+        os << "if (!" << r << ".has_value()) { "
+           << (current_func_is_async_ ? "co_return" : "return") << " std::unexpected{" << r
+           << ".error()}; }\n";
         write_indent(os, indent);
         os << "auto " << h.name << " = *" << r << ";\n";
         return;
@@ -301,8 +304,13 @@ void CppEmitter::emit_cond_hoist(std::ostream& os, const TryHoist& h, int indent
     // While emitting the hoisted node's own body, suppress
     // self-substitution — `emit_expr` would otherwise see the hoist for
     // this very node and write `*name` instead of the if/match shape.
+    // The lambda is an ordinary (non-coroutine) callable returning
+    // std::expected, so escapes inside it are plain `return` even when the
+    // enclosing function is an async coroutine — suppress co_return here.
     const auto* prev_skip = skip_hoist_;
     skip_hoist_ = h.node;
+    const bool prev_async = current_func_is_async_;
+    current_func_is_async_ = false;
     if (h.node->kind == ast::NodeKind::IfExpr) {
         write_indent(os, indent + 1);
         emit_stmt_expr(os, *h.node, /*return_value=*/true);
@@ -311,12 +319,15 @@ void CppEmitter::emit_cond_hoist(std::ostream& os, const TryHoist& h, int indent
     } else if (h.node->kind == ast::NodeKind::DoCatchExpr) {
         emit_do_catch_in_lambda(os, static_cast<const ast::DoCatchExpr&>(*h.node), indent + 1);
     }
+    current_func_is_async_ = prev_async;
     skip_hoist_ = prev_skip;
 
     write_indent(os, indent);
     os << "}();\n";
     write_indent(os, indent);
-    os << "if (!" << h.name << ".has_value()) { return std::unexpected{" << h.name
+    // Function-level re-propagation: co_return inside an async throws coroutine.
+    os << "if (!" << h.name << ".has_value()) { "
+       << (current_func_is_async_ ? "co_return" : "return") << " std::unexpected{" << h.name
        << ".error()}; }\n";
 }
 
