@@ -717,27 +717,10 @@ ast::ExprPtr Parser::parse_primary() {
         q->range = merge(start, last_range());
         return q;
     }
-    case TokenKind::Dollar: {
+    case TokenKind::Dollar:
         // §12.4 splice: `$ident` or `$(expr)`. Only meaningful inside a
-        // quote (sema enforces); the inner is substituted at the splice
-        // site.
-        advance();
-        auto sp = std::make_unique<ast::SpliceExpr>();
-        if (match(TokenKind::LParen)) {
-            sp->inner = parse_expr();
-            expect(TokenKind::RParen, "')' to close '$( … )' splice");
-        } else if (check(TokenKind::Identifier)) {
-            auto id = std::make_unique<ast::IdentExpr>();
-            auto idtok = advance();
-            id->name = std::string{idtok.lexeme};
-            id->range = idtok.range;
-            sp->inner = std::move(id);
-        } else {
-            emit_error(peek().range, "expected an identifier or '(' after '$'");
-        }
-        sp->range = merge(start, last_range());
-        return sp;
-    }
+        // quote (sema enforces); the inner is substituted at the splice site.
+        return parse_splice();
     case TokenKind::At: {
         // `@embed("path")` and other intrinsic-call forms in expression
         // position. Today only @embed is recognized — extending this to
@@ -799,6 +782,26 @@ ast::ExprPtr Parser::parse_primary() {
     }
 }
 
+ast::ExprPtr Parser::parse_splice() {
+    auto start = peek().range;
+    advance();  // '$'
+    auto sp = std::make_unique<ast::SpliceExpr>();
+    if (match(TokenKind::LParen)) {
+        sp->inner = parse_expr();
+        expect(TokenKind::RParen, "')' to close '$( … )' splice");
+    } else if (check(TokenKind::Identifier)) {
+        auto id = std::make_unique<ast::IdentExpr>();
+        auto idtok = advance();
+        id->name = std::string{idtok.lexeme};
+        id->range = idtok.range;
+        sp->inner = std::move(id);
+    } else {
+        emit_error(peek().range, "expected an identifier or '(' after '$'");
+    }
+    sp->range = merge(start, last_range());
+    return sp;
+}
+
 ast::ExprPtr Parser::parse_postfix(ast::ExprPtr lhs) {
     while (true) {
         if (check(TokenKind::LParen)) {
@@ -845,9 +848,13 @@ ast::ExprPtr Parser::parse_postfix(ast::ExprPtr lhs) {
             // derive(Default) exposes `T.default()`, §A6 MMIO uses
             // `view.read()`. Accept those keywords here using their
             // spelled lexeme so we don't force users to escape them.
-            if (check(TokenKind::Identifier) || check(TokenKind::KwType)
-                || check(TokenKind::KwEmbed) || check(TokenKind::KwDefault)
-                || check(TokenKind::KwRead)) {
+            if (check(TokenKind::Dollar)) {
+                // §12.4 a member-name splice inside a decl quote:
+                // `v.$(f.name)`. Resolved to a String when the macro expands.
+                m->member_splice = parse_splice();
+            } else if (check(TokenKind::Identifier) || check(TokenKind::KwType)
+                       || check(TokenKind::KwEmbed) || check(TokenKind::KwDefault)
+                       || check(TokenKind::KwRead)) {
                 m->member = std::string{advance().lexeme};
             } else {
                 emit_error(peek().range, "expected member name after '.'");

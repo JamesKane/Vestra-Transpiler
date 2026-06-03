@@ -580,6 +580,35 @@ std::optional<std::size_t> field_member_index(std::string_view member) {
     return std::nullopt;
 }
 
+// §12.4 materialize a folded value into a type, for `$(d.name)` / `$(f.type)`
+// in type position. String and TypeRef both carry the type name in `.s`. Only
+// a simple identifier is supported in this slice (a dotted path or a compound
+// display like `[8]Int32` / `T?` can't be reconstructed as one NamedType);
+// anything else returns nullptr so the macro fails cleanly rather than emitting
+// a malformed type.
+ast::TypePtr materialize_type(const ComptimeValue& v) {
+    if (v.kind != ComptimeValue::Kind::String && v.kind != ComptimeValue::Kind::TypeRef) {
+        return nullptr;
+    }
+    const std::string& name = v.s;
+    if (name.empty()) {
+        return nullptr;
+    }
+    const auto ident_char = [](char c, bool first) {
+        const bool alpha = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+        const bool digit = c >= '0' && c <= '9';
+        return first ? alpha : (alpha || digit);
+    };
+    for (std::size_t k = 0; k < name.size(); ++k) {
+        if (!ident_char(name[k], k == 0)) {
+            return nullptr;
+        }
+    }
+    auto nt = std::make_unique<ast::NamedType>();
+    nt->path.push_back(name);
+    return nt;
+}
+
 // §12.6: the `cfg` value's fields. Phase 1 hardcodes them based on
 // build-time host detection; later phases will let the build system
 // override via -D flags or a manifest.
@@ -891,6 +920,39 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
                         }
                         fd.name = nv->s;
                         fd.name_splice = nullptr;
+                    }
+                    // §12.4 resolve `$(…)` splices in type position (param
+                    // types, result type) — `_ v: $(d.name)`, `-> $(f.type)` —
+                    // by folding each to a String/TypeRef and materializing a
+                    // concrete NamedType.
+                    const auto resolve_type_splice = [&](ast::TypePtr& ty) -> bool {
+                        if (!ty || ty->kind != ast::NodeKind::SpliceType) {
+                            return true;
+                        }
+                        const ast::Expr* inner = static_cast<ast::SpliceType&>(*ty).splice.get();
+                        if (inner != nullptr && inner->kind == ast::NodeKind::SpliceExpr) {
+                            inner = static_cast<const ast::SpliceExpr&>(*inner).inner.get();
+                        }
+                        auto tv = inner ? fold_with(*inner, env, frame, TypeKind::Unit, depth)
+                                        : std::nullopt;
+                        if (!tv) {
+                            return false;
+                        }
+                        auto mat = materialize_type(*tv);
+                        if (!mat) {
+                            return false;
+                        }
+                        mat->range = ty->range;
+                        ty = std::move(mat);
+                        return true;
+                    };
+                    for (auto& p : fd.params) {
+                        if (!resolve_type_splice(p.type)) {
+                            return std::nullopt;
+                        }
+                    }
+                    if (!resolve_type_splice(fd.result)) {
+                        return std::nullopt;
                     }
                     subst_splices(fd.body, env, frame, depth);
                 }
@@ -1940,9 +2002,25 @@ void ComptimeFolder::subst_splices(ast::ExprPtr& e, const Env& env, Frame& frame
         subst_splices(static_cast<ast::BinaryExpr&>(*e).lhs, env, frame, depth);
         subst_splices(static_cast<ast::BinaryExpr&>(*e).rhs, env, frame, depth);
         break;
-    case ast::NodeKind::MemberExpr:
-        subst_splices(static_cast<ast::MemberExpr&>(*e).base, env, frame, depth);
+    case ast::NodeKind::MemberExpr: {
+        auto& mem = static_cast<ast::MemberExpr&>(*e);
+        subst_splices(mem.base, env, frame, depth);
+        // §12.4 resolve a member-name splice (`v.$(f.name)`) to its String.
+        if (mem.member_splice) {
+            const ast::Expr* inner = mem.member_splice.get();
+            if (inner->kind == ast::NodeKind::SpliceExpr) {
+                inner = static_cast<const ast::SpliceExpr&>(*inner).inner.get();
+            }
+            if (inner != nullptr) {
+                if (auto v = fold_with(*inner, env, frame, TypeKind::Unit, depth);
+                    v && v->kind == ComptimeValue::Kind::String) {
+                    mem.member = v->s;
+                    mem.member_splice = nullptr;
+                }
+            }
+        }
         break;
+    }
     case ast::NodeKind::IndexExpr: {
         auto& ix = static_cast<ast::IndexExpr&>(*e);
         subst_splices(ix.base, env, frame, depth);

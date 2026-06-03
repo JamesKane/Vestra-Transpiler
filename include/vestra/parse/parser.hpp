@@ -91,6 +91,10 @@ private:
     ast::ExprPtr parse_prefix();
     ast::ExprPtr parse_primary();
     ast::ExprPtr parse_postfix(ast::ExprPtr lhs);
+    // §12.4 parse just a `$ident` / `$(expr)` splice (no postfix), for splices
+    // in name / member / type position where the surrounding `()`/`.` must not
+    // be consumed as a call or member of the splice.
+    ast::ExprPtr parse_splice();
 
     // ---- helpers ---------------------------------------------------------
     void emit_error(diag::SourceRange r, std::string msg);

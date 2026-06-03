@@ -46,13 +46,14 @@ int main() {
     assert(qd::fieldCount() == 3);
     assert(qd::wideFieldCount() == 2);
 
-    // §12.4 per-field decl generation: @labels kept `struct Pair` ($d) and
-    // appended one accessor per field via `[Decl] +=`, each named by a comptime
-    // string splice (`first_label`, `second_label`) returning the field name.
+    // §12.4 per-field typed accessors: @getters kept `struct Pair` ($d) and
+    // appended one reader per field via `[Decl] +=`, each named by a comptime
+    // string splice (`first_of`, `second_of`), taking the struct by its own
+    // type ($(d.name)), returning the field's type ($(f.type)), and reading the
+    // field via a member-name splice (v.$(f.name)).
     qd::Pair pr{.first = 10, .second = 20};
-    assert(pr.first == 10);
-    assert(qd::first_label() == "first");
-    assert(qd::second_label() == "second");
+    assert(qd::first_of(pr) == 10);
+    assert(qd::second_of(pr) == 20);
 
     std::puts("quote_demo OK");
     return 0;

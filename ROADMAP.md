@@ -307,9 +307,25 @@ accumulator) rather than an expression quote. Macro detection moved from a
 literal-`return quote` shape check to the signature (`comptime` + `-> [Decl]`),
 since a folder-evaluated body can be any shape.
 
+Ninth slice shipped — **per-field typed accessors** (full reflection into
+generated signatures): a generated declaration can now consume the field's
+type and value, not just its name. Three new splice positions: a `$(expr)`
+splice in **type** position (`ast::SpliceType`, parsed in `parse_type`) for
+`_ v: $(d.name)` and `-> $(f.type)`; a **member-name** splice
+(`MemberExpr::member_splice`) for `v.$(f.name)`; and TypeRef/String →
+`NamedType` materialization (`materialize_type`, simple identifiers only in
+v0.5). The folder resolves type splices in a generated decl's params/result
+and member splices in its body during quote materialization. So
+`func $(f.name + "_of")(_ v: $(d.name)) -> $(f.type) { return v.$(f.name) }`
+over a struct emits a typed `field_of(s)` reader per field. The `$`-splice
+parse is now one shared `parse_splice()` (no postfix), used by name / member /
+type positions.
+
 Remaining (full reflection): `.attribute(...).arg(...).asType()`, hygiene
-(generated names are currently raw — no gensym), the builder API, and
-`vestra expand`.
+(generated names are currently raw — no gensym), method/extension generation
+(accessors are free functions taking the value, not `self` methods), richer
+type materialization (compound types like `[N]T` / `T?`), the builder API,
+and `vestra expand`.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 

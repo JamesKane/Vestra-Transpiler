@@ -203,6 +203,7 @@ ExprPtr clone(const Expr& e) {
         auto n = std::make_unique<MemberExpr>();
         n->base = cl(m.base);
         n->member = m.member;
+        n->member_splice = cl(m.member_splice);
         n->is_optional_chain = m.is_optional_chain;
         return with_range(std::move(n), e);
     }
@@ -426,6 +427,11 @@ TypePtr clone(const Type& t) {
     case NodeKind::DynType: {
         auto n = std::make_unique<DynType>();
         n->inner = clt(static_cast<const DynType&>(t).inner);
+        return with_range(std::move(n), t);
+    }
+    case NodeKind::SpliceType: {
+        auto n = std::make_unique<SpliceType>();
+        n->splice = cl(static_cast<const SpliceType&>(t).splice);
         return with_range(std::move(n), t);
     }
     case NodeKind::InterruptType: {

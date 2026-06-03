@@ -2723,26 +2723,29 @@ TEST_CASE("a declaration macro iterates d.fields in a comptime loop") {
     CHECK(f.out.source.find("return 2;") != std::string::npos);
 }
 
-TEST_CASE("a declaration macro generates one decl per field with a composed name") {
+TEST_CASE("a declaration macro generates one typed accessor per field") {
     SemaEmitFixture f(
-        "comptime func labels(_ d: Decl) -> [Decl] {\n"
+        "comptime func getters(_ d: Decl) -> [Decl] {\n"
         "    var out: [Decl] = quote { $d }\n"
         "    for fld in d.fields {\n"
         "        out += quote {\n"
-        "            func $(fld.name + \"_label\")() -> StrConst { return $(fld.name) }\n"
+        "            func $(fld.name + \"_of\")(_ v: $(d.name)) -> $(fld.type) { return "
+        "v.$(fld.name) }\n"
         "        }\n"
         "    }\n"
         "    return out\n"
         "}\n"
-        "@labels\n"
-        "struct Pair { var first: Int32  var second: Int32 }\n");
-    // $d kept the struct; the loop appended one accessor per field via [Decl] +=,
-    // each named by the comptime string splice $(fld.name + "_label").
+        "@getters\n"
+        "struct Pair { var first: Int32  var second: Int64 }\n");
+    // $d kept the struct; the loop appended one reader per field via [Decl] +=,
+    // each with a composed name ($(fld.name + "_of")), the struct as a typed
+    // parameter ($(d.name)), the field's own return type ($(fld.type)), and a
+    // member-name splice in the body (v.$(fld.name)).
     CHECK(f.out.header.find("struct Pair {") != std::string::npos);
-    CHECK(f.out.source.find("first_label()") != std::string::npos);
-    CHECK(f.out.source.find("second_label()") != std::string::npos);
-    CHECK(f.out.source.find("std::string_view(\"first\")") != std::string::npos);
-    CHECK(f.out.source.find("std::string_view(\"second\")") != std::string::npos);
+    CHECK(f.out.source.find("std::int32_t first_of(const Pair& v)") != std::string::npos);
+    CHECK(f.out.source.find("std::int64_t second_of(const Pair& v)") != std::string::npos);
+    CHECK(f.out.source.find("return v.first;") != std::string::npos);
+    CHECK(f.out.source.find("return v.second;") != std::string::npos);
 }
 
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------

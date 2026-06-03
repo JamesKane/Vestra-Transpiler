@@ -25,7 +25,15 @@ ast::TypePtr Parser::parse_type() {
     auto start = peek().range;
     ast::TypePtr base;
 
-    if (match(TokenKind::KwSome)) {
+    if (check(TokenKind::Dollar)) {
+        // §12.4 a `$(expr)` / `$ident` splice in type position inside a decl
+        // quote — `-> $(f.type)`, `_ v: $(d.name)`. Resolved to a concrete
+        // type when the declaration macro expands.
+        auto s = std::make_unique<ast::SpliceType>();
+        s->splice = parse_splice();
+        s->range = merge(start, last_range());
+        base = std::move(s);
+    } else if (match(TokenKind::KwSome)) {
         auto s = std::make_unique<ast::SomeType>();
         s->inner = parse_type();
         s->range = merge(start, last_range());

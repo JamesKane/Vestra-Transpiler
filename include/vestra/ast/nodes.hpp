@@ -41,6 +41,7 @@ enum class NodeKind : std::uint16_t {
     SomeType,
     DynType,
     InterruptType,
+    SpliceType,  // §12.4 `$(expr)` in type position inside a decl quote
     // ---- statements ----
     LetStmt,
     VarStmt,
@@ -317,6 +318,14 @@ struct DynType : Type {
     TypePtr inner;
     DynType() : Type(NodeKind::DynType) {}
 };
+// §12.4 a `$(expr)` / `$ident` splice where a type is expected, inside a decl
+// quote — e.g. `func get(_ v: $(d.name)) -> $(f.type)`. Resolved when the
+// declaration macro expands: the splice folds to a comptime String / TypeRef
+// and is materialized into a NamedType. Never reaches the resolver.
+struct SpliceType : Type {
+    ExprPtr splice;
+    SpliceType() : Type(NodeKind::SpliceType) {}
+};
 
 // ------------------------------------------------------------------ exprs
 
@@ -382,6 +391,9 @@ struct CallExpr : Expr {
 struct MemberExpr : Expr {
     ExprPtr base;
     std::string member;
+    // §12.4 a `$(expr)` member-name splice: `v.$(f.name)` inside a decl quote.
+    // When set, `member` is empty until expansion folds this to a String.
+    ExprPtr member_splice;
     // §9 optional chaining: `a?.b` peels one Optional layer from `a`
     // before looking up `b`, and wraps the lookup in Optional (.none
     // short-circuits the whole chain). Distinct AST shape from `a.b`

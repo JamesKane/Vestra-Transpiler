@@ -117,24 +117,26 @@ struct Vec3 {
     var z: Int64
 }
 
-// §12.4 per-field declaration generation: the macro builds its `[Decl]` result
-// by iterating `d.fields` and appending one generated declaration per field
-// with `+=`. Each generated function composes a distinct name from the field
-// via a comptime string splice (`$(f.name + "_label")`), and its body splices
-// the field name as a string. `quote { $d }` seeds the accumulator with the
-// annotated struct itself.
-comptime func labels(_ d: Decl) -> [Decl] {
+// §12.4 per-field declaration generation with full type reflection: the macro
+// builds its `[Decl]` result by iterating `d.fields` and appending one accessor
+// per field with `+=`. Each generated function composes a distinct name from a
+// comptime string splice (`$(f.name + "_of")`), takes the annotated struct by
+// type (`$(d.name)`), returns the field's own type (`$(f.type)`), and reads the
+// field through a member-name splice (`v.$(f.name)`). `quote { $d }` seeds the
+// accumulator with the annotated struct itself. So `@getters` on a struct emits
+// a typed `field_of(s)` reader per field, all resolved at comptime.
+comptime func getters(_ d: Decl) -> [Decl] {
     var out: [Decl] = quote { $d }
     for f in d.fields {
         out += quote {
-            func $(f.name + "_label")() -> StrConst { return $(f.name) }
+            func $(f.name + "_of")(_ v: $(d.name)) -> $(f.type) { return v.$(f.name) }
         }
     }
     return out
 }
 
-@labels
+@getters
 struct Pair {
     var first: Int32
-    var second: Int32
+    var second: Int64
 }
