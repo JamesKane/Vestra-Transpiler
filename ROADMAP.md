@@ -49,14 +49,22 @@ include-guard so two module headers in one TU don't redefine its (non-inline)
 types. Proven end to end (`examples/multifile_demo/`: a cross-module call +
 const, compiled and run).
 
-Remaining slices: **visibility** (only `pub` decls should be importable; today
-all top-level decls are visible); **precise qualification** instead of
-`using namespace` (avoids ambiguity once many modules are imported, and is
-needed for name collisions across modules); **output layout** (outputs are
-flat in `-o DIR` by basename, so two modules with the same filename collide —
-mirror the module path into subdirs); **`import c "header.h"`** (parsed, not
-yet honored); **diagnostics** for a missing/cyclic import file; and a
-**search-path / project-root** notion beyond "entry file's directory".
+**Slice 2 shipped** — **`public` visibility**: only a module's `public`
+top-level decls are exported to importers; `internal` (the default), `package`,
+and `private` stay module-private. Enforced in the resolver's imported-unit
+collection (`decl_visibility` filter), so a reference to a non-public imported
+name fails to resolve. The loader is now shared between `build` and `check`
+(`load_module_graph`), so both follow imports identically — `check` previously
+resolved nothing across files. Negative test: `e2e_multifile_visibility`
+(referencing an `internal` import is a hard error).
+
+Remaining slices: **precise qualification** instead of `using namespace`
+(avoids ambiguity once many modules are imported, and is needed for name
+collisions across modules); **output layout** (outputs are flat in `-o DIR` by
+basename, so two modules with the same filename collide — mirror the module
+path into subdirs); **`import c "header.h"`** (parsed, not yet honored);
+**diagnostics** for a missing/cyclic import file; and a **search-path /
+project-root** notion beyond "entry file's directory".
 
 ### 1. Generics phase 2 (multi-session)
 

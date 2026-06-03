@@ -2267,6 +2267,14 @@ set_tests_properties(e2e_multifile_demo_run PROPERTIES
     DEPENDS                e2e_multifile_demo_compile
     PASS_REGULAR_EXPRESSION "multifile_demo OK")
 
+# §5 visibility: referencing a non-public (internal) decl of an imported module
+# must fail to resolve. `vestra check` is expected to exit non-zero.
+add_test(
+    NAME    e2e_multifile_visibility
+    COMMAND $<TARGET_FILE:vestra> check
+            ${CMAKE_SOURCE_DIR}/examples/multifile_demo/badimport.vst)
+set_tests_properties(e2e_multifile_visibility PROPERTIES WILL_FAIL TRUE)
+
 # §5/§18.4 split(at:) partition primitive.
 set(e2e_split_input  ${CMAKE_SOURCE_DIR}/examples/split_demo.vst)
 set(e2e_split_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_split_demo.cpp)

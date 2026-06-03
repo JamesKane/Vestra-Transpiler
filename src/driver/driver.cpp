@@ -211,21 +211,28 @@ sema::ComptimeFolder::EmbedReader make_embed_reader(std::filesystem::path base) 
     };
 }
 
-}  // namespace
-
-int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
-    diag::SourceManager sm;
-    diag::DiagnosticReporter rep(sm);
-    namespace fs = std::filesystem;
-
-    // §5 multi-file: `import a.b.c` loads <entry-dir>/a/b/c.vst. Load the entry
-    // and every transitively-imported module once (deduped by canonical path),
-    // owning each parsed unit in `units` (heap-stable so cross-unit pointers
-    // survive). `deps[i]` holds the indices of unit i's direct imports.
-    const fs::path entry_dir = opts.input.parent_path();
+// §5 the parsed module graph for an entry file: the entry and every
+// transitively-imported unit (owned, heap-stable), each unit's source path, and
+// each unit's direct-import indices into `units`. `entry` indexes the root.
+struct ModuleGraph {
     std::vector<std::unique_ptr<ast::CompilationUnit>> units;
-    std::vector<fs::path> files;
+    std::vector<std::filesystem::path> files;
     std::vector<std::vector<int>> deps;
+    int entry = -1;
+};
+
+// Load `input` and follow `import a.b.c` to <entry-dir>/a/b/c.vst transitively,
+// deduping by canonical path (a diamond loads once). Parse diagnostics go to
+// `rep`; a load failure (missing file) is reported to `err` and yields a graph
+// whose `entry` is -1. Used by both `build` and `check` so they agree on which
+// modules — and thus which imported symbols — are in play.
+ModuleGraph load_module_graph(const std::filesystem::path& input,
+                              diag::SourceManager& sm,
+                              diag::DiagnosticReporter& rep,
+                              std::ostream& err) {
+    namespace fs = std::filesystem;
+    const fs::path entry_dir = input.parent_path();
+    ModuleGraph g;
     std::unordered_map<std::string, int> visited;
 
     std::function<int(const fs::path&)> load = [&](const fs::path& file) -> int {
@@ -245,15 +252,15 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
         lex::Lexer lx(sm, fid, rep);
         auto toks = lx.tokenize();
         parse::Parser ps(toks, rep);
-        const int idx = static_cast<int>(units.size());
-        units.push_back(std::make_unique<ast::CompilationUnit>(ps.parse_unit()));
-        files.push_back(file);
-        deps.emplace_back();
+        const int idx = static_cast<int>(g.units.size());
+        g.units.push_back(std::make_unique<ast::CompilationUnit>(ps.parse_unit()));
+        g.files.push_back(file);
+        g.deps.emplace_back();
         visited[key] = idx;
         // Resolve each `import` to a file and recurse. The unit object is
         // heap-stable, so caching its pointer across the recursion (which may
-        // reallocate `units`) is safe.
-        auto* up = units[static_cast<std::size_t>(idx)].get();
+        // reallocate `g.units`) is safe.
+        auto* up = g.units[static_cast<std::size_t>(idx)].get();
         for (const auto& imp : up->imports) {
             if (imp == nullptr || imp->is_c_header || imp->path.empty()) {
                 continue;
@@ -265,16 +272,32 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
             dep += ".vst";
             const int di = load(dep);
             if (di >= 0) {
-                deps[static_cast<std::size_t>(idx)].push_back(di);
+                g.deps[static_cast<std::size_t>(idx)].push_back(di);
             }
         }
         return idx;
     };
 
-    const int entry = load(opts.input);
-    if (entry < 0) {
+    g.entry = load(input);
+    return g;
+}
+
+}  // namespace
+
+int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
+    diag::SourceManager sm;
+    diag::DiagnosticReporter rep(sm);
+    namespace fs = std::filesystem;
+
+    // §5 multi-file: load the entry and every transitively-imported module.
+    ModuleGraph graph = load_module_graph(opts.input, sm, rep, err);
+    if (graph.entry < 0) {
         return 1;
     }
+    auto& units = graph.units;
+    auto& files = graph.files;
+    auto& deps = graph.deps;
+    const int entry = graph.entry;
     if (opts.dump_tokens) {
         diag::FileId fid = sm.load_file(opts.input);
         for (const auto& t : lex::Lexer(sm, fid, rep).tokenize()) {
@@ -361,23 +384,31 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
 
 int run_check(const std::filesystem::path& input, std::ostream& out, std::ostream& err) {
     diag::SourceManager sm;
-    diag::FileId fid;
-    try {
-        fid = sm.load_file(input);
-    } catch (const std::exception& ex) {
-        err << "vestra: " << ex.what() << "\n";
+    diag::DiagnosticReporter rep(sm);
+
+    // §5 multi-file: load + check the entry and every imported module, so
+    // `check` agrees with `build` on which cross-module references resolve.
+    ModuleGraph graph = load_module_graph(input, sm, rep, err);
+    if (graph.entry < 0) {
         return 1;
     }
-    diag::DiagnosticReporter rep(sm);
-    lex::Lexer lex(sm, fid, rep);
-    auto tokens = lex.tokenize();
-    parse::Parser parser(tokens, rep);
-    auto unit = parser.parse_unit();
-    sema::expand_declaration_macros(unit, rep);  // §12.4
-    sema::fold_extensions(unit);                 // §5
-    if (!rep.has_errors()) {
+    for (auto& u : graph.units) {
+        sema::expand_declaration_macros(*u, rep);  // §12.4
+        sema::fold_extensions(*u);                 // §5
+    }
+    if (rep.has_errors()) {
+        rep.render_to(err);
+        return 1;
+    }
+    for (std::size_t i = 0; i < graph.units.size(); ++i) {
+        auto& unit = *graph.units[i];
         sema::TypeArena arena;
-        sema::Resolver resolver(unit, arena, rep);
+        sema::Resolver resolver(unit, arena, rep, make_embed_reader(graph.files[i].parent_path()));
+        std::vector<const ast::CompilationUnit*> imported;
+        for (int d : graph.deps[i]) {
+            imported.push_back(graph.units[static_cast<std::size_t>(d)].get());
+        }
+        resolver.set_imported_units(std::move(imported));
         resolver.resolve();
         if (!rep.has_errors()) {
             sema::OwnershipChecker ownership(unit, resolver.resolution(), rep);
@@ -387,10 +418,10 @@ int run_check(const std::filesystem::path& input, std::ostream& out, std::ostrea
             sema::CapabilityChecker capability(unit, resolver.resolution(), rep);
             capability.check();
         }
-    }
-    if (rep.has_errors()) {
-        rep.render_to(err);
-        return 1;
+        if (rep.has_errors()) {
+            rep.render_to(err);
+            return 1;
+        }
     }
     out << "vestra: " << input.string() << " checked OK\n";
     return 0;

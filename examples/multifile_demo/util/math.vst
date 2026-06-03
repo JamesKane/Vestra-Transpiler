@@ -7,8 +7,14 @@
 
 module util.math
 
-func add(_ a: Int32, _ b: Int32) -> Int32 {
-    return a + b
+// Only `public` decls are exported to importers; `helper` below stays
+// module-private and is not visible from main.vst.
+public func add(_ a: Int32, _ b: Int32) -> Int32 {
+    return helper(a) + b
 }
 
-const answer: Int32 = 42
+public const answer: Int32 = 42
+
+func helper(_ x: Int32) -> Int32 {
+    return x
+}

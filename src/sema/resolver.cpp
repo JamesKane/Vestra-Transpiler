@@ -177,6 +177,12 @@ void Resolver::duplicate_definition(const Symbol& existing,
 // Pass 1: collect every top-level declaration into the global scope.
 // ============================================================================
 
+namespace {
+// §5 the declared visibility of a top-level decl (defined fully below); used to
+// decide what an imported module exports.
+ast::Visibility decl_visibility(const ast::Decl& d);
+}  // namespace
+
 void Resolver::collect_decl(const ast::Decl& d) {
     switch (d.kind) {
     case ast::NodeKind::Func:
@@ -224,7 +230,9 @@ void Resolver::collect_top_level() {
             continue;
         }
         for (const auto& d : imp->decls) {
-            if (!gated_out(*d)) {
+            // Only a module's `public` decls are visible to importers; the
+            // default (Internal) and narrower visibilities stay module-private.
+            if (!gated_out(*d) && decl_visibility(*d) == ast::Visibility::Public) {
                 collect_decl(*d);
             }
         }
@@ -466,6 +474,30 @@ const std::vector<ast::Attribute>* decl_attributes(const ast::Decl& d) {
         return &static_cast<const ast::ExtensionDecl&>(d).attributes;
     default:
         return nullptr;
+    }
+}
+
+// §5 the declared visibility of a top-level decl, for deciding what a module
+// exports. Kinds that don't carry a `visibility` field aren't importable, so
+// they report Internal (the non-exported default).
+ast::Visibility decl_visibility(const ast::Decl& d) {
+    switch (d.kind) {
+    case ast::NodeKind::Func:
+        return static_cast<const ast::FuncDecl&>(d).visibility;
+    case ast::NodeKind::Struct:
+        return static_cast<const ast::StructDecl&>(d).visibility;
+    case ast::NodeKind::Enum:
+        return static_cast<const ast::EnumDecl&>(d).visibility;
+    case ast::NodeKind::Protocol:
+        return static_cast<const ast::ProtocolDecl&>(d).visibility;
+    case ast::NodeKind::Const:
+        return static_cast<const ast::ConstDecl&>(d).visibility;
+    case ast::NodeKind::Static:
+        return static_cast<const ast::StaticDecl&>(d).visibility;
+    case ast::NodeKind::Opaque:
+        return static_cast<const ast::OpaqueDecl&>(d).visibility;
+    default:
+        return ast::Visibility::Internal;
     }
 }
 
