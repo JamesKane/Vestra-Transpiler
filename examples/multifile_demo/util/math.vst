@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §5 multi-file: a library module imported by examples/multifile_demo/main.vst.
+// Its `module util.math` path mirrors its location under the entry file's
+// directory (util/math.vst), which is how `import util.math` finds it.
+
+module util.math
+
+func add(_ a: Int32, _ b: Int32) -> Int32 {
+    return a + b
+}
+
+const answer: Int32 = 42

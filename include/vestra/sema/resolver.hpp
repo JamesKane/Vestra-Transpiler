@@ -95,6 +95,14 @@ public:
 
     void resolve();
 
+    // §5 multi-file: make the public top-level decls of `imports` visible in
+    // this unit's global scope (collected before resolution; not re-checked or
+    // re-emitted). The pointed-at units must outlive this resolver. Call before
+    // resolve().
+    void set_imported_units(std::vector<const ast::CompilationUnit*> imports) {
+        imported_units_ = std::move(imports);
+    }
+
     [[nodiscard]] const Resolution& resolution() const noexcept { return resolution_; }
 
 private:
@@ -117,6 +125,7 @@ private:
     // BarrierKind enums registered in register_builtin_reflection.
     void register_builtin_sync();
     void collect_top_level();
+    void collect_decl(const ast::Decl& d);
     void collect_func(const ast::FuncDecl& f);
     void collect_struct(const ast::StructDecl& s);
     void collect_enum(const ast::EnumDecl& e);
@@ -305,6 +314,8 @@ private:
     diag::DiagnosticReporter* reporter_;
     ScopeStack scopes_;
     Resolution resolution_;
+    // §5 imported modules whose public decls are collected into scope.
+    std::vector<const ast::CompilationUnit*> imported_units_;
     // Stack of expected return types — pushed when entering a function body so
     // a nested return expression can be checked against it. For a throws(E) →
     // T function we push the *success* type T here; the parallel throws_stack_

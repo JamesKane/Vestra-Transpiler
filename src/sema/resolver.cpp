@@ -177,7 +177,58 @@ void Resolver::duplicate_definition(const Symbol& existing,
 // Pass 1: collect every top-level declaration into the global scope.
 // ============================================================================
 
+void Resolver::collect_decl(const ast::Decl& d) {
+    switch (d.kind) {
+    case ast::NodeKind::Func:
+        collect_func(static_cast<const ast::FuncDecl&>(d));
+        break;
+    case ast::NodeKind::Struct:
+        collect_struct(static_cast<const ast::StructDecl&>(d));
+        break;
+    case ast::NodeKind::Enum:
+        collect_enum(static_cast<const ast::EnumDecl&>(d));
+        break;
+    case ast::NodeKind::Protocol:
+        collect_protocol(static_cast<const ast::ProtocolDecl&>(d));
+        break;
+    case ast::NodeKind::Opaque:
+        collect_opaque(static_cast<const ast::OpaqueDecl&>(d));
+        break;
+    case ast::NodeKind::Const:
+        collect_const(static_cast<const ast::ConstDecl&>(d));
+        break;
+    case ast::NodeKind::Static:
+        collect_static(static_cast<const ast::StaticDecl&>(d));
+        break;
+    case ast::NodeKind::Extension:
+        // Extensions don't introduce a new top-level name; their members
+        // are surfaced via their target type. We resolve them in pass 2.
+        break;
+    case ast::NodeKind::Derive:
+        // `derive(...)` is sugar for empty extensions; nothing to bind.
+        break;
+    default:
+        break;
+    }
+}
+
 void Resolver::collect_top_level() {
+    // §5 imported modules: collect each imported unit's top-level decls into
+    // the global scope first, so references to them resolve in this unit. Their
+    // bodies are not re-checked (resolve() only walks this unit's decls) and
+    // they are not re-emitted (codegen iterates this unit's decls). Signatures
+    // are re-derived here in this resolver's arena, so no cross-arena TypePtr
+    // sharing is needed.
+    for (const auto* imp : imported_units_) {
+        if (imp == nullptr) {
+            continue;
+        }
+        for (const auto& d : imp->decls) {
+            if (!gated_out(*d)) {
+                collect_decl(*d);
+            }
+        }
+    }
     for (const auto& d : unit_->decls) {
         // §12.6: skip `@when`-gated-out decls before they enter any scope.
         // Other passes (check_decl, codegen) will skip them the same way,
@@ -185,38 +236,7 @@ void Resolver::collect_top_level() {
         if (gated_out(*d)) {
             continue;
         }
-        switch (d->kind) {
-        case ast::NodeKind::Func:
-            collect_func(static_cast<const ast::FuncDecl&>(*d));
-            break;
-        case ast::NodeKind::Struct:
-            collect_struct(static_cast<const ast::StructDecl&>(*d));
-            break;
-        case ast::NodeKind::Enum:
-            collect_enum(static_cast<const ast::EnumDecl&>(*d));
-            break;
-        case ast::NodeKind::Protocol:
-            collect_protocol(static_cast<const ast::ProtocolDecl&>(*d));
-            break;
-        case ast::NodeKind::Opaque:
-            collect_opaque(static_cast<const ast::OpaqueDecl&>(*d));
-            break;
-        case ast::NodeKind::Const:
-            collect_const(static_cast<const ast::ConstDecl&>(*d));
-            break;
-        case ast::NodeKind::Static:
-            collect_static(static_cast<const ast::StaticDecl&>(*d));
-            break;
-        case ast::NodeKind::Extension:
-            // Extensions don't introduce a new top-level name; their members
-            // are surfaced via their target type. We resolve them in pass 2.
-            break;
-        case ast::NodeKind::Derive:
-            // `derive(...)` is sugar for empty extensions; nothing to bind.
-            break;
-        default:
-            break;
-        }
+        collect_decl(*d);
     }
 }
 

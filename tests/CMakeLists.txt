@@ -2240,6 +2240,33 @@ set_tests_properties(e2e_quote_demo_expand PROPERTIES
     PASS_REGULAR_EXPRESSION "func Seed1_seed"
     FAIL_REGULAR_EXPRESSION "comptime func seeded")
 
+# §5 multi-file: `demo.app` (main.vst) imports `util.math` (util/math.vst). The
+# transpile emits one .hpp/.cpp per module; the compile links both translation
+# units; the run exercises a cross-module call and const.
+set(e2e_mf_input  ${CMAKE_SOURCE_DIR}/examples/multifile_demo/main.vst)
+set(e2e_mf_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_multifile_demo.cpp)
+
+add_test(
+    NAME    e2e_multifile_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_mf_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_multifile_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_mf_driver} ${e2e_workdir}/main.cpp ${e2e_workdir}/math.cpp
+            -o ${e2e_workdir}/multifile_app)
+set_tests_properties(e2e_multifile_demo_compile PROPERTIES
+    DEPENDS e2e_multifile_demo_transpile)
+
+add_test(
+    NAME    e2e_multifile_demo_run
+    COMMAND ${e2e_workdir}/multifile_app)
+set_tests_properties(e2e_multifile_demo_run PROPERTIES
+    DEPENDS                e2e_multifile_demo_compile
+    PASS_REGULAR_EXPRESSION "multifile_demo OK")
+
 # §5/§18.4 split(at:) partition primitive.
 set(e2e_split_input  ${CMAKE_SOURCE_DIR}/examples/split_demo.vst)
 set(e2e_split_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_split_demo.cpp)

@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §5 multi-file demo. `import util.math` loads util/math.vst relative to this
+// (the entry) file's directory; its public `add` and `answer` are then visible
+// here unqualified. The transpiler emits one .hpp/.cpp per module, and main's
+// header `#include`s the dependency's and opens its namespace, so the cross-
+// module references lower to ordinary C++.
+
+module demo.app
+
+import util.math
+
+func compute() -> Int32 {
+    return add(40, 2)
+}
+
+func viaConst() -> Int32 {
+    return answer
+}

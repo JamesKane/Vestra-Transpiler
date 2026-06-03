@@ -18,10 +18,14 @@
 
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
+#include <memory>
 #include <ostream>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <vector>
 
 namespace vestra::driver {
 
@@ -34,7 +38,10 @@ Subcommands:
                    [--skip-check] [--no-libc]
                    [--target=ARCH] [--target-features=LIST]
         Parse, semantically check, then transpile a Vestra source file to
-        C++ (.hpp + .cpp) under DIR. --skip-check elides sema (debug aid).
+        C++ (.hpp + .cpp) under DIR. §5: `import a.b.c` is followed to
+        <entry-dir>/a/b/c.vst, and every transitively-imported module is
+        transpiled to its own .hpp/.cpp under DIR.
+        --skip-check elides sema (debug aid).
         --no-libc marks the build as freestanding (§A10 §15.5): the
         generated header opens with `// vestra: no_libc = true`.
         --target picks the target architecture (host / aarch64 / x86_64 /
@@ -184,112 +191,168 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
     return 2;
 }
 
-int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
-    diag::SourceManager sm;
-    diag::FileId fid;
-    try {
-        fid = sm.load_file(opts.input);
-    } catch (const std::exception& ex) {
-        err << "vestra: " << ex.what() << "\n";
-        return 1;
-    }
+namespace {
 
-    diag::DiagnosticReporter rep(sm);
-    lex::Lexer lex(sm, fid, rep);
-    auto tokens = lex.tokenize();
-
-    if (opts.dump_tokens) {
-        for (const auto& t : tokens) {
-            out << "  " << lex::spelling(t.kind) << "  '" << t.lexeme << "'\n";
-        }
-    }
-
-    parse::Parser parser(tokens, rep);
-    auto unit = parser.parse_unit();
-
-    // §12.4 expand declaration macros before resolution: the generated decls
-    // are then checked and lowered as ordinary code. §5 then fold `extension`
-    // blocks into their target struct's methods so they lower normally.
-    sema::expand_declaration_macros(unit, rep);
-    sema::fold_extensions(unit);
-
-    if (opts.dump_ast) {
-        ast::Printer pr;
-        pr.print_to(out, unit);
-    }
-
-    if (rep.has_errors()) {
-        rep.render_to(err);
-        return 1;
-    }
-
-    // The resolver's lifetime needs to outlive the emitter — the emitter
-    // reads back the side tables (Resolution) to lower constructs that
-    // depend on context, like leading-dot enum cases and match scrutinees.
-    sema::TypeArena arena;
-    // §12.1 `@embed`: the resolver/folder need a way to read files at
-    // fold time. The reader resolves a path relative to the source
-    // file's parent directory (a content-hashed manifest is the next
-    // step; for now any relative path the user spells reads from disk).
-    auto embed_base = opts.input.parent_path();
-    sema::ComptimeFolder::EmbedReader embed_reader =
-        [embed_base](std::string_view path) -> std::optional<std::vector<std::uint8_t>> {
+// §12.1 `@embed` reader rooted at `base`: resolves a relative path against the
+// source file's directory and returns its bytes (nullopt on any failure).
+sema::ComptimeFolder::EmbedReader make_embed_reader(std::filesystem::path base) {
+    return [base = std::move(base)](
+               std::string_view path) -> std::optional<std::vector<std::uint8_t>> {
         std::filesystem::path p{path};
         if (p.is_relative()) {
-            p = embed_base / p;
+            p = base / p;
         }
         std::ifstream f(p, std::ios::binary);
         if (!f) {
             return std::nullopt;
         }
-        std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
-                                        std::istreambuf_iterator<char>());
-        return bytes;
+        return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(f)),
+                                         std::istreambuf_iterator<char>());
     };
-    // §A4 (§14.9.4) target-feature context flows from BuildOptions
-    // into the resolver so the wide-atomic gate fires at the right
-    // sites.
-    sema::TargetContext target_ctx{opts.target, opts.target_features};
-    sema::Resolver resolver(unit, arena, rep, std::move(embed_reader), std::move(target_ctx));
-    if (!opts.skip_check) {
-        resolver.resolve();
-        if (rep.has_errors()) {
-            rep.render_to(err);
-            return 1;
+}
+
+}  // namespace
+
+int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
+    diag::SourceManager sm;
+    diag::DiagnosticReporter rep(sm);
+    namespace fs = std::filesystem;
+
+    // §5 multi-file: `import a.b.c` loads <entry-dir>/a/b/c.vst. Load the entry
+    // and every transitively-imported module once (deduped by canonical path),
+    // owning each parsed unit in `units` (heap-stable so cross-unit pointers
+    // survive). `deps[i]` holds the indices of unit i's direct imports.
+    const fs::path entry_dir = opts.input.parent_path();
+    std::vector<std::unique_ptr<ast::CompilationUnit>> units;
+    std::vector<fs::path> files;
+    std::vector<std::vector<int>> deps;
+    std::unordered_map<std::string, int> visited;
+
+    std::function<int(const fs::path&)> load = [&](const fs::path& file) -> int {
+        std::error_code ec;
+        auto canon = fs::weakly_canonical(file, ec);
+        std::string key = (ec ? file : canon).string();
+        if (auto it = visited.find(key); it != visited.end()) {
+            return it->second;
         }
-        sema::OwnershipChecker ownership(unit, resolver.resolution(), rep);
-        ownership.check();
-        sema::ExclusivityChecker exclusivity(unit, resolver.resolution(), rep);
-        exclusivity.check();
-        sema::CapabilityChecker capability(unit, resolver.resolution(), rep);
-        capability.check();
-        if (rep.has_errors()) {
-            rep.render_to(err);
-            return 1;
+        diag::FileId fid;
+        try {
+            fid = sm.load_file(file);
+        } catch (const std::exception& e) {
+            err << "vestra: " << e.what() << "\n";
+            return -1;
+        }
+        lex::Lexer lx(sm, fid, rep);
+        auto toks = lx.tokenize();
+        parse::Parser ps(toks, rep);
+        const int idx = static_cast<int>(units.size());
+        units.push_back(std::make_unique<ast::CompilationUnit>(ps.parse_unit()));
+        files.push_back(file);
+        deps.emplace_back();
+        visited[key] = idx;
+        // Resolve each `import` to a file and recurse. The unit object is
+        // heap-stable, so caching its pointer across the recursion (which may
+        // reallocate `units`) is safe.
+        auto* up = units[static_cast<std::size_t>(idx)].get();
+        for (const auto& imp : up->imports) {
+            if (imp == nullptr || imp->is_c_header || imp->path.empty()) {
+                continue;
+            }
+            fs::path dep = entry_dir;
+            for (const auto& seg : imp->path) {
+                dep /= seg;
+            }
+            dep += ".vst";
+            const int di = load(dep);
+            if (di >= 0) {
+                deps[static_cast<std::size_t>(idx)].push_back(di);
+            }
+        }
+        return idx;
+    };
+
+    const int entry = load(opts.input);
+    if (entry < 0) {
+        return 1;
+    }
+    if (opts.dump_tokens) {
+        diag::FileId fid = sm.load_file(opts.input);
+        for (const auto& t : lex::Lexer(sm, fid, rep).tokenize()) {
+            out << "  " << lex::spelling(t.kind) << "  '" << t.lexeme << "'\n";
         }
     }
 
-    codegen::CppEmitter emitter(rep, opts.skip_check ? nullptr : &resolver.resolution());
-    emitter.set_no_libc(opts.no_libc);
-    auto basename = opts.input.stem().string();
-    auto em = emitter.emit(unit, basename);
+    // §12.4 / §5: expand declaration macros and fold extensions on every unit
+    // before any resolution (so an importer collecting a dependency's decls
+    // sees them in fully-lowered form).
+    for (auto& u : units) {
+        sema::expand_declaration_macros(*u, rep);
+        sema::fold_extensions(*u);
+    }
+    if (opts.dump_ast) {
+        ast::Printer pr;
+        pr.print_to(out, *units[static_cast<std::size_t>(entry)]);
+    }
+    if (rep.has_errors()) {
+        rep.render_to(err);
+        return 1;
+    }
 
-    if (opts.emit_only) {
-        out << "// === " << basename << ".hpp ===\n" << em.header << "\n";
-        out << "// === " << basename << ".cpp ===\n" << em.source << "\n";
-    } else {
-        std::filesystem::create_directories(opts.out_dir);
-        auto hpath = opts.out_dir / (basename + ".hpp");
-        auto cpath = opts.out_dir / (basename + ".cpp");
-        {
-            std::ofstream h(hpath);
-            h << em.header;
+    const sema::TargetContext target_ctx{opts.target, opts.target_features};
+    if (!opts.emit_only) {
+        fs::create_directories(opts.out_dir);
+    }
+
+    // Resolve + check + emit each unit. The resolver/arena are scoped per unit
+    // and live through that unit's emit (the emitter reads back the Resolution).
+    for (std::size_t i = 0; i < units.size(); ++i) {
+        auto& unit = *units[i];
+        sema::TypeArena arena;
+        sema::Resolver resolver(
+            unit, arena, rep, make_embed_reader(files[i].parent_path()), target_ctx);
+        std::vector<const ast::CompilationUnit*> imported;
+        for (int d : deps[i]) {
+            imported.push_back(units[static_cast<std::size_t>(d)].get());
         }
-        {
-            std::ofstream c(cpath);
-            c << em.source;
+        resolver.set_imported_units(std::move(imported));
+        if (!opts.skip_check) {
+            resolver.resolve();
+            if (rep.has_errors()) {
+                rep.render_to(err);
+                return 1;
+            }
+            sema::OwnershipChecker ownership(unit, resolver.resolution(), rep);
+            ownership.check();
+            sema::ExclusivityChecker exclusivity(unit, resolver.resolution(), rep);
+            exclusivity.check();
+            sema::CapabilityChecker capability(unit, resolver.resolution(), rep);
+            capability.check();
+            if (rep.has_errors()) {
+                rep.render_to(err);
+                return 1;
+            }
         }
-        out << "wrote " << hpath << "\nwrote " << cpath << "\n";
+
+        codegen::CppEmitter emitter(rep, opts.skip_check ? nullptr : &resolver.resolution());
+        emitter.set_no_libc(opts.no_libc);
+        const auto basename = files[i].stem().string();
+        auto em = emitter.emit(unit, basename);
+        if (opts.emit_only) {
+            out << "// === " << basename << ".hpp ===\n" << em.header << "\n";
+            out << "// === " << basename << ".cpp ===\n" << em.source << "\n";
+        } else {
+            auto hpath = opts.out_dir / (basename + ".hpp");
+            auto cpath = opts.out_dir / (basename + ".cpp");
+            {
+                std::ofstream h(hpath);
+                h << em.header;
+            }
+            {
+                std::ofstream c(cpath);
+                c << em.source;
+            }
+            out << "wrote " << hpath << "\nwrote " << cpath << "\n";
+        }
     }
 
     rep.render_to(err);

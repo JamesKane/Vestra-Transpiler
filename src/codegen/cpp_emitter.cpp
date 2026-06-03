@@ -337,6 +337,15 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     // MmioWireView constructors. Emits at file scope so leading-dot
     // resolution (`.little`, `.big`, `.native`) picks it up
     // unqualified, just like BarrierScope / TlbScope / BarrierKind.
+    // §5 multi-file: the runtime prelude below is identical in every generated
+    // header. When one module's header `#include`s another's (a cross-module
+    // import), both copies land in the same translation unit — guard the prelude
+    // so only the first copy defines its (non-inline) types. `#pragma once`
+    // dedups a header against itself; this macro dedups the prelude across
+    // distinct headers.
+    hdr << "#ifndef VESTRA_RUNTIME_PRELUDE\n";
+    hdr << "#define VESTRA_RUNTIME_PRELUDE\n\n";
+
     hdr << "enum class Endianness { little, big, native };\n\n";
 
     hdr << "namespace __vstr {\n\n";
@@ -1502,6 +1511,36 @@ struct SelectAwaiter {
     hdr << "    }\n";
     hdr << "};\n";
     hdr << "}  // namespace std\n\n";
+
+    hdr << "#endif  // VESTRA_RUNTIME_PRELUDE\n\n";
+
+    // §5 multi-file: pull in each imported module's header and open its
+    // namespace for unqualified lookup, so a cross-module reference (`foo()`,
+    // `Point`) resolves without per-site qualification. The dependency's header
+    // is named by the import's last path segment (matching how the driver names
+    // outputs); the namespace mirrors the dotted import path.
+    for (const auto& imp : unit.imports) {
+        if (imp == nullptr || imp->is_c_header || imp->path.empty()) {
+            continue;
+        }
+        hdr << "#include \"" << imp->path.back() << ".hpp\"\n";
+    }
+    for (const auto& imp : unit.imports) {
+        if (imp == nullptr || imp->is_c_header || imp->path.empty()) {
+            continue;
+        }
+        hdr << "using namespace ";
+        for (std::size_t i = 0; i < imp->path.size(); ++i) {
+            if (i != 0) {
+                hdr << "::";
+            }
+            hdr << imp->path[i];
+        }
+        hdr << ";\n";
+    }
+    if (!unit.imports.empty()) {
+        hdr << "\n";
+    }
 
     auto write_module_path = [&](std::ostream& os) {
         for (std::size_t i = 0; i < unit.module->path.size(); ++i) {

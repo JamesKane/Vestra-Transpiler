@@ -32,6 +32,32 @@ first slice.
 
 ## Next up (priority 1-9)
 
+### 0. Multi-file modules (§5) (multi-session) — slice 1 shipped
+
+The first step toward self-hosting (a compiler is many files). **Slice 1
+shipped**: `vestra build entry.vst` is now a transitive module loader.
+`import a.b.c` loads `<entry-dir>/a/b/c.vst` (dotted path = directory path),
+deduped by canonical path so a diamond imports once. Every loaded unit is
+macro-expanded + extension-folded, then resolved and emitted to its own
+`.hpp`/`.cpp`. An importing unit's resolver collects its dependencies' public
+top-level decls into scope (signatures re-derived in the importer's arena, so
+no cross-arena `TypePtr` sharing); those decls are not re-checked or re-emitted.
+Codegen: the importer's header `#include`s each dependency's header and opens
+`using namespace dep;`, so cross-module references lower without per-site
+qualification. The runtime prelude is now wrapped in a `VESTRA_RUNTIME_PRELUDE`
+include-guard so two module headers in one TU don't redefine its (non-inline)
+types. Proven end to end (`examples/multifile_demo/`: a cross-module call +
+const, compiled and run).
+
+Remaining slices: **visibility** (only `pub` decls should be importable; today
+all top-level decls are visible); **precise qualification** instead of
+`using namespace` (avoids ambiguity once many modules are imported, and is
+needed for name collisions across modules); **output layout** (outputs are
+flat in `-o DIR` by basename, so two modules with the same filename collide —
+mirror the module path into subdirs); **`import c "header.h"`** (parsed, not
+yet honored); **diagnostics** for a missing/cyclic import file; and a
+**search-path / project-root** notion beyond "entry file's directory".
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
