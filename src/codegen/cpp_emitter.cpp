@@ -3886,6 +3886,14 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     }
     case ast::NodeKind::MemberExpr: {
         const auto& m = static_cast<const ast::MemberExpr&>(e);
+        // §5 qualified module reference: `util.math.add` resolved to an imported
+        // export, which the resolver tagged with its fully-qualified C++ name.
+        if (resolution_ != nullptr) {
+            if (const auto* qn = resolution_->qualified_name_of(&e); qn != nullptr) {
+                os << *qn;
+                break;
+            }
+        }
         // §14.12 typed sysreg access. `Sysreg.<name>` lowers to the
         // matching runtime singleton in `__vstr::sysreg::<name>`. The
         // resolver guarantees the name is in the canonical set

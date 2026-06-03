@@ -11,5 +11,5 @@ module demo.bad
 import util.math
 
 func nope() -> Int32 {
-    return helper(1)
+    return util.math.helper(1)
 }

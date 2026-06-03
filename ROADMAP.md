@@ -32,7 +32,7 @@ first slice.
 
 ## Next up (priority 1-9)
 
-### 0. Multi-file modules (§5) (multi-session) — slice 1 shipped
+### 0. Multi-file modules (§5) (multi-session) — slices 1-4 shipped
 
 The first step toward self-hosting (a compiler is many files). **Slice 1
 shipped**: `vestra build entry.vst` is now a transitive module loader.
@@ -67,12 +67,32 @@ import path, all resolved `-I <DIR>`. The output relpath doubles as the
 emitter's `output_basename`, so a unit's self-include and an importer's
 dependency-include spell the identical path.
 
-Remaining slices: **precise qualification** instead of `using namespace`
-(avoids ambiguity once many modules are imported, and is needed for name
-collisions across modules); **`import c "header.h"`** (parsed, not yet
-honored); **diagnostics** for a missing/cyclic import file (a missing file is
-reported but a cycle is silently deduped); and a **search-path / project-root**
-notion beyond "entry file's directory".
+**Slice 4 shipped** — **qualified references** (`util.math.add`), which also
+changed the import model: imported names are now reached *only* through a
+qualified path and are no longer collected into the unqualified global scope.
+This eliminates import/local collisions entirely — a local `add` and
+`util.math.add` coexist, the local owning the unqualified name (matches the
+slice's design preview). `check_qualified_module_ref` flattens a `a.b.c` member
+chain, matches the longest prefix against the imported-module map, and
+synthesizes a symbol for the named public func/const export (signature
+re-derived in this arena); codegen emits the fully-qualified `util::math::add`
+via a Resolution side table (`qualified_name_of`). The `using namespace dep;`
+emission is now inert (no unqualified imported refs remain) and is left in place
+pending the cleanup below.
+
+Note this supersedes slices 1-2's "imports brought into the unqualified scope"
+behavior. The `decl_visibility` collection filter is gone (imports aren't
+collected at all); visibility is now enforced at the qualified-reference site
+(only `public` func/const exports resolve).
+
+Remaining slices: **qualified type / struct / enum exports** (today only
+func/const exports resolve through a qualified head, and cross-module *types*
+still rely on the inert `using namespace` — both need NamedType qualification);
+**drop the now-redundant `using namespace`** once types are qualified;
+**`import c "header.h"`** (parsed, not yet honored); **diagnostics** for a
+missing/cyclic import file (a missing file is reported but a cycle is silently
+deduped); and a **search-path / project-root** notion beyond "entry file's
+directory".
 
 ### 1. Generics phase 2 (multi-session)
 

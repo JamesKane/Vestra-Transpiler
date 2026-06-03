@@ -9,6 +9,7 @@
 #include "vestra/sema/scope.hpp"
 #include "vestra/sema/types.hpp"
 
+#include <deque>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -50,10 +51,17 @@ public:
     // (a never-used linear binding must still be flagged as a leak).
     [[nodiscard]] const Symbol* binding_symbol(const ast::Stmt* s) const;
     void set_binding_symbol(const ast::Stmt* s, const Symbol* sym);
+    // §5 qualified module reference: a `util.math.add` member chain that
+    // resolves to an imported module's export carries the fully-qualified C++
+    // name ("util::math::add") so codegen emits the namespaced reference
+    // instead of a member access. Empty/absent for ordinary member exprs.
+    [[nodiscard]] const std::string* qualified_name_of(const ast::Expr* e) const;
+    void set_qualified_name(const ast::Expr* e, std::string name);
 
 private:
     std::unordered_map<const ast::Expr*, TypePtr> expr_types_;
     std::unordered_map<const ast::Expr*, const Symbol*> expr_symbols_;
+    std::unordered_map<const ast::Expr*, std::string> qualified_names_;
     std::unordered_map<const ast::Expr*, ComptimeValue> folded_;
     std::unordered_set<const ast::Decl*> gated_decls_;
     std::unordered_map<const ast::DoCatchExpr*, TypePtr> do_catch_error_;
@@ -161,6 +169,12 @@ private:
     TypePtr check_select(const ast::SelectExpr& s, TypePtr expected);
     TypePtr check_block_expr(const ast::BlockExpr& b, TypePtr expected);
     TypePtr check_member(const ast::MemberExpr& m, TypePtr expected = nullptr);
+    // §5 if `m` is a qualified reference into an imported module
+    // (`util.math.add`), resolve it to that module's export, record its
+    // fully-qualified name for codegen, and return its type. Returns nullptr
+    // (no diagnostic) when `m` is not a module-qualified reference, so the
+    // caller falls through to ordinary member-access resolution.
+    TypePtr check_qualified_module_ref(const ast::MemberExpr& m);
     TypePtr check_leading_dot(const ast::LeadingDotExpr& d, TypePtr expected);
 
     // Resolve an `ast::Type` node into a `sema::TypePtr`.
@@ -316,6 +330,14 @@ private:
     Resolution resolution_;
     // §5 imported modules whose public decls are collected into scope.
     std::vector<const ast::CompilationUnit*> imported_units_;
+    // §5 imported modules keyed by their dotted `module` path ("util.math"),
+    // for resolving qualified references (`util.math.add`). Built in pass 1.
+    std::unordered_map<std::string, const ast::CompilationUnit*> imported_modules_;
+    // §5 symbols synthesized on demand for imported exports named through a
+    // qualified reference. `std::deque` keeps element addresses stable as the
+    // Resolution stores pointers into it; the cache dedups by qualified name.
+    std::deque<Symbol> module_export_syms_;
+    std::unordered_map<std::string, const Symbol*> module_export_cache_;
     // Stack of expected return types — pushed when entering a function body so
     // a nested return expression can be checked against it. For a throws(E) →
     // T function we push the *success* type T here; the parallel throws_stack_

@@ -348,7 +348,122 @@ TypePtr Resolver::enum_case_constructor_type(TypePtr enum_type, const ast::EnumD
     return types_->make_function(std::move(params), result_type);
 }
 
+TypePtr Resolver::check_qualified_module_ref(const ast::MemberExpr& m) {
+    if (imported_modules_.empty()) {
+        return nullptr;
+    }
+    // Flatten the chain `((a.b).c)` into head-first segments [a, b, c]. Bail if
+    // any link is an optional-chain or the head isn't a plain identifier (then
+    // it's an ordinary member access, not a module path).
+    std::vector<std::string> tail;  // outer-to-inner member names: [c, b]
+    const ast::Expr* cur = &m;
+    while (cur->kind == ast::NodeKind::MemberExpr) {
+        const auto& me = static_cast<const ast::MemberExpr&>(*cur);
+        if (me.is_optional_chain) {
+            return nullptr;
+        }
+        tail.push_back(me.member);
+        cur = me.base.get();
+    }
+    if (cur == nullptr || cur->kind != ast::NodeKind::IdentExpr) {
+        return nullptr;
+    }
+    std::vector<std::string> segs;
+    segs.push_back(static_cast<const ast::IdentExpr&>(*cur).name);
+    for (auto it = tail.rbegin(); it != tail.rend(); ++it) {
+        segs.push_back(*it);
+    }
+    if (segs.size() < 2) {
+        return nullptr;
+    }
+    // A real value/type of the head's name shadows any module — that's an
+    // ordinary member access, not a qualified module reference.
+    if (scopes_.current().lookup(segs.front()) != nullptr) {
+        return nullptr;
+    }
+    // The module path is all-but-last; the final segment names the export.
+    // (v0.5: exactly one trailing segment — nested access on the export through
+    // a qualified head is a later slice.)
+    std::string dotted;
+    for (std::size_t i = 0; i + 1 < segs.size(); ++i) {
+        if (i != 0) {
+            dotted += '.';
+        }
+        dotted += segs[i];
+    }
+    auto it = imported_modules_.find(dotted);
+    if (it == imported_modules_.end()) {
+        return nullptr;  // not an imported module path → ordinary member access
+    }
+    const ast::CompilationUnit* mod = it->second;
+    const std::string& exported = segs.back();
+
+    // Fully-qualified C++ name ("util::math::add"); also the cache key for the
+    // synthesized export symbol.
+    std::string qualified;
+    for (const auto& seg : segs) {
+        if (!qualified.empty()) {
+            qualified += "::";
+        }
+        qualified += seg;
+    }
+
+    const Symbol* sym = nullptr;
+    if (auto cached = module_export_cache_.find(qualified); cached != module_export_cache_.end()) {
+        sym = cached->second;
+    } else {
+        // Synthesize a symbol for the named public export. Imports live only in
+        // the qualified namespace (not the global scope), so the signature is
+        // re-derived here in this resolver's arena. v0.5 supports public func
+        // and const exports through a qualified head.
+        Symbol s;
+        s.name = exported;
+        for (const auto& d : mod->decls) {
+            if (d->kind == ast::NodeKind::Func) {
+                const auto& fd = static_cast<const ast::FuncDecl&>(*d);
+                if (fd.name == exported && fd.visibility == ast::Visibility::Public) {
+                    s.kind = SymbolKind::Func;
+                    s.decl = d.get();
+                    s.type = function_type_of(fd);
+                    s.definition_range = fd.range;
+                    s.visibility = fd.visibility;
+                    break;
+                }
+            } else if (d->kind == ast::NodeKind::Const) {
+                const auto& cd = static_cast<const ast::ConstDecl&>(*d);
+                if (cd.name == exported && cd.visibility == ast::Visibility::Public) {
+                    s.kind = SymbolKind::Const;
+                    s.decl = d.get();
+                    s.type = cd.type != nullptr ? resolve_type(*cd.type) : nullptr;
+                    s.definition_range = cd.range;
+                    s.visibility = cd.visibility;
+                    break;
+                }
+            }
+        }
+        if (s.decl == nullptr) {
+            error_at(m.range,
+                     std::format("module '{}' has no public func or const '{}'", dotted, exported));
+            return types_->error();
+        }
+        module_export_syms_.push_back(std::move(s));
+        sym = &module_export_syms_.back();
+        module_export_cache_[qualified] = sym;
+    }
+
+    // Record the resolved symbol and the fully-qualified C++ name so codegen
+    // emits `util::math::add` rather than a member access.
+    resolution_.set_symbol(&m, sym);
+    resolution_.set_qualified_name(&m, std::move(qualified));
+    return sym->type;
+}
+
 TypePtr Resolver::check_member(const ast::MemberExpr& m, TypePtr expected) {
+    // §5 a qualified reference into an imported module (`util.math.add`) is
+    // resolved before any value/static member handling.
+    if (auto qt = check_qualified_module_ref(m)) {
+        return qt;
+    }
     // §14.12 typed system-register access. `Sysreg.<name>` resolves
     // to a SysregHandle<UInt64> over the architectural register
     // named by <name>. The set is the v0.5 canonical aarch64 EL1

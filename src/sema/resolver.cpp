@@ -60,6 +60,13 @@ const Symbol* Resolution::binding_symbol(const ast::Stmt* s) const {
 void Resolution::set_binding_symbol(const ast::Stmt* s, const Symbol* sym) {
     binding_symbols_[s] = sym;
 }
+const std::string* Resolution::qualified_name_of(const ast::Expr* e) const {
+    auto it = qualified_names_.find(e);
+    return it == qualified_names_.end() ? nullptr : &it->second;
+}
+void Resolution::set_qualified_name(const ast::Expr* e, std::string name) {
+    qualified_names_[e] = std::move(name);
+}
 const ComptimeValue* Resolution::folded_value(const ast::Expr* e) const {
     auto it = folded_.find(e);
     return it == folded_.end() ? nullptr : &it->second;
@@ -177,12 +184,6 @@ void Resolver::duplicate_definition(const Symbol& existing,
 // Pass 1: collect every top-level declaration into the global scope.
 // ============================================================================
 
-namespace {
-// §5 the declared visibility of a top-level decl (defined fully below); used to
-// decide what an imported module exports.
-ast::Visibility decl_visibility(const ast::Decl& d);
-}  // namespace
-
 void Resolver::collect_decl(const ast::Decl& d) {
     switch (d.kind) {
     case ast::NodeKind::Func:
@@ -226,16 +227,22 @@ void Resolver::collect_top_level() {
     // are re-derived here in this resolver's arena, so no cross-arena TypePtr
     // sharing is needed.
     for (const auto* imp : imported_units_) {
-        if (imp == nullptr) {
+        if (imp == nullptr || imp->module == nullptr || imp->module->path.empty()) {
             continue;
         }
-        for (const auto& d : imp->decls) {
-            // Only a module's `public` decls are visible to importers; the
-            // default (Internal) and narrower visibilities stay module-private.
-            if (!gated_out(*d) && decl_visibility(*d) == ast::Visibility::Public) {
-                collect_decl(*d);
+        // Index each imported module by its dotted `module` path. Imports are
+        // referenced only through a qualified path (`util.math.add`), resolved
+        // against this map in check_qualified_module_ref — they are *not*
+        // collected into the unqualified global scope, so an imported name never
+        // collides with (or shadows) a local one.
+        std::string dotted;
+        for (const auto& seg : imp->module->path) {
+            if (!dotted.empty()) {
+                dotted += '.';
             }
+            dotted += seg;
         }
+        imported_modules_[dotted] = imp;
     }
     for (const auto& d : unit_->decls) {
         // §12.6: skip `@when`-gated-out decls before they enter any scope.
@@ -474,30 +481,6 @@ const std::vector<ast::Attribute>* decl_attributes(const ast::Decl& d) {
         return &static_cast<const ast::ExtensionDecl&>(d).attributes;
     default:
         return nullptr;
-    }
-}
-
-// §5 the declared visibility of a top-level decl, for deciding what a module
-// exports. Kinds that don't carry a `visibility` field aren't importable, so
-// they report Internal (the non-exported default).
-ast::Visibility decl_visibility(const ast::Decl& d) {
-    switch (d.kind) {
-    case ast::NodeKind::Func:
-        return static_cast<const ast::FuncDecl&>(d).visibility;
-    case ast::NodeKind::Struct:
-        return static_cast<const ast::StructDecl&>(d).visibility;
-    case ast::NodeKind::Enum:
-        return static_cast<const ast::EnumDecl&>(d).visibility;
-    case ast::NodeKind::Protocol:
-        return static_cast<const ast::ProtocolDecl&>(d).visibility;
-    case ast::NodeKind::Const:
-        return static_cast<const ast::ConstDecl&>(d).visibility;
-    case ast::NodeKind::Static:
-        return static_cast<const ast::StaticDecl&>(d).visibility;
-    case ast::NodeKind::Opaque:
-        return static_cast<const ast::OpaqueDecl&>(d).visibility;
-    default:
-        return ast::Visibility::Internal;
     }
 }
 

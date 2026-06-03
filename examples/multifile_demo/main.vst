@@ -2,19 +2,27 @@
 // Copyright (c) 2026 James Kane
 
 // §5 multi-file demo. `import util.math` loads util/math.vst relative to this
-// (the entry) file's directory; its public `add` and `answer` are then visible
-// here unqualified. The transpiler emits one .hpp/.cpp per module, and main's
-// header `#include`s the dependency's and opens its namespace, so the cross-
-// module references lower to ordinary C++.
+// (the entry) file's directory; its public members are reached through a
+// qualified reference (`util.math.add`), which lowers to `util::math::add`.
+// Imports do not enter the unqualified scope, so a local can freely reuse an
+// imported name — `add` below is the local one, distinct from util.math.add.
 
 module demo.app
 
 import util.math
 
+func add(_ a: Int32, _ b: Int32) -> Int32 {
+    return a - b  // a deliberately-different local `add` (subtracts)
+}
+
 func compute() -> Int32 {
-    return add(40, 2)
+    return util.math.add(40, 2)  // the imported add: 42
+}
+
+func localAdd() -> Int32 {
+    return add(40, 2)  // the local add: 38
 }
 
 func viaConst() -> Int32 {
-    return answer
+    return util.math.answer
 }
