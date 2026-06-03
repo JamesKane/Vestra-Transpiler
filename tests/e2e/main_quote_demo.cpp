@@ -63,6 +63,11 @@ int main() {
     assert(qd::Seed1_seed() == 7);
     assert(qd::Seed2_seed() == 7);
 
+    // §12.4 attribute reflection: @register(addr) read its own argument via
+    // d.attribute("register") and baked it into a generated <Name>_addr().
+    assert(qd::Reg1_addr() == 0x40);
+    assert(qd::Reg2_addr() == 128);
+
     std::puts("quote_demo OK");
     return 0;
 }

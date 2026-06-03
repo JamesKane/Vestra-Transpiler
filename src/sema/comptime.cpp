@@ -268,6 +268,39 @@ std::string_view decl_name_of(const ast::Node& n) {
     }
 }
 
+// §12.4 the attribute list of an annotatable decl (struct / func / enum), for
+// attribute reflection (`d.hasAttribute`, `d.attribute`) and for stripping the
+// macro's own attribute off a `$d`-spliced clone. nullptr for other kinds.
+const std::vector<ast::Attribute>* decl_attrs_of(const ast::Node& n) {
+    switch (n.kind) {
+    case ast::NodeKind::Struct:
+        return &static_cast<const ast::StructDecl&>(n).attributes;
+    case ast::NodeKind::Func:
+        return &static_cast<const ast::FuncDecl&>(n).attributes;
+    case ast::NodeKind::Enum:
+        return &static_cast<const ast::EnumDecl&>(n).attributes;
+    default:
+        return nullptr;
+    }
+}
+
+std::vector<ast::Attribute>* decl_attrs_mut(ast::Node& n) {
+    return const_cast<std::vector<ast::Attribute>*>(decl_attrs_of(n));
+}
+
+const ast::Attribute* find_decl_attribute(const ast::Node& n, std::string_view name) {
+    const auto* attrs = decl_attrs_of(n);
+    if (attrs == nullptr) {
+        return nullptr;
+    }
+    for (const auto& a : *attrs) {
+        if (a.name == name) {
+            return &a;
+        }
+    }
+    return nullptr;
+}
+
 // Default-constructed scalar value for the given element type. Used to
 // fill `var t: [N]T = .zero`.
 ComptimeValue zero_of(TypeKind element_kind) {
@@ -899,6 +932,17 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
                     return std::nullopt;
                 }
                 ast::DeclPtr cloned = ast::clone(static_cast<const ast::Decl&>(*v->code));
+                // Strip the expanding macro's own attribute from the reproduced
+                // decl — it was kept on the original so `d.attribute(...)` could
+                // read it, but the clone must not re-trip unknown-attribute
+                // validation. Other (legitimate) attributes are preserved.
+                if (!expanding_macro_name_.empty()) {
+                    if (auto* attrs = decl_attrs_mut(*cloned)) {
+                        std::erase_if(*attrs, [&](const ast::Attribute& a) {
+                            return a.name == expanding_macro_name_;
+                        });
+                    }
+                }
                 vec.elements.push_back(make_code(
                     std::shared_ptr<const ast::Node>(std::move(cloned)), TypeKind::AstDecl));
             } else {
@@ -1035,6 +1079,35 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
         // locals slate — phase 3 doesn't expose the caller's bindings
         // (no closures).
         const auto& c = static_cast<const ast::CallExpr&>(e);
+
+        // §12.4 attribute reflection: method calls on a `Decl` value with a
+        // single String argument — `d.hasAttribute("x")` (Bool) and
+        // `d.attribute("x")` (the folded value of attribute x's single
+        // argument, e.g. `@register(0x40)` → 64). The macro's own attribute is
+        // still present on the annotated decl during expansion, so a macro can
+        // read the argument it was invoked with.
+        if (c.callee->kind == ast::NodeKind::MemberExpr && c.args.size() == 1) {
+            const auto& m = static_cast<const ast::MemberExpr&>(*c.callee);
+            if ((m.member == "hasAttribute" || m.member == "attribute") && m.base) {
+                if (auto bv = fold_with(*m.base, env, frame, TypeKind::Unit, depth);
+                    bv && bv->kind == ComptimeValue::Kind::Code && bv->code) {
+                    auto an = fold_with(*c.args[0].value, env, frame, TypeKind::Unit, depth + 1);
+                    if (!an || an->kind != ComptimeValue::Kind::String) {
+                        return std::nullopt;
+                    }
+                    const ast::Attribute* attr = find_decl_attribute(*bv->code, an->s);
+                    if (m.member == "hasAttribute") {
+                        return make_bool(attr != nullptr);
+                    }
+                    // `attribute`: fold the attribute's single argument.
+                    if (attr == nullptr || !attr->predicate) {
+                        return std::nullopt;
+                    }
+                    return fold_with(*attr->predicate, env, frame, hint, depth + 1);
+                }
+            }
+        }
+
         if (c.callee->kind != ast::NodeKind::IdentExpr) {
             return std::nullopt;
         }
@@ -2118,6 +2191,9 @@ ComptimeFolder::expand_decl_macro(const ast::FuncDecl& macro, const ast::Decl& a
     if (!macro.body) {
         return std::nullopt;
     }
+    // The macro's own attribute stays on `annotated` so reflection can read it;
+    // record the name so the `$d` clone drops it (see the SpliceDecl branch).
+    expanding_macro_name_ = macro.name;
     Frame frame;
     Env env;
     // Bind the macro's `Decl` parameter to a Code value *aliasing* the annotated

@@ -218,6 +218,12 @@ private:
     // the counter is unique unit-wide. `mutable` because folding is otherwise
     // const and gensym is the one fold that carries state between calls.
     mutable std::int64_t gensym_counter_ = 0;
+
+    // §12.4 name of the macro currently expanding. Its own attribute stays on
+    // the annotated decl during expansion (so `d.attribute(...)` reflection can
+    // read its argument), then is stripped from the `$d`-spliced clone so the
+    // reproduced decl isn't re-validated as an unknown attribute.
+    mutable std::string expanding_macro_name_;
 };
 
 }  // namespace vestra::sema

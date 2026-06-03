@@ -349,10 +349,21 @@ what each `@macro` generated; the comptime macro definitions drop out. An e2e
 test runs it over `quote_demo` and asserts the generated `Seed1_seed` wrapper
 is present while `comptime func seeded` is gone.
 
-Remaining (full reflection): `.attribute(...).arg(...).asType()`,
-method/extension generation (accessors are free functions taking the value,
-not `self` methods), and richer type materialization (compound types like
-`[N]T` / `T?`). The builder API is the last broad piece.
+Thirteenth slice shipped — **attribute reflection**: a macro can read the
+arguments of an attribute on the annotated decl, including the very attribute
+that invoked it. `d.hasAttribute("name")` folds to a Bool; `d.attribute("name")`
+folds the named attribute's single argument (`@register(0x40)` → 64). Both are
+reflection method-calls dispatched in the folder's CallExpr fold on a Code(Decl)
+base. The macro's own attribute is no longer stripped pre-expansion — it stays
+on the decl so `d.attribute(…)` can fold its argument — and is instead stripped
+from the `$d`-spliced clone (by macro name) so the reproduced decl isn't
+re-validated as an unknown attribute; other (legitimate) attributes survive.
+
+Remaining (full reflection): multi-argument attributes (`Attribute` carries a
+single predicate today) and `.asType()` on a type-valued argument
+(`@derive(Eq)`); method/extension generation (accessors are free functions
+taking the value, not `self` methods); richer type materialization (compound
+types like `[N]T` / `T?`). The builder API is the last broad piece.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 

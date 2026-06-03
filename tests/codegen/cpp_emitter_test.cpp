@@ -2772,6 +2772,28 @@ TEST_CASE("gensym names a hygienic helper and an identifier-position splice call
     CHECK(f.out.source.find("return __vstr_helper_h1();") != std::string::npos);
 }
 
+TEST_CASE("a declaration macro reflects on its own attribute's argument") {
+    SemaEmitFixture f(
+        "comptime func reg(_ d: Decl) -> [Decl] {\n"
+        "    let addr: Int32 = if d.hasAttribute(\"reg\") { d.attribute(\"reg\") } else { 0 }\n"
+        "    return quote {\n"
+        "        $d\n"
+        "        func $(d.name + \"_addr\")() -> Int32 { return $(addr) }\n"
+        "    }\n"
+        "}\n"
+        "@reg(0x40)\n"
+        "struct Dev { var v: Int32 }\n");
+    // At comptime: d.hasAttribute("reg") folded to true, so `addr` took the
+    // then-branch and d.attribute("reg") folded the @reg(0x40) argument to 64;
+    // `$(addr)` then baked the literal into the generated accessor. The @reg
+    // attribute was stripped from the spliced struct (no unknown-attribute
+    // error), so the struct still emits cleanly.
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.header.find("struct Dev {") != std::string::npos);
+    CHECK(f.out.source.find("Dev_addr()") != std::string::npos);
+    CHECK(f.out.source.find("return 64;") != std::string::npos);
+}
+
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------
 
 TEST_CASE("split(at:) lowers to __vstr::split_at and destructures to auto [lo, hi]") {

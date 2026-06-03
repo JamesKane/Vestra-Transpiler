@@ -167,3 +167,26 @@ struct Seed1 {
 struct Seed2 {
     var b: Int32
 }
+
+// §12.4 attribute reflection: a macro can read the argument of an attribute on
+// the annotated declaration — including the very attribute that invoked it. The
+// macro's own attribute stays on the decl during expansion (so `d.attribute(…)`
+// can fold its argument) and is stripped from the reproduced `$d` so it isn't
+// re-validated. Here `@register(addr)` reads its address argument and bakes it
+// into a generated `<Name>_addr()` accessor.
+comptime func register(_ d: Decl) -> [Decl] {
+    return quote {
+        $d
+        func $(d.name + "_addr")() -> Int32 { return $(d.attribute("register")) }
+    }
+}
+
+@register(0x40)
+struct Reg1 {
+    var v: Int32
+}
+
+@register(128)
+struct Reg2 {
+    var v: Int32
+}

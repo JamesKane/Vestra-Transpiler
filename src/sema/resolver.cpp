@@ -549,15 +549,13 @@ void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticRepor
             }
         }
         // Find a macro attribute on this declaration.
-        std::vector<ast::Attribute>* attrs = decl_attributes(*d);
+        const std::vector<ast::Attribute>* attrs = decl_attributes(*d);
         ast::FuncDecl* macro = nullptr;
-        std::size_t attr_idx = 0;
         if (attrs != nullptr) {
-            for (std::size_t i = 0; i < attrs->size(); ++i) {
-                auto it = macros.find((*attrs)[i].name);
+            for (const auto& a : *attrs) {
+                auto it = macros.find(a.name);
                 if (it != macros.end()) {
                     macro = it->second;
-                    attr_idx = i;
                     break;
                 }
             }
@@ -566,14 +564,13 @@ void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticRepor
             out.push_back(std::move(d));
             continue;
         }
-        // Strip the macro attribute from the annotated decl so the spliced
-        // copy isn't re-validated as an unknown attribute.
-        attrs->erase(attrs->begin() + static_cast<std::ptrdiff_t>(attr_idx));
         // Expand through the comptime folder: it folds the macro body with the
         // annotated decl bound to its `Decl` parameter and materializes the
-        // `[Decl]` quote result, resolving `$d`, `$(d.name)`, and computed
-        // `$(expr)` splices at fold time. The annotated decl is dropped — `$d`
-        // reproduces it as a freshly cloned subtree.
+        // `[Decl]` quote result, resolving `$d`, `$(d.name)`, computed
+        // `$(expr)` splices, and `d.attribute(...)` reflection at fold time.
+        // The macro's own attribute is left on the decl so reflection can read
+        // it; the folder strips it from the `$d` clone. The annotated decl is
+        // dropped — `$d` reproduces it as a freshly cloned subtree.
         auto expanded = folder.expand_decl_macro(*macro, *d);
         if (!expanded) {
             rep.report(
