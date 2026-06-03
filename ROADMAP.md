@@ -359,11 +359,23 @@ on the decl so `d.attribute(…)` can fold its argument — and is instead strip
 from the `$d`-spliced clone (by macro name) so the reproduced decl isn't
 re-validated as an unknown attribute; other (legitimate) attributes survive.
 
+Fourteenth slice shipped — **method generation via extension lowering**: a
+macro can emit `extension $(d.name) { func … }` blocks whose methods use
+`self`. This needed real `extension` support (codegen emitted nothing for them
+before): a pre-resolution `fold_extensions` pass folds each `extension T`'s
+instance methods into struct `T`'s method list, so they become ordinary struct
+methods — resolved for `t.method()` lookup and lowered as inline C++ member
+functions (`self` → `(*this)`) by the existing struct-method path. Works for
+both hand-written and macro-generated extensions. The folder's
+`resolve_decl_splices` recurses into extension members (target type, method
+names/types/bodies), and `ast::clone` now reproduces `ExtensionDecl`.
+
 Remaining (full reflection): multi-argument attributes (`Attribute` carries a
 single predicate today) and `.asType()` on a type-valued argument
-(`@derive(Eq)`); method/extension generation (accessors are free functions
-taking the value, not `self` methods); richer type materialization (compound
-types like `[N]T` / `T?`). The builder API is the last broad piece.
+(`@derive(Eq)`); richer type materialization (compound types like `[N]T` /
+`T?`). The builder API is the last broad piece. Extension lowering is minimal
+(instance methods on a unit-local struct target; conformance-bearing or
+external-target extensions still pass through unfolded).
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 

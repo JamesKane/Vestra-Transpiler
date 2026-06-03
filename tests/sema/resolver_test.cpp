@@ -29,6 +29,7 @@ std::size_t check_errors(std::string source) {
         return rep.error_count();
     }
     vestra::sema::expand_declaration_macros(unit, rep);  // §12.4
+    vestra::sema::fold_extensions(unit);                 // §5
     vestra::sema::TypeArena arena;
     vestra::sema::Resolver res(unit, arena, rep);
     res.resolve();
@@ -52,6 +53,7 @@ CheckResult check_detail(std::string source) {
     auto unit = p.parse_unit();
     if (!rep.has_errors()) {
         vestra::sema::expand_declaration_macros(unit, rep);  // §12.4
+        vestra::sema::fold_extensions(unit);                 // §5
         vestra::sema::TypeArena arena;
         vestra::sema::Resolver res(unit, arena, rep);
         res.resolve();

@@ -947,58 +947,8 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
                     std::shared_ptr<const ast::Node>(std::move(cloned)), TypeKind::AstDecl));
             } else {
                 ast::DeclPtr gen = ast::clone(*item);
-                if (gen->kind == ast::NodeKind::Func) {
-                    auto& fd = static_cast<ast::FuncDecl&>(*gen);
-                    // §12.4 resolve a name-composing splice (`func $(expr)( … )`)
-                    // by folding it to a comptime String; the loop variable is
-                    // in scope here, so each generated decl gets a distinct name.
-                    if (fd.name_splice) {
-                        const ast::Expr* inner = fd.name_splice.get();
-                        if (inner->kind == ast::NodeKind::SpliceExpr) {
-                            inner = static_cast<const ast::SpliceExpr&>(*inner).inner.get();
-                        }
-                        auto nv = inner ? fold_with(*inner, env, frame, TypeKind::Unit, depth)
-                                        : std::nullopt;
-                        if (!nv || nv->kind != ComptimeValue::Kind::String) {
-                            return std::nullopt;
-                        }
-                        fd.name = nv->s;
-                        fd.name_splice = nullptr;
-                    }
-                    // §12.4 resolve `$(…)` splices in type position (param
-                    // types, result type) — `_ v: $(d.name)`, `-> $(f.type)` —
-                    // by folding each to a String/TypeRef and materializing a
-                    // concrete NamedType.
-                    const auto resolve_type_splice = [&](ast::TypePtr& ty) -> bool {
-                        if (!ty || ty->kind != ast::NodeKind::SpliceType) {
-                            return true;
-                        }
-                        const ast::Expr* inner = static_cast<ast::SpliceType&>(*ty).splice.get();
-                        if (inner != nullptr && inner->kind == ast::NodeKind::SpliceExpr) {
-                            inner = static_cast<const ast::SpliceExpr&>(*inner).inner.get();
-                        }
-                        auto tv = inner ? fold_with(*inner, env, frame, TypeKind::Unit, depth)
-                                        : std::nullopt;
-                        if (!tv) {
-                            return false;
-                        }
-                        auto mat = materialize_type(*tv);
-                        if (!mat) {
-                            return false;
-                        }
-                        mat->range = ty->range;
-                        ty = std::move(mat);
-                        return true;
-                    };
-                    for (auto& p : fd.params) {
-                        if (!resolve_type_splice(p.type)) {
-                            return std::nullopt;
-                        }
-                    }
-                    if (!resolve_type_splice(fd.result)) {
-                        return std::nullopt;
-                    }
-                    subst_splices(fd.body, env, frame, depth);
+                if (!resolve_decl_splices(*gen, env, frame, depth)) {
+                    return std::nullopt;
                 }
                 vec.elements.push_back(
                     make_code(std::shared_ptr<const ast::Node>(std::move(gen)), TypeKind::AstDecl));
@@ -2184,6 +2134,82 @@ void ComptimeFolder::subst_splices_ident(ast::ExprPtr& e,
         }
     }
     subst_splices(sp.inner, env, frame, depth);
+}
+
+bool ComptimeFolder::resolve_type_splice(ast::TypePtr& ty,
+                                         const Env& env,
+                                         Frame& frame,
+                                         int depth) const {
+    if (!ty || ty->kind != ast::NodeKind::SpliceType) {
+        return true;
+    }
+    const ast::Expr* inner = static_cast<ast::SpliceType&>(*ty).splice.get();
+    if (inner != nullptr && inner->kind == ast::NodeKind::SpliceExpr) {
+        inner = static_cast<const ast::SpliceExpr&>(*inner).inner.get();
+    }
+    auto tv = inner ? fold_with(*inner, env, frame, TypeKind::Unit, depth) : std::nullopt;
+    if (!tv) {
+        return false;
+    }
+    auto mat = materialize_type(*tv);
+    if (!mat) {
+        return false;
+    }
+    mat->range = ty->range;
+    ty = std::move(mat);
+    return true;
+}
+
+bool ComptimeFolder::resolve_decl_splices(ast::Decl& d,
+                                          const Env& env,
+                                          Frame& frame,
+                                          int depth) const {
+    if (d.kind == ast::NodeKind::Func) {
+        auto& fd = static_cast<ast::FuncDecl&>(d);
+        // Resolve a name-composing splice (`func $(expr)( … )`) — the loop
+        // variable is in scope, so each generated decl gets a distinct name.
+        if (fd.name_splice) {
+            const ast::Expr* inner = fd.name_splice.get();
+            if (inner->kind == ast::NodeKind::SpliceExpr) {
+                inner = static_cast<const ast::SpliceExpr&>(*inner).inner.get();
+            }
+            auto nv = inner ? fold_with(*inner, env, frame, TypeKind::Unit, depth) : std::nullopt;
+            if (!nv || nv->kind != ComptimeValue::Kind::String) {
+                return false;
+            }
+            fd.name = nv->s;
+            fd.name_splice = nullptr;
+        }
+        // Type-position splices in params / result (`_ v: $(d.name)`,
+        // `-> $(f.type)`), then `$(…)` / member splices in the body.
+        for (auto& p : fd.params) {
+            if (!resolve_type_splice(p.type, env, frame, depth)) {
+                return false;
+            }
+        }
+        if (!resolve_type_splice(fd.result, env, frame, depth)) {
+            return false;
+        }
+        subst_splices(fd.body, env, frame, depth);
+        return true;
+    }
+    if (d.kind == ast::NodeKind::Extension) {
+        // §12.4 method generation: `extension $(d.name) { func … }` — resolve
+        // the target type splice, then recurse into each member (the methods,
+        // whose bodies may use `self.$(f.name)` etc.).
+        auto& ext = static_cast<ast::ExtensionDecl&>(d);
+        if (!resolve_type_splice(ext.target, env, frame, depth)) {
+            return false;
+        }
+        for (auto& m : ext.members) {
+            if (m != nullptr && !resolve_decl_splices(*m, env, frame, depth)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    // Other generated decl kinds carry no splices we resolve in this slice.
+    return true;
 }
 
 std::optional<std::vector<ast::DeclPtr>>

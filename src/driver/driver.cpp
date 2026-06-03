@@ -208,8 +208,10 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
     auto unit = parser.parse_unit();
 
     // §12.4 expand declaration macros before resolution: the generated decls
-    // are then checked and lowered as ordinary code.
+    // are then checked and lowered as ordinary code. §5 then fold `extension`
+    // blocks into their target struct's methods so they lower normally.
     sema::expand_declaration_macros(unit, rep);
+    sema::fold_extensions(unit);
 
     if (opts.dump_ast) {
         ast::Printer pr;
@@ -309,6 +311,7 @@ int run_check(const std::filesystem::path& input, std::ostream& out, std::ostrea
     parse::Parser parser(tokens, rep);
     auto unit = parser.parse_unit();
     sema::expand_declaration_macros(unit, rep);  // §12.4
+    sema::fold_extensions(unit);                 // §5
     if (!rep.has_errors()) {
         sema::TypeArena arena;
         sema::Resolver resolver(unit, arena, rep);
@@ -373,6 +376,7 @@ int run_expand(const std::filesystem::path& input, std::ostream& out, std::ostre
     parse::Parser parser(tokens, rep);
     auto unit = parser.parse_unit();
     sema::expand_declaration_macros(unit, rep);  // §12.4
+    sema::fold_extensions(unit);                 // §5 — show the lowered form
     if (rep.has_errors()) {
         rep.render_to(err);
         return 1;

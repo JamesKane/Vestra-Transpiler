@@ -209,6 +209,14 @@ private:
     // identifier *reference* (`$(h)()` calls the function named by `h`) rather
     // than a string literal. Non-string values fall back to materialize_value.
     void subst_splices_ident(ast::ExprPtr& e, const Env& env, Frame& frame, int depth) const;
+    // §12.4 resolve all `$(…)` splices in a freshly-cloned generated decl: a
+    // function's name / param types / result type / body, or an `extension`'s
+    // target type and each of its member declarations (recursively). Returns
+    // false if a splice can't be folded/materialized.
+    [[nodiscard]] bool
+    resolve_type_splice(ast::TypePtr& ty, const Env& env, Frame& frame, int depth) const;
+    [[nodiscard]] bool
+    resolve_decl_splices(ast::Decl& d, const Env& env, Frame& frame, int depth) const;
 
     const Scope* global_scope_ = nullptr;
     EmbedReader embed_reader_;

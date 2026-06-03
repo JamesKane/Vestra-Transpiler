@@ -47,6 +47,7 @@ struct SemaEmitFixture {
         unit = std::make_unique<vestra::ast::CompilationUnit>(p.parse_unit());
         REQUIRE_FALSE(rep.has_errors());
         vestra::sema::expand_declaration_macros(*unit, rep);  // §12.4
+        vestra::sema::fold_extensions(*unit);                 // §5
         resolver = std::make_unique<vestra::sema::Resolver>(*unit, arena, rep);
         resolver->resolve();
         REQUIRE_FALSE(rep.has_errors());
@@ -2792,6 +2793,44 @@ TEST_CASE("a declaration macro reflects on its own attribute's argument") {
     CHECK(f.out.header.find("struct Dev {") != std::string::npos);
     CHECK(f.out.source.find("Dev_addr()") != std::string::npos);
     CHECK(f.out.source.find("return 64;") != std::string::npos);
+}
+
+TEST_CASE("a hand-written extension lowers its methods into the target struct") {
+    SemaEmitFixture f("struct Point { var x: Int32 }\n"
+                      "extension Point {\n"
+                      "    func getX() -> Int32 { return self.x }\n"
+                      "}\n"
+                      "func use(_ p: Point) -> Int32 { return p.getX() }\n");
+    // The extension method is folded into Point and emitted as a member fn
+    // (self -> (*this)); the call site resolves and lowers as a member call.
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.header.find("std::int32_t getX()") != std::string::npos);
+    CHECK(f.out.header.find("return (*this).x;") != std::string::npos);  // inline method body
+    CHECK(f.out.source.find("return p.getX();") != std::string::npos);
+}
+
+TEST_CASE("a declaration macro generates self methods via an extension") {
+    SemaEmitFixture f(
+        "comptime func props(_ d: Decl) -> [Decl] {\n"
+        "    var out: [Decl] = quote { $d }\n"
+        "    for fld in d.fields {\n"
+        "        out += quote {\n"
+        "            extension $(d.name) {\n"
+        "                func $(fld.name + \"Prop\")() -> $(fld.type) { return self.$(fld.name) }\n"
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "    return out\n"
+        "}\n"
+        "@props\n"
+        "struct Vec2 { var dx: Int32  var dy: Int32 }\n");
+    // Each generated `extension Vec2 { func <field>Prop() … }` is lowered into
+    // Vec2 as a member method reading the field through self.
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.header.find("std::int32_t dxProp()") != std::string::npos);
+    CHECK(f.out.header.find("std::int32_t dyProp()") != std::string::npos);
+    CHECK(f.out.header.find("return (*this).dx;") != std::string::npos);  // inline method bodies
+    CHECK(f.out.header.find("return (*this).dy;") != std::string::npos);
 }
 
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------

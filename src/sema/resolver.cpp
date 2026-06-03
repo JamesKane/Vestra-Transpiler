@@ -588,4 +588,47 @@ void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticRepor
     unit.decls = std::move(out);
 }
 
+void fold_extensions(ast::CompilationUnit& unit) {
+    // Map each unit-local struct name to its decl so an extension's methods can
+    // be appended. Built first so an `extension T` may precede `struct T`.
+    std::unordered_map<std::string, ast::StructDecl*> structs;
+    for (auto& d : unit.decls) {
+        if (d->kind == ast::NodeKind::Struct) {
+            auto& s = static_cast<ast::StructDecl&>(*d);
+            structs[s.name] = &s;
+        }
+    }
+    if (structs.empty()) {
+        return;
+    }
+
+    std::vector<ast::DeclPtr> out;
+    out.reserve(unit.decls.size());
+    for (auto& d : unit.decls) {
+        if (d->kind == ast::NodeKind::Extension) {
+            auto& ext = static_cast<ast::ExtensionDecl&>(*d);
+            // Only fold extensions whose target is a plain unit-local struct
+            // name. (Conformances and non-struct / external targets are left
+            // for their own handling — they pass through unchanged.)
+            ast::StructDecl* target = nullptr;
+            if (ext.target != nullptr && ext.target->kind == ast::NodeKind::NamedType) {
+                const auto& nt = static_cast<const ast::NamedType&>(*ext.target);
+                if (!nt.path.empty()) {
+                    if (auto it = structs.find(nt.path.back()); it != structs.end()) {
+                        target = it->second;
+                    }
+                }
+            }
+            if (target != nullptr && ext.conformances.empty()) {
+                for (auto& m : ext.members) {
+                    target->methods.push_back(std::move(m));
+                }
+                continue;  // drop the now-empty extension decl
+            }
+        }
+        out.push_back(std::move(d));
+    }
+    unit.decls = std::move(out);
+}
+
 }  // namespace vestra::sema

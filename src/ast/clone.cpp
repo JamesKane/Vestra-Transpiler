@@ -576,6 +576,23 @@ DeclPtr clone(const Decl& d) {
         n->value = cl(c.value);
         return with_range(std::move(n), d);
     }
+    case NodeKind::Extension: {
+        // §12.4 macros generate `extension T { … }` blocks; the cloner must
+        // reproduce them (target type, conformances, member decls) so the
+        // declaration quote materializes a real extension, not a placeholder.
+        const auto& e = static_cast<const ExtensionDecl&>(d);
+        auto n = std::make_unique<ExtensionDecl>();
+        n->attributes = clone_attrs(e.attributes);
+        n->visibility = e.visibility;
+        n->target = clt(e.target);
+        for (const auto& c : e.conformances) {
+            n->conformances.push_back(clt(c));
+        }
+        for (const auto& m : e.members) {
+            n->members.push_back(cld(m));
+        }
+        return with_range(std::move(n), d);
+    }
     default: {
         // Unsupported decl kind in a v0.5 quote — a const placeholder keeps
         // the tree well-formed; the resolver will surface the bad name.

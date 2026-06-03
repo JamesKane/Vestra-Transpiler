@@ -391,4 +391,12 @@ private:
 // resulting decls are ordinary and are checked + lowered normally.
 void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticReporter& rep);
 
+// §5/§17.2 extension lowering. Folds each `extension T { … }` whose target is a
+// struct defined in this unit into that struct's method list, then drops the
+// extension decl. After this pass an extension's instance methods are ordinary
+// struct methods — resolved for `t.method()` lookup and lowered as inline C++
+// member functions by the existing struct-method path. Runs before resolution,
+// after declaration-macro expansion (so macro-generated extensions fold too).
+void fold_extensions(ast::CompilationUnit& unit);
+
 }  // namespace vestra::sema

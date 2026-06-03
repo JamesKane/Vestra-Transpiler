@@ -190,3 +190,26 @@ struct Reg1 {
 struct Reg2 {
     var v: Int32
 }
+
+// §12.4 + §5 method generation: a macro can emit `extension $(d.name) { … }`
+// blocks whose methods use `self`. The extension is lowered (folded into the
+// target struct) so each method becomes a real member function — `v.dxProp()`
+// resolves and reads `self.dx`. Here `@props` generates one `<field>Prop()`
+// reader method per field, accessing the field through `self`.
+comptime func props(_ d: Decl) -> [Decl] {
+    var out: [Decl] = quote { $d }
+    for f in d.fields {
+        out += quote {
+            extension $(d.name) {
+                func $(f.name + "Prop")() -> $(f.type) { return self.$(f.name) }
+            }
+        }
+    }
+    return out
+}
+
+@props
+struct Vec2 {
+    var dx: Int32
+    var dy: Int32
+}

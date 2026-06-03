@@ -68,6 +68,13 @@ int main() {
     assert(qd::Reg1_addr() == 0x40);
     assert(qd::Reg2_addr() == 128);
 
+    // §12.4 + §5 method generation: @props emitted `extension Vec2 { … }` with a
+    // <field>Prop() reader per field; lowered into Vec2 as real member methods
+    // that read through self. Called here as ordinary member functions.
+    qd::Vec2 v2{.dx = 3, .dy = 4};
+    assert(v2.dxProp() == 3);
+    assert(v2.dyProp() == 4);
+
     std::puts("quote_demo OK");
     return 0;
 }
