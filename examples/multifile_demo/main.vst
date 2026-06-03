@@ -26,3 +26,10 @@ func localAdd() -> Int32 {
 func viaConst() -> Int32 {
     return util.math.answer
 }
+
+// §5 cross-module struct type: name `util.math.Pair` as a type, construct it,
+// and read its fields — all qualified, lowering to `util::math::Pair`.
+func pairSum() -> Int32 {
+    let p: util.math.Pair = util.math.Pair(lo: 40, hi: 2)
+    return p.lo + p.hi
+}

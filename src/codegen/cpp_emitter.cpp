@@ -3798,6 +3798,27 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 break;
             }
         }
+        // §5 qualified struct construction: `util.geom.Point(x: 1)` — the
+        // callee is a MemberExpr the resolver tagged as a struct export with a
+        // fully-qualified name. Lower to `util::geom::Point{.x = 1}`.
+        if (resolution_ != nullptr && c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto* sym = resolution_->symbol_of(c.callee.get());
+            const auto* qn = resolution_->qualified_name_of(c.callee.get());
+            if (sym != nullptr && sym->kind == sema::SymbolKind::Struct && qn != nullptr) {
+                os << *qn << "{";
+                for (std::size_t i = 0; i < c.args.size(); ++i) {
+                    if (i != 0) {
+                        os << ", ";
+                    }
+                    if (!c.args[i].label.empty()) {
+                        os << "." << c.args[i].label << " = ";
+                    }
+                    emit_expr(os, *c.args[i].value);
+                }
+                os << "}";
+                break;
+            }
+        }
         // Struct construction: if the callee is a bare identifier
         // resolving to a Struct symbol, lower as a C++ designated-init
         // brace expression. Checking the callee (rather than the call's

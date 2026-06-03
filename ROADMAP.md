@@ -32,7 +32,7 @@ first slice.
 
 ## Next up (priority 1-9)
 
-### 0. Multi-file modules (§5) (multi-session) — slices 1-4 shipped
+### 0. Multi-file modules (§5) (multi-session) — slices 1-5 shipped
 
 The first step toward self-hosting (a compiler is many files). **Slice 1
 shipped**: `vestra build entry.vst` is now a transitive module loader.
@@ -85,14 +85,26 @@ behavior. The `decl_visibility` collection filter is gone (imports aren't
 collected at all); visibility is now enforced at the qualified-reference site
 (only `public` func/const exports resolve).
 
-Remaining slices: **qualified type / struct / enum exports** (today only
-func/const exports resolve through a qualified head, and cross-module *types*
-still rely on the inert `using namespace` — both need NamedType qualification);
-**drop the now-redundant `using namespace`** once types are qualified;
-**`import c "header.h"`** (parsed, not yet honored); **diagnostics** for a
-missing/cyclic import file (a missing file is reported but a cycle is silently
-deduped); and a **search-path / project-root** notion beyond "entry file's
-directory".
+**Slice 5 shipped** — **qualified types**: a dotted type path `util.math.Pair`
+in `resolve_type` resolves to the imported module's public struct/enum nominal
+(emit_type already joins the path → `util::math::Pair`), so it works in param /
+return / field / let annotations. `check_qualified_module_ref` also synthesizes
+struct/enum export symbols, so `util.math.Pair(lo: 1, hi: 2)` construction
+resolves and codegen emits the qualified designated-init. Field access on the
+imported value (`p.lo`) works through the nominal's decl. Proven end to end
+(multifile_demo `pairSum()`).
+
+Remaining slices: **`emit_sema_type` qualification** — a *computed/inferred*
+imported type (not spelled via an annotation, e.g. a generic instantiation or
+tuple element) still emits its bare nominal name and relies on the inert
+`using namespace dep;`; qualifying it needs a decl→module map in the emitter,
+after which the `using namespace` emission can finally be dropped. **Imported
+function signatures that mention the module's own types** (`func f(_ p: Point)`)
+can't be synthesized in the importer's arena today (the module-local `Point`
+isn't in the importer's scope) — needs persistent per-module arenas + symbol
+sharing rather than re-derivation. Plus **generic imported types**,
+**`import c "header.h"`**, **missing/cyclic-import diagnostics**, and a
+**search-path / project-root** notion.
 
 ### 1. Generics phase 2 (multi-session)
 

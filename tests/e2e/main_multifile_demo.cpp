@@ -16,6 +16,7 @@ int main() {
     assert(demo::app::compute() == 42);   // util.math.add(40, 2) across modules
     assert(demo::app::viaConst() == 42);  // util.math.answer across modules
     assert(demo::app::localAdd() == 38);  // the local add (40 - 2) shadows nothing
+    assert(demo::app::pairSum() == 42);   // cross-module struct: util.math.Pair
     std::puts("multifile_demo OK");
     return 0;
 }

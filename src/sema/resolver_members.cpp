@@ -439,11 +439,34 @@ TypePtr Resolver::check_qualified_module_ref(const ast::MemberExpr& m) {
                     s.visibility = cd.visibility;
                     break;
                 }
+            } else if (d->kind == ast::NodeKind::Struct) {
+                // A struct export, named in expression position — `util.geom.Point(…)`
+                // construction or a value reference. The nominal type carries the
+                // decl, so this needs no signature re-derivation.
+                const auto& sd = static_cast<const ast::StructDecl&>(*d);
+                if (sd.name == exported && sd.visibility == ast::Visibility::Public) {
+                    s.kind = SymbolKind::Struct;
+                    s.decl = d.get();
+                    s.type = types_->make_nominal(TypeKind::Struct, &sd);
+                    s.definition_range = sd.range;
+                    s.visibility = sd.visibility;
+                    break;
+                }
+            } else if (d->kind == ast::NodeKind::Enum) {
+                const auto& ed = static_cast<const ast::EnumDecl&>(*d);
+                if (ed.name == exported && ed.visibility == ast::Visibility::Public) {
+                    s.kind = SymbolKind::Enum;
+                    s.decl = d.get();
+                    s.type = types_->make_nominal(TypeKind::Enum, &ed);
+                    s.definition_range = ed.range;
+                    s.visibility = ed.visibility;
+                    break;
+                }
             }
         }
         if (s.decl == nullptr) {
             error_at(m.range,
-                     std::format("module '{}' has no public func or const '{}'", dotted, exported));
+                     std::format("module '{}' has no public member '{}'", dotted, exported));
             return types_->error();
         }
         module_export_syms_.push_back(std::move(s));

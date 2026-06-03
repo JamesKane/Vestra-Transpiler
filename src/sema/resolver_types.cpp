@@ -236,8 +236,36 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
             error_at(t.range, std::format("unknown type '{}'", n.path[0]));
             return types_->error();
         }
-        // Dotted paths (modules) are not yet resolved.
-        error_at(t.range, "dotted type paths are not yet resolved");
+        // §5 a dotted type path is a qualified reference into an imported
+        // module: `util.geom.Point`. The all-but-last segments name the module;
+        // the last names a public struct/enum export. emit_type renders the
+        // full path with `::`, so codegen needs no extra qualification.
+        std::string dotted;
+        for (std::size_t i = 0; i + 1 < n.path.size(); ++i) {
+            if (i != 0) {
+                dotted += '.';
+            }
+            dotted += n.path[i];
+        }
+        if (auto mit = imported_modules_.find(dotted); mit != imported_modules_.end()) {
+            const std::string& last = n.path.back();
+            for (const auto& d : mit->second->decls) {
+                if (d->kind == ast::NodeKind::Struct) {
+                    const auto& sd = static_cast<const ast::StructDecl&>(*d);
+                    if (sd.name == last && sd.visibility == ast::Visibility::Public) {
+                        return types_->make_nominal(TypeKind::Struct, &sd);
+                    }
+                } else if (d->kind == ast::NodeKind::Enum) {
+                    const auto& ed = static_cast<const ast::EnumDecl&>(*d);
+                    if (ed.name == last && ed.visibility == ast::Visibility::Public) {
+                        return types_->make_nominal(TypeKind::Enum, &ed);
+                    }
+                }
+            }
+            error_at(t.range, std::format("module '{}' has no public type '{}'", dotted, last));
+            return types_->error();
+        }
+        error_at(t.range, std::format("'{}' is not an imported module", dotted));
         return types_->error();
     }
     case ast::NodeKind::OptionalType: {

@@ -18,3 +18,10 @@ public const answer: Int32 = 42
 func helper(_ x: Int32) -> Int32 {
     return x
 }
+
+// §5 a public struct export, reached from main as the qualified type
+// `util.math.Pair` — used in a type annotation, constructed, and field-read.
+public struct Pair {
+    var lo: Int32
+    var hi: Int32
+}
