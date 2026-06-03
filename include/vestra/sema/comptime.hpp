@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -39,6 +40,11 @@ struct ComptimeValue {
         Field,
         TypeRef,
         Unit,
+        // §12.4 an AST value: what `quote { … }` folds to inside a macro body,
+        // and the `Decl` reflection parameter. `code` points at the node (a
+        // cloned, owned subtree for a quote result; a non-owning alias for the
+        // annotated decl). Materialized back into the program via ast::clone.
+        Code,
     };
 
     Kind kind = Kind::Unit;
@@ -72,6 +78,11 @@ struct ComptimeValue {
     // looks the decl up by name via its global_scope_.
     std::vector<ComptimeValue> elements;
     std::int64_t length = 0;
+
+    // Valid when Kind::Code (§12.4). Shared so ComptimeValue stays copyable as
+    // it flows through folder frames; `const` because reflection reads the AST
+    // and a quote result is never mutated in place — materialization clones it.
+    std::shared_ptr<const ast::Node> code;
 
     // Render this value as a literal expression suitable to drop into C++
     // source. Picks an explicit-width form when `type` is set (e.g. `42`
@@ -158,6 +169,15 @@ public:
     [[nodiscard]] std::optional<ComptimeValue>
     fold(const ast::Expr& e, const Env& env, TypeKind hint = TypeKind::Unit, int depth = 0) const;
 
+    // §12.4 run a declaration macro: fold `macro`'s body with its `Decl`
+    // parameter bound to `annotated`, returning the declarations it produces
+    // (the materialized `[Decl]` quote result), or std::nullopt if the body
+    // didn't fold to a declaration list. Owned, freshly-cloned nodes ready to
+    // splice into the unit. `quote { … }` folds to a Code value; splices
+    // (`$d`, `$(d.name)`, `$(expr)`) fold their inner and materialize it.
+    [[nodiscard]] std::optional<std::vector<ast::DeclPtr>>
+    expand_decl_macro(const ast::FuncDecl& macro, const ast::Decl& annotated) const;
+
 private:
     // Per-call mutable state. A new Frame is built at the entry of every
     // comptime function call (so callees can't see the caller's locals)
@@ -176,6 +196,14 @@ private:
     // Statement-level fold. Returns true when the statement walked without
     // a bail; false on any unfoldable shape. Effects accumulate in frame.
     [[nodiscard]] bool fold_stmt(const ast::Stmt& s, const Env& env, Frame& frame, int depth) const;
+
+    // §12.4 macro evaluation. `materialize_value` turns a folded scalar /
+    // Code value into an AST expression (Int → IntLit, String → StringLit, …,
+    // Code → clone). `subst_splices` walks a cloned quote body and replaces
+    // each `$(expr)` splice by folding the inner and materializing it.
+    [[nodiscard]] ast::ExprPtr materialize_value(const ComptimeValue& v) const;
+    void subst_splices(ast::ExprPtr& e, const Env& env, Frame& frame, int depth) const;
+    void subst_splices_in_stmt(ast::Stmt& s, const Env& env, Frame& frame, int depth) const;
 
     const Scope* global_scope_ = nullptr;
     EmbedReader embed_reader_;

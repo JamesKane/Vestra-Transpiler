@@ -2687,6 +2687,20 @@ TEST_CASE("a declaration macro reflects the annotated decl's name via $(d.name)"
     CHECK(f.out.source.find("std::string_view(\"Widget\")") != std::string::npos);
 }
 
+TEST_CASE("a declaration macro folds a computed value and splices it via $(k)") {
+    SemaEmitFixture f("comptime func bump(_ d: Decl) -> [Decl] {\n"
+                      "    let k: Int32 = 40 + 2\n"
+                      "    return quote { $d  func answer() -> Int32 { return $(k) } }\n"
+                      "}\n"
+                      "@bump\n"
+                      "struct Counter { var n: Int32 }\n");
+    // `k` was folded to 42 during expansion, so the computed `$(k)` splice
+    // materializes the constant literal into the generated function's body.
+    CHECK(f.out.header.find("struct Counter {") != std::string::npos);
+    CHECK(f.out.source.find("answer()") != std::string::npos);
+    CHECK(f.out.source.find("return 42;") != std::string::npos);
+}
+
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------
 
 TEST_CASE("split(at:) lowers to __vstr::split_at and destructures to auto [lo, hi]") {

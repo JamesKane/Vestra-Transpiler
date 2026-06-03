@@ -31,6 +31,13 @@ int main() {
     assert(qd::origin() == 0);
     assert(qd::markerName() == "Marker");
 
+    // §12.4 declaration macro through the comptime folder: @bump kept `struct
+    // Counter` ($d) and added `answer()`, whose body is the *computed* splice
+    // `$(k)` where `k = 40 + 2` was folded to 42 during expansion.
+    qd::Counter ct{.n = 3};
+    assert(ct.n == 3);
+    assert(qd::answer() == 42);
+
     std::puts("quote_demo OK");
     return 0;
 }

@@ -3,6 +3,7 @@
 
 #include "vestra/sema/comptime.hpp"
 
+#include "vestra/ast/clone.hpp"
 #include "vestra/ast/nodes.hpp"
 #include "vestra/sema/builtins.hpp"
 #include "vestra/sema/types.hpp"
@@ -182,6 +183,11 @@ std::string ComptimeValue::to_cpp_literal() const {
         return "/* reflect::Type name=\"" + s + "\" */ 0";
     case Kind::Unit:
         return "/* unit */ 0";
+    case Kind::Code:
+        // §12.4 Code values are AST, not data — they're materialized back into
+        // the program via ast::clone, never rendered as a C++ literal. Reaching
+        // here means a Code value leaked past macro expansion.
+        return "/* ast::Code */ 0";
     }
     return "/* ?comptime */ 0";
 }
@@ -236,6 +242,30 @@ ComptimeValue make_string(std::string v) {
     cv.s = std::move(v);
     cv.type = TypeKind::String;
     return cv;
+}
+
+// §12.4 wrap an owned AST node as a Code value (the result of materializing a
+// quote-body item: a freshly cloned, substituted subtree).
+ComptimeValue make_code(std::shared_ptr<const ast::Node> node, TypeKind kind) {
+    ComptimeValue cv;
+    cv.kind = ComptimeValue::Kind::Code;
+    cv.code = std::move(node);
+    cv.type = kind;
+    return cv;
+}
+
+// §12.4 the source name of an annotatable declaration, for `$(d.name)`.
+std::string_view decl_name_of(const ast::Node& n) {
+    switch (n.kind) {
+    case ast::NodeKind::Struct:
+        return static_cast<const ast::StructDecl&>(n).name;
+    case ast::NodeKind::Func:
+        return static_cast<const ast::FuncDecl&>(n).name;
+    case ast::NodeKind::Enum:
+        return static_cast<const ast::EnumDecl&>(n).name;
+    default:
+        return {};
+    }
 }
 
 // Default-constructed scalar value for the given element type. Used to
@@ -621,6 +651,17 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
         //  - `StructName.fields` (§12.2 reflection phase 1) — vector of
         //    field-name strings, sourced from the StructDecl in scope.
         const auto& m = static_cast<const ast::MemberExpr&>(e);
+        // §12.4 reflection on a `Decl` value (a declaration macro's parameter,
+        // bound to a Code value aliasing the annotated decl). `d.name` folds to
+        // the declaration's source name as a String. `.fields` etc. are a later
+        // folder step; an unknown member just falls through to nullopt.
+        if (auto bv = fold_with(*m.base, env, frame, TypeKind::Unit, depth);
+            bv && bv->kind == ComptimeValue::Kind::Code && bv->code) {
+            if (m.member == "name") {
+                return make_string(std::string{decl_name_of(*bv->code)});
+            }
+            return std::nullopt;
+        }
         if (m.base->kind == ast::NodeKind::IdentExpr) {
             const auto& bi = static_cast<const ast::IdentExpr&>(*m.base);
             if (bi.name == "cfg") {
@@ -743,6 +784,59 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
 
     case ast::NodeKind::ComptimeExpr:
         return fold_with(*static_cast<const ast::ComptimeExpr&>(e).inner, env, frame, hint, depth);
+
+    case ast::NodeKind::QuoteExpr: {
+        // §12.4 an expression quote folds to a Code value: clone the quoted
+        // expression and resolve its `$(…)` splices against the current frame.
+        const auto& q = static_cast<const ast::QuoteExpr&>(e);
+        if (!q.inner) {
+            return std::nullopt;
+        }
+        ast::ExprPtr body = ast::clone(*q.inner);
+        subst_splices(body, env, frame, depth);
+        return make_code(std::shared_ptr<const ast::Node>(std::move(body)), TypeKind::AstExpr);
+    }
+
+    case ast::NodeKind::QuoteDeclExpr: {
+        // §12.4 a declaration quote folds to a Vector of Code(Decl) values —
+        // the macro's `[Decl]` result. Each item is either `$d` (splice the
+        // bound Decl value, materialized by cloning) or a generated decl whose
+        // `$(…)` splices are resolved against the current frame.
+        const auto& q = static_cast<const ast::QuoteDeclExpr&>(e);
+        ComptimeValue vec;
+        vec.kind = ComptimeValue::Kind::Vector;
+        vec.type = TypeKind::AstDecl;  // element kind
+        for (const auto& item : q.decls) {
+            if (item->kind == ast::NodeKind::SpliceDecl) {
+                // `$d`: sd.splice is a SpliceExpr wrapping the named expression
+                // (the IdentExpr `d`); fold that inner to its Code(Decl) value.
+                const auto& sd = static_cast<const ast::SpliceDecl&>(*item);
+                const ast::Expr* target = sd.splice.get();
+                if (target != nullptr && target->kind == ast::NodeKind::SpliceExpr) {
+                    target = static_cast<const ast::SpliceExpr&>(*target).inner.get();
+                }
+                std::optional<ComptimeValue> v;
+                if (target != nullptr) {
+                    v = fold_with(*target, env, frame, TypeKind::Unit, depth);
+                }
+                if (!v || v->kind != ComptimeValue::Kind::Code || !v->code) {
+                    return std::nullopt;
+                }
+                ast::DeclPtr cloned = ast::clone(static_cast<const ast::Decl&>(*v->code));
+                vec.elements.push_back(make_code(
+                    std::shared_ptr<const ast::Node>(std::move(cloned)), TypeKind::AstDecl));
+            } else {
+                ast::DeclPtr gen = ast::clone(*item);
+                if (gen->kind == ast::NodeKind::Func) {
+                    subst_splices(static_cast<ast::FuncDecl&>(*gen).body, env, frame, depth);
+                }
+                vec.elements.push_back(
+                    make_code(std::shared_ptr<const ast::Node>(std::move(gen)), TypeKind::AstDecl));
+            }
+        }
+        vec.length = static_cast<std::int64_t>(vec.elements.size());
+        return vec;
+    }
 
     case ast::NodeKind::EmbedExpr: {
         // §12.1's documented exception to comptime purity: read the named
@@ -1607,6 +1701,183 @@ bool ComptimeFolder::fold_stmt(const ast::Stmt& s, const Env& env, Frame& frame,
     default:
         return false;
     }
+}
+
+// ============================================================================
+// §12.4 macro-body evaluation
+// ============================================================================
+
+ast::ExprPtr ComptimeFolder::materialize_value(const ComptimeValue& v) const {
+    switch (v.kind) {
+    case ComptimeValue::Kind::Int: {
+        auto lit = std::make_unique<ast::IntLit>();
+        lit->text = std::to_string(v.i);
+        return lit;
+    }
+    case ComptimeValue::Kind::UInt: {
+        auto lit = std::make_unique<ast::IntLit>();
+        lit->text = std::to_string(v.u);
+        return lit;
+    }
+    case ComptimeValue::Kind::Float: {
+        auto lit = std::make_unique<ast::FloatLit>();
+        lit->text = std::format("{}", v.f);
+        return lit;
+    }
+    case ComptimeValue::Kind::Bool: {
+        auto lit = std::make_unique<ast::BoolLit>();
+        lit->value = v.b;
+        return lit;
+    }
+    case ComptimeValue::Kind::String: {
+        // StringLit.text is the unquoted content; codegen re-quotes it.
+        auto lit = std::make_unique<ast::StringLit>();
+        lit->text = v.s;
+        return lit;
+    }
+    case ComptimeValue::Kind::Code:
+        return v.code ? ast::clone(static_cast<const ast::Expr&>(*v.code)) : nullptr;
+    case ComptimeValue::Kind::Vector:
+    case ComptimeValue::Kind::Field:
+    case ComptimeValue::Kind::TypeRef:
+    case ComptimeValue::Kind::Unit:
+        return nullptr;
+    }
+    return nullptr;
+}
+
+void ComptimeFolder::subst_splices_in_stmt(ast::Stmt& s,
+                                           const Env& env,
+                                           Frame& frame,
+                                           int depth) const {
+    switch (s.kind) {
+    case ast::NodeKind::LetStmt:
+        subst_splices(static_cast<ast::LetStmt&>(s).value, env, frame, depth);
+        break;
+    case ast::NodeKind::VarStmt:
+        subst_splices(static_cast<ast::VarStmt&>(s).value, env, frame, depth);
+        break;
+    case ast::NodeKind::ExprStmt:
+        subst_splices(static_cast<ast::ExprStmt&>(s).expr, env, frame, depth);
+        break;
+    case ast::NodeKind::ReturnStmt:
+        subst_splices(static_cast<ast::ReturnStmt&>(s).value, env, frame, depth);
+        break;
+    case ast::NodeKind::AssignStmt:
+        subst_splices(static_cast<ast::AssignStmt&>(s).target, env, frame, depth);
+        subst_splices(static_cast<ast::AssignStmt&>(s).value, env, frame, depth);
+        break;
+    case ast::NodeKind::ForStmt:
+        subst_splices(static_cast<ast::ForStmt&>(s).iter, env, frame, depth);
+        subst_splices(static_cast<ast::ForStmt&>(s).body, env, frame, depth);
+        break;
+    case ast::NodeKind::WhileStmt:
+        subst_splices(static_cast<ast::WhileStmt&>(s).cond, env, frame, depth);
+        subst_splices(static_cast<ast::WhileStmt&>(s).body, env, frame, depth);
+        break;
+    default:
+        break;
+    }
+}
+
+void ComptimeFolder::subst_splices(ast::ExprPtr& e, const Env& env, Frame& frame, int depth) const {
+    if (!e) {
+        return;
+    }
+    if (e->kind == ast::NodeKind::SpliceExpr) {
+        auto& sp = static_cast<ast::SpliceExpr&>(*e);
+        if (sp.inner) {
+            // Fold the spliced expression and drop the resulting constant in
+            // place (`$(k)` → IntLit, `$(d.name)` → StringLit). If it doesn't
+            // fold, leave the splice's inner walked so nested splices resolve.
+            if (auto v = fold_with(*sp.inner, env, frame, TypeKind::Unit, depth)) {
+                if (auto mat = materialize_value(*v)) {
+                    mat->range = e->range;
+                    e = std::move(mat);
+                    return;
+                }
+            }
+            subst_splices(sp.inner, env, frame, depth);
+        }
+        return;
+    }
+    switch (e->kind) {
+    case ast::NodeKind::ParenExpr:
+        subst_splices(static_cast<ast::ParenExpr&>(*e).inner, env, frame, depth);
+        break;
+    case ast::NodeKind::UnaryExpr:
+        subst_splices(static_cast<ast::UnaryExpr&>(*e).operand, env, frame, depth);
+        break;
+    case ast::NodeKind::BinaryExpr:
+        subst_splices(static_cast<ast::BinaryExpr&>(*e).lhs, env, frame, depth);
+        subst_splices(static_cast<ast::BinaryExpr&>(*e).rhs, env, frame, depth);
+        break;
+    case ast::NodeKind::MemberExpr:
+        subst_splices(static_cast<ast::MemberExpr&>(*e).base, env, frame, depth);
+        break;
+    case ast::NodeKind::IndexExpr: {
+        auto& ix = static_cast<ast::IndexExpr&>(*e);
+        subst_splices(ix.base, env, frame, depth);
+        for (auto& i : ix.indices) {
+            subst_splices(i, env, frame, depth);
+        }
+        break;
+    }
+    case ast::NodeKind::CallExpr: {
+        auto& c = static_cast<ast::CallExpr&>(*e);
+        subst_splices(c.callee, env, frame, depth);
+        for (auto& a : c.args) {
+            subst_splices(a.value, env, frame, depth);
+        }
+        break;
+    }
+    case ast::NodeKind::BlockExpr:
+        for (auto& st : static_cast<ast::BlockExpr&>(*e).stmts) {
+            subst_splices_in_stmt(*st, env, frame, depth);
+        }
+        break;
+    case ast::NodeKind::IfExpr: {
+        auto& i = static_cast<ast::IfExpr&>(*e);
+        subst_splices(i.cond, env, frame, depth);
+        subst_splices(i.let_init, env, frame, depth);
+        subst_splices(i.then_branch, env, frame, depth);
+        subst_splices(i.else_branch, env, frame, depth);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+std::optional<std::vector<ast::DeclPtr>>
+ComptimeFolder::expand_decl_macro(const ast::FuncDecl& macro, const ast::Decl& annotated) const {
+    if (!macro.body) {
+        return std::nullopt;
+    }
+    Frame frame;
+    Env env;
+    // Bind the macro's `Decl` parameter to a Code value *aliasing* the annotated
+    // declaration (a non-owning shared_ptr — the unit still owns the node). `$d`
+    // and `d.name` read through it; materialization always clones, so the alias
+    // never escapes.
+    if (!macro.params.empty()) {
+        auto alias = std::shared_ptr<const ast::Node>(std::shared_ptr<const ast::Node>{},
+                                                      &annotated);  // aliasing ctor: no delete
+        frame.locals[macro.params[0].name] = make_code(std::move(alias), TypeKind::AstDecl);
+    }
+    auto result = fold_with(*macro.body, env, frame, TypeKind::Unit, 0);
+    if (!result || result->kind != ComptimeValue::Kind::Vector) {
+        return std::nullopt;
+    }
+    std::vector<ast::DeclPtr> out;
+    out.reserve(result->elements.size());
+    for (const auto& el : result->elements) {
+        if (el.kind != ComptimeValue::Kind::Code || !el.code) {
+            return std::nullopt;
+        }
+        out.push_back(ast::clone(static_cast<const ast::Decl&>(*el.code)));
+    }
+    return out;
 }
 
 }  // namespace vestra::sema

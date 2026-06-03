@@ -265,12 +265,23 @@ application instead of moving it, so one macro can back several sites; a
 fixed-name generated decl that collides across sites is caught by the
 ordinary duplicate-definition check rather than a special single-use error.
 
+Sixth slice shipped — **folder-evaluated declaration macros** (computed
+`$(k)` splices): declaration-macro expansion now runs the macro body through
+the comptime folder (`ComptimeFolder::expand_decl_macro`) instead of a fixed
+template walk. A copyable `Code` comptime value (`ComptimeValue::Kind::Code`,
+holding shared `const ast::Node` — an owning clone for a quote result, a
+non-owning alias for the bound `Decl`) lets `quote { … }` fold to an AST
+value; `$d`, `$(d.name)`, and now arbitrary computed `$(expr)` splices all
+resolve at fold time (`$(k)` where `let k: Int32 = 40 + 2` materializes the
+literal `42`). The `d.name` reflection moved from the bespoke
+`subst_name_splices` walk onto the folder's MemberExpr path. Deliberately
+deferred to the next step: `.fields` iteration and for-over-collection.
+
 Remaining (full reflection): `.fields` (iterating struct fields with
 `.name`/`.type`, building `[Decl]` with `+=` in a loop) and
-`.attribute(...).arg(...).asType()`. These need running the macro body
-through the comptime folder, which needs a copyable `Code` comptime value
-(holding shared/cloneable AST, materialized via `ast::clone`). Then:
-hygiene, the builder API, and `vestra expand`.
+`.attribute(...).arg(...).asType()`. The folder path is now in place; these
+extend it with collection-valued reflection and comptime loops over them.
+Then: hygiene, the builder API, and `vestra expand`.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 

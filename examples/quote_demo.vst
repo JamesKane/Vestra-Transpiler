@@ -72,3 +72,21 @@ comptime func withOrigin(_ d: Decl) -> [Decl] {
 struct Marker {
     var tag: Int32
 }
+
+// §12.4 declaration macros run through the comptime folder, so a macro body can
+// compute values before quoting them. Here `k` is folded to 42 during expansion
+// and the computed `$(k)` splice materializes that constant into `answer()` —
+// the emitted function returns the literal 42, evaluated at comptime, not at run
+// time.
+comptime func bump(_ d: Decl) -> [Decl] {
+    let k: Int32 = 40 + 2
+    return quote {
+        $d
+        func answer() -> Int32 { return $(k) }
+    }
+}
+
+@bump
+struct Counter {
+    var n: Int32
+}
