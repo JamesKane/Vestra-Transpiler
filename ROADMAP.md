@@ -341,10 +341,18 @@ StringLit. Together with gensym this closes the loop: a macro can mint a
 private, collision-free helper and reference it from its public surface
 (`func $(h)() {…}  func $(d.name + "_seed")() { return $(h)() }`).
 
+Twelfth slice shipped — **`vestra expand`**: a new subcommand that
+pretty-prints a source file *after* declaration-macro expansion (it runs
+`expand_declaration_macros`, then the AST printer — like `fmt` with the
+expansion pass in between, before sema). A macro author can now see exactly
+what each `@macro` generated; the comptime macro definitions drop out. An e2e
+test runs it over `quote_demo` and asserts the generated `Seed1_seed` wrapper
+is present while `comptime func seeded` is gone.
+
 Remaining (full reflection): `.attribute(...).arg(...).asType()`,
 method/extension generation (accessors are free functions taking the value,
-not `self` methods), richer type materialization (compound types like `[N]T` /
-`T?`), the builder API, and `vestra expand`.
+not `self` methods), and richer type materialization (compound types like
+`[N]T` / `T?`). The builder API is the last broad piece.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 

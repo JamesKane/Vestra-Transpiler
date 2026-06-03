@@ -47,6 +47,10 @@ Subcommands:
         Exits 0 on a clean check.
   fmt <file.vst>
         Pretty-print a Vestra source file to stdout.
+  expand <file.vst>
+        Pretty-print a Vestra source file after §12.4 declaration-macro
+        expansion — shows the declarations each `@macro` generated (the
+        comptime macro definitions themselves drop out). Runs before sema.
   audit <file.vst> [--sysreg] [--no-libc]
         Enumerate every site that crossed a discipline-bearing
         boundary so a cross-architecture review can verify the
@@ -141,6 +145,13 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
             return 2;
         }
         return run_fmt(std::string{argv[2]}, out, err);
+    }
+    if (sub == "expand") {
+        if (argv.size() < 3) {
+            err << "vestra expand: missing input file\n";
+            return 2;
+        }
+        return run_expand(std::string{argv[2]}, out, err);
     }
     if (sub == "audit") {
         AuditOptions opts;
@@ -333,6 +344,35 @@ int run_fmt(const std::filesystem::path& input, std::ostream& out, std::ostream&
     auto tokens = lex.tokenize();
     parse::Parser parser(tokens, rep);
     auto unit = parser.parse_unit();
+    if (rep.has_errors()) {
+        rep.render_to(err);
+        return 1;
+    }
+    ast::Printer pr;
+    pr.print_to(out, unit);
+    return 0;
+}
+
+// §12.4 `vestra expand` — pretty-print a source file *after* declaration-macro
+// expansion, so a macro author can see exactly what `@name` annotations
+// generated (the macro definitions themselves are comptime-only and drop out).
+// Like `fmt`, but with the expansion pass in between; runs before sema so the
+// output is the program the resolver would then check.
+int run_expand(const std::filesystem::path& input, std::ostream& out, std::ostream& err) {
+    diag::SourceManager sm;
+    diag::FileId fid;
+    try {
+        fid = sm.load_file(input);
+    } catch (const std::exception& ex) {
+        err << "vestra: " << ex.what() << "\n";
+        return 1;
+    }
+    diag::DiagnosticReporter rep(sm);
+    lex::Lexer lex(sm, fid, rep);
+    auto tokens = lex.tokenize();
+    parse::Parser parser(tokens, rep);
+    auto unit = parser.parse_unit();
+    sema::expand_declaration_macros(unit, rep);  // §12.4
     if (rep.has_errors()) {
         rep.render_to(err);
         return 1;

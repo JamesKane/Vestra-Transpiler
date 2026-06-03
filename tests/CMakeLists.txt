@@ -2230,6 +2230,16 @@ set_tests_properties(e2e_quote_demo_run PROPERTIES
     DEPENDS                e2e_quote_demo_compile
     PASS_REGULAR_EXPRESSION "quote_demo OK")
 
+# §12.4 `vestra expand` prints the program after declaration-macro expansion:
+# the generated wrapper `Seed1_seed` is present (proving @seeded expanded) while
+# the comptime macro definition itself has dropped out.
+add_test(
+    NAME    e2e_quote_demo_expand
+    COMMAND $<TARGET_FILE:vestra> expand ${e2e_quote_input})
+set_tests_properties(e2e_quote_demo_expand PROPERTIES
+    PASS_REGULAR_EXPRESSION "func Seed1_seed"
+    FAIL_REGULAR_EXPRESSION "comptime func seeded")
+
 # §5/§18.4 split(at:) partition primitive.
 set(e2e_split_input  ${CMAKE_SOURCE_DIR}/examples/split_demo.vst)
 set(e2e_split_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_split_demo.cpp)

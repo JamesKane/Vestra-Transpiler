@@ -48,6 +48,8 @@ struct BuildOptions {
 [[nodiscard]] int
 run_check(const std::filesystem::path& input, std::ostream& out, std::ostream& err);
 [[nodiscard]] int run_fmt(const std::filesystem::path& input, std::ostream& out, std::ostream& err);
+[[nodiscard]] int
+run_expand(const std::filesystem::path& input, std::ostream& out, std::ostream& err);
 
 // §14.12.3 / §15.5 audit surface. `vestra audit <file.vst>` enumerates
 // every site that crossed a discipline-bearing boundary so a cross-
