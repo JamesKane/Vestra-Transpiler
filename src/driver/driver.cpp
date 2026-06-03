@@ -218,6 +218,12 @@ struct ModuleGraph {
     std::vector<std::unique_ptr<ast::CompilationUnit>> units;
     std::vector<std::filesystem::path> files;
     std::vector<std::vector<int>> deps;
+    // §5 output path for each unit relative to the -o directory (no extension):
+    // the entry keeps its file stem; a dependency uses its import path as a
+    // directory path (`import util.math` → "util/math"), so same-named modules
+    // in different packages don't collide and the importer's `#include` (which
+    // mirrors the import path) finds it.
+    std::vector<std::string> relpaths;
     int entry = -1;
 };
 
@@ -235,7 +241,8 @@ ModuleGraph load_module_graph(const std::filesystem::path& input,
     ModuleGraph g;
     std::unordered_map<std::string, int> visited;
 
-    std::function<int(const fs::path&)> load = [&](const fs::path& file) -> int {
+    std::function<int(const fs::path&, std::string)> load = [&](const fs::path& file,
+                                                                std::string relpath) -> int {
         std::error_code ec;
         auto canon = fs::weakly_canonical(file, ec);
         std::string key = (ec ? file : canon).string();
@@ -255,6 +262,7 @@ ModuleGraph load_module_graph(const std::filesystem::path& input,
         const int idx = static_cast<int>(g.units.size());
         g.units.push_back(std::make_unique<ast::CompilationUnit>(ps.parse_unit()));
         g.files.push_back(file);
+        g.relpaths.push_back(std::move(relpath));
         g.deps.emplace_back();
         visited[key] = idx;
         // Resolve each `import` to a file and recurse. The unit object is
@@ -266,11 +274,16 @@ ModuleGraph load_module_graph(const std::filesystem::path& input,
                 continue;
             }
             fs::path dep = entry_dir;
+            std::string dep_rel;
             for (const auto& seg : imp->path) {
                 dep /= seg;
+                if (!dep_rel.empty()) {
+                    dep_rel += '/';
+                }
+                dep_rel += seg;
             }
             dep += ".vst";
-            const int di = load(dep);
+            const int di = load(dep, dep_rel);
             if (di >= 0) {
                 g.deps[static_cast<std::size_t>(idx)].push_back(di);
             }
@@ -278,7 +291,9 @@ ModuleGraph load_module_graph(const std::filesystem::path& input,
         return idx;
     };
 
-    g.entry = load(input);
+    // The entry keeps its file stem as its output name (so single-file builds
+    // are unchanged); dependencies get an import-path-derived relpath above.
+    g.entry = load(input, input.stem().string());
     return g;
 }
 
@@ -297,6 +312,7 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
     auto& units = graph.units;
     auto& files = graph.files;
     auto& deps = graph.deps;
+    auto& relpaths = graph.relpaths;
     const int entry = graph.entry;
     if (opts.dump_tokens) {
         diag::FileId fid = sm.load_file(opts.input);
@@ -358,7 +374,10 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
 
         codegen::CppEmitter emitter(rep, opts.skip_check ? nullptr : &resolver.resolution());
         emitter.set_no_libc(opts.no_libc);
-        const auto basename = files[i].stem().string();
+        // The output relpath (entry = stem; dependency = import path) is also the
+        // emitter's `output_basename`, so a unit's `#include "<self>.hpp"` and an
+        // importer's `#include "<dep>.hpp"` both spell the same -I-relative path.
+        const auto& basename = relpaths[i];
         auto em = emitter.emit(unit, basename);
         if (opts.emit_only) {
             out << "// === " << basename << ".hpp ===\n" << em.header << "\n";
@@ -366,6 +385,7 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
         } else {
             auto hpath = opts.out_dir / (basename + ".hpp");
             auto cpath = opts.out_dir / (basename + ".cpp");
+            fs::create_directories(hpath.parent_path());
             {
                 std::ofstream h(hpath);
                 h << em.header;

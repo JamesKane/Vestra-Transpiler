@@ -2255,7 +2255,7 @@ add_test(
     COMMAND ${CMAKE_CXX_COMPILER}
             -std=c++26 -Wall -Wextra -O0
             -I${e2e_workdir}
-            ${e2e_mf_driver} ${e2e_workdir}/main.cpp ${e2e_workdir}/math.cpp
+            ${e2e_mf_driver} ${e2e_workdir}/main.cpp ${e2e_workdir}/util/math.cpp
             -o ${e2e_workdir}/multifile_app)
 set_tests_properties(e2e_multifile_demo_compile PROPERTIES
     DEPENDS e2e_multifile_demo_transpile)

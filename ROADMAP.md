@@ -58,13 +58,21 @@ name fails to resolve. The loader is now shared between `build` and `check`
 resolved nothing across files. Negative test: `e2e_multifile_visibility`
 (referencing an `internal` import is a hard error).
 
+**Slice 3 shipped** — **output layout**: a dependency is now emitted at its
+import path as a directory path (`import util.math` → `<DIR>/util/math.{hpp,cpp}`)
+instead of flat by basename, so same-named modules in different packages no
+longer overwrite each other. The entry file keeps its file stem (so single-file
+builds are byte-for-byte unchanged), and the importer's `#include` mirrors the
+import path, all resolved `-I <DIR>`. The output relpath doubles as the
+emitter's `output_basename`, so a unit's self-include and an importer's
+dependency-include spell the identical path.
+
 Remaining slices: **precise qualification** instead of `using namespace`
 (avoids ambiguity once many modules are imported, and is needed for name
-collisions across modules); **output layout** (outputs are flat in `-o DIR` by
-basename, so two modules with the same filename collide — mirror the module
-path into subdirs); **`import c "header.h"`** (parsed, not yet honored);
-**diagnostics** for a missing/cyclic import file; and a **search-path /
-project-root** notion beyond "entry file's directory".
+collisions across modules); **`import c "header.h"`** (parsed, not yet
+honored); **diagnostics** for a missing/cyclic import file (a missing file is
+reported but a cycle is silently deduped); and a **search-path / project-root**
+notion beyond "entry file's directory".
 
 ### 1. Generics phase 2 (multi-session)
 

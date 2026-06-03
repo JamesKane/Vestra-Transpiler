@@ -1523,7 +1523,16 @@ struct SelectAwaiter {
         if (imp == nullptr || imp->is_c_header || imp->path.empty()) {
             continue;
         }
-        hdr << "#include \"" << imp->path.back() << ".hpp\"\n";
+        // The dependency is emitted at its import path as a directory path
+        // (`import util.math` → util/math.hpp); -I the output dir to find it.
+        hdr << "#include \"";
+        for (std::size_t i = 0; i < imp->path.size(); ++i) {
+            if (i != 0) {
+                hdr << "/";
+            }
+            hdr << imp->path[i];
+        }
+        hdr << ".hpp\"\n";
     }
     for (const auto& imp : unit.imports) {
         if (imp == nullptr || imp->is_c_header || imp->path.empty()) {
