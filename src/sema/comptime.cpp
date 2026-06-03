@@ -1040,6 +1040,31 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
         }
         const auto& ident = static_cast<const ast::IdentExpr&>(*c.callee);
 
+        // §12.4 hygiene: `gensym()` / `gensym("hint")` yields a fresh, unique
+        // identifier on every call — for macro-introduced names that must not
+        // collide across applications or with user code. Composes with the name
+        // splices: `func $(gensym("helper"))( … )`. Only reachable inside a
+        // macro body (the resolver never registers `gensym`, so a normal call
+        // site fails to resolve); the counter is unit-wide via the reused
+        // expansion folder.
+        if (ident.name == "gensym" && c.args.size() <= 1) {
+            std::string gs_hint;
+            if (c.args.size() == 1) {
+                auto gs_pv = fold_with(*c.args[0].value, env, frame, TypeKind::Unit, depth + 1);
+                if (!gs_pv || gs_pv->kind != ComptimeValue::Kind::String) {
+                    return std::nullopt;
+                }
+                gs_hint = gs_pv->s;
+            }
+            const std::int64_t gs_n = gensym_counter_++;
+            std::string gs_name = "__vstr_";
+            if (!gs_hint.empty()) {
+                gs_name += gs_hint + "_";
+            }
+            gs_name += "h" + std::to_string(gs_n);
+            return make_string(std::move(gs_name));
+        }
+
         // Primitive-type-as-callable conversion (§17.x): `Float64(x)`,
         // `Int32(y)` etc. fold to a re-typed ComptimeValue with the
         // appropriate Int↔Float / width retag. The resolver already

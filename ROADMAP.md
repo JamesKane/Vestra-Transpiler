@@ -321,8 +321,18 @@ over a struct emits a typed `field_of(s)` reader per field. The `$`-splice
 parse is now one shared `parse_splice()` (no postfix), used by name / member /
 type positions.
 
-Remaining (full reflection): `.attribute(...).arg(...).asType()`, hygiene
-(generated names are currently raw — no gensym), method/extension generation
+Tenth slice shipped — **hygiene via `gensym()`**: a comptime builtin that
+yields a fresh, collision-free identifier on every call (`gensym("hint")` →
+`__vstr_hint_h<n>`), backed by a unit-wide counter on the one expansion folder.
+It composes with the name splices — `func $(gensym("helper"))( … )` — so a
+macro that introduces a fixed-purpose helper can be applied to many types
+without the generated names colliding (previously a duplicate-definition
+error). `gensym` is only reachable inside a macro body (never registered as a
+resolver builtin), so a normal call site still fails to resolve.
+
+Remaining (full reflection): `.attribute(...).arg(...).asType()`,
+identifier-position splices (calling a `gensym`'d name — splicing a comptime
+String as an IdentExpr rather than a StringLit), method/extension generation
 (accessors are free functions taking the value, not `self` methods), richer
 type materialization (compound types like `[N]T` / `T?`), the builder API,
 and `vestra expand`.

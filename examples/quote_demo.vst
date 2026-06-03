@@ -140,3 +140,26 @@ struct Pair {
     var first: Int32
     var second: Int64
 }
+
+// §12.4 hygiene: `gensym("hint")` yields a fresh, collision-free identifier on
+// every call, so a macro that introduces a helper can be applied to many types
+// without the generated names clashing. `@tagged` adds an internal marker
+// function to each annotated struct; applied to the two structs below, the two
+// markers get distinct names (`__vstr_marker_h0`, `__vstr_marker_h1`) instead
+// of colliding as they would with a fixed name.
+comptime func tagged(_ d: Decl) -> [Decl] {
+    return quote {
+        $d
+        func $(gensym("marker"))() -> Int32 { return 0 }
+    }
+}
+
+@tagged
+struct Tag1 {
+    var a: Int32
+}
+
+@tagged
+struct Tag2 {
+    var b: Int32
+}

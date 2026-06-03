@@ -2748,6 +2748,23 @@ TEST_CASE("a declaration macro generates one typed accessor per field") {
     CHECK(f.out.source.find("return v.second;") != std::string::npos);
 }
 
+TEST_CASE("gensym() gives a macro hygienic, collision-free names across applications") {
+    SemaEmitFixture f(
+        "comptime func tagged(_ d: Decl) -> [Decl] {\n"
+        "    return quote { $d  func $(gensym(\"marker\"))() -> Int32 { return 0 } }\n"
+        "}\n"
+        "@tagged\n"
+        "struct T1 { var a: Int32 }\n"
+        "@tagged\n"
+        "struct T2 { var b: Int32 }\n");
+    // Two applications of the same macro each introduce a `marker` helper. With
+    // gensym the names are distinct (no duplicate-definition error), and each
+    // carries the hint plus a unique counter suffix.
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.source.find("__vstr_marker_h0()") != std::string::npos);
+    CHECK(f.out.source.find("__vstr_marker_h1()") != std::string::npos);
+}
+
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------
 
 TEST_CASE("split(at:) lowers to __vstr::split_at and destructures to auto [lo, hi]") {

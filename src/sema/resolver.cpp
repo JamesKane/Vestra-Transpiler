@@ -537,6 +537,9 @@ void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticRepor
 
     std::vector<ast::DeclPtr> out;
     out.reserve(unit.decls.size());
+    // One folder for the whole unit so its `gensym()` counter is unique across
+    // every macro application (§12.4 hygiene).
+    ComptimeFolder folder;
     for (auto& d : unit.decls) {
         // Drop the macro definitions themselves (comptime-only).
         if (d->kind == ast::NodeKind::Func) {
@@ -571,7 +574,6 @@ void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticRepor
         // `[Decl]` quote result, resolving `$d`, `$(d.name)`, and computed
         // `$(expr)` splices at fold time. The annotated decl is dropped — `$d`
         // reproduces it as a freshly cloned subtree.
-        ComptimeFolder folder;
         auto expanded = folder.expand_decl_macro(*macro, *d);
         if (!expanded) {
             rep.report(

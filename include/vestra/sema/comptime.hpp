@@ -207,6 +207,12 @@ private:
 
     const Scope* global_scope_ = nullptr;
     EmbedReader embed_reader_;
+
+    // §12.4 hygiene: monotonic counter behind the `gensym()` builtin. One
+    // folder is reused across all declaration-macro expansions in a unit, so
+    // the counter is unique unit-wide. `mutable` because folding is otherwise
+    // const and gensym is the one fold that carries state between calls.
+    mutable std::int64_t gensym_counter_ = 0;
 };
 
 }  // namespace vestra::sema
