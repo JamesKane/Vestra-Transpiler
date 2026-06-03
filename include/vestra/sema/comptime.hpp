@@ -204,6 +204,11 @@ private:
     [[nodiscard]] ast::ExprPtr materialize_value(const ComptimeValue& v) const;
     void subst_splices(ast::ExprPtr& e, const Env& env, Frame& frame, int depth) const;
     void subst_splices_in_stmt(ast::Stmt& s, const Env& env, Frame& frame, int depth) const;
+    // §12.4 like subst_splices, but for a child in identifier position (a call
+    // callee or a member/index base): a splice folding to a String becomes an
+    // identifier *reference* (`$(h)()` calls the function named by `h`) rather
+    // than a string literal. Non-string values fall back to materialize_value.
+    void subst_splices_ident(ast::ExprPtr& e, const Env& env, Frame& frame, int depth) const;
 
     const Scope* global_scope_ = nullptr;
     EmbedReader embed_reader_;

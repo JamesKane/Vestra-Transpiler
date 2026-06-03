@@ -2029,7 +2029,7 @@ void ComptimeFolder::subst_splices(ast::ExprPtr& e, const Env& env, Frame& frame
         break;
     case ast::NodeKind::MemberExpr: {
         auto& mem = static_cast<ast::MemberExpr&>(*e);
-        subst_splices(mem.base, env, frame, depth);
+        subst_splices_ident(mem.base, env, frame, depth);
         // §12.4 resolve a member-name splice (`v.$(f.name)`) to its String.
         if (mem.member_splice) {
             const ast::Expr* inner = mem.member_splice.get();
@@ -2048,7 +2048,7 @@ void ComptimeFolder::subst_splices(ast::ExprPtr& e, const Env& env, Frame& frame
     }
     case ast::NodeKind::IndexExpr: {
         auto& ix = static_cast<ast::IndexExpr&>(*e);
-        subst_splices(ix.base, env, frame, depth);
+        subst_splices_ident(ix.base, env, frame, depth);
         for (auto& i : ix.indices) {
             subst_splices(i, env, frame, depth);
         }
@@ -2056,7 +2056,7 @@ void ComptimeFolder::subst_splices(ast::ExprPtr& e, const Env& env, Frame& frame
     }
     case ast::NodeKind::CallExpr: {
         auto& c = static_cast<ast::CallExpr&>(*e);
-        subst_splices(c.callee, env, frame, depth);
+        subst_splices_ident(c.callee, env, frame, depth);
         for (auto& a : c.args) {
             subst_splices(a.value, env, frame, depth);
         }
@@ -2078,6 +2078,39 @@ void ComptimeFolder::subst_splices(ast::ExprPtr& e, const Env& env, Frame& frame
     default:
         break;
     }
+}
+
+void ComptimeFolder::subst_splices_ident(ast::ExprPtr& e,
+                                         const Env& env,
+                                         Frame& frame,
+                                         int depth) const {
+    // Only a direct `$(…)` splice gets the identifier treatment; anything else
+    // (a dotted callee, a parenthesized expression, …) walks normally.
+    if (!e || e->kind != ast::NodeKind::SpliceExpr) {
+        subst_splices(e, env, frame, depth);
+        return;
+    }
+    auto& sp = static_cast<ast::SpliceExpr&>(*e);
+    if (!sp.inner) {
+        return;
+    }
+    if (auto v = fold_with(*sp.inner, env, frame, TypeKind::Unit, depth)) {
+        // A String in identifier position is a *reference* to that name
+        // (`$(h)()` calls the function named by `h`), not a string literal.
+        if (v->kind == ComptimeValue::Kind::String) {
+            auto id = std::make_unique<ast::IdentExpr>();
+            id->name = v->s;
+            id->range = e->range;
+            e = std::move(id);
+            return;
+        }
+        if (auto mat = materialize_value(*v)) {
+            mat->range = e->range;
+            e = std::move(mat);
+            return;
+        }
+    }
+    subst_splices(sp.inner, env, frame, depth);
 }
 
 std::optional<std::vector<ast::DeclPtr>>

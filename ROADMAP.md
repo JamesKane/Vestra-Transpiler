@@ -330,12 +330,21 @@ without the generated names colliding (previously a duplicate-definition
 error). `gensym` is only reachable inside a macro body (never registered as a
 resolver builtin), so a normal call site still fails to resolve.
 
+Eleventh slice shipped — **identifier-position splices**: a comptime String
+spliced in call-callee or member/index-base position now materializes as an
+identifier *reference* (an IdentExpr) rather than a string literal, so a
+generated body can *call* a `gensym`'d helper — `$(h)()` invokes the function
+named by `h`. Implemented as `subst_splices_ident` (used for the callee and
+base positions), where a String folds to an IdentExpr and any other value
+falls back to the normal literal materialization; elsewhere `$(s)` stays a
+StringLit. Together with gensym this closes the loop: a macro can mint a
+private, collision-free helper and reference it from its public surface
+(`func $(h)() {…}  func $(d.name + "_seed")() { return $(h)() }`).
+
 Remaining (full reflection): `.attribute(...).arg(...).asType()`,
-identifier-position splices (calling a `gensym`'d name — splicing a comptime
-String as an IdentExpr rather than a StringLit), method/extension generation
-(accessors are free functions taking the value, not `self` methods), richer
-type materialization (compound types like `[N]T` / `T?`), the builder API,
-and `vestra expand`.
+method/extension generation (accessors are free functions taking the value,
+not `self` methods), richer type materialization (compound types like `[N]T` /
+`T?`), the builder API, and `vestra expand`.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 

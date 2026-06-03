@@ -55,14 +55,13 @@ int main() {
     assert(qd::first_of(pr) == 10);
     assert(qd::second_of(pr) == 20);
 
-    // §12.4 hygiene: @tagged was applied to both Tag1 and Tag2, each generating
-    // an internal marker via gensym(). That this compiled and linked at all is
-    // the assertion — with a fixed name the two markers would have collided as
-    // a duplicate definition. The structs themselves still work normally.
-    qd::Tag1 t1{.a = 1};
-    qd::Tag2 t2{.b = 2};
-    assert(t1.a == 1);
-    assert(t2.b == 2);
+    // §12.4 hygiene + identifier-position splices: @seeded gave Seed1 and Seed2
+    // each a gensym-named private helper and a public `SeedN_seed()` that calls
+    // it via `$(h)()` (a String splice in callee position → identifier). The
+    // two helpers have distinct names (no collision), and each wrapper returns
+    // its helper's value.
+    assert(qd::Seed1_seed() == 7);
+    assert(qd::Seed2_seed() == 7);
 
     std::puts("quote_demo OK");
     return 0;

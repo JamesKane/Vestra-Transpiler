@@ -141,25 +141,29 @@ struct Pair {
     var second: Int64
 }
 
-// §12.4 hygiene: `gensym("hint")` yields a fresh, collision-free identifier on
-// every call, so a macro that introduces a helper can be applied to many types
-// without the generated names clashing. `@tagged` adds an internal marker
-// function to each annotated struct; applied to the two structs below, the two
-// markers get distinct names (`__vstr_marker_h0`, `__vstr_marker_h1`) instead
-// of colliding as they would with a fixed name.
-comptime func tagged(_ d: Decl) -> [Decl] {
+// §12.4 hygiene + identifier-position splices: `gensym("hint")` yields a fresh,
+// collision-free identifier on every call. Here `@seeded` binds one to `h`,
+// names a private helper with it (`func $(h)()`), and then *calls* that helper
+// from a public wrapper — `$(h)()`, where `$(h)` sits in call-callee position,
+// splices as an identifier reference (not a string literal). Applied to the two
+// structs below, each gets its own uniquely named helper (`__vstr_helper_h0`,
+// `__vstr_helper_h1`) so the two never collide, and both `SeedN_seed()` call
+// their own.
+comptime func seeded(_ d: Decl) -> [Decl] {
+    let h = gensym("helper")
     return quote {
         $d
-        func $(gensym("marker"))() -> Int32 { return 0 }
+        func $(h)() -> Int32 { return 7 }
+        func $(d.name + "_seed")() -> Int32 { return $(h)() }
     }
 }
 
-@tagged
-struct Tag1 {
+@seeded
+struct Seed1 {
     var a: Int32
 }
 
-@tagged
-struct Tag2 {
+@seeded
+struct Seed2 {
     var b: Int32
 }

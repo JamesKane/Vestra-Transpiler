@@ -2748,21 +2748,28 @@ TEST_CASE("a declaration macro generates one typed accessor per field") {
     CHECK(f.out.source.find("return v.second;") != std::string::npos);
 }
 
-TEST_CASE("gensym() gives a macro hygienic, collision-free names across applications") {
-    SemaEmitFixture f(
-        "comptime func tagged(_ d: Decl) -> [Decl] {\n"
-        "    return quote { $d  func $(gensym(\"marker\"))() -> Int32 { return 0 } }\n"
-        "}\n"
-        "@tagged\n"
-        "struct T1 { var a: Int32 }\n"
-        "@tagged\n"
-        "struct T2 { var b: Int32 }\n");
-    // Two applications of the same macro each introduce a `marker` helper. With
-    // gensym the names are distinct (no duplicate-definition error), and each
-    // carries the hint plus a unique counter suffix.
+TEST_CASE("gensym names a hygienic helper and an identifier-position splice calls it") {
+    SemaEmitFixture f("comptime func seeded(_ d: Decl) -> [Decl] {\n"
+                      "    let h = gensym(\"helper\")\n"
+                      "    return quote {\n"
+                      "        $d\n"
+                      "        func $(h)() -> Int32 { return 7 }\n"
+                      "        func $(d.name + \"_seed\")() -> Int32 { return $(h)() }\n"
+                      "    }\n"
+                      "}\n"
+                      "@seeded\n"
+                      "struct S1 { var a: Int32 }\n"
+                      "@seeded\n"
+                      "struct S2 { var b: Int32 }\n");
+    // Each application names a private helper with a gensym (distinct, no
+    // collision) and the public wrapper calls it via `$(h)()` — a String splice
+    // in callee position materialized as an identifier reference, not a literal.
     CHECK_FALSE(f.rep.has_errors());
-    CHECK(f.out.source.find("__vstr_marker_h0()") != std::string::npos);
-    CHECK(f.out.source.find("__vstr_marker_h1()") != std::string::npos);
+    CHECK(f.out.source.find("std::int32_t __vstr_helper_h0()") != std::string::npos);
+    CHECK(f.out.source.find("std::int32_t __vstr_helper_h1()") != std::string::npos);
+    CHECK(f.out.source.find("S1_seed()") != std::string::npos);
+    CHECK(f.out.source.find("return __vstr_helper_h0();") != std::string::npos);
+    CHECK(f.out.source.find("return __vstr_helper_h1();") != std::string::npos);
 }
 
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------
