@@ -2701,6 +2701,28 @@ TEST_CASE("a declaration macro folds a computed value and splices it via $(k)") 
     CHECK(f.out.source.find("return 42;") != std::string::npos);
 }
 
+TEST_CASE("a declaration macro iterates d.fields in a comptime loop") {
+    SemaEmitFixture f("comptime func described(_ d: Decl) -> [Decl] {\n"
+                      "    var total: Int32 = 0\n"
+                      "    var wide: Int32 = 0\n"
+                      "    for fld in d.fields {\n"
+                      "        total += 1\n"
+                      "        if fld.type.name == \"Int64\" { wide += 1 }\n"
+                      "    }\n"
+                      "    return quote { $d\n"
+                      "        func fieldCount() -> Int32 { return $(total) }\n"
+                      "        func wideFieldCount() -> Int32 { return $(wide) }\n"
+                      "    }\n"
+                      "}\n"
+                      "@described\n"
+                      "struct Vec3 { var x: Int32  var y: Int64  var z: Int64 }\n");
+    // The loop ran over the three fields at fold time: total folded to 3 and the
+    // Int64-typed fields (matched via fld.type.name) folded to 2.
+    CHECK(f.out.header.find("struct Vec3 {") != std::string::npos);
+    CHECK(f.out.source.find("return 3;") != std::string::npos);
+    CHECK(f.out.source.find("return 2;") != std::string::npos);
+}
+
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------
 
 TEST_CASE("split(at:) lowers to __vstr::split_at and destructures to auto [lo, hi]") {

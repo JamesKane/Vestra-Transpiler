@@ -513,6 +513,73 @@ TypeKind vector_element_kind(const ast::VectorType& vt) {
     return TypeArena::primitive_kind_by_name(nt.path.front());
 }
 
+// §12.2 / §12.4 build the reflection Vector for a struct's fields: one
+// Kind::Field value per non-embed field, laid out positionally to match the
+// synthetic `Field` StructDecl — elements[0]=name (String), [1]=type (TypeRef),
+// [2]=offset, [3]=size, [4]=alignment (Int). `globals` supplies the §A2 layout
+// walk when available (the resolver path); when it's nullptr (the pre-resolution
+// declaration-macro path) the three integer slots stay 0 — callers still get
+// name/type, which is what field iteration needs.
+ComptimeValue build_fields_value(const ast::StructDecl& sd, const Scope* globals) {
+    std::vector<FieldLayout> layouts;
+    if (globals != nullptr) {
+        layouts = struct_field_layouts(sd, *globals);
+    }
+    const bool has_layout = !layouts.empty();
+    ComptimeValue v;
+    v.kind = ComptimeValue::Kind::Vector;
+    v.type = TypeKind::Struct;  // element kind is Field (nominal struct)
+    std::size_t lay_idx = 0;
+    for (const auto& f : sd.fields) {
+        if (f.kind == ast::StructDecl::Field::Kind::Embed) {
+            continue;
+        }
+        ComptimeValue field;
+        field.kind = ComptimeValue::Kind::Field;
+        field.type = TypeKind::Struct;
+        field.s = f.name;
+        field.elements.push_back(make_string(f.name));
+        ComptimeValue type_ref;
+        type_ref.kind = ComptimeValue::Kind::TypeRef;
+        type_ref.type = TypeKind::Struct;
+        type_ref.s = f.type ? type_display_name(*f.type) : "?";
+        field.elements.push_back(std::move(type_ref));
+        FieldLayout lay{};
+        if (has_layout && lay_idx < layouts.size()) {
+            lay = layouts[lay_idx];
+        }
+        field.elements.push_back(make_int(lay.offset, TypeKind::Int));
+        field.elements.push_back(make_int(lay.size, TypeKind::Int));
+        field.elements.push_back(make_int(lay.align, TypeKind::Int));
+        ++lay_idx;
+        v.elements.push_back(std::move(field));
+    }
+    v.length = static_cast<std::int64_t>(v.elements.size());
+    return v;
+}
+
+// Positional index of a well-known `Field` reflection member, matching the
+// layout build_fields_value emits. Used to dispatch `field.name` / `field.type`
+// etc. without a global scope (the declaration-macro folder has none).
+std::optional<std::size_t> field_member_index(std::string_view member) {
+    if (member == "name") {
+        return 0;
+    }
+    if (member == "type") {
+        return 1;
+    }
+    if (member == "offset") {
+        return 2;
+    }
+    if (member == "size") {
+        return 3;
+    }
+    if (member == "alignment") {
+        return 4;
+    }
+    return std::nullopt;
+}
+
 // §12.6: the `cfg` value's fields. Phase 1 hardcodes them based on
 // build-time host detection; later phases will let the build system
 // override via -D flags or a manifest.
@@ -653,12 +720,19 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
         const auto& m = static_cast<const ast::MemberExpr&>(e);
         // §12.4 reflection on a `Decl` value (a declaration macro's parameter,
         // bound to a Code value aliasing the annotated decl). `d.name` folds to
-        // the declaration's source name as a String. `.fields` etc. are a later
-        // folder step; an unknown member just falls through to nullopt.
+        // the declaration's source name as a String; `d.fields` (for a struct)
+        // folds to the same field Vector as `StructName.fields`, sourced from
+        // the bound StructDecl directly (no global scope at expansion time, so
+        // the layout slots are 0 — name/type carry the iteration). An unknown
+        // member falls through to nullopt.
         if (auto bv = fold_with(*m.base, env, frame, TypeKind::Unit, depth);
             bv && bv->kind == ComptimeValue::Kind::Code && bv->code) {
             if (m.member == "name") {
                 return make_string(std::string{decl_name_of(*bv->code)});
+            }
+            if (m.member == "fields" && bv->code->kind == ast::NodeKind::Struct) {
+                return build_fields_value(static_cast<const ast::StructDecl&>(*bv->code),
+                                          global_scope_);
             }
             return std::nullopt;
         }
@@ -689,50 +763,11 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
                     }
                     if (sym->kind == SymbolKind::Struct && sym->decl != nullptr
                         && m.member == "fields") {
-                        // §12.2 reflection: build a Vector of Field values,
-                        // one per non-embed StructDecl field. Each Field is
-                        // laid out positionally to match its builtin
-                        // StructDecl: elements[0]=name (String),
-                        // elements[1]=type (TypeRef), elements[2]=offset,
-                        // elements[3]=size, elements[4]=alignment (all Int).
-                        // The §A2 layout walk supplies the latter three; if
-                        // any field has no v0.5 layout, the walk returns
-                        // an empty vector and we leave the integer slots
-                        // at 0 — the user still gets name/type, just not
-                        // the offsets.
-                        const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
-                        auto layouts = struct_field_layouts(sd, *global_scope_);
-                        const bool has_layout = !layouts.empty();
-                        ComptimeValue v;
-                        v.kind = ComptimeValue::Kind::Vector;
-                        v.type = TypeKind::Struct;  // element kind is Field (nominal struct)
-                        std::size_t lay_idx = 0;
-                        for (const auto& f : sd.fields) {
-                            if (f.kind == ast::StructDecl::Field::Kind::Embed) {
-                                continue;
-                            }
-                            ComptimeValue field;
-                            field.kind = ComptimeValue::Kind::Field;
-                            field.type = TypeKind::Struct;
-                            field.s = f.name;
-                            field.elements.push_back(make_string(f.name));
-                            ComptimeValue type_ref;
-                            type_ref.kind = ComptimeValue::Kind::TypeRef;
-                            type_ref.type = TypeKind::Struct;
-                            type_ref.s = f.type ? type_display_name(*f.type) : "?";
-                            field.elements.push_back(std::move(type_ref));
-                            FieldLayout lay{};
-                            if (has_layout && lay_idx < layouts.size()) {
-                                lay = layouts[lay_idx];
-                            }
-                            field.elements.push_back(make_int(lay.offset, TypeKind::Int));
-                            field.elements.push_back(make_int(lay.size, TypeKind::Int));
-                            field.elements.push_back(make_int(lay.align, TypeKind::Int));
-                            ++lay_idx;
-                            v.elements.push_back(std::move(field));
-                        }
-                        v.length = static_cast<std::int64_t>(v.elements.size());
-                        return v;
+                        // §12.2 reflection: a Vector of Field values, one per
+                        // non-embed field, with the §A2 layout walk filling the
+                        // offset/size/alignment slots.
+                        return build_fields_value(static_cast<const ast::StructDecl&>(*sym->decl),
+                                                  global_scope_);
                     }
                 }
             }
@@ -746,16 +781,28 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
         // Field decl + populating the matching `elements[i]` is a
         // one-place change.
         if (auto base_val = fold_with(*m.base, env, frame, TypeKind::Unit, depth)) {
-            if (base_val->kind == ComptimeValue::Kind::Field && global_scope_ != nullptr) {
-                if (const auto* fsym = global_scope_->lookup("Field")) {
-                    if (fsym->kind == SymbolKind::Struct && fsym->decl != nullptr) {
-                        const auto& fd = static_cast<const ast::StructDecl&>(*fsym->decl);
-                        for (std::size_t i = 0; i < fd.fields.size(); ++i) {
-                            if (fd.fields[i].name == m.member && i < base_val->elements.size()) {
-                                return base_val->elements[i];
+            if (base_val->kind == ComptimeValue::Kind::Field) {
+                // With a global scope, walk the synthetic `Field` StructDecl by
+                // declaration order (authoritative). Without one (the
+                // declaration-macro folder), fall back to the fixed positional
+                // layout build_fields_value emits, so `field.name`/`.type`
+                // resolve at expansion time.
+                if (global_scope_ != nullptr) {
+                    if (const auto* fsym = global_scope_->lookup("Field")) {
+                        if (fsym->kind == SymbolKind::Struct && fsym->decl != nullptr) {
+                            const auto& fd = static_cast<const ast::StructDecl&>(*fsym->decl);
+                            for (std::size_t i = 0; i < fd.fields.size(); ++i) {
+                                if (fd.fields[i].name == m.member
+                                    && i < base_val->elements.size()) {
+                                    return base_val->elements[i];
+                                }
                             }
                         }
                     }
+                }
+                if (auto idx = field_member_index(m.member);
+                    idx && *idx < base_val->elements.size()) {
+                    return base_val->elements[*idx];
                 }
                 return std::nullopt;
             }
@@ -1592,26 +1639,17 @@ bool ComptimeFolder::fold_stmt(const ast::Stmt& s, const Env& env, Frame& frame,
         return false;
     }
     case ast::NodeKind::ForStmt: {
-        // Only `for ident in start ..< end` (RangeLt) and `for ident in
-        // start .. end` (Range) are foldable. Anything else (iterator
-        // protocol, vector iteration, etc.) waits for a later phase.
+        // Two foldable iteration shapes:
+        //   * a range: `for ident in start ..< end` (RangeLt) / `start .. end`
+        //     (Range) — bounds folded to Ints, generated lazily.
+        //   * a collection: any other iterable that folds to a Vector value
+        //     (e.g. `for f in d.fields` over §12.2/§12.4 reflection) — each
+        //     element binds to the loop variable in turn.
+        // Anything else (the runtime iterator protocol) waits for a later phase.
         const auto& f = static_cast<const ast::ForStmt&>(s);
-        if (!f.iter || f.iter->kind != ast::NodeKind::BinaryExpr) {
+        if (!f.iter) {
             return false;
         }
-        const auto& binop = static_cast<const ast::BinaryExpr&>(*f.iter);
-        if (binop.op != ast::BinaryOp::Range && binop.op != ast::BinaryOp::RangeLt) {
-            return false;
-        }
-        auto lo = fold_with(*binop.lhs, env, frame, TypeKind::Int, depth);
-        auto hi = fold_with(*binop.rhs, env, frame, TypeKind::Int, depth);
-        if (!lo || !hi || lo->kind != ComptimeValue::Kind::Int
-            || hi->kind != ComptimeValue::Kind::Int) {
-            return false;
-        }
-        std::int64_t start = lo->i;
-        // `..` is inclusive; `..<` is exclusive.
-        std::int64_t end = binop.op == ast::BinaryOp::Range ? hi->i + 1 : hi->i;
 
         // Determine the loop variable name. IdentPat / BindPat bind into
         // the body's scope; WildcardPat ("for _ in 0..<n") runs the body
@@ -1638,35 +1676,84 @@ bool ComptimeFolder::fold_stmt(const ast::Stmt& s, const Env& env, Frame& frame,
             }
         }
 
-        std::int64_t iters = 0;
-        for (std::int64_t i = start; i < end; ++i) {
-            if (++iters > MaxLoopIterations) {
-                return false;
-            }
+        // Run the body once with the loop variable bound to `iv`. Returns
+        // false to bail the whole fold, true to continue (the caller checks
+        // frame.returned for an early `return`).
+        const auto run_iter = [&](const ComptimeValue& iv) -> bool {
             if (!var_name.empty()) {
-                ComptimeValue iv;
-                iv.kind = ComptimeValue::Kind::Int;
-                iv.i = i;
-                iv.type = TypeKind::Int;
                 frame.locals[var_name] = iv;
             }
             if (f.body) {
                 auto v = fold_with(*f.body, env, frame, TypeKind::Unit, depth);
-                (void)v;  // body's value is discarded; what we care about is
-                          // assignments and frame.returned
-                if (frame.returned) {
-                    break;
-                }
+                (void)v;  // body's value is discarded; assignments and
+                          // frame.returned are what we propagate
             }
-        }
-
-        if (!var_name.empty()) {
+            return true;
+        };
+        const auto restore = [&]() {
+            if (var_name.empty()) {
+                return;
+            }
             if (had_prior) {
                 frame.locals[var_name] = prior;
             } else {
                 frame.locals.erase(var_name);
             }
+        };
+
+        const bool is_range =
+            f.iter->kind == ast::NodeKind::BinaryExpr
+            && (static_cast<const ast::BinaryExpr&>(*f.iter).op == ast::BinaryOp::Range
+                || static_cast<const ast::BinaryExpr&>(*f.iter).op == ast::BinaryOp::RangeLt);
+        if (is_range) {
+            const auto& binop = static_cast<const ast::BinaryExpr&>(*f.iter);
+            auto lo = fold_with(*binop.lhs, env, frame, TypeKind::Int, depth);
+            auto hi = fold_with(*binop.rhs, env, frame, TypeKind::Int, depth);
+            if (!lo || !hi || lo->kind != ComptimeValue::Kind::Int
+                || hi->kind != ComptimeValue::Kind::Int) {
+                return false;
+            }
+            std::int64_t start = lo->i;
+            // `..` is inclusive; `..<` is exclusive.
+            std::int64_t end = binop.op == ast::BinaryOp::Range ? hi->i + 1 : hi->i;
+            std::int64_t iters = 0;
+            for (std::int64_t i = start; i < end; ++i) {
+                if (++iters > MaxLoopIterations) {
+                    return false;
+                }
+                ComptimeValue iv;
+                iv.kind = ComptimeValue::Kind::Int;
+                iv.i = i;
+                iv.type = TypeKind::Int;
+                if (!run_iter(iv)) {
+                    return false;
+                }
+                if (frame.returned) {
+                    break;
+                }
+            }
+            restore();
+            return true;
         }
+
+        // Collection iteration: the iterable must fold to a Vector value.
+        auto coll = fold_with(*f.iter, env, frame, TypeKind::Unit, depth);
+        if (!coll || coll->kind != ComptimeValue::Kind::Vector) {
+            return false;
+        }
+        std::int64_t iters = 0;
+        for (const auto& el : coll->elements) {
+            if (++iters > MaxLoopIterations) {
+                return false;
+            }
+            if (!run_iter(el)) {
+                return false;
+            }
+            if (frame.returned) {
+                break;
+            }
+        }
+        restore();
         return true;
     }
     case ast::NodeKind::WhileStmt: {

@@ -90,3 +90,29 @@ comptime func bump(_ d: Decl) -> [Decl] {
 struct Counter {
     var n: Int32
 }
+
+// §12.4 reflection over `d.fields`: the folder iterates the annotated struct's
+// fields in a comptime `for` loop, so a macro can derive a value from the shape
+// of the type. Here `@described` counts the fields (and, separately, the Int64
+// ones via `f.type.name`) at expansion time and splices the totals into the
+// generated accessors — no field metadata survives to run time.
+comptime func described(_ d: Decl) -> [Decl] {
+    var total: Int32 = 0
+    var wide: Int32 = 0
+    for f in d.fields {
+        total += 1
+        if f.type.name == "Int64" { wide += 1 }
+    }
+    return quote {
+        $d
+        func fieldCount() -> Int32 { return $(total) }
+        func wideFieldCount() -> Int32 { return $(wide) }
+    }
+}
+
+@described
+struct Vec3 {
+    var x: Int32
+    var y: Int64
+    var z: Int64
+}

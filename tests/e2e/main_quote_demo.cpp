@@ -38,6 +38,14 @@ int main() {
     assert(ct.n == 3);
     assert(qd::answer() == 42);
 
+    // §12.4 field reflection: @described iterated `d.fields` at comptime,
+    // counting all three fields and the two Int64 ones (via f.type.name), and
+    // spliced the folded totals into the generated accessors.
+    qd::Vec3 v3{.x = 1, .y = 2, .z = 3};
+    assert(v3.x == 1);
+    assert(qd::fieldCount() == 3);
+    assert(qd::wideFieldCount() == 2);
+
     std::puts("quote_demo OK");
     return 0;
 }

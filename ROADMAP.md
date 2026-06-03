@@ -277,11 +277,23 @@ literal `42`). The `d.name` reflection moved from the bespoke
 `subst_name_splices` walk onto the folder's MemberExpr path. Deliberately
 deferred to the next step: `.fields` iteration and for-over-collection.
 
-Remaining (full reflection): `.fields` (iterating struct fields with
-`.name`/`.type`, building `[Decl]` with `+=` in a loop) and
-`.attribute(...).arg(...).asType()`. The folder path is now in place; these
-extend it with collection-valued reflection and comptime loops over them.
-Then: hygiene, the builder API, and `vestra expand`.
+Seventh slice shipped — **field reflection over `d.fields`** (comptime
+loop): `d.fields` on the bound `Decl` folds to the same `Field` Vector as
+`StructName.fields` (sourced from the StructDecl directly, so it works at
+pre-resolution expansion time — name/type carry, the layout slots are 0
+without a global scope), and the folder's `for` now iterates any iterable
+that folds to a Vector, not just ranges. So a macro can derive a value from
+a type's shape — `for f in d.fields { total += 1; if f.type.name == "Int64"
+{ wide += 1 } }` — and splice the folded totals (`$(total)`, `$(wide)`) into
+the generated accessors. `field.name` / `field.type` dispatch by a fixed
+positional fallback (`field_member_index`) when no `Field` StructDecl is in
+scope. The `.fields` construction is now one shared helper
+(`build_fields_value`) used by both the reflection and macro paths.
+
+Remaining (full reflection): building `[Decl]` with `+=` in a loop (needs
+identifier name composition / hygiene so per-field generated decls get
+distinct names) and `.attribute(...).arg(...).asType()`. Then the builder
+API and `vestra expand`.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 
