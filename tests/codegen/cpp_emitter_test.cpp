@@ -2676,6 +2676,17 @@ TEST_CASE("a declaration macro replaces the decl with its quoted template") {
     CHECK(f.out.source.find("addC(") == std::string::npos);
 }
 
+TEST_CASE("a declaration macro reflects the annotated decl's name via $(d.name)") {
+    SemaEmitFixture f("comptime func named(_ d: Decl) -> [Decl] {\n"
+                      "    return quote { $d  func typeName() -> StrConst { return $(d.name) } }\n"
+                      "}\n"
+                      "@named\n"
+                      "struct Widget { var n: Int32 }\n");
+    CHECK(f.out.header.find("struct Widget {") != std::string::npos);
+    // `$(d.name)` became the struct's name as a string literal.
+    CHECK(f.out.source.find("std::string_view(\"Widget\")") != std::string::npos);
+}
+
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------
 
 TEST_CASE("split(at:) lowers to __vstr::split_at and destructures to auto [lo, hi]") {

@@ -247,11 +247,22 @@ length-less AST-list types. To avoid a full decl cloner, the template is
 *moved* into the expansion site, so a macro backs a single application
 (applying it twice is a diagnosed v0.5 limitation).
 
-Remaining: a `Decl` reflection API (`.name`, `.attribute(...).arg(...)`,
-`.fields`) so a macro can read the annotated decl (today it can only
-splice it whole as `$d`); comptime macro bodies with control flow building
-quotes (not just a single template); multi-application (needs the decl
-cloner); hygiene; the builder API; and `vestra expand`.
+Fourth slice shipped — **`Decl` name reflection** (`$(d.name)`): a
+declaration macro's template can splice the annotated declaration's name
+(as a String) via `$(d.name)`, where `d` is the macro's `Decl` parameter.
+Implemented as a mutating substitution walk over the moved template decls
+(`expand_declaration_macros`), replacing each `$(<param>.name)` splice with
+a string literal of the annotated decl's name. No comptime evaluation yet —
+it stays template-based, which covers name reflection without the heavier
+machinery.
+
+Remaining (full reflection): `.fields` (iterating struct fields with
+`.name`/`.type`) and `.attribute(...).arg(...).asType()` — these need
+running the macro body through the comptime folder (loops building `[Decl]`
+with `+=`), which in turn needs a copyable `Code` comptime value (cloneable
+/ shared AST) and a full AST deep-cloner for materialization; plus
+multi-application (the same cloner), hygiene, the builder API, and `vestra
+expand`.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 

@@ -53,15 +53,18 @@ func useScaleBias(_ p: Int32, _ k: Int32) -> Int32 {
     return @scaleBias(p + 1, k)
 }
 
-// §12.4 declaration macro: a `comptime func(Decl) -> [Decl]` whose body is a
-// declaration-context `quote { … }`. Applied as `@name` on a declaration, it
-// replaces that declaration with the template's declarations; the `$d` item
-// splices the annotated declaration back in. Here `@withOrigin` keeps the
-// struct and adds a companion `origin()` function.
+// §12.4 declaration macro with reflection: a `comptime func(Decl) -> [Decl]`
+// whose body is a declaration-context `quote { … }`. Applied as `@name` on a
+// declaration, it replaces that declaration with the template's declarations;
+// the `$d` item splices the annotated declaration back in, and `$(d.name)`
+// reflects the annotated declaration's name as a String. Here `@withOrigin`
+// keeps the struct, adds a companion `origin()`, and a `markerName()` that
+// returns the struct's own name.
 comptime func withOrigin(_ d: Decl) -> [Decl] {
     return quote {
         $d
         func origin() -> Int32 { return 0 }
+        func markerName() -> StrConst { return $(d.name) }
     }
 }
 

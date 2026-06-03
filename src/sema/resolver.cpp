@@ -518,6 +518,132 @@ std::vector<ast::Attribute>* decl_attributes(ast::Decl& d) {
     }
 }
 
+// The source name of an annotatable declaration (for `$(d.name)` reflection).
+std::string_view decl_name(const ast::Decl& d) {
+    switch (d.kind) {
+    case ast::NodeKind::Struct:
+        return static_cast<const ast::StructDecl&>(d).name;
+    case ast::NodeKind::Func:
+        return static_cast<const ast::FuncDecl&>(d).name;
+    case ast::NodeKind::Enum:
+        return static_cast<const ast::EnumDecl&>(d).name;
+    default:
+        return {};
+    }
+}
+
+// §12.4 reflection substitution: replace each `$(<param>.name)` splice in a
+// declaration-macro template with the annotated declaration's name as a string
+// literal. A mutating walk over the generated decl's expressions/statements
+// (the template was moved into place; this rewrites the splices in situ).
+void subst_name_splices(ast::ExprPtr& e, std::string_view param, std::string_view name);
+
+void subst_name_splices_stmt(ast::Stmt& s, std::string_view param, std::string_view name) {
+    switch (s.kind) {
+    case ast::NodeKind::LetStmt:
+        subst_name_splices(static_cast<ast::LetStmt&>(s).value, param, name);
+        break;
+    case ast::NodeKind::VarStmt:
+        subst_name_splices(static_cast<ast::VarStmt&>(s).value, param, name);
+        break;
+    case ast::NodeKind::ExprStmt:
+        subst_name_splices(static_cast<ast::ExprStmt&>(s).expr, param, name);
+        break;
+    case ast::NodeKind::ReturnStmt:
+        subst_name_splices(static_cast<ast::ReturnStmt&>(s).value, param, name);
+        break;
+    case ast::NodeKind::AssignStmt:
+        subst_name_splices(static_cast<ast::AssignStmt&>(s).target, param, name);
+        subst_name_splices(static_cast<ast::AssignStmt&>(s).value, param, name);
+        break;
+    case ast::NodeKind::ForStmt:
+        subst_name_splices(static_cast<ast::ForStmt&>(s).iter, param, name);
+        subst_name_splices(static_cast<ast::ForStmt&>(s).body, param, name);
+        break;
+    case ast::NodeKind::WhileStmt:
+        subst_name_splices(static_cast<ast::WhileStmt&>(s).cond, param, name);
+        subst_name_splices(static_cast<ast::WhileStmt&>(s).body, param, name);
+        break;
+    default:
+        break;
+    }
+}
+
+void subst_name_splices(ast::ExprPtr& e, std::string_view param, std::string_view name) {
+    if (!e) {
+        return;
+    }
+    if (e->kind == ast::NodeKind::SpliceExpr) {
+        auto& sp = static_cast<ast::SpliceExpr&>(*e);
+        if (sp.inner && sp.inner->kind == ast::NodeKind::MemberExpr) {
+            auto& m = static_cast<ast::MemberExpr&>(*sp.inner);
+            if (m.member == "name" && m.base && m.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<ast::IdentExpr&>(*m.base).name == param) {
+                auto lit = std::make_unique<ast::StringLit>();
+                lit->text = std::string{name};
+                lit->range = e->range;
+                e = std::move(lit);
+                return;
+            }
+        }
+        subst_name_splices(sp.inner, param, name);
+        return;
+    }
+    switch (e->kind) {
+    case ast::NodeKind::ParenExpr:
+        subst_name_splices(static_cast<ast::ParenExpr&>(*e).inner, param, name);
+        break;
+    case ast::NodeKind::UnaryExpr:
+        subst_name_splices(static_cast<ast::UnaryExpr&>(*e).operand, param, name);
+        break;
+    case ast::NodeKind::BinaryExpr:
+        subst_name_splices(static_cast<ast::BinaryExpr&>(*e).lhs, param, name);
+        subst_name_splices(static_cast<ast::BinaryExpr&>(*e).rhs, param, name);
+        break;
+    case ast::NodeKind::MemberExpr:
+        subst_name_splices(static_cast<ast::MemberExpr&>(*e).base, param, name);
+        break;
+    case ast::NodeKind::IndexExpr: {
+        auto& ix = static_cast<ast::IndexExpr&>(*e);
+        subst_name_splices(ix.base, param, name);
+        for (auto& i : ix.indices) {
+            subst_name_splices(i, param, name);
+        }
+        break;
+    }
+    case ast::NodeKind::CallExpr: {
+        auto& c = static_cast<ast::CallExpr&>(*e);
+        subst_name_splices(c.callee, param, name);
+        for (auto& a : c.args) {
+            subst_name_splices(a.value, param, name);
+        }
+        break;
+    }
+    case ast::NodeKind::BlockExpr:
+        for (auto& st : static_cast<ast::BlockExpr&>(*e).stmts) {
+            subst_name_splices_stmt(*st, param, name);
+        }
+        break;
+    case ast::NodeKind::IfExpr: {
+        auto& i = static_cast<ast::IfExpr&>(*e);
+        subst_name_splices(i.cond, param, name);
+        subst_name_splices(i.let_init, param, name);
+        subst_name_splices(i.then_branch, param, name);
+        subst_name_splices(i.else_branch, param, name);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+// Apply reflection substitution to a generated declaration's bodies.
+void subst_name_splices_decl(ast::Decl& d, std::string_view param, std::string_view name) {
+    if (d.kind == ast::NodeKind::Func) {
+        subst_name_splices(static_cast<ast::FuncDecl&>(d).body, param, name);
+    }
+}
+
 }  // namespace
 
 void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticReporter& rep) {
@@ -582,10 +708,18 @@ void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticRepor
         // Expand: each template item is either `$d` (splice the annotated decl)
         // or a generated declaration (moved into the unit).
         ast::QuoteDeclExpr* tmpl = decl_macro_template(*macro);
+        // §12.4 `$(d.name)` reflection: the macro's first parameter is the
+        // annotated declaration; substitute its name into generated decls.
+        const std::string_view param =
+            macro->params.empty() ? std::string_view{} : std::string_view{macro->params[0].name};
+        const std::string dname{decl_name(*d)};
         for (auto& item : tmpl->decls) {
             if (item->kind == ast::NodeKind::SpliceDecl) {
                 out.push_back(std::move(d));  // $d → the annotated declaration
             } else {
+                if (!param.empty() && !dname.empty()) {
+                    subst_name_splices_decl(*item, param, dname);
+                }
                 out.push_back(std::move(item));
             }
         }

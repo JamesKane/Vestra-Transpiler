@@ -2489,6 +2489,16 @@ TEST_CASE("a declaration macro expands and the generated decls check clean") {
           == 0);
 }
 
+TEST_CASE("a declaration macro with $(d.name) reflection checks clean") {
+    CHECK(check_errors("comptime func named(_ d: Decl) -> [Decl] {\n"
+                       "    return quote { $d  func typeName() -> StrConst { return $(d.name) } }\n"
+                       "}\n"
+                       "@named\n"
+                       "struct Widget { var n: Int32 }\n"
+                       "func use() -> StrConst { return typeName() }\n")
+          == 0);
+}
+
 TEST_CASE("a declaration macro applied twice is rejected (v0.5)") {
     auto r = check_detail("comptime func addC(_ d: Decl) -> [Decl] {\n"
                           "    return quote { $d  func c() -> Int32 { return 0 } }\n"
