@@ -2499,7 +2499,10 @@ TEST_CASE("a declaration macro with $(d.name) reflection checks clean") {
           == 0);
 }
 
-TEST_CASE("a declaration macro applied twice is rejected (v0.5)") {
+TEST_CASE("a declaration macro is cloned per application (the template is reusable)") {
+    // The template is deep-cloned per site (no longer single-use), so applying
+    // the same macro to two structs expands both; a fixed-name generated decl
+    // then collides, caught by the ordinary duplicate-definition check.
     auto r = check_detail("comptime func addC(_ d: Decl) -> [Decl] {\n"
                           "    return quote { $d  func c() -> Int32 { return 0 } }\n"
                           "}\n"
@@ -2508,7 +2511,7 @@ TEST_CASE("a declaration macro applied twice is rejected (v0.5)") {
                           "@addC\n"
                           "struct B { var y: Int32 }\n");
     CHECK(r.error_count >= 1);
-    CHECK(r.first_message.find("applied more than once") != std::string::npos);
+    CHECK(r.first_message.find("duplicate definition") != std::string::npos);
 }
 
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------

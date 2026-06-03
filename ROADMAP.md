@@ -256,13 +256,21 @@ a string literal of the annotated decl's name. No comptime evaluation yet —
 it stays template-based, which covers name reflection without the heavier
 machinery.
 
+Fifth slice shipped — **AST deep-clone foundation** (`ast::clone`,
+src/ast/clone.cpp): an owned recursive copy of any decl / stmt / expr /
+type / pattern, preserving source ranges (the long pole every remaining
+reflection sub-slice needs — for materializing quote bodies and cloning
+templates). Declaration-macro expansion now *clones* its template per
+application instead of moving it, so one macro can back several sites; a
+fixed-name generated decl that collides across sites is caught by the
+ordinary duplicate-definition check rather than a special single-use error.
+
 Remaining (full reflection): `.fields` (iterating struct fields with
-`.name`/`.type`) and `.attribute(...).arg(...).asType()` — these need
-running the macro body through the comptime folder (loops building `[Decl]`
-with `+=`), which in turn needs a copyable `Code` comptime value (cloneable
-/ shared AST) and a full AST deep-cloner for materialization; plus
-multi-application (the same cloner), hygiene, the builder API, and `vestra
-expand`.
+`.name`/`.type`, building `[Decl]` with `+=` in a loop) and
+`.attribute(...).arg(...).asType()`. These need running the macro body
+through the comptime folder, which needs a copyable `Code` comptime value
+(holding shared/cloneable AST, materialized via `ast::clone`). Then:
+hygiene, the builder API, and `vestra expand`.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 

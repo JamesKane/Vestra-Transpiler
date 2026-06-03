@@ -48,6 +48,7 @@ set(vestra_sources
     src/lex/lexer.cpp
     src/ast/nodes.cpp
     src/ast/printer.cpp
+    src/ast/clone.cpp
     src/parse/parser.cpp
     src/parse/parser_decls.cpp
     src/parse/parser_types.cpp

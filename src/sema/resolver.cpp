@@ -3,6 +3,7 @@
 
 #include "vestra/sema/resolver.hpp"
 
+#include "vestra/ast/clone.hpp"
 #include "vestra/ast/nodes.hpp"
 #include "vestra/sema/builtins.hpp"
 #include "vestra/sema/scope.hpp"
@@ -647,6 +648,7 @@ void subst_name_splices_decl(ast::Decl& d, std::string_view param, std::string_v
 }  // namespace
 
 void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticReporter& rep) {
+    (void)rep;  // reserved for diagnostics in later (folder-eval) reflection slices
     // Collect declaration macros by name: a `comptime func` whose body is a
     // declaration-context quote.
     std::unordered_map<std::string, ast::FuncDecl*> macros;
@@ -663,7 +665,6 @@ void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticRepor
     }
 
     std::vector<ast::DeclPtr> out;
-    std::unordered_set<std::string> used;
     out.reserve(unit.decls.size());
     for (auto& d : unit.decls) {
         // Drop the macro definitions themselves (comptime-only).
@@ -691,25 +692,15 @@ void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticRepor
             out.push_back(std::move(d));
             continue;
         }
-        // v0.5: a declaration macro's template is moved into place, so it can
-        // back exactly one expansion site.
-        if (!used.insert(macro->name).second) {
-            rep.report(diag::Diagnostic::error(
-                           std::format("declaration macro '{}' is applied more than once "
-                                       "(v0.5 expands each macro at a single site)",
-                                       macro->name))
-                           .at((*attrs)[attr_idx].range));
-            out.push_back(std::move(d));
-            continue;
-        }
         // Strip the macro attribute from the annotated decl so the spliced
         // copy isn't re-validated as an unknown attribute.
         attrs->erase(attrs->begin() + static_cast<std::ptrdiff_t>(attr_idx));
-        // Expand: each template item is either `$d` (splice the annotated decl)
-        // or a generated declaration (moved into the unit).
+        // Expand: each template item is either `$d` (splice the annotated decl,
+        // moved in once per site) or a generated declaration — *cloned* from
+        // the template so one macro can back several expansion sites.
         ast::QuoteDeclExpr* tmpl = decl_macro_template(*macro);
         // §12.4 `$(d.name)` reflection: the macro's first parameter is the
-        // annotated declaration; substitute its name into generated decls.
+        // annotated declaration; substitute its name into the cloned decls.
         const std::string_view param =
             macro->params.empty() ? std::string_view{} : std::string_view{macro->params[0].name};
         const std::string dname{decl_name(*d)};
@@ -717,10 +708,11 @@ void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticRepor
             if (item->kind == ast::NodeKind::SpliceDecl) {
                 out.push_back(std::move(d));  // $d → the annotated declaration
             } else {
+                ast::DeclPtr gen = ast::clone(*item);  // reusable template clone
                 if (!param.empty() && !dname.empty()) {
-                    subst_name_splices_decl(*item, param, dname);
+                    subst_name_splices_decl(*gen, param, dname);
                 }
-                out.push_back(std::move(item));
+                out.push_back(std::move(gen));
             }
         }
     }
