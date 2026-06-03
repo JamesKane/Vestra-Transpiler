@@ -2723,6 +2723,28 @@ TEST_CASE("a declaration macro iterates d.fields in a comptime loop") {
     CHECK(f.out.source.find("return 2;") != std::string::npos);
 }
 
+TEST_CASE("a declaration macro generates one decl per field with a composed name") {
+    SemaEmitFixture f(
+        "comptime func labels(_ d: Decl) -> [Decl] {\n"
+        "    var out: [Decl] = quote { $d }\n"
+        "    for fld in d.fields {\n"
+        "        out += quote {\n"
+        "            func $(fld.name + \"_label\")() -> StrConst { return $(fld.name) }\n"
+        "        }\n"
+        "    }\n"
+        "    return out\n"
+        "}\n"
+        "@labels\n"
+        "struct Pair { var first: Int32  var second: Int32 }\n");
+    // $d kept the struct; the loop appended one accessor per field via [Decl] +=,
+    // each named by the comptime string splice $(fld.name + "_label").
+    CHECK(f.out.header.find("struct Pair {") != std::string::npos);
+    CHECK(f.out.source.find("first_label()") != std::string::npos);
+    CHECK(f.out.source.find("second_label()") != std::string::npos);
+    CHECK(f.out.source.find("std::string_view(\"first\")") != std::string::npos);
+    CHECK(f.out.source.find("std::string_view(\"second\")") != std::string::npos);
+}
+
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------
 
 TEST_CASE("split(at:) lowers to __vstr::split_at and destructures to auto [lo, hi]") {

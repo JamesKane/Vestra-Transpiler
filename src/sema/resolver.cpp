@@ -483,26 +483,23 @@ bool Resolver::gated_out(const ast::Decl& decl) {
 
 namespace {
 
-// The `quote { <decl> … }` template a declaration macro returns: the
-// QuoteDeclExpr of a `return quote { … }` (or a bare trailing quote) body.
-ast::QuoteDeclExpr* decl_macro_template(ast::FuncDecl& fn) {
-    if (!fn.body) {
-        return nullptr;
+// A declaration macro is a `comptime func` with a body that returns `[Decl]`
+// (a length-less list of declarations). The body is folded by the comptime
+// evaluator at expansion, so it can be any shape — a bare `return quote { … }`,
+// or a loop accumulating into a `[Decl]` variable — not just a literal quote.
+bool is_decl_macro(const ast::FuncDecl& fn) {
+    if (!fn.is_comptime || fn.body == nullptr || fn.result == nullptr) {
+        return false;
     }
-    if (fn.body->kind == ast::NodeKind::QuoteDeclExpr) {
-        return static_cast<ast::QuoteDeclExpr*>(fn.body.get());
+    if (fn.result->kind != ast::NodeKind::VectorType) {
+        return false;
     }
-    if (fn.body->kind == ast::NodeKind::BlockExpr) {
-        for (auto& s : static_cast<ast::BlockExpr&>(*fn.body).stmts) {
-            if (s->kind == ast::NodeKind::ReturnStmt) {
-                auto& r = static_cast<ast::ReturnStmt&>(*s);
-                if (r.value && r.value->kind == ast::NodeKind::QuoteDeclExpr) {
-                    return static_cast<ast::QuoteDeclExpr*>(r.value.get());
-                }
-            }
-        }
+    const auto& vt = static_cast<const ast::VectorType&>(*fn.result);
+    if (vt.element == nullptr || vt.element->kind != ast::NodeKind::NamedType) {
+        return false;
     }
-    return nullptr;
+    const auto& nt = static_cast<const ast::NamedType&>(*vt.element);
+    return !nt.path.empty() && nt.path.back() == "Decl";
 }
 
 // The mutable attribute list of an annotatable top-level decl (struct / func /
@@ -529,7 +526,7 @@ void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticRepor
     for (auto& d : unit.decls) {
         if (d->kind == ast::NodeKind::Func) {
             auto& fn = static_cast<ast::FuncDecl&>(*d);
-            if (fn.is_comptime && decl_macro_template(fn) != nullptr) {
+            if (is_decl_macro(fn)) {
                 macros[fn.name] = &fn;
             }
         }

@@ -172,7 +172,30 @@ std::unique_ptr<ast::FuncDecl> Parser::parse_func(std::vector<ast::Attribute> at
     f->is_comptime = is_comptime;
     f->recv_mode = recv;
 
-    if (!check(TokenKind::Identifier)) {
+    if (check(TokenKind::Dollar)) {
+        // §12.4 a name-composing splice: `func $(expr)( … )` / `func $x( … )`
+        // inside a decl quote. The name is resolved when the declaration macro
+        // expands (the splice folds to a comptime String); leave `name` empty.
+        // Parse only the splice itself — NOT through parse_prefix, whose
+        // postfix step would swallow the parameter list's `()` as a call.
+        auto splice_start = peek().range;
+        advance();  // '$'
+        auto sp = std::make_unique<ast::SpliceExpr>();
+        if (match(TokenKind::LParen)) {
+            sp->inner = parse_expr();
+            expect(TokenKind::RParen, "')' to close '$( … )' splice");
+        } else if (check(TokenKind::Identifier)) {
+            auto id = std::make_unique<ast::IdentExpr>();
+            auto idtok = advance();
+            id->name = std::string{idtok.lexeme};
+            id->range = idtok.range;
+            sp->inner = std::move(id);
+        } else {
+            emit_error(peek().range, "expected an identifier or '(' after '$'");
+        }
+        sp->range = merge(splice_start, last_range());
+        f->name_splice = std::move(sp);
+    } else if (!check(TokenKind::Identifier)) {
         emit_error(peek().range, "expected function name after 'func'");
     } else {
         f->name = std::string{advance().lexeme};

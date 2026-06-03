@@ -875,7 +875,24 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
             } else {
                 ast::DeclPtr gen = ast::clone(*item);
                 if (gen->kind == ast::NodeKind::Func) {
-                    subst_splices(static_cast<ast::FuncDecl&>(*gen).body, env, frame, depth);
+                    auto& fd = static_cast<ast::FuncDecl&>(*gen);
+                    // §12.4 resolve a name-composing splice (`func $(expr)( … )`)
+                    // by folding it to a comptime String; the loop variable is
+                    // in scope here, so each generated decl gets a distinct name.
+                    if (fd.name_splice) {
+                        const ast::Expr* inner = fd.name_splice.get();
+                        if (inner->kind == ast::NodeKind::SpliceExpr) {
+                            inner = static_cast<const ast::SpliceExpr&>(*inner).inner.get();
+                        }
+                        auto nv = inner ? fold_with(*inner, env, frame, TypeKind::Unit, depth)
+                                        : std::nullopt;
+                        if (!nv || nv->kind != ComptimeValue::Kind::String) {
+                            return std::nullopt;
+                        }
+                        fd.name = nv->s;
+                        fd.name_splice = nullptr;
+                    }
+                    subst_splices(fd.body, env, frame, depth);
                 }
                 vec.elements.push_back(
                     make_code(std::shared_ptr<const ast::Node>(std::move(gen)), TypeKind::AstDecl));
@@ -1179,8 +1196,13 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
         if (!rhs) {
             return std::nullopt;
         }
+        // §12.4 String `+` (comptime concatenation, for composed names) and
+        // String `==`/`!=` (cfg predicates) are the non-numeric binary ops the
+        // folder allows; everything else needs matching numeric operands.
+        const bool both_strings =
+            lhs->kind == ComptimeValue::Kind::String && rhs->kind == ComptimeValue::Kind::String;
         if (!same_numeric_kind(*lhs, *rhs) && bin.op != ast::BinaryOp::Eq
-            && bin.op != ast::BinaryOp::Ne) {
+            && bin.op != ast::BinaryOp::Ne && !(bin.op == ast::BinaryOp::Add && both_strings)) {
             return std::nullopt;
         }
 
@@ -1224,6 +1246,12 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
             }
             if (lhs->kind == ComptimeValue::Kind::Float) {
                 return fold_float([](auto a, auto b) { return a + b; });
+            }
+            if (lhs->kind == ComptimeValue::Kind::String
+                && rhs->kind == ComptimeValue::Kind::String) {
+                // §12.4 comptime string concatenation — composes generated
+                // declaration names like `$(f.name + "_get")`.
+                return make_string(lhs->s + rhs->s);
             }
             return std::nullopt;
         case ast::BinaryOp::Sub:
@@ -1460,6 +1488,19 @@ apply_compound(ast::AssignOp op, const ComptimeValue& cur, const ComptimeValue& 
     case ast::AssignOp::AddAssign:
         if (auto v = on_int([](auto a, auto b) { return a + b; })) {
             return v;
+        }
+        if (cur.kind == ComptimeValue::Kind::Vector && rhs.kind == ComptimeValue::Kind::Vector) {
+            // §12.4 `[Decl] += quote { … }` — append the quote's declarations
+            // to the accumulator. The element kind (`type`) is preserved.
+            ComptimeValue out = cur;
+            out.elements.insert(out.elements.end(), rhs.elements.begin(), rhs.elements.end());
+            out.length = static_cast<std::int64_t>(out.elements.size());
+            return out;
+        }
+        if (cur.kind == ComptimeValue::Kind::String && rhs.kind == ComptimeValue::Kind::String) {
+            ComptimeValue out = cur;
+            out.s = cur.s + rhs.s;
+            return out;
         }
         return on_float([](auto a, auto b) { return a + b; });
     case ast::AssignOp::SubAssign:

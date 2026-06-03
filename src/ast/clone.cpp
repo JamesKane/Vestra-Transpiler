@@ -509,6 +509,7 @@ DeclPtr clone(const Decl& d) {
         n->is_comptime = f.is_comptime;
         n->recv_mode = f.recv_mode;
         n->name = f.name;
+        n->name_splice = cl(f.name_splice);
         n->generics = clone_generics(f.generics);
         n->params = clone_params(f.params);
         n->effects = clone_effects(f.effects);

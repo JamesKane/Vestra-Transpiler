@@ -774,6 +774,10 @@ struct FuncDecl : Decl {
     enum class RecvMode { None, Inout, Sink };
     RecvMode recv_mode = RecvMode::None;
     std::string name;
+    // §12.4 a declaration macro may compose a generated function's name from a
+    // comptime String splice: `func $(f.name + "_get")()`. When set, `name` is
+    // empty until expansion folds this splice to a String and writes it back.
+    ExprPtr name_splice;
     std::vector<GenericParam> generics;
     std::vector<Param> params;
     Effects effects;

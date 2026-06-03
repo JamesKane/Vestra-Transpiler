@@ -609,9 +609,40 @@ ast::ExprPtr Parser::parse_primary() {
         // splice the annotated decl as a `$d` item. Disambiguated by scanning
         // the braces for a declaration keyword at brace-depth 1.
         advance();
+        // Skip past a `$ident` / `$(expr)` splice that begins at token `i`
+        // (which is the Dollar), returning the index just after it. Used to
+        // tell a standalone `$d` declaration item from a `$x` inside an
+        // expression.
+        const auto after_splice = [&](std::size_t i) -> std::size_t {
+            std::size_t j = i + 1;
+            if (peek(j).kind == TokenKind::LParen) {
+                int pd = 0;
+                for (; peek(j).kind != TokenKind::Eof; ++j) {
+                    if (peek(j).kind == TokenKind::LParen) {
+                        ++pd;
+                    } else if (peek(j).kind == TokenKind::RParen && --pd == 0) {
+                        ++j;
+                        break;
+                    }
+                }
+            } else if (peek(j).kind == TokenKind::Identifier) {
+                ++j;
+            }
+            return j;
+        };
+        const auto is_decl_kw = [](TokenKind k) {
+            return k == TokenKind::KwFunc || k == TokenKind::KwStruct || k == TokenKind::KwEnum
+                   || k == TokenKind::KwProtocol || k == TokenKind::KwExtension
+                   || k == TokenKind::KwConst || k == TokenKind::KwStatic;
+        };
         bool is_decl_quote = false;
         {
             int depth = 0;
+            // Last non-newline token at the current depth, so we can tell a
+            // `$d` that *starts* an item (preceded by the quote's `{` or the
+            // `}` of the previous decl) from a `$x` used as an operand inside
+            // an expression (preceded by an operator/operand).
+            TokenKind prev = TokenKind::Eof;
             for (std::size_t i = 0;; ++i) {
                 const auto& tk = peek(i);
                 if (tk.kind == TokenKind::Eof) {
@@ -623,13 +654,30 @@ ast::ExprPtr Parser::parse_primary() {
                     if (--depth == 0) {
                         break;
                     }
-                } else if (depth == 1
-                           && (tk.kind == TokenKind::KwFunc || tk.kind == TokenKind::KwStruct
-                               || tk.kind == TokenKind::KwEnum || tk.kind == TokenKind::KwProtocol
-                               || tk.kind == TokenKind::KwExtension || tk.kind == TokenKind::KwConst
-                               || tk.kind == TokenKind::KwStatic)) {
+                } else if (depth == 1 && is_decl_kw(tk.kind)) {
                     is_decl_quote = true;
                     break;
+                } else if (depth == 1 && tk.kind == TokenKind::Dollar
+                           && (prev == TokenKind::LBrace || prev == TokenKind::RBrace)) {
+                    // A `$d` standing alone as a declaration item: it begins at
+                    // an item boundary AND, after the splice (and any
+                    // newlines), is followed by the closing `}`, a declaration
+                    // keyword, or another `$` item. This is what makes
+                    // `quote { $d }` a [Decl] — while `quote { $x + $x }` stays
+                    // an expression (its trailing `$x` is preceded by `+`, not
+                    // a boundary, so it never triggers here).
+                    std::size_t j = after_splice(i);
+                    while (peek(j).kind == TokenKind::Newline) {
+                        ++j;
+                    }
+                    const auto nk = peek(j).kind;
+                    if (nk == TokenKind::RBrace || nk == TokenKind::Dollar || is_decl_kw(nk)) {
+                        is_decl_quote = true;
+                        break;
+                    }
+                }
+                if (tk.kind != TokenKind::Newline) {
+                    prev = tk.kind;
                 }
             }
         }
@@ -640,6 +688,7 @@ ast::ExprPtr Parser::parse_primary() {
             // each either a real decl or a `$d` splice item.
             auto q = std::make_unique<ast::QuoteDeclExpr>();
             while (!check(TokenKind::RBrace) && !at_end()) {
+                const std::size_t before = pos_;
                 if (check(TokenKind::Dollar)) {
                     auto sd = std::make_unique<ast::SpliceDecl>();
                     sd->splice = parse_prefix();  // the `$d` SpliceExpr
@@ -649,6 +698,13 @@ ast::ExprPtr Parser::parse_primary() {
                     q->decls.push_back(parse_decl(parse_attributes()));
                 }
                 skip_newlines();
+                // Guard against a non-advancing iteration (a token neither the
+                // splice nor parse_decl can consume): emit one error and bail
+                // rather than spin forever building error nodes.
+                if (pos_ == before) {
+                    emit_error(peek().range, "unexpected token in declaration quote body");
+                    break;
+                }
             }
             expect(TokenKind::RBrace, "'}' to close quote body");
             q->range = merge(start, last_range());

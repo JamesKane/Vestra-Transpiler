@@ -290,10 +290,26 @@ positional fallback (`field_member_index`) when no `Field` StructDecl is in
 scope. The `.fields` construction is now one shared helper
 (`build_fields_value`) used by both the reflection and macro paths.
 
-Remaining (full reflection): building `[Decl]` with `+=` in a loop (needs
-identifier name composition / hygiene so per-field generated decls get
-distinct names) and `.attribute(...).arg(...).asType()`. Then the builder
-API and `vestra expand`.
+Eighth slice shipped — **per-field declaration generation**: a macro can
+build its `[Decl]` result by iterating `d.fields` and appending one generated
+declaration per field. `[Decl] +=` concatenates Code vectors (folder
+`apply_compound` / `BinaryOp::Add`), comptime String `+` concatenates
+(threaded past the numeric-operand guard), and each generated decl gets a
+distinct name from a comptime String splice in name position —
+`func $(f.name + "_get")( … )`. The parser accepts a `$(expr)` / `$x` splice
+where a function name is expected (`FuncDecl::name_splice`), parsed without
+the postfix step so the parameter list's `()` isn't swallowed as a call; the
+folder resolves the splice to a String and writes `FuncDecl::name` during
+quote materialization (the loop variable is in scope, so each decl is named
+distinctly). The quote disambiguator now treats a standalone `$d` item as
+declaration-context, so `quote { $d }` is a `[Decl]` (seeding the
+accumulator) rather than an expression quote. Macro detection moved from a
+literal-`return quote` shape check to the signature (`comptime` + `-> [Decl]`),
+since a folder-evaluated body can be any shape.
+
+Remaining (full reflection): `.attribute(...).arg(...).asType()`, hygiene
+(generated names are currently raw — no gensym), the builder API, and
+`vestra expand`.
 
 ### 5. Ownership / exclusivity phase 2 (multi-session)
 
