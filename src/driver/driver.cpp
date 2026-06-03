@@ -297,6 +297,42 @@ ModuleGraph load_module_graph(const std::filesystem::path& input,
     return g;
 }
 
+// A unit's dotted `module` path ("util.math"), or empty if it declares none.
+std::string module_path_of(const ast::CompilationUnit& u) {
+    if (u.module == nullptr) {
+        return {};
+    }
+    std::string dotted;
+    for (const auto& seg : u.module->path) {
+        if (!dotted.empty()) {
+            dotted += '.';
+        }
+        dotted += seg;
+    }
+    return dotted;
+}
+
+// Dependency-first ordering of the units in `g` (post-order DFS over deps), so
+// a module is resolved — and its exports harvested — before any importer.
+std::vector<std::size_t> topo_order(const ModuleGraph& g) {
+    std::vector<std::size_t> order;
+    std::vector<bool> seen(g.units.size(), false);
+    std::function<void(std::size_t)> visit = [&](std::size_t i) {
+        if (seen[i]) {
+            return;
+        }
+        seen[i] = true;
+        for (int d : g.deps[i]) {
+            visit(static_cast<std::size_t>(d));
+        }
+        order.push_back(i);
+    };
+    for (std::size_t i = 0; i < g.units.size(); ++i) {
+        visit(i);
+    }
+    return order;
+}
+
 }  // namespace
 
 int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
@@ -342,18 +378,24 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
         fs::create_directories(opts.out_dir);
     }
 
-    // Resolve + check + emit each unit. The resolver/arena are scoped per unit
-    // and live through that unit's emit (the emitter reads back the Resolution).
-    for (std::size_t i = 0; i < units.size(); ++i) {
+    // §5 one TypeArena for the whole build, so a type computed while resolving a
+    // dependency is valid when an importer reuses its exported symbols. Resolve
+    // dependency-first; harvest each module's public exports into `store` for
+    // its importers to reference (no signature re-derivation).
+    sema::TypeArena arena;
+    sema::Resolver::ModuleExports store;
+    for (std::size_t i : topo_order(graph)) {
         auto& unit = *units[i];
-        sema::TypeArena arena;
         sema::Resolver resolver(
             unit, arena, rep, make_embed_reader(files[i].parent_path()), target_ctx);
-        std::vector<const ast::CompilationUnit*> imported;
+        sema::Resolver::ModuleExports visible;
         for (int d : deps[i]) {
-            imported.push_back(units[static_cast<std::size_t>(d)].get());
+            const std::string dep_mod = module_path_of(*units[static_cast<std::size_t>(d)]);
+            if (auto it = store.find(dep_mod); it != store.end()) {
+                visible[dep_mod] = it->second;
+            }
         }
-        resolver.set_imported_units(std::move(imported));
+        resolver.set_module_exports(std::move(visible));
         if (!opts.skip_check) {
             resolver.resolve();
             if (rep.has_errors()) {
@@ -369,6 +411,12 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
             if (rep.has_errors()) {
                 rep.render_to(err);
                 return 1;
+            }
+            // Harvest this module's public exports for its importers (later in
+            // topo order). Symbols are copied; their types live in the shared
+            // arena, which outlives the build.
+            if (auto mod = module_path_of(unit); !mod.empty()) {
+                store[mod] = resolver.public_exports();
             }
         }
 
@@ -420,15 +468,21 @@ int run_check(const std::filesystem::path& input, std::ostream& out, std::ostrea
         rep.render_to(err);
         return 1;
     }
-    for (std::size_t i = 0; i < graph.units.size(); ++i) {
+    // §5 dependency-first, one shared arena, harvest exports for importers —
+    // mirrors run_build so `check` and `build` resolve identically.
+    sema::TypeArena arena;
+    sema::Resolver::ModuleExports store;
+    for (std::size_t i : topo_order(graph)) {
         auto& unit = *graph.units[i];
-        sema::TypeArena arena;
         sema::Resolver resolver(unit, arena, rep, make_embed_reader(graph.files[i].parent_path()));
-        std::vector<const ast::CompilationUnit*> imported;
+        sema::Resolver::ModuleExports visible;
         for (int d : graph.deps[i]) {
-            imported.push_back(graph.units[static_cast<std::size_t>(d)].get());
+            const std::string dep_mod = module_path_of(*graph.units[static_cast<std::size_t>(d)]);
+            if (auto it = store.find(dep_mod); it != store.end()) {
+                visible[dep_mod] = it->second;
+            }
         }
-        resolver.set_imported_units(std::move(imported));
+        resolver.set_module_exports(std::move(visible));
         resolver.resolve();
         if (!rep.has_errors()) {
             sema::OwnershipChecker ownership(unit, resolver.resolution(), rep);
@@ -441,6 +495,9 @@ int run_check(const std::filesystem::path& input, std::ostream& out, std::ostrea
         if (rep.has_errors()) {
             rep.render_to(err);
             return 1;
+        }
+        if (auto mod = module_path_of(unit); !mod.empty()) {
+            store[mod] = resolver.public_exports();
         }
     }
     out << "vestra: " << input.string() << " checked OK\n";

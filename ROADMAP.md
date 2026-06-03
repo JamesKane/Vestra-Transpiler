@@ -32,7 +32,7 @@ first slice.
 
 ## Next up (priority 1-9)
 
-### 0. Multi-file modules (§5) (multi-session) — slices 1-5 shipped
+### 0. Multi-file modules (§5) (multi-session) — slices 1-6 shipped
 
 The first step toward self-hosting (a compiler is many files). **Slice 1
 shipped**: `vestra build entry.vst` is now a transitive module loader.
@@ -94,15 +94,26 @@ resolves and codegen emits the qualified designated-init. Field access on the
 imported value (`p.lo`) works through the nominal's decl. Proven end to end
 (multifile_demo `pairSum()`).
 
-Remaining slices: **`emit_sema_type` qualification** — a *computed/inferred*
-imported type (not spelled via an annotation, e.g. a generic instantiation or
-tuple element) still emits its bare nominal name and relies on the inert
-`using namespace dep;`; qualifying it needs a decl→module map in the emitter,
-after which the `using namespace` emission can finally be dropped. **Imported
-function signatures that mention the module's own types** (`func f(_ p: Point)`)
-can't be synthesized in the importer's arena today (the module-local `Point`
-isn't in the importer's scope) — needs persistent per-module arenas + symbol
-sharing rather than re-derivation. Plus **generic imported types**,
+**Slice 6 shipped** — **shared arena + export harvesting** (the architecture
+that makes modules compiler-grade). The build now uses one `TypeArena`, resolves
+units dependency-first (topological order), and **harvests each module's
+resolved public-export symbols** into a store handed to its importers. An
+importer no longer re-derives an import's signature in its own arena — it reuses
+the symbol the dependency's own resolver produced. This fixes the prior wall:
+an imported function whose signature mentions the module's own types
+(`public func combine(_ p: Pair) -> Int32`) is now callable from an importer
+(`util.math.combine(util.math.Pair(...))`), because `Pair` was resolved in
+util.math's context and reused. Type identity holds across the boundary because
+`TypeArena::equal` is structural (nominals by shared decl pointer). The
+`Resolver` lost `set_imported_units` + the per-unit collection/synthesis; it now
+takes `set_module_exports(...)` and exposes `public_exports()`.
+
+Remaining: **`emit_sema_type` qualification** — a *computed/inferred* imported
+type (not spelled via an annotation — e.g. an un-annotated `let` would be `auto`,
+but a generic instantiation or tuple element spelled from a sema type) still
+emits its bare nominal name and relies on the inert `using namespace dep;`;
+qualifying it needs a decl→module map in the emitter, after which `using
+namespace` can be dropped. Plus **generic imported types**,
 **`import c "header.h"`**, **missing/cyclic-import diagnostics**, and a
 **search-path / project-root** notion.
 

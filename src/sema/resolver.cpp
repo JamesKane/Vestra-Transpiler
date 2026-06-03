@@ -220,30 +220,10 @@ void Resolver::collect_decl(const ast::Decl& d) {
 }
 
 void Resolver::collect_top_level() {
-    // §5 imported modules: collect each imported unit's top-level decls into
-    // the global scope first, so references to them resolve in this unit. Their
-    // bodies are not re-checked (resolve() only walks this unit's decls) and
-    // they are not re-emitted (codegen iterates this unit's decls). Signatures
-    // are re-derived here in this resolver's arena, so no cross-arena TypePtr
-    // sharing is needed.
-    for (const auto* imp : imported_units_) {
-        if (imp == nullptr || imp->module == nullptr || imp->module->path.empty()) {
-            continue;
-        }
-        // Index each imported module by its dotted `module` path. Imports are
-        // referenced only through a qualified path (`util.math.add`), resolved
-        // against this map in check_qualified_module_ref — they are *not*
-        // collected into the unqualified global scope, so an imported name never
-        // collides with (or shadows) a local one.
-        std::string dotted;
-        for (const auto& seg : imp->module->path) {
-            if (!dotted.empty()) {
-                dotted += '.';
-            }
-            dotted += seg;
-        }
-        imported_modules_[dotted] = imp;
-    }
+    // §5 imports are not collected into the unqualified scope — they are reached
+    // only through a qualified path (`util.math.add`), resolved against
+    // module_exports_ (set by set_module_exports before resolve()). So an
+    // imported name never collides with or shadows a local one.
     for (const auto& d : unit_->decls) {
         // §12.6: skip `@when`-gated-out decls before they enter any scope.
         // Other passes (check_decl, codegen) will skip them the same way,
@@ -253,6 +233,45 @@ void Resolver::collect_top_level() {
         }
         collect_decl(*d);
     }
+}
+
+Resolver::ExportMap Resolver::public_exports() {
+    // §5 harvest this unit's public top-level decls (after resolve()) so an
+    // importer can reference them qualified. The Symbol — including its type,
+    // resolved here in the shared arena — is copied; the copy stays valid for
+    // importers because the arena outlives the build.
+    ExportMap out;
+    for (const auto& d : unit_->decls) {
+        std::string name;
+        ast::Visibility vis = ast::Visibility::Internal;
+        switch (d->kind) {
+        case ast::NodeKind::Func:
+            name = static_cast<const ast::FuncDecl&>(*d).name;
+            vis = static_cast<const ast::FuncDecl&>(*d).visibility;
+            break;
+        case ast::NodeKind::Struct:
+            name = static_cast<const ast::StructDecl&>(*d).name;
+            vis = static_cast<const ast::StructDecl&>(*d).visibility;
+            break;
+        case ast::NodeKind::Enum:
+            name = static_cast<const ast::EnumDecl&>(*d).name;
+            vis = static_cast<const ast::EnumDecl&>(*d).visibility;
+            break;
+        case ast::NodeKind::Const:
+            name = static_cast<const ast::ConstDecl&>(*d).name;
+            vis = static_cast<const ast::ConstDecl&>(*d).visibility;
+            break;
+        default:
+            continue;
+        }
+        if (vis != ast::Visibility::Public || name.empty()) {
+            continue;
+        }
+        if (const Symbol* s = scopes_.global().lookup(name)) {
+            out[name] = *s;
+        }
+    }
+    return out;
 }
 
 void Resolver::collect_func(const ast::FuncDecl& f) {

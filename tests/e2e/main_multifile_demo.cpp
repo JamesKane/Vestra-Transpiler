@@ -17,6 +17,7 @@ int main() {
     assert(demo::app::viaConst() == 42);  // util.math.answer across modules
     assert(demo::app::localAdd() == 38);  // the local add (40 - 2) shadows nothing
     assert(demo::app::pairSum() == 42);   // cross-module struct: util.math.Pair
+    assert(demo::app::combined() == 42);  // imported fn over the module's own type
     std::puts("multifile_demo OK");
     return 0;
 }

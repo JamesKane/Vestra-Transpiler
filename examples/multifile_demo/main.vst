@@ -33,3 +33,9 @@ func pairSum() -> Int32 {
     let p: util.math.Pair = util.math.Pair(lo: 40, hi: 2)
     return p.lo + p.hi
 }
+
+// §5 pass an imported struct to an imported function whose signature mentions
+// it — works because util.math's resolved `combine` signature is reused here.
+func combined() -> Int32 {
+    return util.math.combine(util.math.Pair(lo: 40, hi: 2))
+}

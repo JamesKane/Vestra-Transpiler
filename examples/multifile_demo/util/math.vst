@@ -25,3 +25,11 @@ public struct Pair {
     var lo: Int32
     var hi: Int32
 }
+
+// §5 a public function whose signature mentions the module's own type. The
+// importer can call `util.math.combine(p)` even though `Pair` isn't in its
+// scope: the signature is resolved here (in util.math) and the importer reuses
+// the resolved symbol rather than re-deriving it.
+public func combine(_ p: Pair) -> Int32 {
+    return p.lo + p.hi
+}

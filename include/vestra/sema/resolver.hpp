@@ -103,13 +103,21 @@ public:
 
     void resolve();
 
-    // §5 multi-file: make the public top-level decls of `imports` visible in
-    // this unit's global scope (collected before resolution; not re-checked or
-    // re-emitted). The pointed-at units must outlive this resolver. Call before
-    // resolve().
-    void set_imported_units(std::vector<const ast::CompilationUnit*> imports) {
-        imported_units_ = std::move(imports);
-    }
+    // §5 multi-file. A module's public exports: name → its already-resolved
+    // Symbol (carrying a type computed in the shared arena, so it is valid
+    // here). The dotted module path keys the outer map.
+    using ExportMap = std::unordered_map<std::string, Symbol>;
+    using ModuleExports = std::unordered_map<std::string, ExportMap>;
+
+    // Make the exports of imported modules available for qualified references
+    // (`util.math.add`). Resolved by the dependency's own resolver and handed
+    // here — never re-derived — so a signature mentioning the module's own
+    // types resolves correctly. Call before resolve().
+    void set_module_exports(ModuleExports mods) { module_exports_ = std::move(mods); }
+
+    // This unit's public top-level exports, harvested after resolve() for its
+    // importers. Symbols are copied; their types live in the shared arena.
+    [[nodiscard]] ExportMap public_exports();
 
     [[nodiscard]] const Resolution& resolution() const noexcept { return resolution_; }
 
@@ -328,16 +336,10 @@ private:
     diag::DiagnosticReporter* reporter_;
     ScopeStack scopes_;
     Resolution resolution_;
-    // §5 imported modules whose public decls are collected into scope.
-    std::vector<const ast::CompilationUnit*> imported_units_;
-    // §5 imported modules keyed by their dotted `module` path ("util.math"),
-    // for resolving qualified references (`util.math.add`). Built in pass 1.
-    std::unordered_map<std::string, const ast::CompilationUnit*> imported_modules_;
-    // §5 symbols synthesized on demand for imported exports named through a
-    // qualified reference. `std::deque` keeps element addresses stable as the
-    // Resolution stores pointers into it; the cache dedups by qualified name.
-    std::deque<Symbol> module_export_syms_;
-    std::unordered_map<std::string, const Symbol*> module_export_cache_;
+    // §5 imported modules' resolved exports, keyed by dotted module path, for
+    // resolving qualified references (`util.math.add`). The Symbols' addresses
+    // are stable (node-based map) so the Resolution may point at them.
+    ModuleExports module_exports_;
     // Stack of expected return types — pushed when entering a function body so
     // a nested return expression can be checked against it. For a throws(E) →
     // T function we push the *success* type T here; the parallel throws_stack_

@@ -247,20 +247,16 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
             }
             dotted += n.path[i];
         }
-        if (auto mit = imported_modules_.find(dotted); mit != imported_modules_.end()) {
+        if (auto mit = module_exports_.find(dotted); mit != module_exports_.end()) {
             const std::string& last = n.path.back();
-            for (const auto& d : mit->second->decls) {
-                if (d->kind == ast::NodeKind::Struct) {
-                    const auto& sd = static_cast<const ast::StructDecl&>(*d);
-                    if (sd.name == last && sd.visibility == ast::Visibility::Public) {
-                        return types_->make_nominal(TypeKind::Struct, &sd);
-                    }
-                } else if (d->kind == ast::NodeKind::Enum) {
-                    const auto& ed = static_cast<const ast::EnumDecl&>(*d);
-                    if (ed.name == last && ed.visibility == ast::Visibility::Public) {
-                        return types_->make_nominal(TypeKind::Enum, &ed);
-                    }
-                }
+            auto exp = mit->second.find(last);
+            if (exp != mit->second.end() && exp->second.type != nullptr
+                && (exp->second.kind == SymbolKind::Struct
+                    || exp->second.kind == SymbolKind::Enum)) {
+                // The dependency's resolver already built this nominal type
+                // (in the shared arena); reuse it so the decl identity matches
+                // values constructed/returned across the boundary.
+                return exp->second.type;
             }
             error_at(t.range, std::format("module '{}' has no public type '{}'", dotted, last));
             return types_->error();

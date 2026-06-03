@@ -349,7 +349,7 @@ TypePtr Resolver::enum_case_constructor_type(TypePtr enum_type, const ast::EnumD
 }
 
 TypePtr Resolver::check_qualified_module_ref(const ast::MemberExpr& m) {
-    if (imported_modules_.empty()) {
+    if (module_exports_.empty()) {
         return nullptr;
     }
     // Flatten the chain `((a.b).c)` into head-first segments [a, b, c]. Bail if
@@ -391,15 +391,24 @@ TypePtr Resolver::check_qualified_module_ref(const ast::MemberExpr& m) {
         }
         dotted += segs[i];
     }
-    auto it = imported_modules_.find(dotted);
-    if (it == imported_modules_.end()) {
+    auto it = module_exports_.find(dotted);
+    if (it == module_exports_.end()) {
         return nullptr;  // not an imported module path → ordinary member access
     }
-    const ast::CompilationUnit* mod = it->second;
     const std::string& exported = segs.back();
+    // The export was resolved by the dependency's own resolver (so a signature
+    // mentioning the module's own types is already correct) and handed to us in
+    // module_exports_; the map is node-based, so the Symbol's address is stable
+    // for the Resolution to point at.
+    auto exp = it->second.find(exported);
+    if (exp == it->second.end()) {
+        error_at(m.range, std::format("module '{}' has no public member '{}'", dotted, exported));
+        return types_->error();
+    }
+    const Symbol* sym = &exp->second;
 
-    // Fully-qualified C++ name ("util::math::add"); also the cache key for the
-    // synthesized export symbol.
+    // Record the resolved symbol and the fully-qualified C++ name so codegen
+    // emits `util::math::add` rather than a member access.
     std::string qualified;
     for (const auto& seg : segs) {
         if (!qualified.empty()) {
@@ -407,75 +416,6 @@ TypePtr Resolver::check_qualified_module_ref(const ast::MemberExpr& m) {
         }
         qualified += seg;
     }
-
-    const Symbol* sym = nullptr;
-    if (auto cached = module_export_cache_.find(qualified); cached != module_export_cache_.end()) {
-        sym = cached->second;
-    } else {
-        // Synthesize a symbol for the named public export. Imports live only in
-        // the qualified namespace (not the global scope), so the signature is
-        // re-derived here in this resolver's arena. v0.5 supports public func
-        // and const exports through a qualified head.
-        Symbol s;
-        s.name = exported;
-        for (const auto& d : mod->decls) {
-            if (d->kind == ast::NodeKind::Func) {
-                const auto& fd = static_cast<const ast::FuncDecl&>(*d);
-                if (fd.name == exported && fd.visibility == ast::Visibility::Public) {
-                    s.kind = SymbolKind::Func;
-                    s.decl = d.get();
-                    s.type = function_type_of(fd);
-                    s.definition_range = fd.range;
-                    s.visibility = fd.visibility;
-                    break;
-                }
-            } else if (d->kind == ast::NodeKind::Const) {
-                const auto& cd = static_cast<const ast::ConstDecl&>(*d);
-                if (cd.name == exported && cd.visibility == ast::Visibility::Public) {
-                    s.kind = SymbolKind::Const;
-                    s.decl = d.get();
-                    s.type = cd.type != nullptr ? resolve_type(*cd.type) : nullptr;
-                    s.definition_range = cd.range;
-                    s.visibility = cd.visibility;
-                    break;
-                }
-            } else if (d->kind == ast::NodeKind::Struct) {
-                // A struct export, named in expression position — `util.geom.Point(…)`
-                // construction or a value reference. The nominal type carries the
-                // decl, so this needs no signature re-derivation.
-                const auto& sd = static_cast<const ast::StructDecl&>(*d);
-                if (sd.name == exported && sd.visibility == ast::Visibility::Public) {
-                    s.kind = SymbolKind::Struct;
-                    s.decl = d.get();
-                    s.type = types_->make_nominal(TypeKind::Struct, &sd);
-                    s.definition_range = sd.range;
-                    s.visibility = sd.visibility;
-                    break;
-                }
-            } else if (d->kind == ast::NodeKind::Enum) {
-                const auto& ed = static_cast<const ast::EnumDecl&>(*d);
-                if (ed.name == exported && ed.visibility == ast::Visibility::Public) {
-                    s.kind = SymbolKind::Enum;
-                    s.decl = d.get();
-                    s.type = types_->make_nominal(TypeKind::Enum, &ed);
-                    s.definition_range = ed.range;
-                    s.visibility = ed.visibility;
-                    break;
-                }
-            }
-        }
-        if (s.decl == nullptr) {
-            error_at(m.range,
-                     std::format("module '{}' has no public member '{}'", dotted, exported));
-            return types_->error();
-        }
-        module_export_syms_.push_back(std::move(s));
-        sym = &module_export_syms_.back();
-        module_export_cache_[qualified] = sym;
-    }
-
-    // Record the resolved symbol and the fully-qualified C++ name so codegen
-    // emits `util::math::add` rather than a member access.
     resolution_.set_symbol(&m, sym);
     resolution_.set_qualified_name(&m, std::move(qualified));
     return sym->type;
