@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §5 a shared library module that lives outside the entry file's directory. It
+// is reachable only because the build adds this directory as an import search
+// root (`-I examples/searchpath_demo/lib`); the entry in ../app imports it by
+// its module path `mathx`, which the loader resolves against the `-I` root.
+
+module mathx
+
+public func triple(_ x: Int32) -> Int32 {
+    return x * 3
+}

@@ -36,13 +36,16 @@ namespace {
 constexpr std::string_view UsageText = R"(usage: vestra <subcommand> [options]
 
 Subcommands:
-  build <file.vst> [-o DIR] [--emit-only] [--dump-ast] [--dump-tokens]
-                   [--skip-check] [--no-libc]
+  build <file.vst> [-o DIR] [-I DIR ...] [--emit-only] [--dump-ast]
+                   [--dump-tokens] [--skip-check] [--no-libc]
                    [--target=ARCH] [--target-features=LIST]
         Parse, semantically check, then transpile a Vestra source file to
         C++ (.hpp + .cpp) under DIR. §5: `import a.b.c` is followed to
         <entry-dir>/a/b/c.vst, and every transitively-imported module is
         transpiled to its own .hpp/.cpp under DIR.
+        -I DIR adds an import search root (repeatable): an import resolves
+        against the entry file's directory first, then each -I root in
+        order, taking the first match.
         --skip-check elides sema (debug aid).
         --no-libc marks the build as freestanding (§A10 §15.5): the
         generated header opens with `// vestra: no_libc = true`.
@@ -51,9 +54,10 @@ Subcommands:
         ISA features (e.g. lse2,cx16). Wide atomics (Atomic[UInt128] /
         AtomicTaggedPointer[T]) require the matching feature when the
         target is non-host: lse2 on aarch64, cx16 on x86_64 (§14.9.4).
-  check <file.vst>
+  check <file.vst> [-I DIR ...]
         Parse and run name resolution + type checking; print any diagnostics.
-        Exits 0 on a clean check.
+        Exits 0 on a clean check. -I DIR adds an import search root (as in
+        build), so `check` resolves imports identically.
   fmt <file.vst>
         Pretty-print a Vestra source file to stdout.
   expand <file.vst>
@@ -96,6 +100,8 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
             auto a = argv[i];
             if (a == "-o" && i + 1 < argv.size()) {
                 opts.out_dir = std::string{argv[++i]};
+            } else if (a == "-I" && i + 1 < argv.size()) {
+                opts.import_paths.emplace_back(std::string{argv[++i]});
             } else if (a == "--emit-only") {
                 opts.emit_only = true;
             } else if (a == "--dump-ast") {
@@ -142,11 +148,24 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
         return run_build(opts, out, err);
     }
     if (sub == "check") {
-        if (argv.size() < 3) {
+        std::filesystem::path input;
+        std::vector<std::filesystem::path> import_paths;
+        for (std::size_t i = 2; i < argv.size(); ++i) {
+            auto a = argv[i];
+            if (a == "-I" && i + 1 < argv.size()) {
+                import_paths.emplace_back(std::string{argv[++i]});
+            } else if (!a.empty() && a[0] != '-') {
+                input = std::string{a};
+            } else {
+                err << "vestra: unknown option '" << a << "'\n";
+                return 2;
+            }
+        }
+        if (input.empty()) {
             err << "vestra check: missing input file\n";
             return 2;
         }
-        return run_check(std::string{argv[2]}, out, err);
+        return run_check(input, out, err, import_paths);
     }
     if (sub == "fmt") {
         if (argv.size() < 3) {
@@ -239,9 +258,17 @@ struct ModuleGraph {
 ModuleGraph load_module_graph(const std::filesystem::path& input,
                               diag::SourceManager& sm,
                               diag::DiagnosticReporter& rep,
-                              std::ostream& err) {
+                              std::ostream& err,
+                              const std::vector<std::filesystem::path>& import_roots = {}) {
     namespace fs = std::filesystem;
-    const fs::path entry_dir = input.parent_path();
+    // §5 search roots, in priority order: the entry file's directory first,
+    // then each `-I` root. An import resolves to the first existing candidate;
+    // its output relpath stays the import path regardless of which root held it.
+    std::vector<fs::path> search_dirs;
+    search_dirs.push_back(input.parent_path());
+    for (const auto& r : import_roots) {
+        search_dirs.push_back(r);
+    }
     ModuleGraph g;
     std::unordered_map<std::string, int> visited;
     // Canonical keys of the units currently on the DFS recursion stack. An
@@ -287,11 +314,13 @@ ModuleGraph load_module_graph(const std::filesystem::path& input,
             if (imp == nullptr || imp->is_c_header || imp->path.empty()) {
                 continue;
             }
-            fs::path dep = entry_dir;
+            // Build the import as a relative directory path (`a.b.c` →
+            // `a/b/c.vst`) and the dotted name for diagnostics.
+            fs::path rel;
             std::string dep_rel;
             std::string dotted;
             for (const auto& seg : imp->path) {
-                dep /= seg;
+                rel /= seg;
                 if (!dep_rel.empty()) {
                     dep_rel += '/';
                 }
@@ -301,14 +330,35 @@ ModuleGraph load_module_graph(const std::filesystem::path& input,
                 }
                 dotted += seg;
             }
-            dep += ".vst";
-            // §5 missing-import diagnostic, located at the `import` statement.
-            std::error_code ec;
-            if (!fs::exists(dep, ec) || ec) {
+            rel += ".vst";
+            // §5 resolve against each search root in order; the first existing
+            // candidate wins. The relpath that drives output layout stays
+            // `dep_rel` (the import path), independent of which root matched.
+            fs::path dep;
+            bool found = false;
+            for (const auto& base : search_dirs) {
+                std::error_code ec;
+                fs::path cand = base / rel;
+                if (fs::exists(cand, ec) && !ec) {
+                    dep = std::move(cand);
+                    found = true;
+                    break;
+                }
+            }
+            // §5 missing-import diagnostic, located at the `import` statement;
+            // names every root searched so a misconfigured `-I` is obvious.
+            if (!found) {
+                std::string searched;
+                for (const auto& base : search_dirs) {
+                    if (!searched.empty()) {
+                        searched += ", ";
+                    }
+                    searched += (base / rel).string();
+                }
                 rep.report(diag::Diagnostic::error(
-                               std::format("cannot find imported module '{}' (no file at {})",
+                               std::format("cannot find imported module '{}' (searched: {})",
                                            dotted,
-                                           dep.string()))
+                                           searched))
                                .at(imp->range));
                 continue;
             }
@@ -429,8 +479,9 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
     diag::DiagnosticReporter rep(sm);
     namespace fs = std::filesystem;
 
-    // §5 multi-file: load the entry and every transitively-imported module.
-    ModuleGraph graph = load_module_graph(opts.input, sm, rep, err);
+    // §5 multi-file: load the entry and every transitively-imported module,
+    // resolving imports against the entry dir then any `-I` roots.
+    ModuleGraph graph = load_module_graph(opts.input, sm, rep, err, opts.import_paths);
     if (graph.entry < 0) {
         return 1;
     }
@@ -540,13 +591,16 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
     return rep.has_errors() ? 1 : 0;
 }
 
-int run_check(const std::filesystem::path& input, std::ostream& out, std::ostream& err) {
+int run_check(const std::filesystem::path& input,
+              std::ostream& out,
+              std::ostream& err,
+              const std::vector<std::filesystem::path>& import_paths) {
     diag::SourceManager sm;
     diag::DiagnosticReporter rep(sm);
 
     // §5 multi-file: load + check the entry and every imported module, so
     // `check` agrees with `build` on which cross-module references resolve.
-    ModuleGraph graph = load_module_graph(input, sm, rep, err);
+    ModuleGraph graph = load_module_graph(input, sm, rep, err, import_paths);
     if (graph.entry < 0) {
         return 1;
     }

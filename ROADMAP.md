@@ -32,7 +32,7 @@ first slice.
 
 ## Next up (priority 1-9)
 
-### 0. Multi-file modules (§5) (multi-session) — slices 1-10 shipped
+### 0. Multi-file modules (§5) (multi-session) — slices 1-11 shipped (complete)
 
 The first step toward self-hosting (a compiler is many files). **Slice 1
 shipped**: `vestra build entry.vst` is now a transitive module loader.
@@ -157,7 +157,21 @@ this fills in the emitter half. Proven end to end (`examples/cinterop_demo/`:
 `import c "clib.h"` + an `@extern` bound to the header's inline `cdemo_value()`,
 compiled with the example dir on the include path and run).
 
-Remaining: a **search-path / project-root** notion.
+**Slice 11 shipped** — **import search roots (`-I DIR`)**: `vestra build` and
+`vestra check` take repeatable `-I DIR` flags. An `import a.b.c` now resolves
+against the entry file's directory first, then each `-I` root in order, taking
+the first existing `a/b/c.vst` — so a build can name shared library modules from
+a common root regardless of where the entry file lives. The dependency's output
+relpath stays its import path (`a/b/c.{hpp,cpp}`), independent of which root
+held the source, so the importer's `#include` still matches. The missing-import
+diagnostic now lists every root searched. `check` accepts the same flag so it
+resolves identically to `build`. Proven end to end (`examples/searchpath_demo/`:
+an entry in `app/` imports `mathx` whose file lives only under a `-I lib` root).
+
+This closes §5 multi-file modules for v0.5: transitive loading, `public`
+visibility, output layout, qualified references and types (incl. generics),
+shared-arena export harvesting, missing/cyclic diagnostics, C-header imports,
+and search roots.
 
 ### 0b. Collections / string library (§18.5) (multi-session) — slices 1-8 shipped
 

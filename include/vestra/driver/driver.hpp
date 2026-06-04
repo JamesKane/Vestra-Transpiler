@@ -39,14 +39,23 @@ struct BuildOptions {
     // primitive.
     std::string target = "host";
     std::vector<std::string> target_features;
+    // §5 import search roots (repeatable `-I DIR`). An `import a.b.c` resolves
+    // against the entry file's directory first, then each of these in order;
+    // the first existing `a/b/c.vst` wins. Lets a build name shared library
+    // modules from a common root regardless of where the entry file lives.
+    std::vector<std::filesystem::path> import_paths;
 };
 
 // Entry points for each `vestra` subcommand. Each returns a process exit code.
 [[nodiscard]] int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream& err);
 
 [[nodiscard]] int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err);
-[[nodiscard]] int
-run_check(const std::filesystem::path& input, std::ostream& out, std::ostream& err);
+// §5 `import_paths` are extra import search roots (see BuildOptions); empty for
+// a plain single-root check.
+[[nodiscard]] int run_check(const std::filesystem::path& input,
+                            std::ostream& out,
+                            std::ostream& err,
+                            const std::vector<std::filesystem::path>& import_paths = {});
 [[nodiscard]] int run_fmt(const std::filesystem::path& input, std::ostream& out, std::ostream& err);
 [[nodiscard]] int
 run_expand(const std::filesystem::path& input, std::ostream& out, std::ostream& err);

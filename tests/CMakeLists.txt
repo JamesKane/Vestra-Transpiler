@@ -2390,6 +2390,33 @@ set_tests_properties(e2e_cinterop_demo_run PROPERTIES
     DEPENDS                e2e_cinterop_demo_compile
     PASS_REGULAR_EXPRESSION "cinterop_demo OK")
 
+# §5 import search roots: the entry imports `mathx`, whose file lives only under
+# a separate -I root (lib/), not under the entry's own directory. The transpile
+# resolves it via -I; the dependency emits at its import path (mathx.{hpp,cpp}).
+set(e2e_sp_input  ${CMAKE_SOURCE_DIR}/examples/searchpath_demo/app/spmain.vst)
+set(e2e_sp_root   ${CMAKE_SOURCE_DIR}/examples/searchpath_demo/lib)
+set(e2e_sp_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_searchpath_demo.cpp)
+
+add_test(
+    NAME    e2e_searchpath_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_sp_input} -I ${e2e_sp_root} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_searchpath_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_sp_driver} ${e2e_workdir}/spmain.cpp ${e2e_workdir}/mathx.cpp
+            -o ${e2e_workdir}/searchpath_app)
+set_tests_properties(e2e_searchpath_demo_compile PROPERTIES DEPENDS e2e_searchpath_demo_transpile)
+
+add_test(
+    NAME    e2e_searchpath_demo_run
+    COMMAND ${e2e_workdir}/searchpath_app)
+set_tests_properties(e2e_searchpath_demo_run PROPERTIES
+    DEPENDS                e2e_searchpath_demo_compile
+    PASS_REGULAR_EXPRESSION "searchpath_demo OK")
+
 # §5/§18.4 split(at:) partition primitive.
 set(e2e_split_input  ${CMAKE_SOURCE_DIR}/examples/split_demo.vst)
 set(e2e_split_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_split_demo.cpp)

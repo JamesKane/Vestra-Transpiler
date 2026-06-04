@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §5 import search roots. This entry lives in app/ but imports `mathx`, whose
+// file is in a sibling lib/ directory — not under the entry's own directory.
+// The build resolves it via `-I examples/searchpath_demo/lib`: imports are
+// tried against the entry dir first, then each `-I` root in order. The
+// dependency still emits at its import path (mathx.{hpp,cpp}), so the
+// generated `#include "mathx.hpp"` matches regardless of which root held it.
+
+module app
+
+import mathx
+
+func compute() -> Int32 {
+    return mathx.triple(14)  // 42
+}
