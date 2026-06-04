@@ -21,6 +21,8 @@ int main() {
     assert(vd::getOr(0, 0, -1) == -1);   // empty Vec -> default
     assert(vd::drainSum(5) == 15);       // pop drains 5+4+3+2+1
     assert(vd::drainSum(0) == 0);        // empty Vec -> pop is nil immediately
+    assert(vd::doubleAndSum(4) == 20);   // set doubles [1..4]; for-in sums 2+4+6+8
+    assert(vd::doubleAndSum(0) == 0);    // empty: nothing to double, clear is a no-op
     std::puts("vec_demo OK");
     return 0;
 }

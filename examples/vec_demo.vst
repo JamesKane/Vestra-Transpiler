@@ -79,3 +79,26 @@ func drainSum(_ n: Int32) using Alloc -> Int32 {
     }
     return total
 }
+
+// In-place overwrite with `set(i, x)`, ranged iteration with `for x in xs`, and
+// `clear()`. Builds [1..n], doubles every element in place, sums them by
+// iterating, then clears and folds the now-empty length back in.
+func doubleAndSum(_ n: Int32) using Alloc -> Int32 {
+    var xs: Vec[Int32] = Vec.new()
+    var k: Int32 = 1
+    while k <= n {
+        xs.push(k)
+        k = k + 1
+    }
+    var i: Int = 0
+    while i < xs.len() {
+        xs.set(i, xs[i] + xs[i])
+        i = i + 1
+    }
+    var total: Int32 = 0
+    for x in xs {
+        total = total + x
+    }
+    xs.clear()
+    return total + xs.len()
+}

@@ -874,6 +874,12 @@ void Resolver::check_stmt(const ast::Stmt& s) {
                 elem_type = iter_type;
             }
         }
+        if (elem_type == nullptr && iter_type != nullptr && iter_type->kind() == TypeKind::Vec
+            && iter_type->inner() != nullptr) {
+            // §18.5 `for x in xs` over a Vec[T] iterates its elements directly
+            // (lowered to a C++ range-based for); the loop variable type is T.
+            elem_type = iter_type->inner();
+        }
         if (elem_type == nullptr && iter_type != nullptr && !iter_type->is_error()) {
             // Iterator protocol fallback: look for a `next()` method
             // whose result is Optional<T>; the loop variable type is T.
@@ -885,7 +891,7 @@ void Resolver::check_stmt(const ast::Stmt& s) {
             }
             if (elem_type == nullptr) {
                 error_at(f.iter->range,
-                         std::format("'for x in xs' requires xs to be a Range or have a "
+                         std::format("'for x in xs' requires xs to be a Range, a Vec, or have a "
                                      "'next() -> Element?' method, got {}",
                                      iter_type->describe()));
             }

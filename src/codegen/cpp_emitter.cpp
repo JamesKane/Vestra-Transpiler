@@ -3562,6 +3562,19 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << ")";
                     break;
                 }
+                if (mem.member == "set" && c.args.size() == 2) {
+                    emit_expr(os, *mem.base);
+                    os << "[static_cast<std::size_t>(";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")] = ";
+                    emit_expr(os, *c.args[1].value);
+                    break;
+                }
+                if (mem.member == "clear" && c.args.empty()) {
+                    emit_expr(os, *mem.base);
+                    os << ".clear()";
+                    break;
+                }
             }
             // §18.5 String methods: `append(x)` → `.append(x)` (std::string's
             // string_view overload takes a Str/StrConst arg directly);

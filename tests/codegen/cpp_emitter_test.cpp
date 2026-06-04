@@ -2863,6 +2863,24 @@ TEST_CASE("Vec[T] get / pop lower to __vstr optional helpers") {
     CHECK(f.out.header.find("std::optional<typename V::value_type> vec_pop(") != std::string::npos);
 }
 
+TEST_CASE("Vec[T] set / clear / for-in lower to index-assign, .clear, range-for") {
+    SemaEmitFixture f("func f() using Alloc -> Int32 {\n"
+                      "    var xs: Vec[Int32] = Vec.new()\n"
+                      "    xs.push(1)\n"
+                      "    xs.set(0, 9)\n"
+                      "    var total: Int32 = 0\n"
+                      "    for x in xs {\n"
+                      "        total = total + x\n"
+                      "    }\n"
+                      "    xs.clear()\n"
+                      "    return total\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.source.find("xs[static_cast<std::size_t>(0)] = 9") != std::string::npos);
+    CHECK(f.out.source.find("for (auto&& x : xs)") != std::string::npos);
+    CHECK(f.out.source.find("xs.clear()") != std::string::npos);
+}
+
 TEST_CASE("String lowers to std::string with new / append / len") {
     SemaEmitFixture f("func f(_ who: Str) using Alloc -> Int32 {\n"
                       "    var s: String = String.new()\n"

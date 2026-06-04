@@ -313,6 +313,25 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
             }
             break;
         }
+        // §18.5 `for x in xs` over a Vec[T] lowers to a C++ range-based for.
+        // `auto&&` binds each element without copying (free for struct
+        // elements); the loop variable is immutable on the Vestra side, so the
+        // reference is read-only in practice.
+        if (resolution_ != nullptr && f.iter) {
+            if (auto it = resolution_->type_of(f.iter.get());
+                it != nullptr && it->kind() == sema::TypeKind::Vec) {
+                os << "for (auto&& " << bind_name() << " : ";
+                emit_expr(os, *f.iter);
+                os << ") ";
+                if (f.body && f.body->kind == ast::NodeKind::BlockExpr) {
+                    emit_block(os, static_cast<const ast::BlockExpr&>(*f.body), indent);
+                    os << "\n";
+                } else {
+                    os << "{}\n";
+                }
+                break;
+            }
+        }
         // Iterator protocol: capture iter as a mutable local, drive
         // while-true / .next() / break on nullopt.
         //

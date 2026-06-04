@@ -174,12 +174,20 @@ range/empty check into a `std::optional<T>`. Resolved in `lookup_method`
 handle-style mutation path as `push`. Proven end to end (`examples/vec_demo.vst`
 extended with `getOr`/`drainSum`).
 
+**Slice 6 shipped** — **`Vec` mutation + iteration**: `set(i, x)` overwrites an
+element in place (unchecked, lowering to `v[size_t] = x`, the assignment mate of
+the unchecked `xs[i]` read), `clear()` empties the Vec (`.clear()`), and
+`for x in xs` iterates its elements (a third ForStmt shape alongside Range and
+the `next()` iterator protocol, lowered to a C++ range-based `for (auto&& x :
+v)`). Resolved in `lookup_method` (set/clear) and the ForStmt resolution
+(element type = the Vec's inner). Proven end to end (`examples/vec_demo.vst`
+extended with `doubleAndSum`, which sets, iterates, and clears).
+
 Remaining: **`append` taking an owned `String`** via a Str read-borrow (the
 String→Str-at-read-param coercion — today append takes Str, so it accepts
-literals/views but not another owned String); **more `Vec` methods**
-(`set(i, x)`, `clear`, iteration via `for x in v`). And mutation/exclusivity
-discipline for the mutating methods (today `push`/`pop`/`append`/`set` ride the
-handle-style exemption rather than a tracked `inout` receiver).
+literals/views but not another owned String); and mutation/exclusivity
+discipline for the mutating methods (today `push`/`pop`/`set`/`clear`/`append`
+ride the handle-style exemption rather than a tracked `inout` receiver).
 
 ### 1. Generics phase 2 (multi-session)
 
