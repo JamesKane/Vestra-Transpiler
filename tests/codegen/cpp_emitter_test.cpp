@@ -2702,6 +2702,23 @@ TEST_CASE("a declaration macro reflects the annotated decl's name via $(d.name)"
     CHECK(f.out.source.find("std::string_view(\"Widget\")") != std::string::npos);
 }
 
+TEST_CASE("a declaration macro reads multi-arg attributes via d.attribute(name, i)") {
+    // §12.6: an attribute can carry more than one argument; the i-th is read
+    // with a two-arg `d.attribute("name", i)` (0 = the first).
+    SemaEmitFixture f("comptime func mapped(_ d: Decl) -> [Decl] {\n"
+                      "    return quote { $d\n"
+                      "        func base() -> Int32 { return $(d.attribute(\"mapped\", 0)) }\n"
+                      "        func width() -> Int32 { return $(d.attribute(\"mapped\", 1)) }\n"
+                      "    }\n"
+                      "}\n"
+                      "@mapped(64, 16)\n"
+                      "struct Bank { var v: Int32 }\n");
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.source.find("return 64;") != std::string::npos);  // arg 0
+    CHECK(f.out.source.find("return 16;") != std::string::npos);  // arg 1
+    CHECK(f.out.source.find("mapped(") == std::string::npos);     // macro not emitted
+}
+
 TEST_CASE("a declaration macro folds a computed value and splices it via $(k)") {
     SemaEmitFixture f("comptime func bump(_ d: Decl) -> [Decl] {\n"
                       "    let k: Int32 = 40 + 2\n"

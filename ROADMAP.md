@@ -617,8 +617,17 @@ both hand-written and macro-generated extensions. The folder's
 `resolve_decl_splices` recurses into extension members (target type, method
 names/types/bodies), and `ast::clone` now reproduces `ExtensionDecl`.
 
-Remaining (full reflection): multi-argument attributes (`Attribute` carries a
-single predicate today) and `.asType()` on a type-valued argument
+Fifteenth slice shipped — **multi-argument attributes**: an attribute can now
+carry more than one argument (`@mapped(0x80, 16)`), and a macro reads the i-th
+with a two-arg `d.attribute("name", i)` (0 = the first, ≥1 = the new
+`Attribute::extra_args`). Additive — `predicate` stays the first argument so
+every single-arg consumer is untouched; the parser gained a comma loop after
+the first arg, `ast::clone` reproduces the extras, and the folder's
+attribute-reflection path dispatches on the call arity. Proven end to end
+(`quote_demo` `@mapped(addr, width)` bakes both into generated `_base()` /
+`_width()` accessors) plus a codegen unit test.
+
+Remaining (full reflection): `.asType()` on a type-valued argument
 (`@derive(Eq)`); richer type materialization (compound types like `[N]T` /
 `T?`). The builder API is the last broad piece. Extension lowering is minimal
 (instance methods on a unit-local struct target; conformance-bearing or

@@ -50,6 +50,9 @@ Attribute clone_attr(const Attribute& a) {
     Attribute c;
     c.name = a.name;
     c.predicate = cl(a.predicate);
+    for (const auto& e : a.extra_args) {
+        c.extra_args.push_back(cl(e));
+    }
     c.range = a.range;
     return c;
 }

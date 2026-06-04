@@ -211,11 +211,15 @@ using PatternPtr = std::unique_ptr<Pattern>;
 // flesh it out when we tackle macros.
 struct Attribute {
     std::string name;
-    // Single-expression argument: `@when(cfg.arch == .arm64)` puts the
-    // comparison expression here; `@bits(4)` puts the integer literal.
-    // Attributes that take no args leave this null. Phase 1 of §12.6 only
-    // needs a single arg; multi-arg attributes can extend this to a vector.
+    // First argument: `@when(cfg.arch == .arm64)` puts the comparison here;
+    // `@bits(4)` the integer literal. No-arg attributes leave this null. Kept
+    // as a distinct field (rather than args[0]) so the many single-arg
+    // consumers stay unchanged.
     ExprPtr predicate;
+    // §12.6 multi-arg attributes — every argument *after* the first, in order
+    // (`@route("/p", 200)` puts 200 here). Empty for zero- or one-arg
+    // attributes. Reflection reaches them via `d.attribute(name, index)`.
+    std::vector<ExprPtr> extra_args;
     diag::SourceRange range;
 };
 

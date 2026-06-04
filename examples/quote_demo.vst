@@ -191,6 +191,22 @@ struct Reg2 {
     var v: Int32
 }
 
+// §12.6 multi-argument attribute reflection: an attribute can carry more than
+// one argument, and `d.attribute("name", i)` reads the i-th (0 = the first).
+// Here `@mapped(addr, width)` bakes both into separate generated accessors.
+comptime func mapped(_ d: Decl) -> [Decl] {
+    return quote {
+        $d
+        func $(d.name + "_base")() -> Int32 { return $(d.attribute("mapped", 0)) }
+        func $(d.name + "_width")() -> Int32 { return $(d.attribute("mapped", 1)) }
+    }
+}
+
+@mapped(0x80, 16)
+struct Bank1 {
+    var v: Int32
+}
+
 // §12.4 + §5 method generation: a macro can emit `extension $(d.name) { … }`
 // blocks whose methods use `self`. The extension is lowered (folded into the
 // target struct) so each method becomes a real member function — `v.dxProp()`

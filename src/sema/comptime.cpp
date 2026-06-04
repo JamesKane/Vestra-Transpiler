@@ -1030,15 +1030,21 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
         // (no closures).
         const auto& c = static_cast<const ast::CallExpr&>(e);
 
-        // §12.4 attribute reflection: method calls on a `Decl` value with a
-        // single String argument — `d.hasAttribute("x")` (Bool) and
-        // `d.attribute("x")` (the folded value of attribute x's single
-        // argument, e.g. `@register(0x40)` → 64). The macro's own attribute is
-        // still present on the annotated decl during expansion, so a macro can
-        // read the argument it was invoked with.
-        if (c.callee->kind == ast::NodeKind::MemberExpr && c.args.size() == 1) {
+        // §12.4 attribute reflection: method calls on a `Decl` value.
+        //   `d.hasAttribute("x")` → Bool;
+        //   `d.attribute("x")` → the folded value of attribute x's *first*
+        //     argument (`@register(0x40)` → 64);
+        //   `d.attribute("x", i)` → its i-th argument (0 = the first, then the
+        //     §12.6 extra_args), so `@route("/p", 200)` reads both.
+        // The macro's own attribute is still present on the annotated decl
+        // during expansion, so a macro can read the arguments it was invoked
+        // with.
+        if (c.callee->kind == ast::NodeKind::MemberExpr && !c.args.empty() && c.args.size() <= 2) {
             const auto& m = static_cast<const ast::MemberExpr&>(*c.callee);
-            if ((m.member == "hasAttribute" || m.member == "attribute") && m.base) {
+            const bool is_has = m.member == "hasAttribute" && c.args.size() == 1;
+            const bool is_attr =
+                m.member == "attribute" && (c.args.size() == 1 || c.args.size() == 2);
+            if ((is_has || is_attr) && m.base) {
                 if (auto bv = fold_with(*m.base, env, frame, TypeKind::Unit, depth);
                     bv && bv->kind == ComptimeValue::Kind::Code && bv->code) {
                     auto an = fold_with(*c.args[0].value, env, frame, TypeKind::Unit, depth + 1);
@@ -1046,14 +1052,37 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
                         return std::nullopt;
                     }
                     const ast::Attribute* attr = find_decl_attribute(*bv->code, an->s);
-                    if (m.member == "hasAttribute") {
+                    if (is_has) {
                         return make_bool(attr != nullptr);
                     }
-                    // `attribute`: fold the attribute's single argument.
-                    if (attr == nullptr || !attr->predicate) {
+                    if (attr == nullptr) {
                         return std::nullopt;
                     }
-                    return fold_with(*attr->predicate, env, frame, hint, depth + 1);
+                    // Default to the first argument; a second call argument
+                    // selects which (0 = predicate, ≥1 = extra_args[i-1]).
+                    std::int64_t idx = 0;
+                    if (c.args.size() == 2) {
+                        auto iv = fold_with(*c.args[1].value, env, frame, TypeKind::Int, depth + 1);
+                        if (!iv
+                            || (iv->kind != ComptimeValue::Kind::Int
+                                && iv->kind != ComptimeValue::Kind::UInt)) {
+                            return std::nullopt;
+                        }
+                        idx = iv->kind == ComptimeValue::Kind::Int
+                                  ? iv->i
+                                  : static_cast<std::int64_t>(iv->u);
+                    }
+                    const ast::Expr* arg = nullptr;
+                    if (idx == 0) {
+                        arg = attr->predicate.get();
+                    } else if (idx >= 1
+                               && static_cast<std::size_t>(idx - 1) < attr->extra_args.size()) {
+                        arg = attr->extra_args[static_cast<std::size_t>(idx - 1)].get();
+                    }
+                    if (arg == nullptr) {
+                        return std::nullopt;
+                    }
+                    return fold_with(*arg, env, frame, hint, depth + 1);
                 }
             }
         }

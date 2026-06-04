@@ -226,14 +226,16 @@ std::vector<ast::Attribute> Parser::parse_attributes() {
         }
         a.name = std::string{advance().lexeme};
         if (match(TokenKind::LParen)) {
-            // §12.6 wants attribute arguments to be ordinary comptime
-            // expressions (so `@when(cfg.arch == .arm64)` is a Vestra
-            // expression we can fold). Phase 1 supports a single expression
-            // argument — enough for @when, @bits, @repr, etc. Multi-arg
-            // attributes would extend Attribute to a vector and parse with
-            // a comma loop here.
+            // §12.6 attribute arguments are ordinary comptime expressions (so
+            // `@when(cfg.arch == .arm64)` folds as a Vestra expression). The
+            // first lands in `predicate`; any further comma-separated args go
+            // to `extra_args` (`@route("/p", 200)`), reachable from a macro via
+            // `d.attribute(name, index)`.
             if (!check(TokenKind::RParen)) {
                 a.predicate = parse_expr();
+                while (match(TokenKind::Comma)) {
+                    a.extra_args.push_back(parse_expr());
+                }
             }
             expect(TokenKind::RParen, "closing ')' of attribute arguments");
         }
