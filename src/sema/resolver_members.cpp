@@ -90,6 +90,18 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
             return types_->make_function({}, types_->unit());
         }
     }
+    // §18.5 Vec[T] methods (v0.5 core): `push(T)` appends (mutating) and
+    // `len() -> Int` reports the count. Element reads go through indexing
+    // (`xs[i]`, see check_index); `get`/`pop`/etc. are follow-ons.
+    if (owner_type->kind() == TypeKind::Vec && owner_type->inner() != nullptr) {
+        TypePtr T = owner_type->inner();
+        if (name == "push") {
+            return types_->make_function({T}, types_->unit());
+        }
+        if (name == "len") {
+            return types_->make_function({}, types_->primitive(TypeKind::Int));
+        }
+    }
     if (owner_type->kind() == TypeKind::PerCpu && owner_type->inner() != nullptr) {
         if (name == "mine") {
             return types_->make_function({}, owner_type->inner());

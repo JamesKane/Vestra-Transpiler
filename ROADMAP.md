@@ -117,6 +117,31 @@ namespace` can be dropped. Plus **generic imported types**,
 **`import c "header.h"`**, **missing/cyclic-import diagnostics**, and a
 **search-path / project-root** notion.
 
+### 0b. Collections / string library (§18.5) (multi-session) — slice 1 shipped
+
+The other big self-hosting blocker (a compiler is mostly Vec/HashMap/String
+churn). v0.5 had no growable collection; there's no raw-array-alloc primitive
+to write one in Vestra, so these follow the established "compiler-known type
+backed by a C++ STL container" idiom (like Box→unique_ptr, Channel→deque).
+
+**Slice 1 shipped** — **`Vec[T]` → `std::vector<T>`**: a growable, owned
+sequence. `Vec.new()` mints an empty one (gated by `Alloc`, like Box.new);
+`v.push(x)` appends, `v.len() -> Int`, and `v[i]` reads an element. New
+`TypeKind::Vec` (distinct from the fixed-array `Vector`); resolved in
+`resolve_type` / `check_call` (construction) / `lookup_method` (push, len) /
+`check_index` (indexing); lowered in the emitter (type, `Vec.new()` → `{}`,
+push → `push_back`, len → `size()`-as-Int, index → `[size_t]`). Proven end to
+end (`examples/vec_demo.vst`, including a `Vec[Point]`).
+
+Remaining: **owned growable `String`** (→ std::string: `push`/`append`/
+concatenation/length) — the other half of the bootstrap need; **more `Vec`
+methods** (`get(i) -> T?`, `pop() -> T?`, `set`, `clear`, iteration via
+`for x in v`) — `get`/`pop` need an optional-returning lowering (a small runtime
+helper or inline IIFE); **`HashMap[K, V]`** (→ std::unordered_map; the symbol
+table); and mutation/exclusivity discipline for the mutating methods (today
+`push` rides the same handle-style exemption as Channel rather than a tracked
+`inout` receiver).
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

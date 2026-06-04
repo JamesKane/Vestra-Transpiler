@@ -187,6 +187,14 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                 && mem.member == "new" && !in_scope("Alloc")) {
                 missing_capability("Alloc", c.range);
             }
+            // §18.5 `Vec.new()` heap-allocates a growable buffer — same Alloc
+            // gate. (`push` may also reallocate, but the allocation discipline
+            // is anchored at construction in v0.5.)
+            if (mem.base && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "Vec"
+                && mem.member == "new" && !in_scope("Alloc")) {
+                missing_capability("Alloc", c.range);
+            }
             // §A11 (§14.8) `pc.slot(hartId)` — cross-hart accessor.
             // The slot() returns a Ptr[T] into another hart's storage
             // without the borrow-tracking the spec's per-hart view

@@ -50,6 +50,11 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                 return types_->make_channel(n.type_args[0] ? resolve_type(*n.type_args[0])
                                                            : types_->error());
             }
+            // §18.5 Vec[T] — a growable, owned sequence (→ std::vector<T>).
+            if (n.path[0] == "Vec" && n.type_args.size() == 1) {
+                return types_->make_vec(n.type_args[0] ? resolve_type(*n.type_args[0])
+                                                       : types_->error());
+            }
             // §10 builtin `Span[T]` / `MutSpan[T]` — borrowed,
             // non-escapable views over a contiguous range of T. Lower
             // to `std::span<const T>` / `std::span<T>`. The implicit

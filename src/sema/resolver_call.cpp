@@ -814,6 +814,29 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
             }
             return types_->make_channel(inner);
         }
+        // §18.5 `Vec.new()` — mints an empty growable sequence. Like Channel,
+        // the element type comes from the expected `Vec[T]`. Allocation is
+        // gated by `Alloc` (checked in capability.cpp).
+        if (mem.base->kind == ast::NodeKind::IdentExpr
+            && static_cast<const ast::IdentExpr&>(*mem.base).name == "Vec" && mem.member == "new"
+            && scopes_.current().lookup("Vec") == nullptr) {
+            if (!c.args.empty()) {
+                for (const auto& a : c.args) {
+                    (void)check_expr(*a.value);
+                }
+                error_at(c.range, "Vec.new() takes no arguments");
+            }
+            TypePtr inner = (expected != nullptr && expected->kind() == TypeKind::Vec)
+                                ? expected->inner()
+                                : nullptr;
+            if (inner == nullptr) {
+                error_at(c.range,
+                         "cannot infer Vec element type; annotate the binding (e.g. "
+                         "`var xs: Vec[Int32] = Vec.new()`)");
+                inner = types_->error();
+            }
+            return types_->make_vec(inner);
+        }
     }
 
     // §A11 (§14.8) `PerCpu.new(value)` — the heap factory for per-hart

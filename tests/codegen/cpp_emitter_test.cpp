@@ -2833,6 +2833,20 @@ TEST_CASE("a declaration macro generates self methods via an extension") {
     CHECK(f.out.header.find("return (*this).dy;") != std::string::npos);
 }
 
+TEST_CASE("Vec[T] lowers to std::vector with push / len / index") {
+    SemaEmitFixture f("func f() using Alloc -> Int32 {\n"
+                      "    var xs: Vec[Int32] = Vec.new()\n"
+                      "    xs.push(7)\n"
+                      "    return xs[0] + xs.len()\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.source.find("std::vector<std::int32_t> xs = std::vector<std::int32_t>{}")
+          != std::string::npos);
+    CHECK(f.out.source.find("xs.push_back(7)") != std::string::npos);
+    CHECK(f.out.source.find("xs[static_cast<std::size_t>(0)]") != std::string::npos);
+    CHECK(f.out.source.find("static_cast<std::intptr_t>(xs.size())") != std::string::npos);
+}
+
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------
 
 TEST_CASE("split(at:) lowers to __vstr::split_at and destructures to auto [lo, hi]") {

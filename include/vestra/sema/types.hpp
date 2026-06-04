@@ -77,6 +77,9 @@ enum class TypeKind : std::uint16_t {
     Future,
     // §11 Channel[T] — a typed queue: `send` is a sink, `recv` -> T?.
     Channel,
+    // §18.5 Vec[T] — a growable, owned, heap-backed sequence (→ std::vector<T>).
+    // Distinct from Vector (the fixed `[N]T` array, → std::array).
+    Vec,
     Vector,
     Function,
     Tuple,
@@ -265,6 +268,7 @@ public:
     [[nodiscard]] TypePtr make_future(TypePtr inner);
     // §11 Channel[T] — a typed queue; `send(T)` and `recv() -> T?`.
     [[nodiscard]] TypePtr make_channel(TypePtr inner);
+    [[nodiscard]] TypePtr make_vec(TypePtr inner);
     // §10 Span[T] / MutSpan[T] — borrowed, non-escapable views.
     // Lower to `std::span<const T>` and `std::span<T>` respectively.
     [[nodiscard]] TypePtr make_span(TypePtr inner);

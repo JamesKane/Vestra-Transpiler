@@ -962,6 +962,9 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         case TypeKind::Vector:
         case TypeKind::Span:
         case TypeKind::MutSpan:
+        // §18.5 indexing a Vec[T] yields T (unchecked at the C++ layer, as for
+        // a Span; `get(i) -> T?` is the bounds-checked read).
+        case TypeKind::Vec:
             t = base_t->inner();
             break;
         // §5/§18.4 indexing a ChunkIter yields one sub-view (its inner Span /

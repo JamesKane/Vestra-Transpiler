@@ -2240,6 +2240,30 @@ set_tests_properties(e2e_quote_demo_expand PROPERTIES
     PASS_REGULAR_EXPRESSION "func Seed1_seed"
     FAIL_REGULAR_EXPRESSION "comptime func seeded")
 
+# §18.5 Vec[T] growable sequence (lowers to std::vector).
+set(e2e_vec_input  ${CMAKE_SOURCE_DIR}/examples/vec_demo.vst)
+set(e2e_vec_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_vec_demo.cpp)
+
+add_test(
+    NAME    e2e_vec_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_vec_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_vec_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_vec_driver} ${e2e_workdir}/vec_demo.cpp
+            -o ${e2e_workdir}/vec_demo_app)
+set_tests_properties(e2e_vec_demo_compile PROPERTIES DEPENDS e2e_vec_demo_transpile)
+
+add_test(
+    NAME    e2e_vec_demo_run
+    COMMAND ${e2e_workdir}/vec_demo_app)
+set_tests_properties(e2e_vec_demo_run PROPERTIES
+    DEPENDS                e2e_vec_demo_compile
+    PASS_REGULAR_EXPRESSION "vec_demo OK")
+
 # §5 multi-file: `demo.app` (main.vst) imports `util.math` (util/math.vst). The
 # transpile emits one .hpp/.cpp per module; the compile links both translation
 # units; the run exercises a cross-module call and const.

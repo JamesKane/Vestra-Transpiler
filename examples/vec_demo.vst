@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §18.5 Vec[T] — a growable, owned, heap-backed sequence (lowers to
+// std::vector<T>). `Vec.new()` mints an empty one (gated by the `Alloc`
+// capability, like Box.new); `push` appends, `len()` reports the count, and
+// `xs[i]` reads an element. This is the first growable collection — the kind a
+// real program (a compiler's token list, a symbol table's buckets) needs.
+
+module examples.vec_demo
+
+// Build a Vec by pushing, then fold it back by indexing.
+func sumTo(_ n: Int32) using Alloc -> Int32 {
+    var xs: Vec[Int32] = Vec.new()
+    var k: Int32 = 1
+    while k <= n {
+        xs.push(k)
+        k = k + 1
+    }
+    var total: Int32 = 0
+    var i: Int = 0
+    while i < xs.len() {
+        total = total + xs[i]
+        i = i + 1
+    }
+    return total
+}
+
+// The element type can be any type, including a struct.
+struct Point {
+    var x: Int32
+    var y: Int32
+}
+
+func centroidX(_ count: Int32) using Alloc -> Int32 {
+    var pts: Vec[Point] = Vec.new()
+    var i: Int32 = 0
+    while i < count {
+        pts.push(Point(x: i, y: 0))
+        i = i + 1
+    }
+    var sx: Int32 = 0
+    var j: Int = 0
+    while j < pts.len() {
+        sx = sx + pts[j].x
+        j = j + 1
+    }
+    return sx
+}

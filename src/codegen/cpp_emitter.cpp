@@ -3360,6 +3360,19 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     break;
                 }
             }
+            // §18.5 `Vec.new()` → an empty `std::vector<T>{}` (T from the call's
+            // resolved Vec type).
+            if (mem.base && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "Vec"
+                && mem.member == "new" && resolution_ != nullptr) {
+                auto rt = resolution_->type_of(&e);
+                if (rt != nullptr && rt->kind() == sema::TypeKind::Vec) {
+                    os << "std::vector<";
+                    emit_sema_type(os, rt->inner());
+                    os << ">{}";
+                    break;
+                }
+            }
             // §11 `Duration.seconds(n)` (also milliseconds / microseconds /
             // nanoseconds) lowers to the static factory
             // `__vstr::Duration::seconds(n)`. Guarded on the call resolving to
@@ -3453,6 +3466,27 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 }
                 os << ")";
                 break;
+            }
+        }
+        // §18.5 Vec[T] methods: `push(x)` → `.push_back(x)`; `len()` →
+        // `.size()` retyped to Int (std::intptr_t).
+        if (resolution_ != nullptr && c.callee && c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            if (auto base_t = resolution_->type_of(mem.base.get());
+                base_t != nullptr && base_t->kind() == sema::TypeKind::Vec) {
+                if (mem.member == "push" && c.args.size() == 1) {
+                    emit_expr(os, *mem.base);
+                    os << ".push_back(";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
+                    break;
+                }
+                if (mem.member == "len" && c.args.empty()) {
+                    os << "static_cast<std::intptr_t>(";
+                    emit_expr(os, *mem.base);
+                    os << ".size())";
+                    break;
+                }
             }
         }
         // §9 `result.mapError(f)` lowers to std::expected's
@@ -4115,10 +4149,12 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             // Span / MutSpan operator[] and ChunkIter operator[] both take
             // std::size_t — cast the (signed) Int index to keep
             // -Wsign-conversion quiet.
+            // §18.5 Vec[T] indexes std::vector::operator[], also size_t-typed.
             span_base =
                 bt != nullptr
                 && (bt->kind() == sema::TypeKind::Span || bt->kind() == sema::TypeKind::MutSpan
-                    || bt->kind() == sema::TypeKind::ChunkIter);
+                    || bt->kind() == sema::TypeKind::ChunkIter
+                    || bt->kind() == sema::TypeKind::Vec);
         }
         emit_expr(os, *ix.base);
         os << "[";

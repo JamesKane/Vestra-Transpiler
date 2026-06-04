@@ -88,6 +88,25 @@ TEST_CASE("calling a multi-cap function flags each missing one") {
     CHECK(r.error_count >= 2);
 }
 
+TEST_CASE("§18.5 Vec.new() requires Alloc") {
+    auto r = check("func bad() -> Int32 {\n"
+                   "    var xs: Vec[Int32] = Vec.new()\n"
+                   "    return xs.len()\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("missing capability 'Alloc'") != std::string::npos);
+}
+
+TEST_CASE("§18.5 Vec.new() under `using Alloc` is clean") {
+    CHECK(check("func ok() using Alloc -> Int32 {\n"
+                "    var xs: Vec[Int32] = Vec.new()\n"
+                "    xs.push(1)\n"
+                "    return xs.len()\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 // ---- `with` blocks satisfy a capability ------------------------------------
 
 TEST_CASE("a `with` block supplies the capability for its body") {

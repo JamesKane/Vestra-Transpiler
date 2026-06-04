@@ -106,6 +106,11 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         emit_sema_type(os, t->inner());
         os << ">";
         return;
+    case TypeKind::Vec:
+        os << "std::vector<";
+        emit_sema_type(os, t->inner());
+        os << ">";
+        return;
     case TypeKind::Duration:
         os << "__vstr::Duration";
         return;
@@ -404,6 +409,13 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
             // §11 Channel[T] → the runtime Channel shim.
             if (n.path[0] == "Channel" && n.type_args.size() == 1) {
                 os << "__vstr::Channel<";
+                emit_type(os, *n.type_args[0]);
+                os << ">";
+                return;
+            }
+            // §18.5 Vec[T] → std::vector<T>.
+            if (n.path[0] == "Vec" && n.type_args.size() == 1) {
+                os << "std::vector<";
                 emit_type(os, *n.type_args[0]);
                 os << ">";
                 return;
