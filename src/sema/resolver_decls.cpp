@@ -874,10 +874,13 @@ void Resolver::check_stmt(const ast::Stmt& s) {
                 elem_type = iter_type;
             }
         }
-        if (elem_type == nullptr && iter_type != nullptr && iter_type->kind() == TypeKind::Vec
+        if (elem_type == nullptr && iter_type != nullptr
+            && (iter_type->kind() == TypeKind::Vec || iter_type->kind() == TypeKind::Span
+                || iter_type->kind() == TypeKind::MutSpan)
             && iter_type->inner() != nullptr) {
-            // §18.5 `for x in xs` over a Vec[T] iterates its elements directly
-            // (lowered to a C++ range-based for); the loop variable type is T.
+            // §18.5 / §10 / §13 `for x in xs` over a Vec[T], a Span[T]/MutSpan[T]
+            // (incl. a Soa column view), iterates its elements directly (lowered
+            // to a C++ range-based for); the loop variable type is T.
             elem_type = iter_type->inner();
         }
         if (elem_type == nullptr && iter_type != nullptr && !iter_type->is_error()) {

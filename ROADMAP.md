@@ -747,10 +747,20 @@ one stored field (diagnosed otherwise). The tuple backing is shared between
 (`examples/soa_demo.vst`: column fold + row gather, compiled at -O2 and run)
 plus a codegen unit test.
 
-Remaining: per-field **column views** (`s.column(.x) -> MutSpan[Int32]`) — the
-real SIMD-traversal payoff, pairing with §7's elementwise vector ops; the
-spec's `@layout(soa)` attribute form (vs. today's explicit `Soa[T]` type);
-`get(i) -> T?` bounds-checking; and Soa over a generic struct instance.
+Second slice shipped — **per-field column views** (`s.column(.x)`): the
+SIMD-traversal payoff. A leading-dot field selector resolved against T's fields
+yields a `MutSpan[FieldType]` over that field's contiguous column — lowered to
+`std::span{std::get<i>(s)}`. `column` is intercepted in `check_call` (the
+selector is a field name, not a value, so the result type is the field's type
+statically) and in the emitter's Soa method block. To make a column directly
+traversable, `for x in xs` now also iterates a `Span[T]`/`MutSpan[T]` (the same
+range-based-for lowering as Vec), so `for v in s.column(.y) { … }` walks one
+field's memory. Proven end to end (`soa_demo.sumY` folds a column view) plus a
+codegen unit test.
+
+Remaining: the spec's `@layout(soa)` attribute form (vs. today's explicit
+`Soa[T]` type); `get(i) -> T?` bounds-checking; Soa over a generic struct
+instance; and elementwise ops directly over a column view (pairs with §7).
 
 ---
 

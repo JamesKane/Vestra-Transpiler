@@ -44,3 +44,20 @@ func yAt(_ n: Int32, _ idx: Int) using Alloc -> Int32 {
     }
     return s.get(idx).y
 }
+
+// Column view: `s.column(.y)` is a MutSpan over the y column — all the y values
+// are contiguous in the SoA layout, so this traversal walks one field's memory
+// directly (the SIMD-/cache-friendly payoff). Folds the whole y column.
+func sumY(_ n: Int32) using Alloc -> Int32 {
+    var s: Soa[Point] = Soa.new()
+    var i: Int32 = 0
+    while i < n {
+        s.push(Point(x: i, y: i + 100))
+        i = i + 1
+    }
+    var total: Int32 = 0
+    for v in s.column(.y) {
+        total = total + v
+    }
+    return total
+}

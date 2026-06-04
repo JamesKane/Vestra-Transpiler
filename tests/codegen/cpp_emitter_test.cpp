@@ -2897,6 +2897,23 @@ TEST_CASE("Soa[T] lowers to a tuple-of-vectors with scatter push / gather get") 
           != std::string::npos);
 }
 
+TEST_CASE("Soa[T] column(.field) lowers to a std::span over that column, iterable") {
+    SemaEmitFixture f("struct Point { var x: Int32  var y: Int32 }\n"
+                      "func sumY() using Alloc -> Int32 {\n"
+                      "    var s: Soa[Point] = Soa.new()\n"
+                      "    s.push(Point(x: 1, y: 2))\n"
+                      "    var t: Int32 = 0\n"
+                      "    for v in s.column(.y) {\n"
+                      "        t = t + v\n"
+                      "    }\n"
+                      "    return t\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    // .y is column 1; the view is a std::span over that column, iterated by a
+    // C++ range-based for.
+    CHECK(f.out.source.find("for (auto&& v : std::span{std::get<1>(s)})") != std::string::npos);
+}
+
 TEST_CASE("elementwise [N]T arithmetic lowers to __vstr::vec_* helpers") {
     SemaEmitFixture f("func axpy(_ a: [4]Int32, _ x: [4]Int32, _ y: [4]Int32) -> [4]Int32 {\n"
                       "    return a * x + y\n"

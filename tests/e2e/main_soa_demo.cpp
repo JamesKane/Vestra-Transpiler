@@ -13,9 +13,10 @@
 namespace sd = examples::soa_demo;
 
 int main() {
-    assert(sd::sumX(4) == 0 + 1 + 2 + 3);  // x column: 0..3 -> 6
-    assert(sd::yAt(4, 2) == 102);          // row 2 gathered: y = x + 100
-    assert(sd::sumX(0) == 0);              // empty Soa
+    assert(sd::sumX(4) == 0 + 1 + 2 + 3);    // x column: 0..3 -> 6
+    assert(sd::yAt(4, 2) == 102);            // row 2 gathered: y = x + 100
+    assert(sd::sumX(0) == 0);                // empty Soa
+    assert(sd::sumY(3) == 100 + 101 + 102);  // y column view, iterated -> 303
     std::puts("soa_demo OK");
     return 0;
 }

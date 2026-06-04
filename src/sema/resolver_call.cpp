@@ -681,6 +681,41 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
+    // §13 — `s.column(.field)` on a Soa[T] yields a `MutSpan[FieldType]` over
+    // that field's column: the SIMD-friendly per-field view (all the field's
+    // values are contiguous in the SoA layout). The argument is a leading-dot
+    // field selector resolved against T's fields, not a runtime value, so the
+    // result type can be the field's type statically.
+    if (c.callee->kind == ast::NodeKind::MemberExpr) {
+        const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+        if (mem.member == "column" && mem.base != nullptr) {
+            auto base_t = check_expr(*mem.base);
+            if (base_t != nullptr && base_t->kind() == TypeKind::Soa && base_t->inner() != nullptr
+                && base_t->inner()->nominal_decl() != nullptr
+                && base_t->inner()->nominal_decl()->kind == ast::NodeKind::Struct) {
+                const auto& sd =
+                    static_cast<const ast::StructDecl&>(*base_t->inner()->nominal_decl());
+                if (c.args.size() != 1 || !c.args[0].label.empty() || c.args[0].value == nullptr
+                    || c.args[0].value->kind != ast::NodeKind::LeadingDotExpr) {
+                    error_at(c.range,
+                             "column(.field) takes one leading-dot field selector "
+                             "(e.g. `s.column(.x)`)");
+                    return types_->make_mut_span(types_->error());
+                }
+                const auto& sel = static_cast<const ast::LeadingDotExpr&>(*c.args[0].value);
+                for (const auto& f : sd.fields) {
+                    if (f.kind != ast::StructDecl::Field::Kind::Embed && f.name == sel.name) {
+                        return types_->make_mut_span(f.type != nullptr ? resolve_type(*f.type)
+                                                                       : types_->error());
+                    }
+                }
+                error_at(c.args[0].value->range,
+                         std::format("Soa element '{}' has no field '{}'", sd.name, sel.name));
+                return types_->make_mut_span(types_->error());
+            }
+        }
+    }
+
     // §5 clause 4 / §18.4 — `s.split(at: i)` on a Span[T] / MutSpan[T] is a
     // trusted partitioner: it yields a provably-disjoint partition, the
     // tuple `(prefix, suffix)` of two non-overlapping sub-views of the same

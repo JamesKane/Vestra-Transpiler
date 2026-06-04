@@ -3684,6 +3684,27 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << ").size())";
                     break;
                 }
+                if (mem.member == "column" && c.args.size() == 1
+                    && c.args[0].value->kind == ast::NodeKind::LeadingDotExpr) {
+                    const auto& sel = static_cast<const ast::LeadingDotExpr&>(*c.args[0].value);
+                    std::size_t ci = 0;
+                    bool found = false;
+                    for (const auto* col : cols) {
+                        if (col->name == sel.name) {
+                            found = true;
+                            break;
+                        }
+                        ++ci;
+                    }
+                    if (found) {
+                        // MutSpan over the column vector — CTAD deduces
+                        // std::span<T> from the (mutable) std::vector<T>.
+                        os << "std::span{std::get<" << ci << ">(";
+                        emit_expr(os, *mem.base);
+                        os << ")}";
+                        break;
+                    }
+                }
                 if (mem.member == "get" && c.args.size() == 1) {
                     os << "[&](auto&& __s, std::size_t __i) { return ";
                     emit_sema_type(os, base_t->inner());
