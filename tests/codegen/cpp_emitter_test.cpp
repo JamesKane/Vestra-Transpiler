@@ -2847,6 +2847,22 @@ TEST_CASE("Vec[T] lowers to std::vector with push / len / index") {
     CHECK(f.out.source.find("static_cast<std::intptr_t>(xs.size())") != std::string::npos);
 }
 
+TEST_CASE("Vec[T] get / pop lower to __vstr optional helpers") {
+    SemaEmitFixture f("func f() using Alloc -> Int32 {\n"
+                      "    var xs: Vec[Int32] = Vec.new()\n"
+                      "    xs.push(7)\n"
+                      "    let a = xs.get(0) ?? 0\n"
+                      "    let b = xs.pop() ?? 0\n"
+                      "    return a + b\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.source.find("__vstr::vec_get(xs, 0)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::vec_pop(xs)") != std::string::npos);
+    // Both optional-returning helpers are emitted into the prelude.
+    CHECK(f.out.header.find("std::optional<typename V::value_type> vec_get(") != std::string::npos);
+    CHECK(f.out.header.find("std::optional<typename V::value_type> vec_pop(") != std::string::npos);
+}
+
 TEST_CASE("String lowers to std::string with new / append / len") {
     SemaEmitFixture f("func f(_ who: Str) using Alloc -> Int32 {\n"
                       "    var s: String = String.new()\n"

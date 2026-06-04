@@ -363,6 +363,23 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    if (it == m.end()) return std::nullopt;\n";
     hdr << "    return it->second;\n";
     hdr << "}\n\n";
+    // §18.5 Vec[T].get(i) → a bounds-checked `std::optional<T>` read (nil when
+    // the signed index is out of range), and Vec[T].pop() → an
+    // `std::optional<T>` that removes and returns the last element (nil when
+    // empty). std::vector has neither, so both fold the range/empty check into
+    // the `T?` the resolver promises.
+    hdr << "template <class V>\n";
+    hdr << "std::optional<typename V::value_type> vec_get(const V& v, std::intptr_t i) {\n";
+    hdr << "    if (i < 0 || static_cast<std::size_t>(i) >= v.size()) return std::nullopt;\n";
+    hdr << "    return v[static_cast<std::size_t>(i)];\n";
+    hdr << "}\n\n";
+    hdr << "template <class V>\n";
+    hdr << "std::optional<typename V::value_type> vec_pop(V& v) {\n";
+    hdr << "    if (v.empty()) return std::nullopt;\n";
+    hdr << "    auto last = std::move(v.back());\n";
+    hdr << "    v.pop_back();\n";
+    hdr << "    return last;\n";
+    hdr << "}\n\n";
     // §A10 (§15.5) — `@panic_handler` delegation. The function-
     // pointer slot is `inline` so multiple translation units agree
     // on one storage location; when the user declares a
@@ -3529,6 +3546,20 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << "static_cast<std::intptr_t>(";
                     emit_expr(os, *mem.base);
                     os << ".size())";
+                    break;
+                }
+                if (mem.member == "get" && c.args.size() == 1) {
+                    os << "__vstr::vec_get(";
+                    emit_expr(os, *mem.base);
+                    os << ", ";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
+                    break;
+                }
+                if (mem.member == "pop" && c.args.empty()) {
+                    os << "__vstr::vec_pop(";
+                    emit_expr(os, *mem.base);
+                    os << ")";
                     break;
                 }
             }

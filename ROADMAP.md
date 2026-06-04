@@ -117,7 +117,7 @@ namespace` can be dropped. Plus **generic imported types**,
 **`import c "header.h"`**, **missing/cyclic-import diagnostics**, and a
 **search-path / project-root** notion.
 
-### 0b. Collections / string library (§18.5) (multi-session) — slices 1-4 shipped
+### 0b. Collections / string library (§18.5) (multi-session) — slices 1-5 shipped
 
 The other big self-hosting blocker (a compiler is mostly Vec/HashMap/String
 churn). v0.5 had no growable collection; there's no raw-array-alloc primitive
@@ -164,14 +164,22 @@ New `TypeKind::HashMap` (parts = {K, V}); resolved in `resolve_type` /
 `__vstr::map_get(m, k)` prelude template folds the find/end check into a
 `std::optional<V>`. Proven end to end (`examples/hashmap_demo.vst`).
 
+**Slice 5 shipped** — **optional-returning `Vec` reads**: `get(i) -> T?` is the
+bounds-checked element read (nil when the signed index is out of range, so a
+default falls out of `??`), and `pop() -> T?` removes and returns the last
+element (nil when empty). Both reuse the slice-4 optional-helper shape: new
+`__vstr::vec_get(v, i)` / `__vstr::vec_pop(v)` prelude templates fold the
+range/empty check into a `std::optional<T>`. Resolved in `lookup_method`
+(returning `make_optional(T)`), lowered in the emitter; `pop` rides the same
+handle-style mutation path as `push`. Proven end to end (`examples/vec_demo.vst`
+extended with `getOr`/`drainSum`).
+
 Remaining: **`append` taking an owned `String`** via a Str read-borrow (the
 String→Str-at-read-param coercion — today append takes Str, so it accepts
 literals/views but not another owned String); **more `Vec` methods**
-(`get(i) -> T?`, `pop() -> T?`, `set`, `clear`, iteration via `for x in v`) —
-`get`/`pop` need an optional-returning lowering (the same `map_get` shape).
-And mutation/exclusivity discipline for the mutating methods (today
-`push`/`append`/`set` ride the handle-style exemption rather than a tracked
-`inout` receiver).
+(`set(i, x)`, `clear`, iteration via `for x in v`). And mutation/exclusivity
+discipline for the mutating methods (today `push`/`pop`/`append`/`set` ride the
+handle-style exemption rather than a tracked `inout` receiver).
 
 ### 1. Generics phase 2 (multi-session)
 

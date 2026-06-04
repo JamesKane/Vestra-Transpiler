@@ -90,9 +90,11 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
             return types_->make_function({}, types_->unit());
         }
     }
-    // §18.5 Vec[T] methods (v0.5 core): `push(T)` appends (mutating) and
-    // `len() -> Int` reports the count. Element reads go through indexing
-    // (`xs[i]`, see check_index); `get`/`pop`/etc. are follow-ons.
+    // §18.5 Vec[T] methods (v0.5 core): `push(T)` appends (mutating),
+    // `len() -> Int` reports the count, `get(Int) -> T?` is the bounds-checked
+    // element read (nil when out of range), and `pop() -> T?` removes and
+    // returns the last element (nil when empty). Unchecked element reads still
+    // go through indexing (`xs[i]`, see check_index).
     if (owner_type->kind() == TypeKind::Vec && owner_type->inner() != nullptr) {
         TypePtr T = owner_type->inner();
         if (name == "push") {
@@ -100,6 +102,13 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
         }
         if (name == "len") {
             return types_->make_function({}, types_->primitive(TypeKind::Int));
+        }
+        if (name == "get") {
+            return types_->make_function({types_->primitive(TypeKind::Int)},
+                                         types_->make_optional(T));
+        }
+        if (name == "pop") {
+            return types_->make_function({}, types_->make_optional(T));
         }
     }
     // §18.5 String methods (v0.5 core): `append(Str)` concatenates another

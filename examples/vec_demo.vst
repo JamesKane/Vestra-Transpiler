@@ -47,3 +47,35 @@ func centroidX(_ count: Int32) using Alloc -> Int32 {
     }
     return sx
 }
+
+// Optional-returning reads: `get(i) -> T?` is bounds-checked (nil out of range,
+// so a default falls out of `??`), and `pop() -> T?` drains the tail (nil when
+// empty). The whole vector folds away one element at a time through pop.
+func getOr(_ n: Int32, _ idx: Int, _ fallback: Int32) using Alloc -> Int32 {
+    var xs: Vec[Int32] = Vec.new()
+    var k: Int32 = 1
+    while k <= n {
+        xs.push(k)
+        k = k + 1
+    }
+    return xs.get(idx) ?? fallback
+}
+
+func drainSum(_ n: Int32) using Alloc -> Int32 {
+    var xs: Vec[Int32] = Vec.new()
+    var k: Int32 = 1
+    while k <= n {
+        xs.push(k)
+        k = k + 1
+    }
+    var total: Int32 = 0
+    var more: Bool = true
+    while more {
+        if let v = xs.pop() {
+            total = total + v
+        } else {
+            more = false
+        }
+    }
+    return total
+}
