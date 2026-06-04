@@ -4023,6 +4023,43 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 break;
             }
         }
+        // §7 explicit-type-args struct construction: `Pair[Int32](lo: 1, hi: 2)`
+        // parses as a call whose callee is an IndexExpr (`Pair[Int32]`); sema
+        // typed the whole call as the explicit struct instance. Lower it as the
+        // designated-init brace expression `Pair<Int32>{...}`, taking the
+        // specialization arguments from the resolved result type — mirroring
+        // the bare-identifier construction below.
+        if (resolution_ != nullptr && c.callee->kind == ast::NodeKind::IndexExpr) {
+            const auto& ix = static_cast<const ast::IndexExpr&>(*c.callee);
+            auto inst = resolution_->type_of(&c);
+            if (ix.base != nullptr && ix.base->kind == ast::NodeKind::IdentExpr && inst != nullptr
+                && inst->kind() == sema::TypeKind::Struct && inst->nominal_decl() != nullptr) {
+                const auto& s_decl = static_cast<const ast::StructDecl&>(*inst->nominal_decl());
+                os << s_decl.name;
+                if (!inst->parts().empty()) {
+                    os << "<";
+                    for (std::size_t i = 0; i < inst->parts().size(); ++i) {
+                        if (i != 0) {
+                            os << ", ";
+                        }
+                        emit_sema_type(os, inst->parts()[i]);
+                    }
+                    os << ">";
+                }
+                os << "{";
+                for (std::size_t i = 0; i < c.args.size(); ++i) {
+                    if (i != 0) {
+                        os << ", ";
+                    }
+                    if (!c.args[i].label.empty()) {
+                        os << "." << c.args[i].label << " = ";
+                    }
+                    emit_expr(os, *c.args[i].value);
+                }
+                os << "}";
+                break;
+            }
+        }
         // Struct construction: if the callee is a bare identifier
         // resolving to a Struct symbol, lower as a C++ designated-init
         // brace expression. Checking the callee (rather than the call's

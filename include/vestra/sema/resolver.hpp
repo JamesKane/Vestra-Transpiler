@@ -199,6 +199,13 @@ private:
     // Resolve an `ast::Type` node into a `sema::TypePtr`.
     TypePtr resolve_type(const ast::Type& t);
 
+    // §7 — interpret an index-expression entry as a type, for explicit type
+    // arguments at a construction site (`Pair[Int32](...)`, whose `Int32`
+    // parses as a value expression). Handles a bare type name (primitive or
+    // nominal/generic-param); returns nullptr for anything else, so nested
+    // generics fall back to inference rather than erroring.
+    [[nodiscard]] TypePtr type_from_index_expr(const ast::Expr* e);
+
     // §7 generics phase 2 — build the interleaved type + const generic
     // arguments for a use-site `Name[...]`, in declaration order, against a
     // struct/enum's parameter list. Returns nullopt (after emitting the

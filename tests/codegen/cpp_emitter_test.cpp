@@ -2156,6 +2156,20 @@ TEST_CASE("generic struct construction emits the inferred specialization") {
     CHECK(f.out.source.find("Pair<std::int32_t>{.first = a, .second = b}") != std::string::npos);
 }
 
+TEST_CASE("explicit type-args at a construction site emit the named specialization") {
+    // §7: `Pair[Int32](...)` parses as a call of an index expr; sema reinterprets
+    // the bracket as explicit type arguments and types the call as Pair[Int32],
+    // so codegen emits the same designated-init brace as the inferred form.
+    SemaEmitFixture f("struct Pair[T] { var first: T  var second: T }\n"
+                      "func make() -> Pair[Int32] {\n"
+                      "    return Pair[Int32](first: 1, second: 2)\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.source.find("Pair<std::int32_t>{.first = 1, .second = 2}") != std::string::npos);
+    // The bracket must not leak through as a C++ subscript.
+    CHECK(f.out.source.find("Pair[Int32]") == std::string::npos);
+}
+
 TEST_CASE("two-parameter generic struct emits a two-parameter template") {
     SemaEmitFixture f("struct KeyValue[K, V] { var key: K  var value: V }\n"
                       "func mk(_ k: Int32, _ v: Bool) -> KeyValue[Int32, Bool] {\n"

@@ -45,6 +45,30 @@ bool read_borrows_as(TypePtr arg, TypePtr param) noexcept {
 
 }  // namespace
 
+TypePtr Resolver::type_from_index_expr(const ast::Expr* e) {
+    if (e == nullptr || e->kind != ast::NodeKind::IdentExpr) {
+        return nullptr;  // only a bare type name today; nested generics defer
+    }
+    const auto& id = static_cast<const ast::IdentExpr&>(*e);
+    if (auto k = TypeArena::primitive_kind_by_name(id.name); k != TypeKind::Error) {
+        return types_->primitive(k);
+    }
+    const auto* sym = scopes_.current().lookup(id.name);
+    if (sym == nullptr || sym->type == nullptr) {
+        return nullptr;
+    }
+    switch (sym->kind) {
+    case SymbolKind::Struct:
+    case SymbolKind::Enum:
+    case SymbolKind::Protocol:
+    case SymbolKind::OpaqueType:
+    case SymbolKind::GenericParam:
+        return sym->type;
+    default:
+        return nullptr;
+    }
+}
+
 TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
     // §17.x conversion-call syntax: `Float64(i)` / `Int32(x)` — a bare
     // primitive numeric type name in callee position is an explicit
@@ -959,6 +983,64 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
+    // §7 explicit type-args at a construction site: `Pair[Int32](lo: 1, hi: 2)`
+    // parses as a CallExpr whose callee is the IndexExpr `Pair[Int32]` (the
+    // bracket reads as a subscript in expression position). When the base names
+    // a generic struct/enum *type*, reinterpret the bracket as explicit type
+    // arguments: resolve them, build the nominal instance, and funnel into the
+    // ordinary construction path below with that instance as the expected type
+    // — which seeds the generic bindings exactly as an annotated binding would.
+    TypePtr callee_type = nullptr;
+    if (c.callee->kind == ast::NodeKind::IndexExpr) {
+        const auto& ix = static_cast<const ast::IndexExpr&>(*c.callee);
+        if (ix.base != nullptr && ix.base->kind == ast::NodeKind::IdentExpr) {
+            const auto& base_id = static_cast<const ast::IdentExpr&>(*ix.base);
+            const auto* sym = scopes_.current().lookup(base_id.name);
+            if (sym != nullptr && sym->type != nullptr && sym->decl != nullptr
+                && (sym->type->kind() == TypeKind::Struct || sym->type->kind() == TypeKind::Enum)) {
+                // The base is a nominal type name, so this is a construction with
+                // explicit type arguments, not a subscript. Resolve each bracket
+                // entry as a type (a bare type name today; nested generics fall
+                // back to inference). Convert IdentExpr indices to types.
+                std::vector<TypePtr> targs;
+                bool all_types = !ix.indices.empty();
+                for (const auto& idx : ix.indices) {
+                    TypePtr t = type_from_index_expr(idx.get());
+                    if (t == nullptr) {
+                        all_types = false;
+                        break;
+                    }
+                    targs.push_back(t);
+                }
+                const auto& generics =
+                    (sym->decl->kind == ast::NodeKind::Struct)
+                        ? static_cast<const ast::StructDecl&>(*sym->decl).generics
+                        : static_cast<const ast::EnumDecl&>(*sym->decl).generics;
+                const std::size_t want = named_type_param_count(generics);
+                if (all_types && want > 0 && targs.size() == want) {
+                    expected = sym->type->kind() == TypeKind::Struct
+                                   ? types_->make_struct_instance(sym->type->nominal_decl(),
+                                                                  std::move(targs))
+                                   : types_->make_enum_instance(sym->type->nominal_decl(),
+                                                                std::move(targs));
+                    callee_type = sym->type;
+                } else if (want == 0) {
+                    error_at(ix.range,
+                             std::format("type '{}' is not generic; it takes no type arguments",
+                                         base_id.name));
+                    callee_type = sym->type;
+                } else if (all_types) {
+                    error_at(ix.range,
+                             std::format("'{}' expects {} type argument(s), got {}",
+                                         base_id.name,
+                                         want,
+                                         ix.indices.size()));
+                    callee_type = sym->type;
+                }
+            }
+        }
+    }
+
     // Resolve the callee first so we know each parameter's expected type
     // before we type its corresponding argument — this is what lets integer
     // literals adopt the parameter's type without an explicit conversion.
@@ -966,7 +1048,9 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
     // We pass `expected` through to the callee so a leading-dot enum case in
     // call position (`.circle(radius: 1.0)`) can resolve against the expected
     // enum type.
-    auto callee_type = check_expr(*c.callee, expected);
+    if (callee_type == nullptr) {
+        callee_type = check_expr(*c.callee, expected);
+    }
     if (callee_type == nullptr || callee_type->is_error()) {
         // Still type the arguments so their internal errors surface.
         for (const auto& a : c.args) {

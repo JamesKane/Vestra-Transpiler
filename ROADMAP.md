@@ -280,9 +280,18 @@ var data: [N]T }`, monomorphized to `template <class T, std::size_t N>`),
 and *protocol bounds* (`func eq[T: Eq](...)` / `where T: Comparable`,
 enforced at the call site and at struct/enum instantiation, with a C++20
 `requires` clause for the concept-mappable bounds). See the HANDOFF top
-entries. Remaining pieces: explicit type-args at a construction site
-(`Pair[Int32](...)`, where the callee currently parses as an index
-expression); a const generic as a runtime/comptime *value* in a body
+entries. A fifth slice shipped: **explicit type-args at a construction site**
+(`Pair[Int32](lo: 1, hi: 2)`). It parses as a call of an index expression
+(`Pair[Int32]`); when the base names a generic struct/enum, `check_call`
+reinterprets the bracket as explicit type arguments (`type_from_index_expr`
+converts each bare type name), builds the nominal instance, and funnels into
+the ordinary construction path with that instance as the expected type — which
+seeds the generic bindings, so a contradicting value argument conflicts at
+unification. Arity mismatches and type-args on a non-generic type are
+diagnosed (not silently read as a subscript). Codegen emits the named
+specialization `Pair<std::int32_t>{...}`. Bare type-name arguments today;
+nested generics still defer to inference. Remaining pieces: a const generic as
+a runtime/comptime *value* in a body
 (`for i in 0..N`; today N is only an array length); const-expression
 array lengths (`[N + 1]T`); bound enforcement gating body operations;
 transitive bound checking; user-defined-protocol conformance (no general
@@ -290,9 +299,10 @@ table yet); and `requires` clauses on generic structs/enums (functions
 only today). (Leading-dot payloaded-enum construction, const generics on
 functions, and derive emission for generic types were closed as
 follow-ons.) The type-parameter surface is now substantially complete —
-the remaining items are minor refinements. Explicit construction-site
-type-args is the most user-visible one left; otherwise generics phase 2
-is effectively done and the next phase is best drawn from the bigger
+the remaining items are minor refinements (const generics as body values,
+const-expression array lengths, deeper bound enforcement, a conformance
+table). With explicit construction-site type-args now shipped, generics
+phase 2 is effectively done and the next phase is best drawn from the bigger
 swings (async, macros, ownership phase 2) or the annex deepening.
 
 ### 2. `async` / `spawn` / `select` / `parallel` (§11) (multi-session)

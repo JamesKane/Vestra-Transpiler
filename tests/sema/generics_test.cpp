@@ -146,6 +146,45 @@ TEST_CASE("generic struct construction infers the type argument from arguments")
           == 0);
 }
 
+TEST_CASE("explicit type-args at a construction site bind and are enforced") {
+    // §7 `Pair[Int32](...)` pins T to Int32; the integer literals adopt it.
+    CHECK(check("struct Pair[T] { var first: T  var second: T }\n"
+                "func make() -> Pair[Int32] {\n"
+                "    return Pair[Int32](first: 1, second: 2)\n"
+                "}\n")
+              .error_count
+          == 0);
+    // A value that contradicts the explicit argument conflicts at unification.
+    {
+        auto r = check("struct Pair[T] { var first: T  var second: T }\n"
+                       "func bad() -> Bool {\n"
+                       "    let p = Pair[Bool](first: 1, second: 2)\n"
+                       "    return p.first\n"
+                       "}\n");
+        CHECK(r.error_count >= 1);
+    }
+    // The wrong number of explicit type arguments is a diagnostic.
+    {
+        auto r = check("struct Pair[T] { var first: T  var second: T }\n"
+                       "func bad() -> Int32 {\n"
+                       "    let p = Pair[Int32, Bool](first: 1, second: 2)\n"
+                       "    return p.first\n"
+                       "}\n");
+        CHECK(r.error_count >= 1);
+        CHECK(r.first_message.find("type argument") != std::string::npos);
+    }
+    // Type arguments on a non-generic type are rejected (not read as a subscript).
+    {
+        auto r = check("struct Point { var x: Int32 }\n"
+                       "func bad() -> Int32 {\n"
+                       "    let p = Point[Int32](x: 1)\n"
+                       "    return p.x\n"
+                       "}\n");
+        CHECK(r.error_count >= 1);
+        CHECK(r.first_message.find("not generic") != std::string::npos);
+    }
+}
+
 TEST_CASE("generic struct construction is seeded by the annotated binding type") {
     // The integer literals adopt Int32 from the annotated `Pair[Int32]`;
     // without expected-type seeding they would default to Int and the
