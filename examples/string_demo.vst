@@ -5,17 +5,15 @@
 // builder shape a real program needs: start empty with `String.new()` (gated by
 // `Alloc`, like Vec.new), grow it with `append` (a literal or a borrowed Str),
 // and read its byte length with `len()`. The finished String is an ordinary
-// value: returnable, and usable where a `Str` view is expected.
-//
-// (v0.5: build via `String.new()` + append; seeding directly from a literal
-// `var s: String = "..."` is a separate coercion still to be wired.)
+// value: returnable, and usable where a `Str` view is expected. A String can be
+// seeded directly from a string literal (`var s: String = "..."`) — the
+// StrConst→String coercion wraps it in std::string at codegen.
 
 module examples.string_demo
 
-// Join three pieces into one owned string.
+// Seed from a literal, then grow it.
 func greeting(_ who: Str) using Alloc -> String {
-    var s: String = String.new()
-    s.append("Hello, ")
+    var s: String = "Hello, "
     s.append(who)
     s.append("!")
     return s

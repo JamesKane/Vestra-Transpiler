@@ -241,6 +241,10 @@ private:
     // to `co_return` (the function is a C++20 coroutine returning Task<T>).
     bool current_func_is_async_ = false;
 
+    // §18.5 — re-entry guard for the string-view→String coercion wrap, so the
+    // `std::string(...)` wrap is emitted exactly once around the coerced expr.
+    bool in_string_coerce_ = false;
+
     // §12.3 derive layer: a target-type-name → derived-protocol-name
     // index built up front from every `derive(...) for T` top-level
     // decl in the unit. The struct/enum emitters consult this so

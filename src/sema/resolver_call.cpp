@@ -1043,6 +1043,7 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                                      field_type ? field_type->describe() : "?",
                                      arg_type ? arg_type->describe() : "?"));
             }
+            note_string_coercion(*arg.value, arg_type, field_type);
             // Track coverage for "missing field" diagnostics.
             for (std::size_t k = 0; k < s_decl.fields.size(); ++k) {
                 if (&s_decl.fields[k] == it->second.first) {
@@ -1166,6 +1167,7 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                                  arg_type ? arg_type->describe() : "?",
                                  pty ? pty->describe() : "?"));
         }
+        note_string_coercion(*c.args[i].value, arg_type, pty);
     }
 
     // Verify every generic parameter ended up bound. An unbound generic at a

@@ -2861,6 +2861,25 @@ TEST_CASE("String lowers to std::string with new / append / len") {
     CHECK(f.out.source.find("static_cast<std::intptr_t>(s.size())") != std::string::npos);
 }
 
+TEST_CASE("StrConst flowing into a String slot is wrapped in std::string(...)") {
+    SemaEmitFixture f("func g(_ x: String) -> Int32 { return 0 }\n"
+                      "struct Named { var label: String }\n"
+                      "func f() -> String {\n"
+                      "    var s: String = \"a\"\n"               // let init
+                      "    var n: Named = Named(label: \"b\")\n"  // struct field
+                      "    var k: Int32 = g(\"c\")\n"             // call arg
+                      "    return \"d\"\n"                        // return
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    // Each StrConst→String site wraps the string_view in an explicit
+    // std::string ctor (the implicit conversion doesn't exist).
+    CHECK(f.out.source.find("std::string s = std::string(std::string_view(\"a\"))")
+          != std::string::npos);
+    CHECK(f.out.source.find(".label = std::string(std::string_view(\"b\"))") != std::string::npos);
+    CHECK(f.out.source.find("g(std::string(std::string_view(\"c\")))") != std::string::npos);
+    CHECK(f.out.source.find("return std::string(std::string_view(\"d\"))") != std::string::npos);
+}
+
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------
 
 TEST_CASE("split(at:) lowers to __vstr::split_at and destructures to auto [lo, hi]") {

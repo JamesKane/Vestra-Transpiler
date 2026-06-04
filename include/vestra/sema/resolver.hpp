@@ -41,6 +41,12 @@ public:
     // the DoCatchExpr's AST error_type is null.
     [[nodiscard]] TypePtr do_catch_error_type(const ast::DoCatchExpr* dc) const;
 
+    // §18.5 string-lattice coercion: this expression is a string view
+    // (StrConst/Str) flowing into a `String` slot. C++'s std::string(string_view)
+    // ctor is explicit, so codegen wraps the expr in `std::string(...)`.
+    [[nodiscard]] bool needs_string_coercion(const ast::Expr* e) const;
+    void mark_string_coercion(const ast::Expr* e);
+
     void set_type(const ast::Expr* e, TypePtr t);
     void set_symbol(const ast::Expr* e, const Symbol* s);
     void set_folded_value(const ast::Expr* e, ComptimeValue v);
@@ -62,6 +68,7 @@ private:
     std::unordered_map<const ast::Expr*, TypePtr> expr_types_;
     std::unordered_map<const ast::Expr*, const Symbol*> expr_symbols_;
     std::unordered_map<const ast::Expr*, std::string> qualified_names_;
+    std::unordered_set<const ast::Expr*> string_coercions_;
     std::unordered_map<const ast::Expr*, ComptimeValue> folded_;
     std::unordered_set<const ast::Decl*> gated_decls_;
     std::unordered_map<const ast::DoCatchExpr*, TypePtr> do_catch_error_;
@@ -183,6 +190,10 @@ private:
     // (no diagnostic) when `m` is not a module-qualified reference, so the
     // caller falls through to ordinary member-access resolution.
     TypePtr check_qualified_module_ref(const ast::MemberExpr& m);
+    // §18.5 if `from` is a string view (StrConst/Str) and `to` is `String`,
+    // record that `e` needs a `std::string(...)` wrap at codegen (the C++
+    // string_view→string ctor is explicit). No-op otherwise.
+    void note_string_coercion(const ast::Expr& e, TypePtr from, TypePtr to);
     TypePtr check_leading_dot(const ast::LeadingDotExpr& d, TypePtr expected);
 
     // Resolve an `ast::Type` node into a `sema::TypePtr`.

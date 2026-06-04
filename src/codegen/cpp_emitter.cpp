@@ -2821,7 +2821,20 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             os << v->to_cpp_literal();
             return;
         }
+        // §18.5 string-lattice coercion: this string-view expression flows into
+        // a `String` slot; wrap it in `std::string(...)` (the string_view→string
+        // ctor is explicit). The guard wraps once — the recursive emit (and its
+        // subtree) is emitted un-wrapped inside the parens.
+        if (!in_string_coerce_ && resolution_->needs_string_coercion(&e)) {
+            os << "std::string(";
+            in_string_coerce_ = true;
+            emit_expr(os, e);
+            in_string_coerce_ = false;
+            os << ")";
+            return;
+        }
     }
+    in_string_coerce_ = false;
     switch (e.kind) {
     case ast::NodeKind::IntLit: {
         // §17.1 admits `_` as a digit separator (`1_000_000`,

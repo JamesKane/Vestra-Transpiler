@@ -67,6 +67,21 @@ const std::string* Resolution::qualified_name_of(const ast::Expr* e) const {
 void Resolution::set_qualified_name(const ast::Expr* e, std::string name) {
     qualified_names_[e] = std::move(name);
 }
+bool Resolution::needs_string_coercion(const ast::Expr* e) const {
+    return string_coercions_.contains(e);
+}
+void Resolution::mark_string_coercion(const ast::Expr* e) {
+    string_coercions_.insert(e);
+}
+
+void Resolver::note_string_coercion(const ast::Expr& e, TypePtr from, TypePtr to) {
+    if (from == nullptr || to == nullptr || to->kind() != TypeKind::String) {
+        return;
+    }
+    if (from->kind() == TypeKind::StrConst || from->kind() == TypeKind::Str) {
+        resolution_.mark_string_coercion(&e);
+    }
+}
 const ComptimeValue* Resolution::folded_value(const ast::Expr* e) const {
     auto it = folded_.find(e);
     return it == folded_.end() ? nullptr : &it->second;

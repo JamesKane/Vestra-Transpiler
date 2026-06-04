@@ -45,6 +45,7 @@ void Resolver::check_decl(const ast::Decl& d) {
                                      value_type ? value_type->describe() : "?",
                                      annotated->describe()));
             }
+            note_string_coercion(*c.value, value_type, annotated);
             // §12.1 fold attempt: if the initializer is a pure constant
             // expression, evaluate it now and record the result. The hint is
             // the annotated TypeKind so an integer literal folds to the
@@ -69,6 +70,7 @@ void Resolver::check_decl(const ast::Decl& d) {
                                      value_type ? value_type->describe() : "?",
                                      annotated->describe()));
             }
+            note_string_coercion(*s.value, value_type, annotated);
         }
         // §A1 (§4.5): a `@noinit static` reserves uninitialized storage
         // in .bss and *must* have a type annotation (sema can't infer
@@ -745,6 +747,9 @@ void Resolver::check_stmt(const ast::Stmt& s) {
                                  value_type->describe(),
                                  annot_type->describe()));
         }
+        if (initializer != nullptr) {
+            note_string_coercion(*initializer, value_type, annot_type);
+        }
 
         if (!binding_name.empty()) {
             Symbol sym;
@@ -787,6 +792,9 @@ void Resolver::check_stmt(const ast::Stmt& s) {
                                  value_type ? value_type->describe() : "?",
                                  expected->describe()));
         }
+        if (r.value != nullptr) {
+            note_string_coercion(*r.value, value_type, expected);
+        }
         break;
     }
     case ast::NodeKind::ExprStmt:
@@ -804,6 +812,9 @@ void Resolver::check_stmt(const ast::Stmt& s) {
                      std::format("cannot assign value of type {} to target of type {}",
                                  rhs->describe(),
                                  lhs->describe()));
+        }
+        if (a.value != nullptr) {
+            note_string_coercion(*a.value, rhs, lhs);
         }
         break;
     }

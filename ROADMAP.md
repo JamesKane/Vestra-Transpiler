@@ -117,7 +117,7 @@ namespace` can be dropped. Plus **generic imported types**,
 **`import c "header.h"`**, **missing/cyclic-import diagnostics**, and a
 **search-path / project-root** notion.
 
-### 0b. Collections / string library (§18.5) (multi-session) — slices 1-2 shipped
+### 0b. Collections / string library (§18.5) (multi-session) — slices 1-3 shipped
 
 The other big self-hosting blocker (a compiler is mostly Vec/HashMap/String
 churn). v0.5 had no growable collection; there's no raw-array-alloc primitive
@@ -141,17 +141,24 @@ overload — no coercion needed), and `s.len() -> Int`. Resolved in check_call /
 lookup_method, lowered in the emitter, gated in capability.cpp; proven end to
 end (`examples/string_demo.vst`).
 
-Remaining: **string-lattice coercion codegen** — `var s: String = "literal"`
-type-checks (StrConst → String) but emits invalid C++ (`std::string =
-std::string_view(...)`, an explicit ctor) — a *pre-existing* bug; the wrap to
-`std::string(...)` is needed at let/var/arg/return/field coercion sites, after
-which a String can be seeded directly from a literal and `append` can take an
-owned String via a Str borrow. **More `Vec` methods** (`get(i) -> T?`,
-`pop() -> T?`, `set`, `clear`, iteration via `for x in v`) — `get`/`pop` need an
-optional-returning lowering. **`HashMap[K, V]`** (→ std::unordered_map; the
-symbol table). And mutation/exclusivity discipline for the mutating methods
-(today `push`/`append` ride the handle-style exemption rather than a tracked
-`inout` receiver).
+**Slice 3 shipped** — **string-lattice coercion codegen**: a string view
+(StrConst/Str) flowing into a `String` slot is now wrapped in `std::string(...)`
+at codegen, fixing the pre-existing bug where `var s: String = "literal"`
+type-checked but emitted invalid C++ (`std::string = std::string_view(...)`,
+explicit ctor). The resolver marks the coerced expr (`note_string_coercion` at
+every assignable-to-String site — let/var, return, assign, call arg, struct
+field, const/static), recorded in a Resolution side table; emit_expr wraps it
+once (a re-entry guard prevents double-wrap). A String can now be seeded
+directly from a literal.
+
+Remaining: **`append` taking an owned `String`** via a Str read-borrow (the
+String→Str-at-read-param coercion — today append takes Str, so it accepts
+literals/views but not another owned String); **more `Vec` methods**
+(`get(i) -> T?`, `pop() -> T?`, `set`, `clear`, iteration via `for x in v`) —
+`get`/`pop` need an optional-returning lowering. **`HashMap[K, V]`**
+(→ std::unordered_map; the symbol table). And mutation/exclusivity discipline
+for the mutating methods (today `push`/`append` ride the handle-style exemption
+rather than a tracked `inout` receiver).
 
 ### 1. Generics phase 2 (multi-session)
 
