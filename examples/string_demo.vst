@@ -3,11 +3,12 @@
 
 // §18.5 String — an owned, growable string (lowers to std::string). The
 // builder shape a real program needs: start empty with `String.new()` (gated by
-// `Alloc`, like Vec.new), grow it with `append` (a literal or a borrowed Str),
-// and read its byte length with `len()`. The finished String is an ordinary
-// value: returnable, and usable where a `Str` view is expected. A String can be
-// seeded directly from a string literal (`var s: String = "..."`) — the
-// StrConst→String coercion wraps it in std::string at codegen.
+// `Alloc`, like Vec.new), grow it with `append` (a literal, a borrowed Str, or
+// another owned String — the owned one read-borrows as a Str view for the
+// call), and read its byte length with `len()`. The finished String is an
+// ordinary value: returnable, and usable where a `Str` view is expected. A
+// String can be seeded directly from a string literal (`var s: String = "..."`)
+// — the StrConst→String coercion wraps it in std::string at codegen.
 
 module examples.string_demo
 
@@ -22,4 +23,16 @@ func greeting(_ who: Str) using Alloc -> String {
 // Length of the built-up string.
 func greetingLen(_ who: Str) using Alloc -> Int {
     return greeting(who).len()
+}
+
+// Concatenate two owned Strings. The second `String` read-borrows as a `Str`
+// view at the `append` call (no copy of the owner needed), so building a
+// composite from already-owned pieces is one call.
+func joined(_ first: Str, _ second: Str) using Alloc -> Int {
+    var a: String = ""
+    a.append(first)
+    var b: String = ""
+    b.append(second)
+    a.append(b)  // b is an owned String, borrowed as Str here
+    return a.len()
 }

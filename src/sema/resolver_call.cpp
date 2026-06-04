@@ -29,6 +29,22 @@ namespace vestra::sema {
 using detail::named_type_param_count;
 using detail::struct_is_repr_union;
 
+namespace {
+
+// §18.5 read-borrow at a call argument: an owned `String` argument flowing into
+// a `Str` parameter borrows as a view for the duration of the call (std::string
+// → std::string_view, a zero-copy conversion). This is the call-site
+// counterpart of the §4 string lattice, which forbids String → Str at binding
+// and return positions — there the view would outlive the owner and dangle —
+// but not here, where the argument is guaranteed to outlive the call it is
+// passed into. Distinct from `assignable` so the dangling cases stay rejected.
+bool read_borrows_as(TypePtr arg, TypePtr param) noexcept {
+    return arg != nullptr && param != nullptr && arg->kind() == TypeKind::String
+           && param->kind() == TypeKind::Str;
+}
+
+}  // namespace
+
 TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
     // §17.x conversion-call syntax: `Float64(i)` / `Int32(x)` — a bare
     // primitive numeric type name in callee position is an explicit
@@ -1180,7 +1196,7 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
     for (std::size_t i = 0; i < params.size(); ++i) {
         auto pty = types_->substitute(params[i], bindings);
         auto arg_type = check_expr(*c.args[i].value, pty);
-        if (!TypeArena::assignable(arg_type, pty)) {
+        if (!TypeArena::assignable(arg_type, pty) && !read_borrows_as(arg_type, pty)) {
             error_at(c.args[i].value->range,
                      std::format("argument {} of type {} does not match parameter type {}",
                                  i + 1,

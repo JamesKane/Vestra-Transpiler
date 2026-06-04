@@ -117,7 +117,7 @@ namespace` can be dropped. Plus **generic imported types**,
 **`import c "header.h"`**, **missing/cyclic-import diagnostics**, and a
 **search-path / project-root** notion.
 
-### 0b. Collections / string library (§18.5) (multi-session) — slices 1-5 shipped
+### 0b. Collections / string library (§18.5) (multi-session) — slices 1-7 shipped
 
 The other big self-hosting blocker (a compiler is mostly Vec/HashMap/String
 churn). v0.5 had no growable collection; there's no raw-array-alloc primitive
@@ -183,11 +183,22 @@ v)`). Resolved in `lookup_method` (set/clear) and the ForStmt resolution
 (element type = the Vec's inner). Proven end to end (`examples/vec_demo.vst`
 extended with `doubleAndSum`, which sets, iterates, and clears).
 
-Remaining: **`append` taking an owned `String`** via a Str read-borrow (the
-String→Str-at-read-param coercion — today append takes Str, so it accepts
-literals/views but not another owned String); and mutation/exclusivity
-discipline for the mutating methods (today `push`/`pop`/`set`/`clear`/`append`
-ride the handle-style exemption rather than a tracked `inout` receiver).
+**Slice 7 shipped** — **owned-`String` read-borrow at a call argument**: an
+owned `String` flowing into a `Str` parameter now borrows as a view for the
+duration of the call (std::string → std::string_view, zero-copy), so
+`s.append(otherString)` and any `func f(_ v: Str)` called with an owned String
+type-check. This is the call-site counterpart of the §4 string lattice: a new
+`read_borrows_as(String, Str)` relaxation sits beside `assignable` in
+`check_call`'s argument check only, so the dangling cases the lattice guards —
+`let v: Str = ownedString` and `return ownedString` from a `-> Str` function —
+stay rejected (the view would outlive its owner). No codegen change: the
+std::string → string_view conversion and `std::string::append(const string&)`
+are both implicit. Proven end to end (`examples/string_demo.vst` extended with
+`joined`).
+
+Remaining: mutation/exclusivity discipline for the mutating methods (today
+`push`/`pop`/`set`/`clear`/`append` ride the handle-style exemption rather than a
+tracked `inout` receiver).
 
 ### 1. Generics phase 2 (multi-session)
 

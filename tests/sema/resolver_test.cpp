@@ -351,6 +351,31 @@ TEST_CASE("a Str widens to a String but not the reverse") {
     CHECK(r.first_message.find("String") != std::string::npos);
 }
 
+TEST_CASE("an owned String read-borrows as a Str at a call argument") {
+    // §18.5: an owned String flows into a Str parameter (the borrow lives only
+    // for the call), so `take(owned)` and `s.append(owned)` both check clean.
+    CHECK(check_errors("func take(_ v: Str) -> Int32 { return 0 }\n"
+                       "func f(_ owned: String) -> Int32 { return take(owned) }\n")
+          == 0);
+    CHECK(check_errors("func f(_ owned: String) using Alloc -> Int {\n"
+                       "    var s: String = \"\"\n"
+                       "    s.append(owned)\n"
+                       "    return s.len()\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("String does not read-borrow as Str at a binding or return") {
+    // The read-borrow relaxation is scoped to call arguments; binding a Str to
+    // an owned String (or returning one) would dangle, so both still error.
+    CHECK(check_errors("func f(_ owned: String) -> Int32 {\n"
+                       "    let v: Str = owned\n"
+                       "    return 0\n"
+                       "}\n")
+          >= 1);
+    CHECK(check_errors("func f(_ owned: String) -> Str { return owned }\n") >= 1);
+}
+
 TEST_CASE("string-literal patterns match a string scrutinee") {
     CHECK(check_errors("func classify(_ s: Str) -> Int32 {\n"
                        "    return match s {\n"
