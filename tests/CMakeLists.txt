@@ -1563,6 +1563,22 @@ add_test(
 set_tests_properties(audit_no_libc_clean_pass PROPERTIES
     FAIL_REGULAR_EXPRESSION "extern ")
 
+# §6 --safety enumerator. Walks every site granting an unsafe capability
+# (RawMemory / Asm / Mmio) via a `using` row or `with` block and reports whether
+# a `// Safety:` comment justifies it. safety_demo.vst documents some grants and
+# leaves others bare, so the audit must surface both a yes and a no.
+add_test(
+    NAME    audit_safety_justified
+    COMMAND $<TARGET_FILE:vestra> audit ${CMAKE_SOURCE_DIR}/examples/safety_demo.vst --safety)
+set_tests_properties(audit_safety_justified PROPERTIES
+    PASS_REGULAR_EXPRESSION "unsafe RawMemory \\[safety:yes\\]")
+
+add_test(
+    NAME    audit_safety_unjustified
+    COMMAND $<TARGET_FILE:vestra> audit ${CMAKE_SOURCE_DIR}/examples/safety_demo.vst --safety)
+set_tests_properties(audit_safety_unjustified PROPERTIES
+    PASS_REGULAR_EXPRESSION "unsafe Asm \\[safety:no\\]")
+
 # §14.9.4 wide-atomic target-feature gate (CLI end-to-end). The
 # atomics.vst example uses Atomic[UInt128] + AtomicTaggedPointer;
 # under --target=aarch64 without --target-features=lse2 the sema

@@ -72,7 +72,7 @@ Subcommands:
         Pretty-print a Vestra source file after §12.4 declaration-macro
         expansion — shows the declarations each `@macro` generated (the
         comptime macro definitions themselves drop out). Runs before sema.
-  audit <file.vst> [--sysreg] [--no-libc]
+  audit <file.vst> [--sysreg] [--no-libc] [--safety]
         Enumerate every site that crossed a discipline-bearing
         boundary so a cross-architecture review can verify the
         build's contracts at the call site.
@@ -83,6 +83,11 @@ Subcommands:
                    zero-finding pass under the freestanding
                    profile (§15.5) is the build-time proof the
                    binary is libc-free.
+        --safety : every site granting an unsafe capability
+                   (RawMemory / Asm / Mmio) via a `using` row or a
+                   `with` block, and whether a `// Safety:` comment
+                   justifies it (§6). Zero `safety:no` == every
+                   unsafe grant is documented.
   help
         Show this message.
 
@@ -201,6 +206,8 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
                 opts.sysreg = true;
             } else if (a == "--no-libc") {
                 opts.no_libc = true;
+            } else if (a == "--safety") {
+                opts.safety = true;
             } else if (!a.empty() && a[0] != '-') {
                 opts.input = std::string{a};
             } else {
@@ -213,8 +220,8 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
             print_usage(err);
             return 2;
         }
-        if (!opts.sysreg && !opts.no_libc) {
-            err << "vestra audit: pick an enumerator (--sysreg, --no-libc)\n";
+        if (!opts.sysreg && !opts.no_libc && !opts.safety) {
+            err << "vestra audit: pick an enumerator (--sysreg, --no-libc, --safety)\n";
             return 2;
         }
         return run_audit(opts, out, err);
@@ -1105,6 +1112,198 @@ struct NoLibcAuditor {
     }
 };
 
+// §6 safety-audit walker. Enumerates every site that grants an *unsafe*
+// capability — RawMemory / Asm / Mmio, the low-level rows whose discharges
+// bypass the safe model — through a function's `using` row or a `with` block,
+// and reports whether a `// Safety:` comment justifies it. Each finding is
+// `<file>:<line>:<col>: unsafe <Cap> [safety:{yes|no}]`. A pass with zero
+// `safety:no` is the spec's audit trail: every unsafe grant is documented.
+struct SafetyAuditor {
+    const diag::SourceManager& sm;
+    std::ostream& out;
+    std::vector<std::string_view> lines;  // 1-based: lines[L-1] is source line L
+
+    static bool is_unsafe_cap(std::string_view name) {
+        return name == "RawMemory" || name == "Asm" || name == "Mmio";
+    }
+
+    static std::string_view trim(std::string_view s) {
+        const auto* ws = " \t\r";
+        auto b = s.find_first_not_of(ws);
+        if (b == std::string_view::npos) {
+            return {};
+        }
+        auto e = s.find_last_not_of(ws);
+        return s.substr(b, e - b + 1);
+    }
+
+    // The capability name of an AST type (a `NamedType`'s first path segment).
+    static std::string_view cap_name(const ast::Type& t) {
+        if (t.kind != ast::NodeKind::NamedType) {
+            return {};
+        }
+        const auto& n = static_cast<const ast::NamedType&>(t);
+        return n.path.empty() ? std::string_view{} : std::string_view{n.path.front()};
+    }
+
+    void walk_unit(const ast::CompilationUnit& unit) {
+        // Find the unit's source file from the module decl, else the first
+        // top-level decl. Never call sm.source on an invalid id (it throws).
+        diag::FileId fid = diag::FileId::Invalid;
+        if (unit.module != nullptr) {
+            fid = unit.module->range.begin.file;
+        } else if (!unit.decls.empty() && unit.decls.front() != nullptr) {
+            fid = unit.decls.front()->range.begin.file;
+        }
+        if (fid == diag::FileId::Invalid) {
+            return;
+        }
+        std::string_view src = sm.source(fid);
+        for (std::size_t off = 0, start = 0; off <= src.size(); ++off) {
+            if (off == src.size() || src[off] == '\n') {
+                lines.push_back(src.substr(start, off - start));
+                start = off + 1;
+            }
+        }
+        for (const auto& d : unit.decls) {
+            if (d != nullptr) {
+                walk_decl(*d);
+            }
+        }
+    }
+
+    void walk_decl(const ast::Decl& d) {
+        switch (d.kind) {
+        case ast::NodeKind::Func:
+            walk_func(static_cast<const ast::FuncDecl&>(d));
+            break;
+        case ast::NodeKind::Struct:
+            for (const auto& m : static_cast<const ast::StructDecl&>(d).methods) {
+                if (m != nullptr) {
+                    walk_decl(*m);
+                }
+            }
+            break;
+        case ast::NodeKind::Enum:
+            for (const auto& m : static_cast<const ast::EnumDecl&>(d).methods) {
+                if (m != nullptr) {
+                    walk_decl(*m);
+                }
+            }
+            break;
+        case ast::NodeKind::Extension:
+            for (const auto& m : static_cast<const ast::ExtensionDecl&>(d).members) {
+                if (m != nullptr) {
+                    walk_decl(*m);
+                }
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    void walk_func(const ast::FuncDecl& f) {
+        for (const auto& cap : f.effects.using_caps) {
+            if (cap != nullptr && is_unsafe_cap(cap_name(*cap))) {
+                emit_record(f.range, cap_name(*cap));
+            }
+        }
+        if (f.body != nullptr) {
+            walk_expr(*f.body);
+        }
+    }
+
+    void walk_expr(const ast::Expr& e) {
+        switch (e.kind) {
+        case ast::NodeKind::BlockExpr:
+            for (const auto& s : static_cast<const ast::BlockExpr&>(e).stmts) {
+                if (s != nullptr) {
+                    walk_stmt(*s);
+                }
+            }
+            break;
+        case ast::NodeKind::IfExpr: {
+            const auto& i = static_cast<const ast::IfExpr&>(e);
+            if (i.then_branch) {
+                walk_expr(*i.then_branch);
+            }
+            if (i.else_branch) {
+                walk_expr(*i.else_branch);
+            }
+            break;
+        }
+        case ast::NodeKind::MatchExpr:
+            for (const auto& arm : static_cast<const ast::MatchExpr&>(e).arms) {
+                if (arm.body) {
+                    walk_expr(*arm.body);
+                }
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    void walk_stmt(const ast::Stmt& s) {
+        switch (s.kind) {
+        case ast::NodeKind::WithStmt: {
+            const auto& w = static_cast<const ast::WithStmt&>(s);
+            for (const auto& b : w.bindings) {
+                if (b.cap_type != nullptr && is_unsafe_cap(cap_name(*b.cap_type))) {
+                    emit_record(w.range, cap_name(*b.cap_type));
+                }
+            }
+            if (w.body) {
+                walk_expr(*w.body);
+            }
+            break;
+        }
+        case ast::NodeKind::ExprStmt:
+            walk_expr(*static_cast<const ast::ExprStmt&>(s).expr);
+            break;
+        case ast::NodeKind::WhileStmt:
+            if (auto* b = static_cast<const ast::WhileStmt&>(s).body.get()) {
+                walk_expr(*b);
+            }
+            break;
+        case ast::NodeKind::ForStmt:
+            if (auto* b = static_cast<const ast::ForStmt&>(s).body.get()) {
+                walk_expr(*b);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    // True when a `// Safety:` comment precedes the site's line, skipping blank
+    // lines, attribute lines (`@…`), and other comment lines in between.
+    bool has_safety_comment(std::uint32_t line) const {
+        for (int L = static_cast<int>(line) - 1; L >= 1; --L) {
+            std::string_view t = trim(lines[static_cast<std::size_t>(L - 1)]);
+            if (t.empty() || t.starts_with("@")) {
+                continue;
+            }
+            if (t.starts_with("//")) {
+                std::string_view body = trim(t.substr(2));
+                if (body.starts_with("Safety:")) {
+                    return true;
+                }
+                continue;  // some other comment — keep scanning upward
+            }
+            return false;  // hit code / a declaration — stop
+        }
+        return false;
+    }
+
+    void emit_record(diag::SourceRange range, std::string_view cap) {
+        auto lc = sm.line_col(range.begin);
+        out << sm.name(range.begin.file) << ":" << lc.line << ":" << lc.col << ": unsafe " << cap
+            << " [safety:" << (has_safety_comment(lc.line) ? "yes" : "no") << "]\n";
+    }
+};
+
 }  // namespace
 
 int run_audit(const AuditOptions& opts, std::ostream& out, std::ostream& err) {
@@ -1131,6 +1330,10 @@ int run_audit(const AuditOptions& opts, std::ostream& out, std::ostream& err) {
     }
     if (opts.no_libc) {
         NoLibcAuditor a{sm, out};
+        a.walk_unit(unit);
+    }
+    if (opts.safety) {
+        SafetyAuditor a{sm, out, {}};
         a.walk_unit(unit);
     }
     return 0;

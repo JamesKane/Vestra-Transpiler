@@ -77,6 +77,11 @@ struct AuditOptions {
     std::filesystem::path input;
     bool sysreg = false;
     bool no_libc = false;
+    // §6 — enumerate every site that grants an unsafe capability (RawMemory /
+    // Asm / Mmio) via a `using` row or a `with` block, and whether a
+    // `// Safety:` comment justifies it. A zero-`safety:no` pass is the audit
+    // trail the spec calls for.
+    bool safety = false;
 };
 [[nodiscard]] int run_audit(const AuditOptions& opts, std::ostream& out, std::ostream& err);
 

@@ -670,11 +670,24 @@ carried through wrapper types (Optional/Span/Box).
 
 ### 6. Capability narrowing + audit trail
 
-Row polymorphism over a generic capability variable; narrowing
-(`Mmio.narrowed(to:)`); the `// Safety:` audit-comment trail for
-`unsafe` discharges. The `vestra audit` subcommand already exists
-(`--sysreg` / `--no-libc` enumerators from `a2e7438` / `3934f9f`), so
-this extends an established surface.
+First slice shipped — **`vestra audit --safety`**: a third audit enumerator
+(beside `--sysreg` / `--no-libc`) that walks every site granting an *unsafe*
+capability — `RawMemory` / `Asm` / `Mmio`, the low-level rows whose discharges
+bypass the safe model — through a function's `using` row or a `with` block, and
+reports whether a `// Safety:` comment justifies it: one line per site,
+`<file>:<line>:<col>: unsafe <Cap> [safety:{yes|no}]`. The justification scan
+walks the source lines above the site, skipping blanks, `@attributes`, and
+other comments, matching a `// Safety:` line. A zero-`safety:no` pass is the
+audit trail the spec calls for — every unsafe grant documented where it is
+taken. It's an enumerator, not a build gate, so existing low-level code keeps
+building; proven over `examples/safety_demo.vst` (a justified `using
+RawMemory, Mmio`, an undocumented `using Asm`, and a mix of `with` blocks).
+
+Remaining: row polymorphism over a generic capability variable; value-level
+narrowing (`Mmio.narrowed(to:)`, which needs capabilities-as-region-values, a
+model the name-set checker doesn't have yet); and a build-time `// Safety:`
+*requirement* (vs. today's audit-time enumeration), which would want real
+comment-trivia retention in the lexer rather than the audit's source-line scan.
 
 ### 7. SIMD `[N]T` lowering (§13)
 

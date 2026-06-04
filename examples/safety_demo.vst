@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §6 safety-audit demo. `vestra audit examples/safety_demo.vst --safety`
+// enumerates every site that grants an unsafe capability (RawMemory / Asm /
+// Mmio) — through a `using` row or a `with` block — and reports whether a
+// `// Safety:` comment justifies it. A zero-`safety:no` pass is the audit trail
+// the spec calls for: every unsafe grant documented at the point it is taken.
+
+// Safety: the bootloader maps this device region before any Vestra code runs,
+// and this driver owns it exclusively for the duration of init.
+func mapDevice() using RawMemory, Mmio {
+}
+
+// Deliberately undocumented — the audit flags this grant as `safety:no`.
+func inlineTrap() using Asm {
+}
+
+func scopedAccess() {
+    // Safety: exclusive access to the timer window; no other task touches it.
+    with Mmio {
+    }
+    with RawMemory {
+    }
+}
