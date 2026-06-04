@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §13 Soa[T] — a struct-of-arrays container over a struct T. Where a Vec[Point]
+// stores points row-major (x, y, x, y, …), a Soa[Point] inverts the layout to
+// column-major: one growable column per field (all x's contiguous, then all
+// y's), so a traversal that touches a single field walks contiguous memory —
+// SIMD- and cache-friendly. It lowers to a std::tuple<std::vector<F0>, …>;
+// `push` scatters a value's fields into the columns, `get(i)` gathers the i-th
+// row back into a T, and `len()` reports the row count. `Soa.new()` is
+// Alloc-gated like Vec/HashMap.
+
+module examples.soa_demo
+
+struct Point {
+    var x: Int32
+    var y: Int32
+}
+
+// Build a Soa[Point] of [0..n) with y = x + 100, then fold one column.
+func sumX(_ n: Int32) using Alloc -> Int32 {
+    var s: Soa[Point] = Soa.new()
+    var i: Int32 = 0
+    while i < n {
+        s.push(Point(x: i, y: i + 100))
+        i = i + 1
+    }
+    var total: Int32 = 0
+    var j: Int = 0
+    while j < s.len() {
+        total = total + s.get(j).x
+        j = j + 1
+    }
+    return total
+}
+
+// Gather the full i-th row back into a Point and read the other column.
+func yAt(_ n: Int32, _ idx: Int) using Alloc -> Int32 {
+    var s: Soa[Point] = Soa.new()
+    var i: Int32 = 0
+    while i < n {
+        s.push(Point(x: i, y: i + 100))
+        i = i + 1
+    }
+    return s.get(idx).y
+}

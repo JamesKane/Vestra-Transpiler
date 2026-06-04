@@ -119,6 +119,22 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
             return types_->make_function({}, types_->unit());
         }
     }
+    // §13 Soa[T] methods (v0.5 core): `push(T)` scatters a struct value's
+    // fields into the parallel columns, `len() -> Int` reports the row count,
+    // and `get(Int) -> T` gathers the i-th row back into a struct. Column-view
+    // accessors are a follow-on slice.
+    if (owner_type->kind() == TypeKind::Soa && owner_type->inner() != nullptr) {
+        TypePtr T = owner_type->inner();
+        if (name == "push") {
+            return types_->make_function({T}, types_->unit());
+        }
+        if (name == "len") {
+            return types_->make_function({}, types_->primitive(TypeKind::Int));
+        }
+        if (name == "get") {
+            return types_->make_function({types_->primitive(TypeKind::Int)}, T);
+        }
+    }
     // §18.5 String methods (v0.5 core): `append(Str)` concatenates another
     // string in place (a literal or borrowed view; std::string::append takes a
     // string_view), and `len() -> Int` reports the byte length. Built via

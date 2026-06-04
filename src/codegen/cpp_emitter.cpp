@@ -255,6 +255,15 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     // and emit_enum read this when injecting the reflective defaults.
     // Each target/protocol path is reduced to its last segment (its
     // simple name) which matches the scope's nominal lookup today.
+    // §13 — index the unit's top-level structs by name so a `Soa[Point]`
+    // annotation can reach Point's fields when emitting its tuple-of-vectors.
+    structs_by_name_.clear();
+    for (const auto& d : unit.decls) {
+        if (d != nullptr && d->kind == ast::NodeKind::Struct) {
+            structs_by_name_[static_cast<const ast::StructDecl&>(*d).name] =
+                static_cast<const ast::StructDecl*>(d.get());
+        }
+    }
     derives_by_target_.clear();
     for (const auto& d : unit.decls) {
         if (d->kind != ast::NodeKind::Derive) {
@@ -3485,6 +3494,18 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     break;
                 }
             }
+            // §13 `Soa.new()` → an empty struct-of-arrays (tuple of empty
+            // vectors), spelled by the call's resolved Soa type.
+            if (mem.base && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "Soa"
+                && mem.member == "new" && resolution_ != nullptr) {
+                auto rt = resolution_->type_of(&e);
+                if (rt != nullptr && rt->kind() == sema::TypeKind::Soa) {
+                    emit_sema_type(os, rt);
+                    os << "{}";
+                    break;
+                }
+            }
             // §11 `Duration.seconds(n)` (also milliseconds / microseconds /
             // nanoseconds) lowers to the static factory
             // `__vstr::Duration::seconds(n)`. Guarded on the call resolving to
@@ -3624,6 +3645,60 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 if (mem.member == "clear" && c.args.empty()) {
                     emit_expr(os, *mem.base);
                     os << ".clear()";
+                    break;
+                }
+            }
+            // §13 Soa[T] methods. The backing is a tuple of column vectors:
+            //   push(v) scatters v's fields into the columns (an IIFE binds the
+            //     receiver + value once, then push_back per column);
+            //   len()   is column 0's size as Int;
+            //   get(i)  gathers the i-th of each column back into a T (an IIFE
+            //     binds the receiver + index once, then a designated-init).
+            if (auto base_t = resolution_->type_of(mem.base.get());
+                base_t != nullptr && base_t->kind() == sema::TypeKind::Soa
+                && base_t->inner() != nullptr && base_t->inner()->nominal_decl() != nullptr
+                && base_t->inner()->nominal_decl()->kind == ast::NodeKind::Struct) {
+                const auto& sd =
+                    static_cast<const ast::StructDecl&>(*base_t->inner()->nominal_decl());
+                std::vector<const ast::StructDecl::Field*> cols;
+                for (const auto& f : sd.fields) {
+                    if (f.kind != ast::StructDecl::Field::Kind::Embed && f.type != nullptr) {
+                        cols.push_back(&f);
+                    }
+                }
+                if (mem.member == "push" && c.args.size() == 1) {
+                    os << "[&](auto&& __s, auto&& __v) { ";
+                    for (std::size_t i = 0; i < cols.size(); ++i) {
+                        os << "std::get<" << i << ">(__s).push_back(__v." << cols[i]->name << "); ";
+                    }
+                    os << "}(";
+                    emit_expr(os, *mem.base);
+                    os << ", ";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
+                    break;
+                }
+                if (mem.member == "len" && c.args.empty()) {
+                    os << "static_cast<std::intptr_t>(std::get<0>(";
+                    emit_expr(os, *mem.base);
+                    os << ").size())";
+                    break;
+                }
+                if (mem.member == "get" && c.args.size() == 1) {
+                    os << "[&](auto&& __s, std::size_t __i) { return ";
+                    emit_sema_type(os, base_t->inner());
+                    os << "{";
+                    for (std::size_t i = 0; i < cols.size(); ++i) {
+                        if (i != 0) {
+                            os << ", ";
+                        }
+                        os << "." << cols[i]->name << " = std::get<" << i << ">(__s)[__i]";
+                    }
+                    os << "}; }(";
+                    emit_expr(os, *mem.base);
+                    os << ", static_cast<std::size_t>(";
+                    emit_expr(os, *c.args[0].value);
+                    os << "))";
                     break;
                 }
             }

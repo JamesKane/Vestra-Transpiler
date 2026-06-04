@@ -137,6 +137,8 @@ std::string Type::describe() const {
         return inner_ ? std::format("Channel[{}]", inner_->describe()) : std::string{"Channel"};
     case TypeKind::Vec:
         return inner_ ? std::format("Vec[{}]", inner_->describe()) : std::string{"Vec"};
+    case TypeKind::Soa:
+        return inner_ ? std::format("Soa[{}]", inner_->describe()) : std::string{"Soa"};
     case TypeKind::HashMap:
         return parts_.size() == 2
                    ? std::format("HashMap[{}, {}]", parts_[0]->describe(), parts_[1]->describe())
@@ -356,6 +358,14 @@ TypePtr TypeArena::make_channel(TypePtr inner) {
 TypePtr TypeArena::make_vec(TypePtr inner) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::Vec));
     t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_soa(TypePtr element) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Soa));
+    t->inner_ = element;
     auto* p = t.get();
     owned_.push_back(std::move(t));
     return p;
@@ -675,6 +685,7 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     case TypeKind::Future:
     case TypeKind::Channel:
     case TypeKind::Vec:
+    case TypeKind::Soa:
     case TypeKind::Span:
     case TypeKind::MutSpan:
     case TypeKind::Ptr:
@@ -936,6 +947,10 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::Vec: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_vec(inner);
+    }
+    case TypeKind::Soa: {
+        auto inner = substitute(t->inner(), bindings);
+        return inner == t->inner() ? t : make_soa(inner);
     }
     case TypeKind::HashMap: {
         if (t->parts().size() != 2) {

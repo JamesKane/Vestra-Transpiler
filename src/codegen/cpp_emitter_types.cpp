@@ -21,6 +21,25 @@ namespace vestra::codegen {
 
 using detail::primitive_map;
 
+void CppEmitter::emit_soa_backing(std::ostream& os, const ast::StructDecl& sd) {
+    // One growable column per (non-embed) field, in declaration order.
+    os << "std::tuple<";
+    bool first = true;
+    for (const auto& f : sd.fields) {
+        if (f.kind == ast::StructDecl::Field::Kind::Embed || f.type == nullptr) {
+            continue;
+        }
+        if (!first) {
+            os << ", ";
+        }
+        first = false;
+        os << "std::vector<";
+        emit_type(os, *f.type);
+        os << ">";
+    }
+    os << ">";
+}
+
 void CppEmitter::emit_nominal_qualifier(std::ostream& os, const ast::Decl* decl) {
     if (auto it = imported_qualifiers_.find(decl); it != imported_qualifiers_.end()) {
         os << it->second << "::";
@@ -116,6 +135,14 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         os << "std::vector<";
         emit_sema_type(os, t->inner());
         os << ">";
+        return;
+    case TypeKind::Soa:
+        if (t->inner() != nullptr && t->inner()->nominal_decl() != nullptr
+            && t->inner()->nominal_decl()->kind == ast::NodeKind::Struct) {
+            emit_soa_backing(os, static_cast<const ast::StructDecl&>(*t->inner()->nominal_decl()));
+        } else {
+            os << "std::tuple<>";
+        }
         return;
     case TypeKind::HashMap:
         os << "std::unordered_map<";
@@ -444,6 +471,21 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
                 os << ", ";
                 emit_type(os, *n.type_args[1]);
                 os << ">";
+                return;
+            }
+            // §13 Soa[T] → std::tuple<std::vector<F0>, …> over T's fields. The
+            // element struct is found by name in the unit's struct index.
+            if (n.path[0] == "Soa" && n.type_args.size() == 1 && n.type_args[0] != nullptr
+                && n.type_args[0]->kind == ast::NodeKind::NamedType) {
+                const auto& en = static_cast<const ast::NamedType&>(*n.type_args[0]);
+                if (!en.path.empty()) {
+                    if (auto it = structs_by_name_.find(en.path.back());
+                        it != structs_by_name_.end() && it->second != nullptr) {
+                        emit_soa_backing(os, *it->second);
+                        return;
+                    }
+                }
+                os << "std::tuple<>";
                 return;
             }
             // §10 borrowed views: `Span[T]` → `std::span<const T>`,

@@ -2878,6 +2878,25 @@ TEST_CASE("Vec[T] lowers to std::vector with push / len / index") {
     CHECK(f.out.source.find("static_cast<std::intptr_t>(xs.size())") != std::string::npos);
 }
 
+TEST_CASE("Soa[T] lowers to a tuple-of-vectors with scatter push / gather get") {
+    SemaEmitFixture f("struct Point { var x: Int32  var y: Int32 }\n"
+                      "func build() using Alloc -> Int32 {\n"
+                      "    var s: Soa[Point] = Soa.new()\n"
+                      "    s.push(Point(x: 1, y: 2))\n"
+                      "    return s.get(0).x + s.len()\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    // One column vector per field.
+    CHECK(f.out.source.find("std::tuple<std::vector<std::int32_t>, std::vector<std::int32_t>>")
+          != std::string::npos);
+    // push scatters each field into its column; get gathers a Point back.
+    CHECK(f.out.source.find("std::get<0>(__s).push_back(__v.x)") != std::string::npos);
+    CHECK(f.out.source.find("std::get<1>(__s).push_back(__v.y)") != std::string::npos);
+    CHECK(f.out.source.find(".x = std::get<0>(__s)[__i]") != std::string::npos);
+    CHECK(f.out.source.find("static_cast<std::intptr_t>(std::get<0>(s).size())")
+          != std::string::npos);
+}
+
 TEST_CASE("elementwise [N]T arithmetic lowers to __vstr::vec_* helpers") {
     SemaEmitFixture f("func axpy(_ a: [4]Int32, _ x: [4]Int32, _ y: [4]Int32) -> [4]Int32 {\n"
                       "    return a * x + y\n"

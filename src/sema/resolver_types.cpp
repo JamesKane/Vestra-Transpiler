@@ -61,6 +61,39 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                     n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error(),
                     n.type_args[1] ? resolve_type(*n.type_args[1]) : types_->error());
             }
+            // §13 Soa[T] — struct-of-arrays over a struct T. The element must be
+            // a (non-generic) struct: SoA stores one column per field, so the
+            // field set has to be known. Lowers to a tuple-of-vectors.
+            if (n.path[0] == "Soa" && n.type_args.size() == 1) {
+                TypePtr elem = n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error();
+                if (elem != nullptr && !elem->is_error()) {
+                    const ast::Decl* nd = elem->nominal_decl();
+                    if (elem->kind() != TypeKind::Struct || nd == nullptr
+                        || nd->kind != ast::NodeKind::Struct) {
+                        error_at(t.range,
+                                 std::format("Soa[T] requires T to be a struct, got {}",
+                                             elem->describe()));
+                        return types_->error();
+                    }
+                    if (!elem->parts().empty()) {
+                        error_at(t.range,
+                                 "Soa[T] over a generic struct instance is not yet supported");
+                        return types_->error();
+                    }
+                    const auto& sd = static_cast<const ast::StructDecl&>(*nd);
+                    std::size_t cols = 0;
+                    for (const auto& f : sd.fields) {
+                        if (f.kind != ast::StructDecl::Field::Kind::Embed) {
+                            ++cols;
+                        }
+                    }
+                    if (cols == 0) {
+                        error_at(t.range, "Soa[T] requires T to have at least one stored field");
+                        return types_->error();
+                    }
+                }
+                return types_->make_soa(elem);
+            }
             // §10 builtin `Span[T]` / `MutSpan[T]` — borrowed,
             // non-escapable views over a contiguous range of T. Lower
             // to `std::span<const T>` / `std::span<T>`. The implicit

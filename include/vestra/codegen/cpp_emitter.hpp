@@ -132,6 +132,11 @@ private:
                              const ast::Type& t,
                              std::string_view name,
                              std::string_view trailing_qual = "");
+    // §13 Soa[T] backing type: `std::tuple<std::vector<F0>, std::vector<F1>, …>`,
+    // one column per field of the element struct `sd`. Shared by emit_sema_type
+    // (struct via the sema type's nominal_decl) and emit_type (struct via the
+    // unit's name→struct index).
+    void emit_soa_backing(std::ostream& os, const ast::StructDecl& sd);
     // Emit the C++ spelling of a resolver-canonicalized type. Used in a
     // handful of places where the AST type isn't reachable (e.g. the
     // success-T slot of `std::expected<T, E>` for `do { ... } catch
@@ -268,6 +273,10 @@ private:
 
     // §5 — imported-nominal → C++ namespace map (see set_imported_qualifiers).
     std::unordered_map<const ast::Decl*, std::string> imported_qualifiers_;
+
+    // §13 — the unit's top-level structs by name, so emit_type can reach a
+    // `Soa[Point]` annotation's element fields. Rebuilt each emit() call.
+    std::unordered_map<std::string, const ast::StructDecl*> structs_by_name_;
 };
 
 }  // namespace vestra::codegen

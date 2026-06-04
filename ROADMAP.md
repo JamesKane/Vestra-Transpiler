@@ -732,9 +732,25 @@ resistance).
 
 ### 9. `Soa[T]` struct-of-arrays library type (§13)
 
-Inverts AoS storage for SIMD-friendly traversal. Library on top of
-generic structs plus a small `@layout(soa)` attribute. Design-heavy;
-waits for generics phase 2 (#1).
+First slice shipped — **`Soa[T]` over a struct**: a struct-of-arrays container
+that inverts AoS storage for SIMD-/cache-friendly per-field traversal. Built as
+a compiler-known type (the Vec/HashMap idiom), `Soa[T]` lowers to a
+`std::tuple<std::vector<F0>, std::vector<F1>, …>` — one growable column per
+field of the element struct. `Soa.new()` mints an empty one (Alloc-gated, T
+inferred from the expected type); `push(v)` scatters v's fields into the columns
+(an IIFE binds receiver + value once, then `push_back` per column), `len() ->
+Int` is column 0's size, and `get(i) -> T` gathers the i-th row back into a
+struct (an IIFE + designated-init). T must be a non-generic struct with at least
+one stored field (diagnosed otherwise). The tuple backing is shared between
+`emit_sema_type` (struct via the sema type's nominal_decl) and `emit_type`
+(struct via a unit-local name→struct index). Proven end to end
+(`examples/soa_demo.vst`: column fold + row gather, compiled at -O2 and run)
+plus a codegen unit test.
+
+Remaining: per-field **column views** (`s.column(.x) -> MutSpan[Int32]`) — the
+real SIMD-traversal payoff, pairing with §7's elementwise vector ops; the
+spec's `@layout(soa)` attribute form (vs. today's explicit `Soa[T]` type);
+`get(i) -> T?` bounds-checking; and Soa over a generic struct instance.
 
 ---
 

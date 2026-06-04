@@ -83,6 +83,10 @@ enum class TypeKind : std::uint16_t {
     // §18.5 HashMap[K, V] — an owned hash map (→ std::unordered_map<K, V>);
     // parts() are {K, V}.
     HashMap,
+    // §13 Soa[T] — a struct-of-arrays container over a struct T: one growable
+    // column per field, stored contiguously for SIMD-friendly traversal
+    // (→ std::tuple<std::vector<F0>, …>). inner() is the element struct T.
+    Soa,
     Vector,
     Function,
     Tuple,
@@ -273,6 +277,8 @@ public:
     [[nodiscard]] TypePtr make_channel(TypePtr inner);
     [[nodiscard]] TypePtr make_vec(TypePtr inner);
     [[nodiscard]] TypePtr make_hashmap(TypePtr key, TypePtr value);
+    // §13 Soa[T] — struct-of-arrays over the element struct T (inner()).
+    [[nodiscard]] TypePtr make_soa(TypePtr element);
     // §10 Span[T] / MutSpan[T] — borrowed, non-escapable views.
     // Lower to `std::span<const T>` and `std::span<T>` respectively.
     [[nodiscard]] TypePtr make_span(TypePtr inner);

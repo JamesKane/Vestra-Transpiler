@@ -910,6 +910,25 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                      "`var m: HashMap[Str, Int32] = HashMap.new()`)");
             return types_->make_hashmap(types_->error(), types_->error());
         }
+        // §13 `Soa.new()` — mints an empty struct-of-arrays; the element struct
+        // comes from the expected `Soa[T]`. Alloc-gated, like Vec.new.
+        if (mem.base->kind == ast::NodeKind::IdentExpr
+            && static_cast<const ast::IdentExpr&>(*mem.base).name == "Soa" && mem.member == "new"
+            && scopes_.current().lookup("Soa") == nullptr) {
+            if (!c.args.empty()) {
+                for (const auto& a : c.args) {
+                    (void)check_expr(*a.value);
+                }
+                error_at(c.range, "Soa.new() takes no arguments");
+            }
+            if (expected != nullptr && expected->kind() == TypeKind::Soa) {
+                return types_->make_soa(expected->inner());
+            }
+            error_at(c.range,
+                     "cannot infer Soa element type; annotate the binding (e.g. "
+                     "`var s: Soa[Point] = Soa.new()`)");
+            return types_->make_soa(types_->error());
+        }
     }
 
     // §A11 (§14.8) `PerCpu.new(value)` — the heap factory for per-hart
