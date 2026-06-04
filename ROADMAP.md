@@ -32,7 +32,7 @@ first slice.
 
 ## Next up (priority 1-9)
 
-### 0. Multi-file modules (§5) (multi-session) — slices 1-8 shipped
+### 0. Multi-file modules (§5) (multi-session) — slices 1-9 shipped
 
 The first step toward self-hosting (a compiler is many files). **Slice 1
 shipped**: `vestra build entry.vst` is now a transitive module loader.
@@ -134,8 +134,19 @@ refs via the resolver's `qualified_name_of`, computed types via this map — the
 alone suffices. Proven end to end (`pairVecSum()` in multifile_demo builds a
 `Vec[util.math.Pair]` whose element type lowers through emit_sema_type).
 
-Remaining: **generic imported types**, **`import c "header.h"`**, and a
-**search-path / project-root** notion.
+**Slice 9 shipped** — **generic imported types**: a qualified generic type
+`util.math.Boxed[Int32]` now binds its type arguments onto the imported nominal
+instead of dropping them. `resolve_type`'s dotted-path branch calls the same
+`resolve_generic_instance_args` + `make_struct_instance`/`make_enum_instance`
+the local case uses (the export symbol carries the dependency's decl, whose
+`generics` drive the binding), so the annotation resolves to the instance,
+construction infers it, and a field read yields the substituted type (not the
+unbound `T`). Codegen: the qualified-construction path now appends the resolved
+`<args>` after the `qualified_name_of` string — `coll::box::Holder<std::int32_t>
+{...}` — matching the local-struct emission instead of leaning on CTAD. Proven
+end to end (`boxedValue()` over a `util.math.Boxed[Int32]`).
+
+Remaining: **`import c "header.h"`** and a **search-path / project-root** notion.
 
 ### 0b. Collections / string library (§18.5) (multi-session) — slices 1-8 shipped
 

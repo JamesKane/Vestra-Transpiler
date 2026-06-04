@@ -3971,7 +3971,26 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             const auto* sym = resolution_->symbol_of(c.callee.get());
             const auto* qn = resolution_->qualified_name_of(c.callee.get());
             if (sym != nullptr && sym->kind == sema::SymbolKind::Struct && qn != nullptr) {
-                os << *qn << "{";
+                os << *qn;
+                // §7/§5 generic imported struct — `coll.box.Holder[Int32](...)`
+                // constructs as `coll::box::Holder<std::int32_t>{...}`. The
+                // call's resolved result type carries the inferred arguments;
+                // emit them so the brace-init names the right specialization
+                // (the qualified name string alone has no `<args>`). Mirrors the
+                // local-struct construction path below.
+                if (auto inst = resolution_->type_of(&c); inst != nullptr
+                                                          && inst->kind() == sema::TypeKind::Struct
+                                                          && !inst->parts().empty()) {
+                    os << "<";
+                    for (std::size_t i = 0; i < inst->parts().size(); ++i) {
+                        if (i != 0) {
+                            os << ", ";
+                        }
+                        emit_sema_type(os, inst->parts()[i]);
+                    }
+                    os << ">";
+                }
+                os << "{";
                 for (std::size_t i = 0; i < c.args.size(); ++i) {
                     if (i != 0) {
                         os << ", ";

@@ -33,3 +33,10 @@ public struct Pair {
 public func combine(_ p: Pair) -> Int32 {
     return p.lo + p.hi
 }
+
+// §7/§5 a public *generic* struct export, reached from main as the qualified
+// generic type `util.math.Boxed[Int32]` — the type arguments bind onto the
+// imported nominal so field access substitutes them.
+public struct Boxed[T] {
+    var item: T
+}

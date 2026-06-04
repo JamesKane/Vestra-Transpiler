@@ -19,6 +19,7 @@ int main() {
     assert(demo::app::pairSum() == 42);     // cross-module struct: util.math.Pair
     assert(demo::app::combined() == 42);    // imported fn over the module's own type
     assert(demo::app::pairVecSum() == 42);  // computed imported type: Vec[util.math.Pair]
+    assert(demo::app::boxedValue() == 42);  // generic imported type: util.math.Boxed[Int32]
     std::puts("multifile_demo OK");
     return 0;
 }

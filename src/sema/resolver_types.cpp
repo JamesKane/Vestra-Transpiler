@@ -267,6 +267,28 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                 // The dependency's resolver already built this nominal type
                 // (in the shared arena); reuse it so the decl identity matches
                 // values constructed/returned across the boundary.
+                //
+                // §7/§5 generic imported type — `coll.box.Holder[Int32]`: bind
+                // the type arguments onto the imported nominal exactly as the
+                // local case does, so field access and construction substitute
+                // them. Non-generic exports (no args) fall through to the bare
+                // nominal, matching the prior behavior for `util.math.Pair`.
+                const ast::Decl* nd = exp->second.type->nominal_decl();
+                if (exp->second.kind == SymbolKind::Struct && nd != nullptr
+                    && nd->kind == ast::NodeKind::Struct) {
+                    const auto& sd = static_cast<const ast::StructDecl&>(*nd);
+                    if (auto args = resolve_generic_instance_args(
+                            sd.generics, n, "struct", sd.name, t.range)) {
+                        return types_->make_struct_instance(nd, std::move(*args));
+                    }
+                } else if (exp->second.kind == SymbolKind::Enum && nd != nullptr
+                           && nd->kind == ast::NodeKind::Enum) {
+                    const auto& ed = static_cast<const ast::EnumDecl&>(*nd);
+                    if (auto args = resolve_generic_instance_args(
+                            ed.generics, n, "enum", ed.name, t.range)) {
+                        return types_->make_enum_instance(nd, std::move(*args));
+                    }
+                }
                 return exp->second.type;
             }
             error_at(t.range, std::format("module '{}' has no public type '{}'", dotted, last));

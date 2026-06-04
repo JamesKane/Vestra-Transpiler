@@ -50,3 +50,11 @@ func pairVecSum() using Alloc -> Int32 {
     v.push(util.math.Pair(lo: 40, hi: 2))
     return v[0].lo + v[0].hi
 }
+
+// §7/§5 generic imported type: `util.math.Boxed[Int32]` binds the type argument
+// onto the imported nominal, so the annotation resolves to the instance,
+// construction infers it, and the field read yields Int32 (not the unbound T).
+func boxedValue() -> Int32 {
+    let b: util.math.Boxed[Int32] = util.math.Boxed(item: 42)
+    return b.item
+}
