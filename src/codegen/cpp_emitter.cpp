@@ -1540,6 +1540,25 @@ struct SelectAwaiter {
 
     hdr << "#endif  // VESTRA_RUNTIME_PRELUDE\n\n";
 
+    // §5 C interop: `import c "stdio.h"` lowers to `#include "stdio.h"` at
+    // global scope, ahead of the user's namespace. The quoted form finds both
+    // in-tree and system headers (compilers fall back to the angle-bracket
+    // search path for a quoted include). Vestra doesn't parse the header — the
+    // foreign symbols are declared in-tree via `@extern` (§14.6) — but pulling
+    // the canonical C declarations in lets the C++ compiler cross-check those
+    // `@extern` prototypes and makes any header types/macros they touch visible.
+    bool any_c_header = false;
+    for (const auto& imp : unit.imports) {
+        if (imp == nullptr || !imp->is_c_header || imp->c_header.empty()) {
+            continue;
+        }
+        any_c_header = true;
+        hdr << "#include \"" << imp->c_header << "\"\n";
+    }
+    if (any_c_header) {
+        hdr << "\n";
+    }
+
     // §5 multi-file: pull in each imported module's header. Every cross-module
     // reference is now fully qualified — value refs through the resolver's
     // `qualified_name_of` side table, and computed/inferred imported types

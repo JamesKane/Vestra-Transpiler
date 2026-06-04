@@ -32,7 +32,7 @@ first slice.
 
 ## Next up (priority 1-9)
 
-### 0. Multi-file modules (§5) (multi-session) — slices 1-9 shipped
+### 0. Multi-file modules (§5) (multi-session) — slices 1-10 shipped
 
 The first step toward self-hosting (a compiler is many files). **Slice 1
 shipped**: `vestra build entry.vst` is now a transitive module loader.
@@ -146,7 +146,18 @@ unbound `T`). Codegen: the qualified-construction path now appends the resolved
 {...}` — matching the local-struct emission instead of leaning on CTAD. Proven
 end to end (`boxedValue()` over a `util.math.Boxed[Int32]`).
 
-Remaining: **`import c "header.h"`** and a **search-path / project-root** notion.
+**Slice 10 shipped** — **`import c "header.h"`**: a C-header import now lowers to
+a global-scope `#include "header.h"` in the generated header (the quoted form
+finds both in-tree and system headers). Vestra doesn't parse the C header — the
+foreign symbols are still declared in-tree via `@extern` (§14.6) — but pulling
+the canonical declarations into the translation unit lets the C++ compiler
+cross-check those `@extern` prototypes and makes any types/macros they define
+visible. The loader already skips `is_c_header` imports (no `.vst` to load);
+this fills in the emitter half. Proven end to end (`examples/cinterop_demo/`:
+`import c "clib.h"` + an `@extern` bound to the header's inline `cdemo_value()`,
+compiled with the example dir on the include path and run).
+
+Remaining: a **search-path / project-root** notion.
 
 ### 0b. Collections / string library (§18.5) (multi-session) — slices 1-8 shipped
 

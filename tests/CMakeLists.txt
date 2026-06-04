@@ -2363,6 +2363,33 @@ add_test(
             ${CMAKE_SOURCE_DIR}/examples/multifile_demo/missingimport.vst)
 set_tests_properties(e2e_missing_import PROPERTIES WILL_FAIL TRUE)
 
+# §5 C interop: `import c "clib.h"` emits a global-scope `#include "clib.h"`; an
+# in-tree `@extern` binds to the inline cdemo_value() the header defines. The
+# compile points -I at the example dir so the generated `#include` resolves.
+set(e2e_cinterop_input  ${CMAKE_SOURCE_DIR}/examples/cinterop_demo/cinterop.vst)
+set(e2e_cinterop_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_cinterop_demo.cpp)
+
+add_test(
+    NAME    e2e_cinterop_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_cinterop_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_cinterop_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            -I${CMAKE_SOURCE_DIR}/examples/cinterop_demo
+            ${e2e_cinterop_driver} ${e2e_workdir}/cinterop.cpp
+            -o ${e2e_workdir}/cinterop_app)
+set_tests_properties(e2e_cinterop_demo_compile PROPERTIES DEPENDS e2e_cinterop_demo_transpile)
+
+add_test(
+    NAME    e2e_cinterop_demo_run
+    COMMAND ${e2e_workdir}/cinterop_app)
+set_tests_properties(e2e_cinterop_demo_run PROPERTIES
+    DEPENDS                e2e_cinterop_demo_compile
+    PASS_REGULAR_EXPRESSION "cinterop_demo OK")
+
 # §5/§18.4 split(at:) partition primitive.
 set(e2e_split_input  ${CMAKE_SOURCE_DIR}/examples/split_demo.vst)
 set(e2e_split_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_split_demo.cpp)
