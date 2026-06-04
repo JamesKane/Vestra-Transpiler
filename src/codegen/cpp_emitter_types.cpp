@@ -111,6 +111,13 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
         emit_sema_type(os, t->inner());
         os << ">";
         return;
+    case TypeKind::HashMap:
+        os << "std::unordered_map<";
+        emit_sema_type(os, t->parts()[0]);
+        os << ", ";
+        emit_sema_type(os, t->parts()[1]);
+        os << ">";
+        return;
     case TypeKind::Duration:
         os << "__vstr::Duration";
         return;
@@ -417,6 +424,15 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
             if (n.path[0] == "Vec" && n.type_args.size() == 1) {
                 os << "std::vector<";
                 emit_type(os, *n.type_args[0]);
+                os << ">";
+                return;
+            }
+            // §18.5 HashMap[K, V] → std::unordered_map<K, V>.
+            if (n.path[0] == "HashMap" && n.type_args.size() == 2) {
+                os << "std::unordered_map<";
+                emit_type(os, *n.type_args[0]);
+                os << ", ";
+                emit_type(os, *n.type_args[1]);
                 os << ">";
                 return;
             }

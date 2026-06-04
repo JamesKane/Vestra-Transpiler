@@ -202,6 +202,13 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                 && mem.member == "new" && !in_scope("Alloc")) {
                 missing_capability("Alloc", c.range);
             }
+            // §18.5 `HashMap.new()` — same Alloc gate (an owned hash map
+            // heap-allocates its buckets).
+            if (mem.base && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "HashMap"
+                && mem.member == "new" && !in_scope("Alloc")) {
+                missing_capability("Alloc", c.range);
+            }
             // §A11 (§14.8) `pc.slot(hartId)` — cross-hart accessor.
             // The slot() returns a Ptr[T] into another hart's storage
             // without the borrow-tracking the spec's per-hart view

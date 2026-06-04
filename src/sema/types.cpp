@@ -137,6 +137,10 @@ std::string Type::describe() const {
         return inner_ ? std::format("Channel[{}]", inner_->describe()) : std::string{"Channel"};
     case TypeKind::Vec:
         return inner_ ? std::format("Vec[{}]", inner_->describe()) : std::string{"Vec"};
+    case TypeKind::HashMap:
+        return parts_.size() == 2
+                   ? std::format("HashMap[{}, {}]", parts_[0]->describe(), parts_[1]->describe())
+                   : std::string{"HashMap"};
     case TypeKind::Duration:
         return "Duration";
     case TypeKind::AstExpr:
@@ -352,6 +356,14 @@ TypePtr TypeArena::make_channel(TypePtr inner) {
 TypePtr TypeArena::make_vec(TypePtr inner) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::Vec));
     t->inner_ = inner;
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
+TypePtr TypeArena::make_hashmap(TypePtr key, TypePtr value) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::HashMap));
+    t->parts_ = {key, value};
     auto* p = t.get();
     owned_.push_back(std::move(t));
     return p;
@@ -684,7 +696,8 @@ bool TypeArena::equal(TypePtr a, TypePtr b) noexcept {
     case TypeKind::AtomicTaggedPointer:
         return equal(a->inner(), b->inner());
     case TypeKind::ZipIter:
-    case TypeKind::MapIter: {
+    case TypeKind::MapIter:
+    case TypeKind::HashMap: {
         const auto& pa = a->parts();
         const auto& pb = b->parts();
         return pa.size() == pb.size() && pa.size() == 2 && equal(pa[0], pb[0])
@@ -923,6 +936,14 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     case TypeKind::Vec: {
         auto inner = substitute(t->inner(), bindings);
         return inner == t->inner() ? t : make_vec(inner);
+    }
+    case TypeKind::HashMap: {
+        if (t->parts().size() != 2) {
+            return t;
+        }
+        auto k = substitute(t->parts()[0], bindings);
+        auto v = substitute(t->parts()[1], bindings);
+        return (k == t->parts()[0] && v == t->parts()[1]) ? t : make_hashmap(k, v);
     }
     case TypeKind::Span: {
         auto inner = substitute(t->inner(), bindings);

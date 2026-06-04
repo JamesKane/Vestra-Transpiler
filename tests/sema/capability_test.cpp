@@ -123,6 +123,23 @@ TEST_CASE("§18.5 String.new() requires Alloc; append/len under Alloc are clean"
           == 0);
 }
 
+TEST_CASE("§18.5 HashMap.new() requires Alloc; set/get/contains/len under Alloc are clean") {
+    auto bad = check("func bad() -> Int32 {\n"
+                     "    var m: HashMap[Str, Int32] = HashMap.new()\n"
+                     "    return m.len()\n"
+                     "}\n");
+    CHECK(bad.error_count >= 1);
+    CHECK(bad.first_message.find("missing capability 'Alloc'") != std::string::npos);
+    CHECK(check("func ok(_ k: Str) using Alloc -> Int32 {\n"
+                "    var m: HashMap[Str, Int32] = HashMap.new()\n"
+                "    m.set(k, 1)\n"
+                "    let has = m.contains(k)\n"
+                "    return (m.get(k) ?? 0) + m.len()\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 // ---- `with` blocks satisfy a capability ------------------------------------
 
 TEST_CASE("a `with` block supplies the capability for its body") {

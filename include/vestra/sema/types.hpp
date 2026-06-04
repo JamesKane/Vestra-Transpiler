@@ -80,6 +80,9 @@ enum class TypeKind : std::uint16_t {
     // §18.5 Vec[T] — a growable, owned, heap-backed sequence (→ std::vector<T>).
     // Distinct from Vector (the fixed `[N]T` array, → std::array).
     Vec,
+    // §18.5 HashMap[K, V] — an owned hash map (→ std::unordered_map<K, V>);
+    // parts() are {K, V}.
+    HashMap,
     Vector,
     Function,
     Tuple,
@@ -269,6 +272,7 @@ public:
     // §11 Channel[T] — a typed queue; `send(T)` and `recv() -> T?`.
     [[nodiscard]] TypePtr make_channel(TypePtr inner);
     [[nodiscard]] TypePtr make_vec(TypePtr inner);
+    [[nodiscard]] TypePtr make_hashmap(TypePtr key, TypePtr value);
     // §10 Span[T] / MutSpan[T] — borrowed, non-escapable views.
     // Lower to `std::span<const T>` and `std::span<T>` respectively.
     [[nodiscard]] TypePtr make_span(TypePtr inner);

@@ -117,7 +117,7 @@ namespace` can be dropped. Plus **generic imported types**,
 **`import c "header.h"`**, **missing/cyclic-import diagnostics**, and a
 **search-path / project-root** notion.
 
-### 0b. Collections / string library (§18.5) (multi-session) — slices 1-3 shipped
+### 0b. Collections / string library (§18.5) (multi-session) — slices 1-4 shipped
 
 The other big self-hosting blocker (a compiler is mostly Vec/HashMap/String
 churn). v0.5 had no growable collection; there's no raw-array-alloc primitive
@@ -151,14 +151,27 @@ field, const/static), recorded in a Resolution side table; emit_expr wraps it
 once (a re-entry guard prevents double-wrap). A String can now be seeded
 directly from a literal.
 
+**Slice 4 shipped** — **`HashMap[K, V]` → `std::unordered_map<K, V>`**: the
+owned hash map that completes the bootstrap collection set (a compiler is mostly
+Vec/HashMap/String churn). `HashMap.new()` mints an empty one (Alloc-gated,
+inferring K/V from the expected type); `m.set(k, v)` inserts-or-assigns,
+`m.contains(k) -> Bool`, `m.len() -> Int`, and `m.get(k) -> V?` reads a value
+back as an optional (nil when absent), folding straight into `if let` / `??`.
+New `TypeKind::HashMap` (parts = {K, V}); resolved in `resolve_type` /
+`check_call` / `lookup_method`; lowered in the emitter (type → unordered_map,
+`new` → `{}`, set → `insert_or_assign`, contains → `.contains`, len →
+`size()`-as-Int). The only new codegen wrinkle is `get`'s optional return: a
+`__vstr::map_get(m, k)` prelude template folds the find/end check into a
+`std::optional<V>`. Proven end to end (`examples/hashmap_demo.vst`).
+
 Remaining: **`append` taking an owned `String`** via a Str read-borrow (the
 String→Str-at-read-param coercion — today append takes Str, so it accepts
 literals/views but not another owned String); **more `Vec` methods**
 (`get(i) -> T?`, `pop() -> T?`, `set`, `clear`, iteration via `for x in v`) —
-`get`/`pop` need an optional-returning lowering. **`HashMap[K, V]`**
-(→ std::unordered_map; the symbol table). And mutation/exclusivity discipline
-for the mutating methods (today `push`/`append` ride the handle-style exemption
-rather than a tracked `inout` receiver).
+`get`/`pop` need an optional-returning lowering (the same `map_get` shape).
+And mutation/exclusivity discipline for the mutating methods (today
+`push`/`append`/`set` ride the handle-style exemption rather than a tracked
+`inout` receiver).
 
 ### 1. Generics phase 2 (multi-session)
 

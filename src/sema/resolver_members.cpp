@@ -114,6 +114,24 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
             return types_->make_function({}, types_->primitive(TypeKind::Int));
         }
     }
+    // §18.5 HashMap[K, V] methods (v0.5 core): `set(K, V)` inserts/updates,
+    // `get(K) -> V?` is the lookup, `contains(K) -> Bool`, `len() -> Int`.
+    if (owner_type->kind() == TypeKind::HashMap && owner_type->parts().size() == 2) {
+        TypePtr K = owner_type->parts()[0];
+        TypePtr V = owner_type->parts()[1];
+        if (name == "set") {
+            return types_->make_function({K, V}, types_->unit());
+        }
+        if (name == "get") {
+            return types_->make_function({K}, types_->make_optional(V));
+        }
+        if (name == "contains") {
+            return types_->make_function({K}, types_->primitive(TypeKind::Bool));
+        }
+        if (name == "len") {
+            return types_->make_function({}, types_->primitive(TypeKind::Int));
+        }
+    }
     if (owner_type->kind() == TypeKind::PerCpu && owner_type->inner() != nullptr) {
         if (name == "mine") {
             return types_->make_function({}, owner_type->inner());

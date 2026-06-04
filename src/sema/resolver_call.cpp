@@ -850,6 +850,26 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
             }
             return types_->primitive(TypeKind::String);
         }
+        // §18.5 `HashMap.new()` — mints an empty map; K/V come from the expected
+        // `HashMap[K, V]`. Alloc-gated, like Vec.new.
+        if (mem.base->kind == ast::NodeKind::IdentExpr
+            && static_cast<const ast::IdentExpr&>(*mem.base).name == "HashMap"
+            && mem.member == "new" && scopes_.current().lookup("HashMap") == nullptr) {
+            if (!c.args.empty()) {
+                for (const auto& a : c.args) {
+                    (void)check_expr(*a.value);
+                }
+                error_at(c.range, "HashMap.new() takes no arguments");
+            }
+            if (expected != nullptr && expected->kind() == TypeKind::HashMap
+                && expected->parts().size() == 2) {
+                return types_->make_hashmap(expected->parts()[0], expected->parts()[1]);
+            }
+            error_at(c.range,
+                     "cannot infer HashMap key/value types; annotate the binding (e.g. "
+                     "`var m: HashMap[Str, Int32] = HashMap.new()`)");
+            return types_->make_hashmap(types_->error(), types_->error());
+        }
     }
 
     // §A11 (§14.8) `PerCpu.new(value)` — the heap factory for per-hart

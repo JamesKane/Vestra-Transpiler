@@ -55,6 +55,12 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
                 return types_->make_vec(n.type_args[0] ? resolve_type(*n.type_args[0])
                                                        : types_->error());
             }
+            // §18.5 HashMap[K, V] — an owned hash map (→ std::unordered_map).
+            if (n.path[0] == "HashMap" && n.type_args.size() == 2) {
+                return types_->make_hashmap(
+                    n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error(),
+                    n.type_args[1] ? resolve_type(*n.type_args[1]) : types_->error());
+            }
             // §10 builtin `Span[T]` / `MutSpan[T]` — borrowed,
             // non-escapable views over a contiguous range of T. Lower
             // to `std::span<const T>` / `std::span<T>`. The implicit

@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §18.5 HashMap[K, V] — an owned hash map (lowers to std::unordered_map<K, V>).
+// Completes the bootstrap collection set alongside Vec and String. The shape a
+// real program needs: start empty with `HashMap.new()` (gated by `Alloc`, like
+// Vec.new / String.new), populate it with `set(k, v)` (insert-or-overwrite),
+// ask `contains(k)` / `len()`, and read a value back with `get(k)`, which
+// yields a `V?` — nil when the key is absent. The optional folds straight into
+// `if let` / `??`, so a lookup-with-default is one expression.
+
+module examples.hashmap_demo
+
+// Build a small word -> count table, overwriting one key to show set() is
+// insert-or-assign (so the final len() counts distinct keys, not set calls).
+func wordCounts() using Alloc -> HashMap[Str, Int32] {
+    var m: HashMap[Str, Int32] = HashMap.new()
+    m.set("apple", 1)
+    m.set("pear", 2)
+    m.set("apple", 3)
+    return m
+}
+
+// Number of distinct keys in the built table.
+func distinctWords() using Alloc -> Int {
+    return wordCounts().len()
+}
+
+// Look a key up, falling back to a default when it is absent — exercises the
+// `V?` return threaded through `??`.
+func countOr(_ key: Str, _ fallback: Int32) using Alloc -> Int32 {
+    let m = wordCounts()
+    return m.get(key) ?? fallback
+}
+
+// Membership test over the built table.
+func hasWord(_ key: Str) using Alloc -> Bool {
+    return wordCounts().contains(key)
+}

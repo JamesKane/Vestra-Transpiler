@@ -2861,6 +2861,27 @@ TEST_CASE("String lowers to std::string with new / append / len") {
     CHECK(f.out.source.find("static_cast<std::intptr_t>(s.size())") != std::string::npos);
 }
 
+TEST_CASE("HashMap[K, V] lowers to std::unordered_map with set / get / contains / len") {
+    SemaEmitFixture f("func f(_ k: Str) using Alloc -> Int32 {\n"
+                      "    var m: HashMap[Str, Int32] = HashMap.new()\n"
+                      "    m.set(\"a\", 1)\n"
+                      "    let has = m.contains(k)\n"
+                      "    let n = m.len()\n"
+                      "    return (m.get(k) ?? 0) + n\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.source.find("std::unordered_map<std::string_view, std::int32_t> m = "
+                            "std::unordered_map<std::string_view, std::int32_t>{}")
+          != std::string::npos);
+    CHECK(f.out.source.find("m.insert_or_assign(std::string_view(\"a\"), 1)") != std::string::npos);
+    CHECK(f.out.source.find("m.contains(k)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::map_get(m, k)") != std::string::npos);
+    CHECK(f.out.source.find("static_cast<std::intptr_t>(m.size())") != std::string::npos);
+    // The optional-returning lookup helper is emitted into the prelude.
+    CHECK(f.out.header.find("std::optional<typename M::mapped_type> map_get(")
+          != std::string::npos);
+}
+
 TEST_CASE("StrConst flowing into a String slot is wrapped in std::string(...)") {
     SemaEmitFixture f("func g(_ x: String) -> Int32 { return 0 }\n"
                       "struct Named { var label: String }\n"

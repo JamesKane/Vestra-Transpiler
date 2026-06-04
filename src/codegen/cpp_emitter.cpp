@@ -354,6 +354,15 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "        std::unreachable();\n";
     hdr << "    }\n";
     hdr << "};\n\n";
+    // §18.5 HashMap[K, V].get(k) → an owning `std::optional<V>` lookup.
+    // std::unordered_map has no optional-returning accessor, so this
+    // shim folds the find/end check into the `T?` the resolver promises.
+    hdr << "template <class M, class K>\n";
+    hdr << "std::optional<typename M::mapped_type> map_get(const M& m, const K& k) {\n";
+    hdr << "    auto it = m.find(k);\n";
+    hdr << "    if (it == m.end()) return std::nullopt;\n";
+    hdr << "    return it->second;\n";
+    hdr << "}\n\n";
     // §A10 (§15.5) — `@panic_handler` delegation. The function-
     // pointer slot is `inline` so multiple translation units agree
     // on one storage location; when the user declares a
@@ -3393,6 +3402,21 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << "std::string{}";
                 break;
             }
+            // §18.5 `HashMap.new()` → an empty `std::unordered_map<K, V>{}`.
+            if (mem.base && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "HashMap"
+                && mem.member == "new" && resolution_ != nullptr) {
+                auto rt = resolution_->type_of(&e);
+                if (rt != nullptr && rt->kind() == sema::TypeKind::HashMap
+                    && rt->parts().size() == 2) {
+                    os << "std::unordered_map<";
+                    emit_sema_type(os, rt->parts()[0]);
+                    os << ", ";
+                    emit_sema_type(os, rt->parts()[1]);
+                    os << ">{}";
+                    break;
+                }
+            }
             // §11 `Duration.seconds(n)` (also milliseconds / microseconds /
             // nanoseconds) lowers to the static factory
             // `__vstr::Duration::seconds(n)`. Guarded on the call resolving to
@@ -3516,6 +3540,42 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 if (mem.member == "append" && c.args.size() == 1) {
                     emit_expr(os, *mem.base);
                     os << ".append(";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
+                    break;
+                }
+                if (mem.member == "len" && c.args.empty()) {
+                    os << "static_cast<std::intptr_t>(";
+                    emit_expr(os, *mem.base);
+                    os << ".size())";
+                    break;
+                }
+            }
+            // §18.5 HashMap methods: `set(k, v)` → `.insert_or_assign(k, v)`;
+            // `get(k)` → `__vstr::map_get(m, k)` yielding `std::optional<V>`;
+            // `contains(k)` → `.contains(k)`; `len()` → `.size()` as Int.
+            if (auto base_t = resolution_->type_of(mem.base.get());
+                base_t != nullptr && base_t->kind() == sema::TypeKind::HashMap) {
+                if (mem.member == "set" && c.args.size() == 2) {
+                    emit_expr(os, *mem.base);
+                    os << ".insert_or_assign(";
+                    emit_expr(os, *c.args[0].value);
+                    os << ", ";
+                    emit_expr(os, *c.args[1].value);
+                    os << ")";
+                    break;
+                }
+                if (mem.member == "get" && c.args.size() == 1) {
+                    os << "__vstr::map_get(";
+                    emit_expr(os, *mem.base);
+                    os << ", ";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
+                    break;
+                }
+                if (mem.member == "contains" && c.args.size() == 1) {
+                    emit_expr(os, *mem.base);
+                    os << ".contains(";
                     emit_expr(os, *c.args[0].value);
                     os << ")";
                     break;
