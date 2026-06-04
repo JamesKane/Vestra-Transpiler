@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §5 negative fixture: the other half of the cycle_a <-> cycle_b import cycle.
+// See cycle_a.vst.
+
+module cycle_b
+
+import cycle_a
+
+public func b_value() -> Int32 {
+    return 2
+}

@@ -17,6 +17,7 @@
 #include "vestra/sema/types.hpp"
 
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -25,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace vestra::driver {
@@ -229,9 +231,11 @@ struct ModuleGraph {
 
 // Load `input` and follow `import a.b.c` to <entry-dir>/a/b/c.vst transitively,
 // deduping by canonical path (a diamond loads once). Parse diagnostics go to
-// `rep`; a load failure (missing file) is reported to `err` and yields a graph
-// whose `entry` is -1. Used by both `build` and `check` so they agree on which
-// modules — and thus which imported symbols — are in play.
+// `rep`; so do located §5 import errors — a missing imported file and a cyclic
+// import each report at the offending `import` statement, so the build aborts
+// (via `rep.has_errors()`) before resolution. A failure to load the *entry*
+// itself is reported to `err` and yields a graph whose `entry` is -1. Used by
+// both `build` and `check` so they agree on which modules are in play.
 ModuleGraph load_module_graph(const std::filesystem::path& input,
                               diag::SourceManager& sm,
                               diag::DiagnosticReporter& rep,
@@ -240,12 +244,21 @@ ModuleGraph load_module_graph(const std::filesystem::path& input,
     const fs::path entry_dir = input.parent_path();
     ModuleGraph g;
     std::unordered_map<std::string, int> visited;
+    // Canonical keys of the units currently on the DFS recursion stack. An
+    // `import` whose target is already on this stack closes a cycle (a
+    // back-edge); a target merely in `visited` but off the stack is a diamond
+    // re-import and is fine.
+    std::unordered_set<std::string> on_stack;
+
+    auto canon_key = [](const fs::path& p) -> std::string {
+        std::error_code ec;
+        auto c = fs::weakly_canonical(p, ec);
+        return (ec ? p : c).string();
+    };
 
     std::function<int(const fs::path&, std::string)> load = [&](const fs::path& file,
                                                                 std::string relpath) -> int {
-        std::error_code ec;
-        auto canon = fs::weakly_canonical(file, ec);
-        std::string key = (ec ? file : canon).string();
+        std::string key = canon_key(file);
         if (auto it = visited.find(key); it != visited.end()) {
             return it->second;
         }
@@ -265,6 +278,7 @@ ModuleGraph load_module_graph(const std::filesystem::path& input,
         g.relpaths.push_back(std::move(relpath));
         g.deps.emplace_back();
         visited[key] = idx;
+        on_stack.insert(key);
         // Resolve each `import` to a file and recurse. The unit object is
         // heap-stable, so caching its pointer across the recursion (which may
         // reallocate `g.units`) is safe.
@@ -275,19 +289,46 @@ ModuleGraph load_module_graph(const std::filesystem::path& input,
             }
             fs::path dep = entry_dir;
             std::string dep_rel;
+            std::string dotted;
             for (const auto& seg : imp->path) {
                 dep /= seg;
                 if (!dep_rel.empty()) {
                     dep_rel += '/';
                 }
                 dep_rel += seg;
+                if (!dotted.empty()) {
+                    dotted += '.';
+                }
+                dotted += seg;
             }
             dep += ".vst";
+            // §5 missing-import diagnostic, located at the `import` statement.
+            std::error_code ec;
+            if (!fs::exists(dep, ec) || ec) {
+                rep.report(diag::Diagnostic::error(
+                               std::format("cannot find imported module '{}' (no file at {})",
+                                           dotted,
+                                           dep.string()))
+                               .at(imp->range));
+                continue;
+            }
+            // §5 cyclic-import diagnostic: the target is still on the DFS stack,
+            // so this `import` closes a cycle. Report and drop the back-edge
+            // (don't recurse), keeping the dependency graph acyclic for topo.
+            if (on_stack.contains(canon_key(dep))) {
+                rep.report(diag::Diagnostic::error(
+                               std::format("cyclic import: '{}' is already being imported "
+                                           "(import cycle)",
+                                           dotted))
+                               .at(imp->range));
+                continue;
+            }
             const int di = load(dep, dep_rel);
             if (di >= 0) {
                 g.deps[static_cast<std::size_t>(idx)].push_back(di);
             }
         }
+        on_stack.erase(key);
         return idx;
     };
 

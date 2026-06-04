@@ -32,7 +32,7 @@ first slice.
 
 ## Next up (priority 1-9)
 
-### 0. Multi-file modules (§5) (multi-session) — slices 1-6 shipped
+### 0. Multi-file modules (§5) (multi-session) — slices 1-7 shipped
 
 The first step toward self-hosting (a compiler is many files). **Slice 1
 shipped**: `vestra build entry.vst` is now a transitive module loader.
@@ -108,14 +108,25 @@ util.math's context and reused. Type identity holds across the boundary because
 `Resolver` lost `set_imported_units` + the per-unit collection/synthesis; it now
 takes `set_module_exports(...)` and exposes `public_exports()`.
 
+**Slice 7 shipped** — **missing / cyclic-import diagnostics**: the module loader
+now reports both failure modes as located errors at the offending `import`
+statement, recorded in the shared reporter so the build aborts (via
+`rep.has_errors()`) before resolution. A missing import (no backing `.vst`)
+reports "cannot find imported module '<a.b.c>' (no file at <path>)"; a cyclic
+import is caught by tracking the units currently on the DFS recursion stack —
+an `import` whose target is on the stack closes a back-edge and reports "cyclic
+import: '<x>' is already being imported", and the back-edge is dropped so the
+dependency graph stays acyclic for the topological resolve. A diamond
+re-import (target already loaded but off the stack) is unaffected. Negative
+tests `e2e_cyclic_import` / `e2e_missing_import` (both WILL_FAIL).
+
 Remaining: **`emit_sema_type` qualification** — a *computed/inferred* imported
 type (not spelled via an annotation — e.g. an un-annotated `let` would be `auto`,
 but a generic instantiation or tuple element spelled from a sema type) still
 emits its bare nominal name and relies on the inert `using namespace dep;`;
 qualifying it needs a decl→module map in the emitter, after which `using
 namespace` can be dropped. Plus **generic imported types**,
-**`import c "header.h"`**, **missing/cyclic-import diagnostics**, and a
-**search-path / project-root** notion.
+**`import c "header.h"`**, and a **search-path / project-root** notion.
 
 ### 0b. Collections / string library (§18.5) (multi-session) — slices 1-8 shipped
 

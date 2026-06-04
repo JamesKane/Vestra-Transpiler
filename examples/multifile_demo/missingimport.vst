@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §5 negative fixture: importing a module with no backing file. The loader
+// reports a located "cannot find imported module" error at the `import`. Used
+// by the WILL_FAIL test e2e_missing_import.
+
+module missingimport
+
+import util.does_not_exist
+
+func main() -> Int32 {
+    return 0
+}

@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §5 negative fixture: cycle_a imports cycle_b, which imports cycle_a back. The
+// loader detects the back-edge and reports a located cyclic-import error at the
+// `import` that closes the loop. Used by the WILL_FAIL test e2e_cyclic_import.
+// (Import paths resolve relative to the entry file's directory, so a sibling is
+// imported by bare name.)
+
+module cycle_a
+
+import cycle_b
+
+public func a_value() -> Int32 {
+    return 1
+}

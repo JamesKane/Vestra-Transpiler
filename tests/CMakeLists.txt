@@ -2347,6 +2347,22 @@ add_test(
             ${CMAKE_SOURCE_DIR}/examples/multifile_demo/badimport.vst)
 set_tests_properties(e2e_multifile_visibility PROPERTIES WILL_FAIL TRUE)
 
+# §5 cyclic import: cycle_a <-> cycle_b import each other; the loader reports a
+# located cyclic-import error and `vestra check` exits non-zero.
+add_test(
+    NAME    e2e_cyclic_import
+    COMMAND $<TARGET_FILE:vestra> check
+            ${CMAKE_SOURCE_DIR}/examples/multifile_demo/cycle_a.vst)
+set_tests_properties(e2e_cyclic_import PROPERTIES WILL_FAIL TRUE)
+
+# §5 missing import: importing a module with no backing file is a located error
+# at the `import`; `vestra check` exits non-zero.
+add_test(
+    NAME    e2e_missing_import
+    COMMAND $<TARGET_FILE:vestra> check
+            ${CMAKE_SOURCE_DIR}/examples/multifile_demo/missingimport.vst)
+set_tests_properties(e2e_missing_import PROPERTIES WILL_FAIL TRUE)
+
 # §5/§18.4 split(at:) partition primitive.
 set(e2e_split_input  ${CMAKE_SOURCE_DIR}/examples/split_demo.vst)
 set(e2e_split_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_split_demo.cpp)
