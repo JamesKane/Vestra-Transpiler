@@ -284,6 +284,22 @@ void ExclusivityChecker::check_call(const ast::CallExpr& c) {
                            arg.value->range});
     }
 
+    // §18.5 mutating collection methods take their receiver by inout: the call
+    // mutates the collection in place. Model the receiver as an inout borrow so
+    // it joins the conflict scan alongside the argument borrows — e.g.
+    // `node.kids.push(node)` borrows `node.kids` inout while reading `node`, an
+    // aliasing violation. (User-defined methods have no receiver-mode story
+    // yet, so this is scoped to the builtin collection types, keyed on the
+    // resolved receiver type and the method name.)
+    if (c.callee->kind == ast::NodeKind::MemberExpr) {
+        const auto& m = static_cast<const ast::MemberExpr&>(*c.callee);
+        if (receiver_borrowed_inout(m)) {
+            if (auto place = as_place(*m.base)) {
+                borrows.push_back({std::move(*place), Access::Inout, m.base->range});
+            }
+        }
+    }
+
     // Pairwise conflict scan. The lists are tiny in practice (most calls have
     // ≤ 4 args), so the O(n²) is fine.
     for (std::size_t i = 0; i < borrows.size(); ++i) {
@@ -317,6 +333,23 @@ void ExclusivityChecker::check_call(const ast::CallExpr& c) {
 // ============================================================================
 // Place extraction + overlap
 // ============================================================================
+
+bool ExclusivityChecker::receiver_borrowed_inout(const ast::MemberExpr& m) const {
+    auto base_t = resolution_->type_of(m.base.get());
+    if (base_t == nullptr) {
+        return false;
+    }
+    switch (base_t->kind()) {
+    case TypeKind::Vec:
+        return m.member == "push" || m.member == "pop" || m.member == "set" || m.member == "clear";
+    case TypeKind::String:
+        return m.member == "append";
+    case TypeKind::HashMap:
+        return m.member == "set";
+    default:
+        return false;
+    }
+}
 
 std::optional<ExclusivityChecker::Place> ExclusivityChecker::as_place(const ast::Expr& e) const {
     switch (e.kind) {

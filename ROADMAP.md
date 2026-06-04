@@ -117,7 +117,7 @@ namespace` can be dropped. Plus **generic imported types**,
 **`import c "header.h"`**, **missing/cyclic-import diagnostics**, and a
 **search-path / project-root** notion.
 
-### 0b. Collections / string library (§18.5) (multi-session) — slices 1-7 shipped
+### 0b. Collections / string library (§18.5) (multi-session) — slices 1-8 shipped
 
 The other big self-hosting blocker (a compiler is mostly Vec/HashMap/String
 churn). v0.5 had no growable collection; there's no raw-array-alloc primitive
@@ -196,9 +196,22 @@ std::string → string_view conversion and `std::string::append(const string&)`
 are both implicit. Proven end to end (`examples/string_demo.vst` extended with
 `joined`).
 
-Remaining: mutation/exclusivity discipline for the mutating methods (today
-`push`/`pop`/`set`/`clear`/`append` ride the handle-style exemption rather than a
-tracked `inout` receiver).
+**Slice 8 shipped** — **tracked `inout` receiver for the mutating methods**: the
+mutating collection methods (`Vec.push`/`pop`/`set`/`clear`, `String.append`,
+`HashMap.set`) now borrow their receiver `inout` in the exclusivity checker
+instead of riding the handle-style exemption. `check_call` adds the receiver
+place as an inout borrow (keyed on the resolved receiver type and method name)
+alongside the argument borrows, so a call that aliases the receiver with one of
+its arguments is caught — e.g. `node.kids.push(node)` borrows `node.kids` inout
+while reading `node`, which contains it, an overlap. Disjoint roots
+(`n.kids.push(child)`) and the non-mutating reads (`len`/`get`/`contains`) stay
+clean. Scoped to the builtin collection types (user-defined methods still have
+no receiver-mode story). Phase-1 exclusivity remains intra-call, so this fires
+when receiver and argument alias within one call.
+
+That rounds out the bootstrap collection set: `Vec`, `String`, and `HashMap`
+each have construction, reads, mutation, iteration where applicable, the string
+read-borrow, and inout-receiver discipline for their mutators.
 
 ### 1. Generics phase 2 (multi-session)
 

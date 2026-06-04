@@ -268,3 +268,35 @@ TEST_CASE("an async func with a read parameter is fine") {
               .error_count
           == 0);
 }
+
+// ---- §18.5 mutating collection methods borrow their receiver inout ---------
+
+TEST_CASE("a mutating Vec method aliasing its argument is an exclusivity error") {
+    // `n.kids.push(n)` borrows the receiver `n.kids` inout while reading `n` as
+    // the pushed argument; `n` contains `n.kids`, so the two overlap.
+    auto r = check("struct Node { var kids: Vec[Node]\n var id: Int32 }\n"
+                   "func grow(_ n: inout Node) using Alloc {\n"
+                   "    n.kids.push(n)\n"
+                   "}\n");
+    CHECK(r.error_count >= 1);
+    CHECK(r.first_message.find("overlap") != std::string::npos);
+}
+
+TEST_CASE("a mutating Vec method with a disjoint argument is clean") {
+    // Distinct roots (`n.kids` receiver, `child` argument) — no overlap.
+    CHECK(check("struct Node { var kids: Vec[Node]\n var id: Int32 }\n"
+                "func grow(_ n: inout Node, _ child: Node) using Alloc {\n"
+                "    n.kids.push(child)\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a non-mutating Vec method does not borrow its receiver inout") {
+    // `len()` reads; pushing the count read from the same Vec is fine because
+    // the receiver borrow is read, not inout (so two reads, no conflict).
+    CHECK(check("struct Holder { var xs: Vec[Int32] }\n"
+                "func peek(_ h: Holder) -> Int { return h.xs.len() }\n")
+              .error_count
+          == 0);
+}

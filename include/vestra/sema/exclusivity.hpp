@@ -78,6 +78,12 @@ private:
     // it isn't (e.g., calls into a global Const).
     [[nodiscard]] std::optional<Place> as_place(const ast::Expr& e) const;
 
+    // §18.5 — does a method call on `m` borrow its receiver inout? True for the
+    // mutating builtin collection methods (Vec push/pop/set/clear, String
+    // append, HashMap set), keyed on the resolved receiver type. Lets check_call
+    // model the receiver as an inout borrow in the conflict scan.
+    [[nodiscard]] bool receiver_borrowed_inout(const ast::MemberExpr& m) const;
+
     [[nodiscard]] static bool overlap(const Place& a, const Place& b) noexcept;
     [[nodiscard]] static bool conflict(Access a, Access b) noexcept;
 
