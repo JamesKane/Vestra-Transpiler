@@ -1540,17 +1540,19 @@ struct SelectAwaiter {
 
     hdr << "#endif  // VESTRA_RUNTIME_PRELUDE\n\n";
 
-    // §5 multi-file: pull in each imported module's header and open its
-    // namespace for unqualified lookup, so a cross-module reference (`foo()`,
-    // `Point`) resolves without per-site qualification. The dependency's header
-    // is named by the import's last path segment (matching how the driver names
-    // outputs); the namespace mirrors the dotted import path.
+    // §5 multi-file: pull in each imported module's header. Every cross-module
+    // reference is now fully qualified — value refs through the resolver's
+    // `qualified_name_of` side table, and computed/inferred imported types
+    // through emit_sema_type's `imported_qualifiers_` map — so no
+    // `using namespace dep;` is emitted; the `#include` alone suffices. The
+    // dependency's header is named by its import path as a directory path
+    // (`import util.math` → util/math.hpp); -I the output dir to find it.
+    bool any_module_import = false;
     for (const auto& imp : unit.imports) {
         if (imp == nullptr || imp->is_c_header || imp->path.empty()) {
             continue;
         }
-        // The dependency is emitted at its import path as a directory path
-        // (`import util.math` → util/math.hpp); -I the output dir to find it.
+        any_module_import = true;
         hdr << "#include \"";
         for (std::size_t i = 0; i < imp->path.size(); ++i) {
             if (i != 0) {
@@ -1560,20 +1562,7 @@ struct SelectAwaiter {
         }
         hdr << ".hpp\"\n";
     }
-    for (const auto& imp : unit.imports) {
-        if (imp == nullptr || imp->is_c_header || imp->path.empty()) {
-            continue;
-        }
-        hdr << "using namespace ";
-        for (std::size_t i = 0; i < imp->path.size(); ++i) {
-            if (i != 0) {
-                hdr << "::";
-            }
-            hdr << imp->path[i];
-        }
-        hdr << ";\n";
-    }
-    if (!unit.imports.empty()) {
+    if (any_module_import) {
         hdr << "\n";
     }
 

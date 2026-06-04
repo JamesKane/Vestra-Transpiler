@@ -13,11 +13,12 @@
 #include <cstdio>
 
 int main() {
-    assert(demo::app::compute() == 42);   // util.math.add(40, 2) across modules
-    assert(demo::app::viaConst() == 42);  // util.math.answer across modules
-    assert(demo::app::localAdd() == 38);  // the local add (40 - 2) shadows nothing
-    assert(demo::app::pairSum() == 42);   // cross-module struct: util.math.Pair
-    assert(demo::app::combined() == 42);  // imported fn over the module's own type
+    assert(demo::app::compute() == 42);     // util.math.add(40, 2) across modules
+    assert(demo::app::viaConst() == 42);    // util.math.answer across modules
+    assert(demo::app::localAdd() == 38);    // the local add (40 - 2) shadows nothing
+    assert(demo::app::pairSum() == 42);     // cross-module struct: util.math.Pair
+    assert(demo::app::combined() == 42);    // imported fn over the module's own type
+    assert(demo::app::pairVecSum() == 42);  // computed imported type: Vec[util.math.Pair]
     std::puts("multifile_demo OK");
     return 0;
 }

@@ -39,3 +39,14 @@ func pairSum() -> Int32 {
 func combined() -> Int32 {
     return util.math.combine(util.math.Pair(lo: 40, hi: 2))
 }
+
+// §5 computed/inferred imported type: `Vec.new()` for a `Vec[util.math.Pair]`
+// lowers its element type through emit_sema_type (the std::vector<...>{} the
+// construction emits is not spelled from an annotation), so the imported
+// nominal is fully qualified to `util::math::Pair` without any
+// `using namespace`. Builds the vector, then folds the one pushed pair.
+func pairVecSum() using Alloc -> Int32 {
+    var v: Vec[util.math.Pair] = Vec.new()
+    v.push(util.math.Pair(lo: 40, hi: 2))
+    return v[0].lo + v[0].hi
+}

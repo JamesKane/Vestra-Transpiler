@@ -45,6 +45,16 @@ public:
     // `vestra audit --no-libc` enumerator) can see the contract.
     void set_no_libc(bool v) { no_libc_ = v; }
 
+    // §5 multi-file: hand the emitter a map from each *imported* module's
+    // public nominal decl (struct/enum/protocol/opaque) to its C++ namespace
+    // ("util::math"). emit_sema_type uses it to spell a computed/inferred
+    // imported type fully-qualified (`util::math::Pair`) instead of relying on
+    // a `using namespace dep;`. The current unit's own decls are deliberately
+    // absent, so they still emit bare. Empty for a single-file build.
+    void set_imported_qualifiers(std::unordered_map<const ast::Decl*, std::string> q) {
+        imported_qualifiers_ = std::move(q);
+    }
+
     [[nodiscard]] EmittedUnit emit(const ast::CompilationUnit& unit,
                                    std::string_view output_basename);
 
@@ -128,6 +138,10 @@ private:
     // (...) { ... }` — T is the do-catch expression's inferred result
     // type, not anything written in the source).
     void emit_sema_type(std::ostream& os, sema::TypePtr t);
+    // §5 — emit the `util::math::` namespace prefix when `decl` is an imported
+    // nominal (present in imported_qualifiers_); a no-op for the unit's own
+    // decls and for single-file builds.
+    void emit_nominal_qualifier(std::ostream& os, const ast::Decl* decl);
 
     // §9 stmt-position lowering for expressions whose runtime semantics
     // need a statement (a real `return`, an `if/else` chain, etc.). When
@@ -251,6 +265,9 @@ private:
     // e.g. `derive(Eq) for Point` injects a defaulted `operator==`
     // into Point's body. Reset each emit() call.
     std::unordered_map<std::string, std::unordered_set<std::string>> derives_by_target_;
+
+    // §5 — imported-nominal → C++ namespace map (see set_imported_qualifiers).
+    std::unordered_map<const ast::Decl*, std::string> imported_qualifiers_;
 };
 
 }  // namespace vestra::codegen

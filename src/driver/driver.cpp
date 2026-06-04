@@ -353,6 +353,54 @@ std::string module_path_of(const ast::CompilationUnit& u) {
     return dotted;
 }
 
+// A unit's C++ namespace ("util::math"), or empty if it declares no module.
+std::string module_namespace_of(const ast::CompilationUnit& u) {
+    if (u.module == nullptr) {
+        return {};
+    }
+    std::string ns;
+    for (const auto& seg : u.module->path) {
+        if (!ns.empty()) {
+            ns += "::";
+        }
+        ns += seg;
+    }
+    return ns;
+}
+
+// §5 — build the importer-side map the emitter uses to fully-qualify a
+// computed/inferred imported nominal: every top-level struct/enum/protocol/
+// opaque decl of every *other* module unit, keyed by its decl pointer (the
+// same pointer a sema type's `nominal_decl()` carries), mapped to that unit's
+// C++ namespace. The current unit `self` is excluded so its own types stay
+// bare; module-less units (global scope) contribute nothing.
+std::unordered_map<const ast::Decl*, std::string> imported_qualifiers_for(const ModuleGraph& g,
+                                                                          std::size_t self) {
+    std::unordered_map<const ast::Decl*, std::string> q;
+    for (std::size_t j = 0; j < g.units.size(); ++j) {
+        if (j == self) {
+            continue;
+        }
+        std::string ns = module_namespace_of(*g.units[j]);
+        if (ns.empty()) {
+            continue;
+        }
+        for (const auto& d : g.units[j]->decls) {
+            switch (d->kind) {
+            case ast::NodeKind::Struct:
+            case ast::NodeKind::Enum:
+            case ast::NodeKind::Protocol:
+            case ast::NodeKind::Opaque:
+                q[d.get()] = ns;
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    return q;
+}
+
 // Dependency-first ordering of the units in `g` (post-order DFS over deps), so
 // a module is resolved — and its exports harvested — before any importer.
 std::vector<std::size_t> topo_order(const ModuleGraph& g) {
@@ -463,6 +511,7 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
 
         codegen::CppEmitter emitter(rep, opts.skip_check ? nullptr : &resolver.resolution());
         emitter.set_no_libc(opts.no_libc);
+        emitter.set_imported_qualifiers(imported_qualifiers_for(graph, i));
         // The output relpath (entry = stem; dependency = import path) is also the
         // emitter's `output_basename`, so a unit's `#include "<self>.hpp"` and an
         // importer's `#include "<dep>.hpp"` both spell the same -I-relative path.

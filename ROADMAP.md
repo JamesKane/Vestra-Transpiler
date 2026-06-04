@@ -32,7 +32,7 @@ first slice.
 
 ## Next up (priority 1-9)
 
-### 0. Multi-file modules (§5) (multi-session) — slices 1-7 shipped
+### 0. Multi-file modules (§5) (multi-session) — slices 1-8 shipped
 
 The first step toward self-hosting (a compiler is many files). **Slice 1
 shipped**: `vestra build entry.vst` is now a transitive module loader.
@@ -120,13 +120,22 @@ dependency graph stays acyclic for the topological resolve. A diamond
 re-import (target already loaded but off the stack) is unaffected. Negative
 tests `e2e_cyclic_import` / `e2e_missing_import` (both WILL_FAIL).
 
-Remaining: **`emit_sema_type` qualification** — a *computed/inferred* imported
-type (not spelled via an annotation — e.g. an un-annotated `let` would be `auto`,
-but a generic instantiation or tuple element spelled from a sema type) still
-emits its bare nominal name and relies on the inert `using namespace dep;`;
-qualifying it needs a decl→module map in the emitter, after which `using
-namespace` can be dropped. Plus **generic imported types**,
-**`import c "header.h"`**, and a **search-path / project-root** notion.
+**Slice 8 shipped** — **`emit_sema_type` qualification + dropping `using
+namespace`**: a *computed/inferred* imported nominal (one not spelled via an
+annotation — e.g. the `std::vector<util::math::Pair>{}` a `Vec.new()` for a
+`Vec[util.math.Pair]` emits) is now spelled fully-qualified instead of relying
+on a `using namespace dep;`. The driver hands each emitter an
+`imported_qualifiers_` map (every *other* module unit's public struct/enum/
+protocol/opaque decl → its C++ namespace, keyed by the same decl pointer a sema
+type's `nominal_decl()` carries); `emit_sema_type` prefixes a hit with
+`util::math::`. With every cross-module reference now fully qualified — value
+refs via the resolver's `qualified_name_of`, computed types via this map — the
+`using namespace dep;` emission is gone entirely; the dependency `#include`
+alone suffices. Proven end to end (`pairVecSum()` in multifile_demo builds a
+`Vec[util.math.Pair]` whose element type lowers through emit_sema_type).
+
+Remaining: **generic imported types**, **`import c "header.h"`**, and a
+**search-path / project-root** notion.
 
 ### 0b. Collections / string library (§18.5) (multi-session) — slices 1-8 shipped
 

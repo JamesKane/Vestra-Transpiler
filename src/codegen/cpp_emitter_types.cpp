@@ -21,6 +21,12 @@ namespace vestra::codegen {
 
 using detail::primitive_map;
 
+void CppEmitter::emit_nominal_qualifier(std::ostream& os, const ast::Decl* decl) {
+    if (auto it = imported_qualifiers_.find(decl); it != imported_qualifiers_.end()) {
+        os << it->second << "::";
+    }
+}
+
 void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
     using namespace sema;
     if (t == nullptr) {
@@ -278,6 +284,7 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
                 if (sd.name == "Context" && sd.fields.empty()) {
                     os << "__vstr::Context";
                 } else {
+                    emit_nominal_qualifier(os, decl);
                     os << sd.name;
                     // §7 generics phase 2 — a struct instance carries its
                     // resolved type arguments in parts_; emit `Pair<Int32>`
@@ -303,6 +310,7 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
                 if (ed.name == "Ordering") {
                     os << "std::memory_order";
                 } else {
+                    emit_nominal_qualifier(os, decl);
                     os << ed.name;
                     // §7 generics phase 2 — append `<args>` for a generic
                     // enum instance so the template name matches the decl.
@@ -320,9 +328,11 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
                 return;
             }
             case ast::NodeKind::Protocol:
+                emit_nominal_qualifier(os, decl);
                 os << static_cast<const ast::ProtocolDecl&>(*decl).name;
                 return;
             case ast::NodeKind::Opaque:
+                emit_nominal_qualifier(os, decl);
                 os << static_cast<const ast::OpaqueDecl&>(*decl).name;
                 return;
             default:
