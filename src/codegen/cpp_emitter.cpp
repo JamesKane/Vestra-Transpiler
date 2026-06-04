@@ -3373,6 +3373,13 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     break;
                 }
             }
+            // §18.5 `String.new()` → an empty `std::string{}`.
+            if (mem.base && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "String"
+                && mem.member == "new") {
+                os << "std::string{}";
+                break;
+            }
             // §11 `Duration.seconds(n)` (also milliseconds / microseconds /
             // nanoseconds) lowers to the static factory
             // `__vstr::Duration::seconds(n)`. Guarded on the call resolving to
@@ -3477,6 +3484,25 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 if (mem.member == "push" && c.args.size() == 1) {
                     emit_expr(os, *mem.base);
                     os << ".push_back(";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
+                    break;
+                }
+                if (mem.member == "len" && c.args.empty()) {
+                    os << "static_cast<std::intptr_t>(";
+                    emit_expr(os, *mem.base);
+                    os << ".size())";
+                    break;
+                }
+            }
+            // §18.5 String methods: `append(x)` → `.append(x)` (std::string's
+            // string_view overload takes a Str/StrConst arg directly);
+            // `len()` → `.size()` as Int.
+            if (auto base_t = resolution_->type_of(mem.base.get());
+                base_t != nullptr && base_t->kind() == sema::TypeKind::String) {
+                if (mem.member == "append" && c.args.size() == 1) {
+                    emit_expr(os, *mem.base);
+                    os << ".append(";
                     emit_expr(os, *c.args[0].value);
                     os << ")";
                     break;

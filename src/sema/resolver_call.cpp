@@ -837,6 +837,19 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
             }
             return types_->make_vec(inner);
         }
+        // §18.5 `String.new()` — mints an empty owned, growable string.
+        // Alloc-gated (capability.cpp), like Vec.new.
+        if (mem.base->kind == ast::NodeKind::IdentExpr
+            && static_cast<const ast::IdentExpr&>(*mem.base).name == "String" && mem.member == "new"
+            && scopes_.current().lookup("String") == nullptr) {
+            if (!c.args.empty()) {
+                for (const auto& a : c.args) {
+                    (void)check_expr(*a.value);
+                }
+                error_at(c.range, "String.new() takes no arguments");
+            }
+            return types_->primitive(TypeKind::String);
+        }
     }
 
     // §A11 (§14.8) `PerCpu.new(value)` — the heap factory for per-hart

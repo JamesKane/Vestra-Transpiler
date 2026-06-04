@@ -117,7 +117,7 @@ namespace` can be dropped. Plus **generic imported types**,
 **`import c "header.h"`**, **missing/cyclic-import diagnostics**, and a
 **search-path / project-root** notion.
 
-### 0b. Collections / string library (§18.5) (multi-session) — slice 1 shipped
+### 0b. Collections / string library (§18.5) (multi-session) — slices 1-2 shipped
 
 The other big self-hosting blocker (a compiler is mostly Vec/HashMap/String
 churn). v0.5 had no growable collection; there's no raw-array-alloc primitive
@@ -133,13 +133,24 @@ sequence. `Vec.new()` mints an empty one (gated by `Alloc`, like Box.new);
 push → `push_back`, len → `size()`-as-Int, index → `[size_t]`). Proven end to
 end (`examples/vec_demo.vst`, including a `Vec[Point]`).
 
-Remaining: **owned growable `String`** (→ std::string: `push`/`append`/
-concatenation/length) — the other half of the bootstrap need; **more `Vec`
-methods** (`get(i) -> T?`, `pop() -> T?`, `set`, `clear`, iteration via
-`for x in v`) — `get`/`pop` need an optional-returning lowering (a small runtime
-helper or inline IIFE); **`HashMap[K, V]`** (→ std::unordered_map; the symbol
-table); and mutation/exclusivity discipline for the mutating methods (today
-`push` rides the same handle-style exemption as Channel rather than a tracked
+**Slice 2 shipped** — **owned growable `String`** (→ std::string). `String`
+already lowered to std::string but had no operations (and was untested): now
+`String.new()` mints an empty one (Alloc-gated), `s.append(_ other: Str)`
+concatenates a literal or borrowed view (via std::string's string_view append
+overload — no coercion needed), and `s.len() -> Int`. Resolved in check_call /
+lookup_method, lowered in the emitter, gated in capability.cpp; proven end to
+end (`examples/string_demo.vst`).
+
+Remaining: **string-lattice coercion codegen** — `var s: String = "literal"`
+type-checks (StrConst → String) but emits invalid C++ (`std::string =
+std::string_view(...)`, an explicit ctor) — a *pre-existing* bug; the wrap to
+`std::string(...)` is needed at let/var/arg/return/field coercion sites, after
+which a String can be seeded directly from a literal and `append` can take an
+owned String via a Str borrow. **More `Vec` methods** (`get(i) -> T?`,
+`pop() -> T?`, `set`, `clear`, iteration via `for x in v`) — `get`/`pop` need an
+optional-returning lowering. **`HashMap[K, V]`** (→ std::unordered_map; the
+symbol table). And mutation/exclusivity discipline for the mutating methods
+(today `push`/`append` ride the handle-style exemption rather than a tracked
 `inout` receiver).
 
 ### 1. Generics phase 2 (multi-session)

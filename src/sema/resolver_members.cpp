@@ -102,6 +102,18 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
             return types_->make_function({}, types_->primitive(TypeKind::Int));
         }
     }
+    // §18.5 String methods (v0.5 core): `append(Str)` concatenates another
+    // string in place (a literal or borrowed view; std::string::append takes a
+    // string_view), and `len() -> Int` reports the byte length. Built via
+    // `String.new()` + append; appending an owned String awaits a Str borrow.
+    if (owner_type->kind() == TypeKind::String) {
+        if (name == "append") {
+            return types_->make_function({types_->primitive(TypeKind::Str)}, types_->unit());
+        }
+        if (name == "len") {
+            return types_->make_function({}, types_->primitive(TypeKind::Int));
+        }
+    }
     if (owner_type->kind() == TypeKind::PerCpu && owner_type->inner() != nullptr) {
         if (name == "mine") {
             return types_->make_function({}, owner_type->inner());

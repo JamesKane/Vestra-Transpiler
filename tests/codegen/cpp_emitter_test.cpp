@@ -2847,6 +2847,20 @@ TEST_CASE("Vec[T] lowers to std::vector with push / len / index") {
     CHECK(f.out.source.find("static_cast<std::intptr_t>(xs.size())") != std::string::npos);
 }
 
+TEST_CASE("String lowers to std::string with new / append / len") {
+    SemaEmitFixture f("func f(_ who: Str) using Alloc -> Int32 {\n"
+                      "    var s: String = String.new()\n"
+                      "    s.append(\"hi \")\n"
+                      "    s.append(who)\n"
+                      "    return s.len()\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.source.find("std::string s = std::string{}") != std::string::npos);
+    CHECK(f.out.source.find("s.append(std::string_view(\"hi \"))") != std::string::npos);
+    CHECK(f.out.source.find("s.append(who)") != std::string::npos);
+    CHECK(f.out.source.find("static_cast<std::intptr_t>(s.size())") != std::string::npos);
+}
+
 // ---- §5/§18.4 split(at:) partition primitive ------------------------------
 
 TEST_CASE("split(at:) lowers to __vstr::split_at and destructures to auto [lo, hi]") {

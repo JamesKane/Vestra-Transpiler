@@ -107,6 +107,22 @@ TEST_CASE("§18.5 Vec.new() under `using Alloc` is clean") {
           == 0);
 }
 
+TEST_CASE("§18.5 String.new() requires Alloc; append/len under Alloc are clean") {
+    auto bad = check("func bad() -> Int32 {\n"
+                     "    var s: String = String.new()\n"
+                     "    return s.len()\n"
+                     "}\n");
+    CHECK(bad.error_count >= 1);
+    CHECK(bad.first_message.find("missing capability 'Alloc'") != std::string::npos);
+    CHECK(check("func ok() using Alloc -> Int32 {\n"
+                "    var s: String = String.new()\n"
+                "    s.append(\"x\")\n"
+                "    return s.len()\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 // ---- `with` blocks satisfy a capability ------------------------------------
 
 TEST_CASE("a `with` block supplies the capability for its body") {
