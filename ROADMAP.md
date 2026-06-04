@@ -675,13 +675,24 @@ Needs a target-detection layer the codegen doesn't have yet; the
 `--target` / `--target-features` plumbing from `312281c` is a starting
 point for that layer.
 
-### 8. Content-hashed `@embed` manifest
+### 8. Content-hashed `@embed` manifest — shipped
 
-Bounded single-session item. Today `@embed("path")` reads files
-relative to the source dir at fold time; the spec wants paths resolved
-against a content-hashed manifest so two builds of the same source
-under the same config are byte-identical. Needs a manifest file format
-plus a hash compare in the driver. Self-contained.
+`@embed("path")` reads files relative to the source dir at fold time; a
+content-hashed manifest now pins exactly which bytes a build embeds.
+`vestra build --embed-manifest FILE` enforces it: every `@embed`ed file's
+FNV-1a-64 content hash + byte size must match a manifest entry for that
+path, or the build fails — a drifted file or an unmanifested embed is a hard
+error (so two builds of the same source under the same manifest are
+byte-identical). `--emit-embed-manifest FILE` writes that manifest from the
+files a clean build embedded (sorted by path, byte-stable). Both live in the
+manifest-aware `make_embed_reader` (the documented integration point), keyed
+by the path as written; the manifest is emitted only after an error-free
+build so a failed build never leaves a stale one. The two flags are mutually
+exclusive. Proven end to end (`examples/embed_demo/`: an emit→enforce
+round-trip agrees, and a committed wrong-hash `drift.manifest` makes enforce
+fail — the `e2e_embed_manifest_drift` WILL_FAIL test). The hash is a fast
+non-cryptographic content hash (reproducibility / drift detection, not tamper
+resistance).
 
 ### 9. `Soa[T]` struct-of-arrays library type (§13)
 

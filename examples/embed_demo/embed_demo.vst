@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §12.1 / §8 `@embed` with a content-hashed manifest. `@embed("data.txt")`
+// reads the file at fold time and materializes its bytes as a `[7]UInt8`. When
+// the build runs under `--embed-manifest`, the file's content hash + size must
+// match the manifest entry or the build fails — pinning exactly which bytes are
+// embedded so two builds of the same source are byte-identical. `--emit-embed-
+// manifest` writes that manifest from the files this build embedded.
+
+const data: [7]UInt8 = @embed("data.txt")
+
+func firstByte() -> UInt8 {
+    return data[0]
+}

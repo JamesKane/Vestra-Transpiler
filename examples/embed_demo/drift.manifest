@@ -1,0 +1,4 @@
+# vestra embed manifest v1 -- <fnv1a64-hex>  <size>  <path>
+# Deliberately WRONG hash for data.txt, used by the e2e_embed_manifest_drift
+# WILL_FAIL test: enforcing this manifest must fail with a content-drift error.
+0000000000000000  7  data.txt

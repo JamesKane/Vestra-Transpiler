@@ -2417,6 +2417,28 @@ set_tests_properties(e2e_searchpath_demo_run PROPERTIES
     DEPENDS                e2e_searchpath_demo_compile
     PASS_REGULAR_EXPRESSION "searchpath_demo OK")
 
+# §8 content-hashed @embed manifest. Emit the manifest from a build, then build
+# again enforcing it (round-trip must agree). A third build enforces a manifest
+# with a deliberately-wrong hash and must fail (drift detection).
+set(e2e_embed_input ${CMAKE_SOURCE_DIR}/examples/embed_demo/embed_demo.vst)
+
+add_test(
+    NAME    e2e_embed_manifest_emit
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_embed_input} -o ${e2e_workdir}
+            --emit-embed-manifest ${e2e_workdir}/embed_demo.manifest)
+
+add_test(
+    NAME    e2e_embed_manifest_enforce
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_embed_input} -o ${e2e_workdir}
+            --embed-manifest ${e2e_workdir}/embed_demo.manifest)
+set_tests_properties(e2e_embed_manifest_enforce PROPERTIES DEPENDS e2e_embed_manifest_emit)
+
+add_test(
+    NAME    e2e_embed_manifest_drift
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_embed_input} -o ${e2e_workdir}
+            --embed-manifest ${CMAKE_SOURCE_DIR}/examples/embed_demo/drift.manifest)
+set_tests_properties(e2e_embed_manifest_drift PROPERTIES WILL_FAIL TRUE)
+
 # §5/§18.4 split(at:) partition primitive.
 set(e2e_split_input  ${CMAKE_SOURCE_DIR}/examples/split_demo.vst)
 set(e2e_split_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_split_demo.cpp)

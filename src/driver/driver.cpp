@@ -16,13 +16,17 @@
 #include "vestra/sema/resolver.hpp"
 #include "vestra/sema/types.hpp"
 
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <ostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -46,6 +50,10 @@ Subcommands:
         -I DIR adds an import search root (repeatable): an import resolves
         against the entry file's directory first, then each -I root in
         order, taking the first match.
+        --embed-manifest FILE enforces a content-hashed @embed manifest:
+        every @embed'ed file must match a recorded hash + size, or the
+        build fails (drift / unmanifested embed). --emit-embed-manifest
+        FILE instead writes that manifest after a clean build. At most one.
         --skip-check elides sema (debug aid).
         --no-libc marks the build as freestanding (§A10 §15.5): the
         generated header opens with `// vestra: no_libc = true`.
@@ -102,6 +110,10 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
                 opts.out_dir = std::string{argv[++i]};
             } else if (a == "-I" && i + 1 < argv.size()) {
                 opts.import_paths.emplace_back(std::string{argv[++i]});
+            } else if (a == "--embed-manifest" && i + 1 < argv.size()) {
+                opts.embed_manifest = std::string{argv[++i]};
+            } else if (a == "--emit-embed-manifest" && i + 1 < argv.size()) {
+                opts.emit_embed_manifest = std::string{argv[++i]};
             } else if (a == "--emit-only") {
                 opts.emit_only = true;
             } else if (a == "--dump-ast") {
@@ -214,10 +226,93 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
 
 namespace {
 
+// §8 content-hashed `@embed` manifest. FNV-1a (64-bit) over the file bytes — a
+// fast, non-cryptographic content hash. The goal is reproducibility / drift
+// detection (identical bytes → identical entry; a changed file → a different
+// hash), not tamper resistance.
+std::uint64_t fnv1a64(const std::vector<std::uint8_t>& bytes) {
+    std::uint64_t h = 1469598103934665603ULL;  // FNV-1a 64-bit offset basis
+    for (auto b : bytes) {
+        h ^= b;
+        h *= 1099511628211ULL;  // FNV-1a 64-bit prime
+    }
+    return h;
+}
+
+struct EmbedManifest {
+    enum class Mode { Off, Enforce, Emit };
+    struct Entry {
+        std::uint64_t hash = 0;
+        std::uintmax_t size = 0;
+    };
+    Mode mode = Mode::Off;
+    std::map<std::string, Entry> expected;  // loaded entries (enforce mode)
+    std::map<std::string, Entry> recorded;  // entries observed during this build
+    // Paths already reported as drift/unmanifested, so a re-folded @embed (the
+    // const initializer is evaluated more than once) reports the failure once.
+    std::unordered_set<std::string> reported;
+};
+
+// Parse a manifest into `expected`. Each non-comment line is
+// `<hex-hash>  <size>  <path>`; the path is the line remainder (may contain
+// spaces). Returns false only when the file can't be opened.
+bool load_embed_manifest(const std::filesystem::path& file, EmbedManifest& mf, std::ostream& err) {
+    std::ifstream f(file);
+    if (!f) {
+        err << "vestra: cannot read embed manifest " << file << "\n";
+        return false;
+    }
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        std::istringstream ls(line);
+        std::string hash_hex;
+        std::uintmax_t size = 0;
+        if (!(ls >> hash_hex >> size)) {
+            continue;  // malformed line — skip
+        }
+        std::string rest;
+        std::getline(ls, rest);
+        std::size_t s = rest.find_first_not_of(" \t");
+        if (s == std::string::npos) {
+            continue;
+        }
+        EmbedManifest::Entry e;
+        e.hash = std::strtoull(hash_hex.c_str(), nullptr, 16);
+        e.size = size;
+        mf.expected[rest.substr(s)] = e;
+    }
+    return true;
+}
+
+// Write `recorded` to the manifest file. std::map iterates by key, so the
+// output is sorted by path and byte-stable across regenerations.
+bool write_embed_manifest(const std::filesystem::path& file,
+                          const EmbedManifest& mf,
+                          std::ostream& err) {
+    std::ofstream f(file, std::ios::trunc);
+    if (!f) {
+        err << "vestra: cannot write embed manifest " << file << "\n";
+        return false;
+    }
+    f << "# vestra embed manifest v1 -- <fnv1a64-hex>  <size>  <path>\n";
+    for (const auto& [path, e] : mf.recorded) {
+        f << std::format("{:016x}  {}  {}\n", e.hash, e.size, path);
+    }
+    return true;
+}
+
 // §12.1 `@embed` reader rooted at `base`: resolves a relative path against the
-// source file's directory and returns its bytes (nullopt on any failure).
-sema::ComptimeFolder::EmbedReader make_embed_reader(std::filesystem::path base) {
-    return [base = std::move(base)](
+// source file's directory and returns its bytes (nullopt on any failure). When
+// a manifest is active (`mf` non-null, mode != Off) it records each embed's
+// content hash + size, and in Enforce mode fails (nullopt + a line to `err`)
+// when a path is unmanifested or its on-disk content has drifted from the
+// recorded hash — turning a silent content change into a build error.
+sema::ComptimeFolder::EmbedReader
+make_embed_reader(std::filesystem::path base, EmbedManifest* mf, std::ostream& err) {
+    return [base = std::move(base), mf, &err](
                std::string_view path) -> std::optional<std::vector<std::uint8_t>> {
         std::filesystem::path p{path};
         if (p.is_relative()) {
@@ -227,8 +322,38 @@ sema::ComptimeFolder::EmbedReader make_embed_reader(std::filesystem::path base) 
         if (!f) {
             return std::nullopt;
         }
-        return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(f)),
-                                         std::istreambuf_iterator<char>());
+        std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                        std::istreambuf_iterator<char>());
+        if (mf != nullptr && mf->mode != EmbedManifest::Mode::Off) {
+            const std::string key{path};
+            const EmbedManifest::Entry seen{fnv1a64(bytes), bytes.size()};
+            mf->recorded[key] = seen;
+            if (mf->mode == EmbedManifest::Mode::Enforce) {
+                auto it = mf->expected.find(key);
+                const bool first = mf->reported.insert(key).second;
+                if (it == mf->expected.end()) {
+                    if (first) {
+                        err << "vestra: @embed \"" << key
+                            << "\" is not listed in the embed manifest (unmanifested embed)\n";
+                    }
+                    return std::nullopt;
+                }
+                if (it->second.hash != seen.hash || it->second.size != seen.size) {
+                    if (first) {
+                        err << std::format(
+                            "vestra: @embed \"{}\" content drift -- manifest {:016x} "
+                            "({} bytes), on disk {:016x} ({} bytes)\n",
+                            key,
+                            it->second.hash,
+                            it->second.size,
+                            seen.hash,
+                            seen.size);
+                    }
+                    return std::nullopt;
+                }
+            }
+        }
+        return bytes;
     };
 }
 
@@ -479,6 +604,21 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
     diag::DiagnosticReporter rep(sm);
     namespace fs = std::filesystem;
 
+    // §8 content-hashed @embed manifest setup. At most one of enforce / emit.
+    EmbedManifest embed_mf;
+    if (!opts.embed_manifest.empty() && !opts.emit_embed_manifest.empty()) {
+        err << "vestra: --embed-manifest and --emit-embed-manifest are mutually exclusive\n";
+        return 2;
+    }
+    if (!opts.embed_manifest.empty()) {
+        embed_mf.mode = EmbedManifest::Mode::Enforce;
+        if (!load_embed_manifest(opts.embed_manifest, embed_mf, err)) {
+            return 1;
+        }
+    } else if (!opts.emit_embed_manifest.empty()) {
+        embed_mf.mode = EmbedManifest::Mode::Emit;
+    }
+
     // §5 multi-file: load the entry and every transitively-imported module,
     // resolving imports against the entry dir then any `-I` roots.
     ModuleGraph graph = load_module_graph(opts.input, sm, rep, err, opts.import_paths);
@@ -526,8 +666,11 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
     sema::Resolver::ModuleExports store;
     for (std::size_t i : topo_order(graph)) {
         auto& unit = *units[i];
-        sema::Resolver resolver(
-            unit, arena, rep, make_embed_reader(files[i].parent_path()), target_ctx);
+        sema::Resolver resolver(unit,
+                                arena,
+                                rep,
+                                make_embed_reader(files[i].parent_path(), &embed_mf, err),
+                                target_ctx);
         sema::Resolver::ModuleExports visible;
         for (int d : deps[i]) {
             const std::string dep_mod = module_path_of(*units[static_cast<std::size_t>(d)]);
@@ -588,7 +731,19 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
     }
 
     rep.render_to(err);
-    return rep.has_errors() ? 1 : 0;
+    if (rep.has_errors()) {
+        return 1;
+    }
+    // §8 emit the manifest only after a clean build, so a failed build never
+    // leaves a stale/partial manifest behind.
+    if (embed_mf.mode == EmbedManifest::Mode::Emit) {
+        if (!write_embed_manifest(opts.emit_embed_manifest, embed_mf, err)) {
+            return 1;
+        }
+        out << "wrote " << opts.emit_embed_manifest << " (" << embed_mf.recorded.size()
+            << " embed entr" << (embed_mf.recorded.size() == 1 ? "y" : "ies") << ")\n";
+    }
+    return 0;
 }
 
 int run_check(const std::filesystem::path& input,
@@ -618,7 +773,8 @@ int run_check(const std::filesystem::path& input,
     sema::Resolver::ModuleExports store;
     for (std::size_t i : topo_order(graph)) {
         auto& unit = *graph.units[i];
-        sema::Resolver resolver(unit, arena, rep, make_embed_reader(graph.files[i].parent_path()));
+        sema::Resolver resolver(
+            unit, arena, rep, make_embed_reader(graph.files[i].parent_path(), nullptr, err));
         sema::Resolver::ModuleExports visible;
         for (int d : graph.deps[i]) {
             const std::string dep_mod = module_path_of(*graph.units[static_cast<std::size_t>(d)]);

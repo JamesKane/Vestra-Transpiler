@@ -44,6 +44,14 @@ struct BuildOptions {
     // the first existing `a/b/c.vst` wins. Lets a build name shared library
     // modules from a common root regardless of where the entry file lives.
     std::vector<std::filesystem::path> import_paths;
+    // §12.1 / §8 content-hashed `@embed` manifest. `embed_manifest` (enforce):
+    // every `@embed`ed file's content hash + size must match an entry in this
+    // manifest, or the build fails — pinning exactly which bytes a build
+    // embeds so two builds of the same source are byte-identical.
+    // `emit_embed_manifest` (generate): after a clean build, write the manifest
+    // of every embedded file. At most one may be set. Empty = no manifest.
+    std::filesystem::path embed_manifest;
+    std::filesystem::path emit_embed_manifest;
 };
 
 // Entry points for each `vestra` subcommand. Each returns a process exit code.
