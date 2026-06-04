@@ -1174,6 +1174,36 @@ TypePtr Resolver::check_binary(const ast::BinaryExpr& b, TypePtr expected) {
         }
     }
 
+    // §13 elementwise vector arithmetic: `[N]T <op> [N]T` for + - * / applies
+    // the operator lanewise and yields the same `[N]T`, where T is numeric and
+    // both lengths match. Lowered to an auto-vectorizable elementwise helper (a
+    // clean scalar fallback the C++ compiler maps to real SIMD where it pays).
+    if (lhs->kind() == TypeKind::Vector || rhs->kind() == TypeKind::Vector) {
+        const bool elementwise = b.op == ast::BinaryOp::Add || b.op == ast::BinaryOp::Sub
+                                 || b.op == ast::BinaryOp::Mul || b.op == ast::BinaryOp::Div;
+        if (!elementwise) {
+            error_at(b.range, "a fixed-length vector supports only elementwise + - * /");
+            return types_->error();
+        }
+        if (lhs->kind() != TypeKind::Vector || rhs->kind() != TypeKind::Vector
+            || !TypeArena::equal(lhs, rhs)) {
+            error_at(b.range,
+                     std::format("elementwise vector arithmetic requires two vectors of the "
+                                 "same type, got {} and {}",
+                                 lhs->describe(),
+                                 rhs->describe()));
+            return types_->error();
+        }
+        if (lhs->inner() == nullptr || !lhs->inner()->is_numeric()) {
+            error_at(b.range,
+                     std::format("elementwise vector arithmetic requires a numeric element "
+                                 "type, got {}",
+                                 lhs->describe()));
+            return types_->error();
+        }
+        return lhs;
+    }
+
     // For arithmetic / bitwise / comparison, the operands must share a
     // numeric type. The §17 natural-width rule (see TypeArena::assignable)
     // applies symmetrically — `Int + Int32` yields Int32 (the sized side

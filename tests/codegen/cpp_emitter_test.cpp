@@ -2878,6 +2878,17 @@ TEST_CASE("Vec[T] lowers to std::vector with push / len / index") {
     CHECK(f.out.source.find("static_cast<std::intptr_t>(xs.size())") != std::string::npos);
 }
 
+TEST_CASE("elementwise [N]T arithmetic lowers to __vstr::vec_* helpers") {
+    SemaEmitFixture f("func axpy(_ a: [4]Int32, _ x: [4]Int32, _ y: [4]Int32) -> [4]Int32 {\n"
+                      "    return a * x + y\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    // a * x + y composes the helpers; each operand stays a std::array<…, 4>.
+    CHECK(f.out.source.find("__vstr::vec_add(__vstr::vec_mul(a, x), y)") != std::string::npos);
+    CHECK(f.out.header.find("std::array<T, N> vec_mul(") != std::string::npos);
+    CHECK(f.out.header.find("std::array<T, N> vec_add(") != std::string::npos);
+}
+
 TEST_CASE("Vec[T] get / pop lower to __vstr optional helpers") {
     SemaEmitFixture f("func f() using Alloc -> Int32 {\n"
                       "    var xs: Vec[Int32] = Vec.new()\n"

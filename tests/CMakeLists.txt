@@ -2455,6 +2455,31 @@ add_test(
             --embed-manifest ${CMAKE_SOURCE_DIR}/examples/embed_demo/drift.manifest)
 set_tests_properties(e2e_embed_manifest_drift PROPERTIES WILL_FAIL TRUE)
 
+# §13 elementwise vector arithmetic on [N]T: a * x + y lowers to __vstr::vec_*
+# helpers over std::array; the compile + run exercises +, *, and lane indexing.
+set(e2e_simd_input  ${CMAKE_SOURCE_DIR}/examples/simd_demo.vst)
+set(e2e_simd_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_simd_demo.cpp)
+
+add_test(
+    NAME    e2e_simd_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_simd_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_simd_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O2
+            -I${e2e_workdir}
+            ${e2e_simd_driver} ${e2e_workdir}/simd_demo.cpp
+            -o ${e2e_workdir}/simd_app)
+set_tests_properties(e2e_simd_demo_compile PROPERTIES DEPENDS e2e_simd_demo_transpile)
+
+add_test(
+    NAME    e2e_simd_demo_run
+    COMMAND ${e2e_workdir}/simd_app)
+set_tests_properties(e2e_simd_demo_run PROPERTIES
+    DEPENDS                e2e_simd_demo_compile
+    PASS_REGULAR_EXPRESSION "simd_demo OK")
+
 # §5/§18.4 split(at:) partition primitive.
 set(e2e_split_input  ${CMAKE_SOURCE_DIR}/examples/split_demo.vst)
 set(e2e_split_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_split_demo.cpp)

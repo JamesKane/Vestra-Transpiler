@@ -691,11 +691,25 @@ comment-trivia retention in the lexer rather than the audit's source-line scan.
 
 ### 7. SIMD `[N]T` lowering (§13)
 
-Map fixed-length vector types to `std::experimental::simd` (or target
-intrinsics) where available, with a clean scalar fallback elsewhere.
-Needs a target-detection layer the codegen doesn't have yet; the
-`--target` / `--target-features` plumbing from `312281c` is a starting
-point for that layer.
+First slice shipped — **elementwise arithmetic on `[N]T`**: `+ - * /` apply
+lanewise to two same-length, numeric-element fixed vectors and yield the same
+`[N]T`. Sema's `check_binary` adds a vector case (matching length via the
+structural `Vector` equality, numeric element required, only the four
+elementwise ops — `%`/bitwise/comparison are rejected); codegen lowers each to
+an `__vstr::vec_add/sub/mul/div` prelude template — a small fixed-extent loop
+over the `std::array<T, N>` that the C++ compiler auto-vectorizes to real SIMD
+where it pays, with a clean scalar fallback and no target-detection layer.
+Compositions chain (`a * x + y` → `vec_add(vec_mul(a, x), y)`). Proven end to
+end (`examples/simd_demo.vst`: axpy + a lane-sum dot product) plus a
+codegen unit test.
+
+Remaining: scalar broadcast (`v * 2`); reductions / swizzles / lane shuffles;
+comparison-to-mask; and the spec's target-feature-gated typed vector lanes
+(`Vec[N, T]` in a `core.systems.simd` namespace, ANNEX A §14.10) backed by
+`std::experimental::simd` or NEON/SSE/AVX/RVV intrinsics — which is where the
+`--target` / `--target-features` plumbing (`312281c`) becomes the
+target-detection layer. The current helper bodies can be swapped for those
+behind the same `vec_*` surface.
 
 ### 8. Content-hashed `@embed` manifest — shipped
 

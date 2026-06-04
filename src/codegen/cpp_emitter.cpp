@@ -299,6 +299,7 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     }
     hdr << "#pragma once\n\n";
     hdr << "#include <algorithm>\n";  // §11 scheduler timer queue min_element / erase_if
+    hdr << "#include <array>\n";      // §13 [N]T lowers to std::array (+ vector arithmetic)
     hdr << "#include <atomic>\n";     // §A4 Atomic[T] lowers to std::atomic
     hdr << "#include <bit>\n";        // §A6 MmioWireView std::byteswap / std::endian
     hdr << "#include <chrono>\n";     // §11 timeout select arm wall-clock deadlines
@@ -380,6 +381,27 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    v.pop_back();\n";
     hdr << "    return last;\n";
     hdr << "}\n\n";
+    // §13 elementwise fixed-length-vector arithmetic over `[N]T` (→
+    // std::array<T, N>). Each op is a lanewise loop returning a fresh array;
+    // the C++ compiler auto-vectorizes these small fixed-extent loops to real
+    // SIMD where it pays, falling back to scalar otherwise. Explicit
+    // std::experimental::simd / target intrinsics can replace the body later
+    // behind this same surface.
+    struct VecOp {
+        const char* fn;
+        const char* op;
+    };
+    static constexpr VecOp vec_ops[] = {
+        {"vec_add", "+"}, {"vec_sub", "-"}, {"vec_mul", "*"}, {"vec_div", "/"}};
+    for (const auto& vop : vec_ops) {
+        hdr << "template <class T, std::size_t N>\n";
+        hdr << "std::array<T, N> " << vop.fn
+            << "(const std::array<T, N>& a, const std::array<T, N>& b) {\n";
+        hdr << "    std::array<T, N> r{};\n";
+        hdr << "    for (std::size_t i = 0; i < N; ++i) r[i] = a[i] " << vop.op << " b[i];\n";
+        hdr << "    return r;\n";
+        hdr << "}\n\n";
+    }
     // §A10 (§15.5) — `@panic_handler` delegation. The function-
     // pointer slot is `inline` so multiple translation units agree
     // on one storage location; when the user declares a
@@ -3182,6 +3204,27 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             emit_expr(os, *b.rhs);
             os << ")";
             break;
+        }
+        // §13 elementwise vector arithmetic: when sema typed the result as a
+        // fixed-length vector, `a <op> b` lowers to an `__vstr::vec_<op>` helper
+        // that loops lanewise over the std::array (auto-vectorized by the C++
+        // compiler — real SIMD where it pays, a scalar fallback otherwise).
+        if (resolution_ != nullptr
+            && (b.op == ast::BinaryOp::Add || b.op == ast::BinaryOp::Sub
+                || b.op == ast::BinaryOp::Mul || b.op == ast::BinaryOp::Div)) {
+            if (auto rt = resolution_->type_of(&e);
+                rt != nullptr && rt->kind() == sema::TypeKind::Vector) {
+                const char* fn = b.op == ast::BinaryOp::Add   ? "vec_add"
+                                 : b.op == ast::BinaryOp::Sub ? "vec_sub"
+                                 : b.op == ast::BinaryOp::Mul ? "vec_mul"
+                                                              : "vec_div";
+                os << "__vstr::" << fn << "(";
+                emit_expr(os, *b.lhs);
+                os << ", ";
+                emit_expr(os, *b.rhs);
+                os << ")";
+                break;
+            }
         }
         emit_expr(os, *b.lhs);
         os << " " << binop_text(b.op) << " ";

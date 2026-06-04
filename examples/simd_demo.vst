@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §13 elementwise arithmetic on a fixed-length vector `[N]T`. `+ - * /` apply
+// lanewise to two same-length, numeric-element vectors and yield the same
+// `[N]T`. Each lowers to an `__vstr::vec_<op>` helper — a small fixed-extent
+// loop over the std::array the compiler auto-vectorizes to real SIMD where it
+// pays, with a clean scalar fallback elsewhere (no target-detection layer).
+
+module examples.simd_demo
+
+// Fused multiply-add over four lanes: a * x + y, all elementwise.
+func axpy(_ a: [4]Int32, _ x: [4]Int32, _ y: [4]Int32) -> [4]Int32 {
+    return a * x + y
+}
+
+// Sum the lanes of an elementwise product — a tiny dot-product shape.
+func dot4(_ a: [4]Int32, _ b: [4]Int32) -> Int32 {
+    let p = a * b
+    return p[0] + p[1] + p[2] + p[3]
+}
