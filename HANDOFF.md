@@ -9,17 +9,19 @@ proceeds, and the rough edges to watch out for.
 
 ## Current state
 
-- **862 / 862 tests pass** (`ctest --test-dir build/debug`), Debug
-  build with ASan + UBSan via the `asan` preset, format-check clean.
-- Tip commit: the `chunks(of:)` slice below. Recent prior tips:
-  `db5b860` (linear types), `9de722a` (branch-flow-merge), `409ded7`
-  (split(at:)), `cad90c4` (quote/splice), `b17894b` (Channel[T]),
-  `7c8341a` (parallel),
-  `8842998` (select), `b22801d` (spawn → Future[T])
-  (const generics on functions), `17e5444` (leading-dot enum
-  construction), `7ca4ef8` (generic protocol bounds), `8bf316a` (const
-  generics on types), `1bfff52` (generic enums), `e74f1ad` (generic
-  structs).
+- **1016 / 1016 tests pass** (`ctest --test-dir build/debug`), Debug
+  build, format-check clean.
+- Tip commit: `0fe845d` (command-line args). The session below shipped a
+  long run of slices; recent tips: `e5a8955` (file I/O), `56de8f5` (stdout
+  print), `1df41ef` (Soa column views), `a4dccb1` (Soa[T]), `710631d`
+  ([N]T elementwise SIMD), `7eda93d` (audit --safety), `70c8a67` (multi-arg
+  attributes), `8a281d9` (@embed manifest), `f5b043e` (explicit construction
+  type-args), `dcc9f87` (-I import roots), `14bbafa` (generic imported
+  types), `61a18e8` (drop using-namespace), `a0da33b` (cyclic/missing import
+  diagnostics), the §18.5 collection set (`4f23402` HashMap, `734a258` Vec,
+  `bff737e` String, …), and `b570b39` (modules shared arena).
+- **The commit trailer is now `Co-Authored-By: Claude Opus 4.8 (1M context)
+  <noreply@anthropic.com>`** (was 4.7 in older entries below).
 - Toolchain in use: Apple Clang 21 (Xcode 26) at `/usr/bin/c++`,
   CMake 4, Ninja 1.13. clang-format from Homebrew at
   `/opt/homebrew/bin/clang-format`. clang-tidy is optional.
@@ -27,6 +29,39 @@ proceeds, and the rough edges to watch out for.
   capability → comptime fold → C++ emitter`. Every phase produces
   diagnostics on a shared `DiagnosticReporter`; `vestra build` refuses
   to emit C++ when sema reports an error (override with `--skip-check`).
+
+## Where to pick up (self-hosting focus)
+
+The recent arc has been **self-hosting equipment** — the three gaps from the
+bootstrap assessment, now all addressed:
+
+- **§0 multi-file modules — complete (slices 1–11).** Transitive loading,
+  `public` visibility, output layout, qualified references + types (incl.
+  generics), shared-arena export harvesting, missing/cyclic-import
+  diagnostics, `import c "header.h"`, and `-I` import search roots.
+- **§0b collections — complete (slices 1–8).** `Vec[T]`, owned `String`,
+  `HashMap[K,V]`; reads/mutation/iteration; the owned-String→Str read-borrow;
+  inout-receiver exclusivity for the mutators.
+- **§0c I/O + entry point — slices 1–3 shipped.** `print`/`println` (Log),
+  `readFile`/`writeFile` (Fs), `args()` + an argv-capturing entry `main`.
+  `func main() -> Int32` is already the C++ entry. So a Vestra program can
+  now: read its input path from `args()`, `readFile` it into a `String`,
+  process, `writeFile` the output, and `print` diagnostics.
+
+**Best next step:** a **self-hosting proof-of-concept** — a small standalone
+Vestra program (read a file via argv, do real String/Vec/HashMap work, write
+output) that exercises the whole equipment stack end to end, committed as an
+example + e2e. That surfaces the *next* real gaps (String slicing/search,
+char/byte access, number↔string, `Str` splitting) which become the following
+slices. Cheaper §0c follow-ons if preferred: `eprint`/`eprintln` (stderr),
+formatted print over non-`Str` values.
+
+Other open tracks (not self-hosting): §1 generics phase-2 refinements
+(minor), §6 capability narrowing / row polymorphism (needs capabilities as
+values — design-heavy), §7 SIMD `Vec[N,T]` intrinsic lanes (needs the
+target-detection layer), and the annex-deepening slices (A7 context-switch,
+A8 kernel vector tables, A9 call-graph gates, lock-free stress). See
+[`ROADMAP.md`](ROADMAP.md) for the per-item "Remaining" notes.
 
 ## How the work has been proceeding
 
@@ -53,7 +88,7 @@ A few standing constraints, **honored on every commit**:
 - **No `--no-verify`**, **no force-push to main**.
 - Commit message convention: subject like `sema+codegen: §N feature
   (one-liner)`, a paragraphs-of-rationale body, trailer:
-  `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`.
+  `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 
 ## Phase log (newest first)
 
@@ -63,7 +98,20 @@ The commit hash is the canonical reference; the summary is the
 
 | Commit | Phase |
 |---|---|
-| (this branch) | **§5/§18.4 `chunks(of:)` iterator partition primitive** — the size-based sibling of `split(at:)` and the iterator-partitioner carry-forward from ownership phase 2. `s.chunks(of: n)` on a `Span[T]` / `MutSpan[T]` yields the consecutive, disjoint sub-views of length n ([0,n), [n,2n), … the last shorter when the length isn't a multiple of n; a chunk size of 0 yields none). Unlike split's eager tuple, chunks is a *lazy iterator*: it returns a new `ChunkIter[Span[T]]` / `ChunkIter[MutSpan[T]]` type (a `next() -> Element?` combinator like the existing `TakeIter` / `FilterIter`), so `for chunk in s.chunks(of: n)` binds chunk: Span[T] through the existing iterator-protocol for-loop machinery (no materialized vector). Sema: a `chunks` member-call intercept in `check_call` (mirrors the split intercept) validates one integer arg with optional label `of` and returns `make_chunk_iter(sub)` where sub keeps the receiver's span kind and element type; `lookup_method(ChunkIter, "next")` synthesizes the `Optional[sub]` result the for-loop drives. New `ChunkIter` TypeKind threaded through types.hpp / types.cpp (describe, `make_chunk_iter` factory, is-trivial set, substitute, equal). Codegen: a `__vstr::Chunks<S>` struct in the runtime preamble (a span, a step, an offset; `next()` returns `std::optional<S>` subspans, S deduced by CTAD) emitted as `__vstr::Chunks{span, static_cast<std::size_t>(n)}`, which the existing for-iter lowering drives through `.next()`. Five unit tests (Span + MutSpan accept; non-integer size + wrong-label reject; codegen emits the Chunks iterator) plus a 3-stage e2e (examples/chunks_demo.vst + tests/e2e/main_chunks_demo.cpp): chunked sum is sum-preserving, oversized/zero-size edge cases, in-place double via mutable chunks. v0.5 carry-forwards (remaining ownership/exclusivity phase 2): chunks as a first-class value (indexing, `.count` — today it's for-loop-only), cross-statement borrow liveness, partition *provenance* in `as_place`, and linearity transitivity / parameters. |
+| `0fe845d` | **§0c command-line args** — `args() -> Vec[Str]`; a module-less `func main()` emits as `main(int argc, char** argv)` with an `__vstr::args_init` prologue (keyed on `unit_has_module_`), and `args()` lowers to `__vstr::args()`, Alloc-gated. `examples/args_demo.vst`. |
+| `e5a8955` | **§0c file I/O** — `readFile(path) -> String?` / `writeFile(path, contents) -> Bool`, lowered to `__vstr::read_file`/`write_file` over `<fstream>`, gated on a new `Fs` capability. `examples/fileio_demo.vst`. |
+| `56de8f5` | **§0c stdout I/O** — `print(Str)`/`println(Str)` → `std::print("{}", x)`/`std::println`, gated on `Log`. Builtins registered in `register_builtin_io`; codegen + cap gate guarded on the builtin symbol (`decl == nullptr`) so a user `print` isn't hijacked. `examples/io_demo.vst`. |
+| `1df41ef` | **§13 Soa column views** — `s.column(.x)` → `MutSpan` over a field's column (`std::span{std::get<i>(s)}`); leading-dot field selector intercepted in `check_call`. Also generalized `for x in xs` to iterate `Span`/`MutSpan`. |
+| `a4dccb1` | **§13 `Soa[T]` struct-of-arrays** — `Soa[T]` over a struct → `std::tuple<std::vector<F0>, …>`; `new`/`push` (scatter via IIFE)/`len`/`get` (gather). `emit_soa_backing` shared by emit_sema_type + a unit-local name→struct index. |
+| `710631d` | **§13 `[N]T` elementwise SIMD** — `+ - * /` lanewise on fixed vectors → `__vstr::vec_add/sub/mul/div` (auto-vectorized loops over `std::array`). |
+| `7eda93d` | **§6 `vestra audit --safety`** — enumerates unsafe-capability (RawMemory/Asm/Mmio) grants via `using`/`with` and whether a `// Safety:` comment justifies each (source-line scan, no lexer changes). |
+| `70c8a67` | **§12.6 multi-arg attributes** — `Attribute::extra_args` (additive, `predicate` stays arg 0); `d.attribute("name", i)` reflection. |
+| `8a281d9` | **§8 content-hashed `@embed` manifest** — `--embed-manifest` (enforce: FNV-1a-64 hash + size) / `--emit-embed-manifest` (generate), in the manifest-aware `make_embed_reader`. |
+| `f5b043e` | **§7 explicit construction type-args** — `Pair[Int32](...)`: `check_call` reinterprets the `IndexExpr` callee as type args (`type_from_index_expr`), funnels through the normal construction path; codegen emits the named specialization. |
+| `dcc9f87` / `770b351` / `14bbafa` / `61a18e8` / `a0da33b` | **§5 module follow-ons** — `-I` import roots (build + check); `import c "header.h"` → global `#include`; generic imported types; computed-imported-nominal qualification + dropping `using namespace dep;` (decl→ns map); located missing/cyclic-import diagnostics. |
+| `95312a5` / `35af758` / `0bae339` / `159713c` / `4f23402` / `144b722` / `bff737e` / `734a258` | **§18.5 collection set** — inout-receiver exclusivity for mutators; owned-String→Str read-borrow at call args; Vec `set`/`clear`/`for-in`; Vec `get`/`pop` (`T?`); `HashMap[K,V]`; String-coercion codegen; owned `String`; `Vec[T]`. |
+| `b570b39` | **§5 modules shared arena** — one TypeArena for the build, topological resolve, public-export harvesting (`set_module_exports`/`public_exports`) so an importer reuses a dependency's resolved signature symbols. |
+| (older) | **§5/§18.4 `chunks(of:)` iterator partition primitive** — the size-based sibling of `split(at:)` and the iterator-partitioner carry-forward from ownership phase 2. `s.chunks(of: n)` on a `Span[T]` / `MutSpan[T]` yields the consecutive, disjoint sub-views of length n ([0,n), [n,2n), … the last shorter when the length isn't a multiple of n; a chunk size of 0 yields none). Unlike split's eager tuple, chunks is a *lazy iterator*: it returns a new `ChunkIter[Span[T]]` / `ChunkIter[MutSpan[T]]` type (a `next() -> Element?` combinator like the existing `TakeIter` / `FilterIter`), so `for chunk in s.chunks(of: n)` binds chunk: Span[T] through the existing iterator-protocol for-loop machinery (no materialized vector). Sema: a `chunks` member-call intercept in `check_call` (mirrors the split intercept) validates one integer arg with optional label `of` and returns `make_chunk_iter(sub)` where sub keeps the receiver's span kind and element type; `lookup_method(ChunkIter, "next")` synthesizes the `Optional[sub]` result the for-loop drives. New `ChunkIter` TypeKind threaded through types.hpp / types.cpp (describe, `make_chunk_iter` factory, is-trivial set, substitute, equal). Codegen: a `__vstr::Chunks<S>` struct in the runtime preamble (a span, a step, an offset; `next()` returns `std::optional<S>` subspans, S deduced by CTAD) emitted as `__vstr::Chunks{span, static_cast<std::size_t>(n)}`, which the existing for-iter lowering drives through `.next()`. Five unit tests (Span + MutSpan accept; non-integer size + wrong-label reject; codegen emits the Chunks iterator) plus a 3-stage e2e (examples/chunks_demo.vst + tests/e2e/main_chunks_demo.cpp): chunked sum is sum-preserving, oversized/zero-size edge cases, in-place double via mutable chunks. v0.5 carry-forwards (remaining ownership/exclusivity phase 2): chunks as a first-class value (indexing, `.count` — today it's for-loop-only), cross-statement borrow liveness, partition *provenance* in `as_place`, and linearity transitivity / parameters. |
 | `db5b860` | **§5/§19.6 `linear` types (must-consume)** — builds directly on the branch-flow-merge. `linear struct Foo { … }` marks a type whose values must be consumed before their scope ends (moved to a sink, returned, or destructured) — dropping one is a leak error. Parser: a `KwLinear` (previously tokenized-but-unparsed) decl modifier before `struct` sets `StructDecl.is_linear`; the printer round-trips it. To register a linear binding at its declaration (so a never-touched `let t = mk()` still leaks), the resolver now records the let/var's bound Local in a new `Resolution` side table (`binding_symbol(const Stmt*)`), since a `let` binds through a pattern with no Expr to `symbol_of`. Ownership checker: `is_linear_type` (direct `linear struct`; transitivity through linear fields deferred); `register_linear_binding` seeds each linear let/var Live; at function-body end any linear binding still Live is a leak (`linear value 't' is never consumed …`); and at every if/match join `report_linear_divergence` flags a linear binding consumed on some paths but not all (`consumed on some branches but leaks on the path(s) that do not consume it`) — this is exactly the per-path state the flow merge computes. Existing consume sites (return, sink args) discharge a linear value. Seven ownership_test cases (consumed-once / returned / both-branches / all-arms accepted; never-consumed / one-branch / one-arm rejected). No codegen change (linear is a checker rule). v0.5 carry-forwards: linearity transitivity (a struct with a linear field is linear), linear value *parameters* (a sink linear param must be consumed by the callee — needs param-symbol registration like the let side table), linear-binding-via-`let c = b` move tracking (the checker doesn't model let-from-place as a move yet), and linear-in-loops (the body is walked once, so a consume inside a loop isn't sound for 0/≥2 iterations). |
 | `9de722a` | **§10/§5 ownership phase 2: branch-aware flow merging** — the headline phase-2 analysis advance. The phase-1 ownership checker walked both `if`/`match` branches linearly against one shared state, so a move in the then-branch poisoned the else-branch and `if c { take(b) } else { take(b) }` was wrongly rejected. Now the checker forks: at an `if`, the post-condition `bindings_` state is snapshotted; the then-branch runs from it (producing `then_state`), the else-branch runs from the same snapshot, and the two are merged at the join via a new `merge_consumed` helper — a binding is Consumed after the join iff it was consumed on *either* path. This is sound: a one-sided `if c { take(b) }` leaves `b` consumed-on-the-then-path, which the merge treats as moved, so a later use is still rejected; a within-branch double-move is still caught (the branch walk shares state internally). `match` is the same shape — guards are walked in sequence first (sound: assume each ran), then each arm body is checked from the post-guard snapshot and the bodies are merged, so arms don't poison each other. Codegen is untouched (this is a checker-precision change: it accepts more valid programs while rejecting the same invalid ones). No example/e2e — the feature is validated by six new ownership_test accept/reject cases (both-branches-move accepted, neither-moves-then-move accepted, one-sided-move-then-use rejected, within-branch double-move rejected, match-arms-each-move accepted, match-one-arm-move-then-use rejected). v0.5 carry-forwards (the rest of ownership/exclusivity phase 2): cross-statement borrow liveness in the exclusivity checker (per-call only today), the iterator partitioner `chunks(n)`, partition *provenance* in `as_place`, and `linear` types (`KwLinear` tokenized-but-unparsed; must-consume builds directly on this branch-merge — a `linear` binding must be consumed on *every* path, which is exactly the per-path state this slice now computes). |
 | `409ded7` | **§5/§18.4 `split(at:)` partition primitive (ownership phase 2, first slice)** — `s.split(at: i)` on a `Span[T]` / `MutSpan[T]` is the first of §5 clause 4's trusted partitioners: it yields the `(prefix, suffix)` tuple of two non-overlapping sub-views of the same span type — [0, i) and [i, count). Sema: a `check_call` intercept (mirrors the `MutSpan.raw` / `parallel` builtin-call shapes) matching a MemberExpr callee `<span>.split` whose base resolves to Span/MutSpan, with one Int arg (label `at` or positional); result is `(baseSpan, baseSpan)` via make_tuple. A `.split` on any non-span base falls through to the generic member resolution (`no field or method 'split' on type …`). Codegen: a `__vstr::split_at(std::span<T>, std::intptr_t)` preamble helper returns `std::tuple<std::span<T>, std::span<T>>` of the two `subspan`s, clamping `i` to [0, count] so an out-of-range split yields an empty piece rather than UB; `s.split(at: i)` lowers to `__vstr::split_at(s, static_cast<std::intptr_t>(i))`, and `let (lo, hi) = …` reuses the existing tuple-destructuring lowering (`auto [lo, hi] = …`). Because the halves bind to distinct local symbols, the phase-1 exclusivity checker (which roots places at the symbol) already treats them as non-overlapping, so each can be borrowed/mutated independently. One codegen test, two sema tests (MutSpan split yields a tuple; non-span split rejected), and an e2e (`examples/split_demo.vst` + driver) summing a read-only Span by halves, mutating the two disjoint MutSpan halves in place, and exercising the clamped out-of-range split. v0.5 carry-forwards (the rest of ownership/exclusivity phase 2): the iterator partitioner `chunks(n)` (needs an iterator-protocol runtime type), branch-aware flow merging in the ownership checker (today it walks both branches linearly), cross-statement borrow liveness (so using the parent span while a split half is live is caught — today exclusivity is per-call only), `split`/partition *provenance* tracking in `as_place` (so aliasing sub-views through the same root, not just distinct bound symbols, is proven disjoint), and `linear` types (`KwLinear` is tokenized but unparsed; must-consume needs the branch merge). |
