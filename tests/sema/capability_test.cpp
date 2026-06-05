@@ -836,3 +836,12 @@ TEST_CASE("§18 readFile / writeFile require the Fs capability") {
               .error_count
           == 0);
 }
+
+// ---- §18 args() Alloc gate -------------------------------------------------
+
+TEST_CASE("§18 args() requires Alloc (it allocates a Vec)") {
+    auto bad = check("func count() -> Int { return args().len() }\n");
+    CHECK(bad.error_count >= 1);
+    CHECK(bad.first_message.find("missing capability 'Alloc'") != std::string::npos);
+    CHECK(check("func count() using Alloc -> Int { return args().len() }\n").error_count == 0);
+}

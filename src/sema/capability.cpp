@@ -325,6 +325,14 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                     missing_capability("Fs", c.range);
                 }
             }
+            // §18 `args()` allocates a Vec of the command-line arguments, so it
+            // carries the same Alloc gate as the other heap constructors.
+            if (bi.name == "args" && resolution_ != nullptr) {
+                const auto* sym = resolution_->symbol_of(c.callee.get());
+                if (sym != nullptr && sym->decl == nullptr && !in_scope("Alloc")) {
+                    missing_capability("Alloc", c.range);
+                }
+            }
         }
         // §A7 (§14.13) — call-shape rules inside an InterruptsOff
         // region. Five of the seven §14.13 rules are static; the

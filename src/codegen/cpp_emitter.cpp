@@ -255,6 +255,11 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     // and emit_enum read this when injecting the reflective defaults.
     // Each target/protocol path is reduced to its last segment (its
     // simple name) which matches the scope's nominal lookup today.
+    // §18 — a module-less `func main()` is the program's real C++ entry point,
+    // so its emission captures argc/argv (for args()); a `main` inside a module
+    // is just `mod::main`, not the entry.
+    unit_has_module_ = unit.module != nullptr;
+
     // §13 — index the unit's top-level structs by name so a `Soa[Point]`
     // annotation can reach Point's fields when emitting its tuple-of-vectors.
     structs_by_name_.clear();
@@ -407,6 +412,19 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    f.write(contents.data(), static_cast<std::streamsize>(contents.size()));\n";
     hdr << "    return static_cast<bool>(f);\n";
     hdr << "}\n\n";
+    // §18 command-line arguments. The entry `main` calls args_init(argc, argv);
+    // args() returns a copy of the captured argv as string views (program
+    // lifetime), backing the Alloc-gated `args()` builtin.
+    hdr << "inline std::vector<std::string_view>& args_storage() {\n";
+    hdr << "    static std::vector<std::string_view> a;\n";
+    hdr << "    return a;\n";
+    hdr << "}\n\n";
+    hdr << "inline void args_init(int argc, char** argv) {\n";
+    hdr << "    auto& a = args_storage();\n";
+    hdr << "    a.clear();\n";
+    hdr << "    for (int i = 0; i < argc; ++i) a.emplace_back(argv[i]);\n";
+    hdr << "}\n\n";
+    hdr << "inline std::vector<std::string_view> args() { return args_storage(); }\n\n";
     // §13 elementwise fixed-length-vector arithmetic over `[N]T` (→
     // std::array<T, N>). Each op is a lanewise loop returning a fresh array;
     // the C++ compiler auto-vectorizes these small fixed-extent loops to real
@@ -1959,6 +1977,12 @@ void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl
 }
 
 void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::FuncDecl& f) {
+    // §18 — the program's real C++ entry point: a module-less, parameterless
+    // top-level `func main`. We emit it as `main(int argc, char** argv)` and
+    // capture argv into the runtime so `args()` can read it; an in-module
+    // `main` or one with params is an ordinary function.
+    const bool is_entry_main =
+        !unit_has_module_ && f.name == "main" && f.params.empty() && f.body != nullptr;
     // §9 propagation: conditional hoists need to write
     // `std::expected<T, E>` as their lambda's return type, where E is
     // this function's `throws(E)`. Stash + restore for nested funcs.
@@ -2123,6 +2147,9 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
             os << ">";
         }
         os << " " << f.name << "(";
+        if (is_entry_main) {
+            os << "int argc, char** argv";  // captured into __vstr for args()
+        }
         for (std::size_t i = 0; i < f.params.size(); ++i) {
             if (i != 0) {
                 os << ", ";
@@ -2297,6 +2324,9 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
     emit_inline_specifier(src, link_attrs);
     emit_signature(src, /*is_decl=*/false);
     src << " {\n";
+    if (is_entry_main) {
+        src << "    __vstr::args_init(argc, argv);\n";
+    }
     emit_tuple_param_prologue(src);
     if (f.body->kind == ast::NodeKind::BlockExpr) {
         const auto& blk = static_cast<const ast::BlockExpr&>(*f.body);
@@ -3906,6 +3936,15 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << ", ";
                     emit_expr(os, *c.args[1].value);
                     os << ")";
+                    break;
+                }
+            }
+            // §18 `args()` -> __vstr::args() (a copy of the captured argv).
+            if (callee_ident.name == "args" && c.args.empty()) {
+                const auto* sym =
+                    resolution_ != nullptr ? resolution_->symbol_of(c.callee.get()) : nullptr;
+                if (sym != nullptr && sym->decl == nullptr) {
+                    os << "__vstr::args()";
                     break;
                 }
             }

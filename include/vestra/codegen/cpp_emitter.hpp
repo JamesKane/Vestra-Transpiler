@@ -277,6 +277,10 @@ private:
     // §13 — the unit's top-level structs by name, so emit_type can reach a
     // `Soa[Point]` annotation's element fields. Rebuilt each emit() call.
     std::unordered_map<std::string, const ast::StructDecl*> structs_by_name_;
+
+    // §18 — true when the unit declares a `module`; a module-less `func main()`
+    // is the real C++ entry point and captures argc/argv. Set each emit().
+    bool unit_has_module_ = false;
 };
 
 }  // namespace vestra::codegen

@@ -2554,6 +2554,30 @@ set_tests_properties(e2e_fileio_demo_run PROPERTIES
     DEPENDS                e2e_fileio_demo_compile
     PASS_REGULAR_EXPRESSION "read back: vestra file io")
 
+# §18 command-line args: a module-less `func main` captures argc/argv, and
+# `args()` reads them. The run passes args and the program echoes each one.
+set(e2e_args_input ${CMAKE_SOURCE_DIR}/examples/args_demo.vst)
+
+add_test(
+    NAME    e2e_args_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_args_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_args_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/args_demo.cpp
+            -o ${e2e_workdir}/args_app)
+set_tests_properties(e2e_args_demo_compile PROPERTIES DEPENDS e2e_args_demo_transpile)
+
+add_test(
+    NAME    e2e_args_demo_run
+    COMMAND ${e2e_workdir}/args_app alpha beta)
+set_tests_properties(e2e_args_demo_run PROPERTIES
+    DEPENDS                e2e_args_demo_compile
+    PASS_REGULAR_EXPRESSION "arg: beta")
+
 # §5/§18.4 split(at:) partition primitive.
 set(e2e_split_input  ${CMAKE_SOURCE_DIR}/examples/split_demo.vst)
 set(e2e_split_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_split_demo.cpp)

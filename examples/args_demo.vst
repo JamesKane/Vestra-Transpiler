@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §18 command-line arguments. `args() -> Vec[Str]` returns the program's argv
+// (argv[0] is the program name) as views with program lifetime. A module-less
+// `func main()` is the real C++ entry point, so the generated `main` captures
+// argc/argv for `args()` to read. `args()` allocates the Vec, so it carries the
+// `Alloc` gate. This is how a self-hosting CLI (`vestrac input.vst`) reaches
+// its input path.
+
+func main() -> Int32 {
+    with Alloc {
+        with Log {
+            var n: Int32 = 0
+            for a in args() {
+                print("arg: ")
+                println(a)
+                n = n + 1
+            }
+            return n
+        }
+    }
+}

@@ -142,6 +142,17 @@ void Resolver::register_builtin_io() {
         wf.type = types_->make_function({str, str}, types_->primitive(TypeKind::Bool));
         wf.visibility = ast::Visibility::Public;
         (void)scopes_.global().insert(std::move(wf));
+
+        // §18 `args() -> Vec[Str]` — the program's command-line arguments
+        // (argv[0] is the program name), as views with program lifetime.
+        // Allocates the Vec, so Alloc-gated (capability.cpp); codegen lowers
+        // it to __vstr::args(), backed by argv captured in the entry `main`.
+        Symbol ar;
+        ar.name = "args";
+        ar.kind = SymbolKind::Func;
+        ar.type = types_->make_function({}, types_->make_vec(str));
+        ar.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(ar));
     }
 }
 

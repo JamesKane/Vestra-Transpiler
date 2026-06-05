@@ -298,9 +298,20 @@ a file-touching function declares `using Fs`. This is the read/write a
 self-hosting transpiler needs. Proven end to end (`examples/fileio_demo.vst`: a
 write→read round-trip, printed, compiled standalone and run).
 
-Remaining: **command-line args** (`argv` access for the input path — needs
-`main` to capture argc/argv into a global the builtin reads), `eprint`/`eprintln`
-to stderr, and formatted print over non-`Str` values (today the caller
+**Slice 3 shipped** — **command-line args**: `args() -> Vec[Str]` returns the
+program's argv (argv[0] is the program name) as views with program lifetime. A
+module-less `func main()` is the real C++ entry point, so it now emits as
+`main(int argc, char** argv)` with an `__vstr::args_init(argc, argv)` prologue
+(an in-module or parametered `main` stays an ordinary function); `args()` lowers
+to `__vstr::args()`, a copy of the captured argv. It allocates the Vec, so it
+carries the `Alloc` gate. This is how a self-hosting CLI (`vestrac input.vst`)
+reaches its input path. Proven end to end (`examples/args_demo.vst` echoes its
+args; the e2e runs it with `alpha beta`).
+
+With stdout (slice 1), file I/O (slice 2), and argv (slice 3) — plus the
+already-working `func main` entry point — the I/O equipment a self-hosting
+transpiler needs is in place. Remaining niceties: `eprint`/`eprintln` to
+stderr, and formatted print over non-`Str` values (today the caller
 interpolates to a `String` first).
 
 ### 1. Generics phase 2 (multi-session)

@@ -2878,6 +2878,19 @@ TEST_CASE("Vec[T] lowers to std::vector with push / len / index") {
     CHECK(f.out.source.find("static_cast<std::intptr_t>(xs.size())") != std::string::npos);
 }
 
+TEST_CASE("a module-less main captures argv and args() reads it") {
+    SemaEmitFixture f("func main() -> Int32 {\n"
+                      "    with Alloc {\n"
+                      "        return args().len()\n"
+                      "    }\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    // The entry main takes argc/argv and seeds the runtime; args() reads it.
+    CHECK(f.out.source.find("main(int argc, char** argv)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::args_init(argc, argv)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::args()") != std::string::npos);
+}
+
 TEST_CASE("readFile / writeFile lower to __vstr file helpers") {
     SemaEmitFixture f("func rt(_ p: Str, _ b: Str) using Fs -> Int {\n"
                       "    if writeFile(p, b) {\n"
