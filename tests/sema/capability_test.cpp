@@ -816,3 +816,23 @@ TEST_CASE("§18 print / println require the Log capability") {
               .error_count
           == 0);
 }
+
+// ---- §18 filesystem I/O capability gate ------------------------------------
+
+TEST_CASE("§18 readFile / writeFile require the Fs capability") {
+    auto bad = check("func grab(_ p: Str) -> Int {\n"
+                     "    if let s = readFile(p) { return s.len() }\n"
+                     "    return 0\n"
+                     "}\n");
+    CHECK(bad.error_count >= 1);
+    CHECK(bad.first_message.find("missing capability 'Fs'") != std::string::npos);
+    // Under `using Fs` both are clean.
+    CHECK(check("func rt(_ p: Str, _ b: Str) using Fs -> Bool {\n"
+                "    if writeFile(p, b) {\n"
+                "        if let s = readFile(p) { return s.len() > 0 }\n"
+                "    }\n"
+                "    return false\n"
+                "}\n")
+              .error_count
+          == 0);
+}

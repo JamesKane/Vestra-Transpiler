@@ -289,10 +289,19 @@ user-defined `print` is unaffected, in both the gate and the codegen intercept).
 Proven end to end (`examples/io_demo.vst` compiles standalone and prints
 "Hello, Vestra!").
 
-Remaining: runtime **file I/O** (read a file → `String`, write a `String` → a
-file — the read/write a transpiler needs), **command-line args** (`argv` access
-for the input path), `eprint`/`eprintln` to stderr, and formatted print over
-non-`Str` values (today the caller interpolates to a `String` first).
+**Slice 2 shipped** — **file I/O**: `readFile(path) -> String?` slurps a whole
+file (nil when it can't be opened); `writeFile(path, contents) -> Bool`
+truncates and writes, returning success. Both lower to `__vstr::read_file` /
+`__vstr::write_file` prelude helpers (over `<fstream>`) and require a new `Fs`
+capability — filesystem access is an observable side effect, like Net/Log — so
+a file-touching function declares `using Fs`. This is the read/write a
+self-hosting transpiler needs. Proven end to end (`examples/fileio_demo.vst`: a
+write→read round-trip, printed, compiled standalone and run).
+
+Remaining: **command-line args** (`argv` access for the input path — needs
+`main` to capture argc/argv into a global the builtin reads), `eprint`/`eprintln`
+to stderr, and formatted print over non-`Str` values (today the caller
+interpolates to a `String` first).
 
 ### 1. Generics phase 2 (multi-session)
 

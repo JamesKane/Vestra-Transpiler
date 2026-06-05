@@ -2530,6 +2530,30 @@ set_tests_properties(e2e_io_demo_run PROPERTIES
     DEPENDS                e2e_io_demo_compile
     PASS_REGULAR_EXPRESSION "Hello, Vestra!")
 
+# §18 filesystem I/O: writeFile then readFile round-trip, printed. Standalone
+# (`func main`), so the program's own output is the assertion.
+set(e2e_fileio_input ${CMAKE_SOURCE_DIR}/examples/fileio_demo.vst)
+
+add_test(
+    NAME    e2e_fileio_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_fileio_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_fileio_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/fileio_demo.cpp
+            -o ${e2e_workdir}/fileio_app)
+set_tests_properties(e2e_fileio_demo_compile PROPERTIES DEPENDS e2e_fileio_demo_transpile)
+
+add_test(
+    NAME    e2e_fileio_demo_run
+    COMMAND ${e2e_workdir}/fileio_app)
+set_tests_properties(e2e_fileio_demo_run PROPERTIES
+    DEPENDS                e2e_fileio_demo_compile
+    PASS_REGULAR_EXPRESSION "read back: vestra file io")
+
 # §5/§18.4 split(at:) partition primitive.
 set(e2e_split_input  ${CMAKE_SOURCE_DIR}/examples/split_demo.vst)
 set(e2e_split_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_split_demo.cpp)

@@ -318,6 +318,7 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "#include <cstdint>\n";
     hdr << "#include <cstdlib>\n";     // §10 panic / abort → std::abort
     hdr << "#include <expected>\n";    // §9 throws(E) → T lowers to std::expected
+    hdr << "#include <fstream>\n";     // §18 readFile / writeFile
     hdr << "#include <format>\n";      // §4 interpolated strings lower to std::format
     hdr << "#include <functional>\n";  // §12.3 derive(Hash) std::hash specializations
     hdr << "#include <memory>\n";      // §10 Box[T] lowers to std::unique_ptr
@@ -389,6 +390,22 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    auto last = std::move(v.back());\n";
     hdr << "    v.pop_back();\n";
     hdr << "    return last;\n";
+    hdr << "}\n\n";
+    // §18 filesystem I/O. read_file slurps the whole file into a string
+    // (std::nullopt if it can't be opened); write_file truncates + writes,
+    // returning whether the stream stayed good. Both back the Fs-gated
+    // readFile / writeFile builtins.
+    hdr << "inline std::optional<std::string> read_file(std::string_view path) {\n";
+    hdr << "    std::ifstream f{std::string(path), std::ios::binary};\n";
+    hdr << "    if (!f) return std::nullopt;\n";
+    hdr << "    return std::string{std::istreambuf_iterator<char>(f), "
+           "std::istreambuf_iterator<char>()};\n";
+    hdr << "}\n\n";
+    hdr << "inline bool write_file(std::string_view path, std::string_view contents) {\n";
+    hdr << "    std::ofstream f{std::string(path), std::ios::binary | std::ios::trunc};\n";
+    hdr << "    if (!f) return false;\n";
+    hdr << "    f.write(contents.data(), static_cast<std::streamsize>(contents.size()));\n";
+    hdr << "    return static_cast<bool>(f);\n";
     hdr << "}\n\n";
     // §13 elementwise fixed-length-vector arithmetic over `[N]T` (→
     // std::array<T, N>). Each op is a lanewise loop returning a fresh array;
@@ -3863,6 +3880,31 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << (callee_ident.name == "println" ? "std::println(\"{}\", "
                                                           : "std::print(\"{}\", ");
                     emit_expr(os, *c.args[0].value);
+                    os << ")";
+                    break;
+                }
+            }
+            // §18 `readFile(path)` -> __vstr::read_file (std::optional<std::string>);
+            // `writeFile(path, contents)` -> __vstr::write_file (bool). Guarded
+            // on the builtin symbol so a user definition isn't intercepted.
+            if (callee_ident.name == "readFile" && c.args.size() == 1) {
+                const auto* sym =
+                    resolution_ != nullptr ? resolution_->symbol_of(c.callee.get()) : nullptr;
+                if (sym != nullptr && sym->decl == nullptr) {
+                    os << "__vstr::read_file(";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
+                    break;
+                }
+            }
+            if (callee_ident.name == "writeFile" && c.args.size() == 2) {
+                const auto* sym =
+                    resolution_ != nullptr ? resolution_->symbol_of(c.callee.get()) : nullptr;
+                if (sym != nullptr && sym->decl == nullptr) {
+                    os << "__vstr::write_file(";
+                    emit_expr(os, *c.args[0].value);
+                    os << ", ";
+                    emit_expr(os, *c.args[1].value);
                     os << ")";
                     break;
                 }

@@ -316,6 +316,15 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                     missing_capability("Log", c.range);
                 }
             }
+            // §18 `readFile` / `writeFile` touch the filesystem — an observable
+            // side effect — so they require the `Fs` capability. Same
+            // builtin-symbol guard as print/println.
+            if ((bi.name == "readFile" || bi.name == "writeFile") && resolution_ != nullptr) {
+                const auto* sym = resolution_->symbol_of(c.callee.get());
+                if (sym != nullptr && sym->decl == nullptr && !in_scope("Fs")) {
+                    missing_capability("Fs", c.range);
+                }
+            }
         }
         // §A7 (§14.13) — call-shape rules inside an InterruptsOff
         // region. Five of the seven §14.13 rules are static; the

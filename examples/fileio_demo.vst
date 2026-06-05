@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §18 filesystem I/O. `readFile(path) -> String?` slurps a whole file (nil when
+// it can't be opened); `writeFile(path, contents) -> Bool` truncates and writes,
+// returning whether it succeeded. Both touch the filesystem, so they require
+// the `Fs` capability — a function that does file I/O declares `using Fs`, or a
+// caller opens `with Fs`. This is the read/write a self-hosting transpiler needs.
+
+// Write a string to `path`, read it back, and print the round-tripped contents.
+func roundTrip(_ path: Str, _ body: Str) using Fs, Log {
+    if writeFile(path, body) {
+        if let back = readFile(path) {
+            print("read back: ")
+            println(back)
+        } else {
+            println("read failed")
+        }
+    } else {
+        println("write failed")
+    }
+}
+
+func main() -> Int32 {
+    with Fs {
+        with Log {
+            roundTrip("/tmp/__vestra_fileio_demo.txt", "vestra file io")
+        }
+    }
+    return 0
+}

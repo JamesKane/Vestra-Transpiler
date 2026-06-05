@@ -2878,6 +2878,20 @@ TEST_CASE("Vec[T] lowers to std::vector with push / len / index") {
     CHECK(f.out.source.find("static_cast<std::intptr_t>(xs.size())") != std::string::npos);
 }
 
+TEST_CASE("readFile / writeFile lower to __vstr file helpers") {
+    SemaEmitFixture f("func rt(_ p: Str, _ b: Str) using Fs -> Int {\n"
+                      "    if writeFile(p, b) {\n"
+                      "        if let s = readFile(p) { return s.len() }\n"
+                      "    }\n"
+                      "    return -1\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.source.find("__vstr::write_file(p, b)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::read_file(p)") != std::string::npos);
+    CHECK(f.out.header.find("std::optional<std::string> read_file(") != std::string::npos);
+    CHECK(f.out.header.find("bool write_file(") != std::string::npos);
+}
+
 TEST_CASE("print / println lower to std::print / std::println") {
     SemaEmitFixture f("func f(_ s: Str) using Log {\n"
                       "    print(\"hi \")\n"

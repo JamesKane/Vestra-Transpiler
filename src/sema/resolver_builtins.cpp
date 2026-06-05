@@ -31,13 +31,16 @@ namespace vestra::sema {
 // primitive. We register each as a nominal Protocol-kind symbol with a
 // placeholder type; the capability checker matches them by name.
 void Resolver::register_builtin_capabilities() {
-    static constexpr std::array<std::string_view, 11> Names = {
+    static constexpr std::array<std::string_view, 12> Names = {
         "Alloc",
         "Log",
         "Async",
         "Net",
         "Clock",
         "Rand",
+        // §18 filesystem access (readFile / writeFile). A side-effecting
+        // capability like Net/Log; the hosted self-hosting toolchain needs it.
+        "Fs",
         "Mmio",
         "Asm",
         "RawMemory",
@@ -119,6 +122,27 @@ void Resolver::register_builtin_io() {
     };
     insert("print");
     insert("println");
+
+    // §18 filesystem I/O (Fs-gated, see capability.cpp). `readFile(path)` reads
+    // a whole file into a `String?` (nil when it can't be read); `writeFile(path,
+    // contents)` writes a string and returns whether it succeeded. Codegen
+    // lowers them to __vstr::read_file / __vstr::write_file.
+    auto str_t = types_->primitive(TypeKind::String);
+    {
+        Symbol rf;
+        rf.name = "readFile";
+        rf.kind = SymbolKind::Func;
+        rf.type = types_->make_function({str}, types_->make_optional(str_t));
+        rf.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(rf));
+
+        Symbol wf;
+        wf.name = "writeFile";
+        wf.kind = SymbolKind::Func;
+        wf.type = types_->make_function({str, str}, types_->primitive(TypeKind::Bool));
+        wf.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(wf));
+    }
 }
 
 void Resolver::register_builtin_sync() {
