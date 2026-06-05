@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §18 stdout I/O. `print(Str)` / `println(Str)` write to stdout (lowering to
+// std::print / std::println). They are side-effecting, so they require the
+// `Log` capability — a function that prints declares `using Log`, or a caller
+// opens `with Log`. `func main() -> Int32` is the program's real entry point,
+// so this compiles to a standalone executable with no driver.
+
+func banner(_ name: Str) using Log {
+    print("Hello, ")
+    print(name)
+    println("!")
+}
+
+func main() -> Int32 {
+    with Log {
+        banner("Vestra")
+    }
+    return 0
+}

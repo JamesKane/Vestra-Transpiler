@@ -269,6 +269,31 @@ That rounds out the bootstrap collection set: `Vec`, `String`, and `HashMap`
 each have construction, reads, mutation, iteration where applicable, the string
 read-borrow, and inout-receiver discipline for their mutators.
 
+### 0c. I/O + entry-point (self-hosting equipment) (multi-session)
+
+The third self-hosting equipment gap from the bootstrap assessment (after
+multi-file modules §0 and collections §0b): a compiler must read its input,
+write its output, see argv, and print diagnostics. The entry point already
+works — `func main() -> Int32` becomes the C++ `main`, so a program with a
+`main` compiles to a standalone executable (no driver).
+
+**Slice 1 shipped** — **stdout output**: `print(Str)` / `println(Str)` are
+builtin free functions (registered in `register_builtin_io`) that lower to
+`std::print("{}", x)` / `std::println("{}", x)` (the argument is a formatting
+*argument*, never the format string, so text containing `{` is safe). They take
+a `Str`, so a literal, a borrowed view, or an owned `String` (via the slice-7
+read-borrow) all work. Writing to stdout is an observable side effect, so they
+require the `Log` capability — a printing function declares `using Log` or a
+caller opens `with Log` — gated in capability.cpp on the builtin symbol (a
+user-defined `print` is unaffected, in both the gate and the codegen intercept).
+Proven end to end (`examples/io_demo.vst` compiles standalone and prints
+"Hello, Vestra!").
+
+Remaining: runtime **file I/O** (read a file → `String`, write a `String` → a
+file — the read/write a transpiler needs), **command-line args** (`argv` access
+for the input path), `eprint`/`eprintln` to stderr, and formatted print over
+non-`Str` values (today the caller interpolates to a `String` first).
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

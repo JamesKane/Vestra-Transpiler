@@ -100,6 +100,27 @@ void Resolver::register_builtin_panic() {
     insert("unreachable", {});
 }
 
+void Resolver::register_builtin_io() {
+    // §18 stdout output. `print` / `println` take a `Str` (a literal, a view, or
+    // an owned String read-borrowed at the call) and return Unit. Codegen lowers
+    // them to std::print / std::println; the `Log` capability gates them
+    // (capability.cpp), since writing to stdout is an observable side effect.
+    auto unit = types_->unit();
+    auto str = types_->primitive(TypeKind::Str);
+    auto insert = [&](std::string name) {
+        Symbol s;
+        s.name = std::move(name);
+        s.kind = SymbolKind::Func;
+        s.decl = nullptr;
+        s.type = types_->make_function({str}, unit);
+        s.definition_range = {};
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
+    };
+    insert("print");
+    insert("println");
+}
+
 void Resolver::register_builtin_sync() {
     // §A5 (§14.10) sync intrinsics. Free-function builtins surfaced
     // in global scope; codegen recognizes the names and lowers each

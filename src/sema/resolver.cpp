@@ -126,6 +126,7 @@ void Resolver::resolve() {
     // intrinsics' signatures reference the Ordering / BarrierScope /
     // BarrierKind enums registered there.
     register_builtin_sync();
+    register_builtin_io();
     collect_top_level();
     for (const auto& d : unit_->decls) {
         // §12.6: same gate as collect_top_level. Skipping here keeps the

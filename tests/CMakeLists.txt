@@ -2505,6 +2505,31 @@ set_tests_properties(e2e_soa_demo_run PROPERTIES
     DEPENDS                e2e_soa_demo_compile
     PASS_REGULAR_EXPRESSION "soa_demo OK")
 
+# §18 stdout I/O: print/println lower to std::print/std::println; `func main`
+# is the real entry point, so io_demo compiles standalone (no driver) and its
+# own output is the assertion.
+set(e2e_io_input ${CMAKE_SOURCE_DIR}/examples/io_demo.vst)
+
+add_test(
+    NAME    e2e_io_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_io_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_io_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/io_demo.cpp
+            -o ${e2e_workdir}/io_app)
+set_tests_properties(e2e_io_demo_compile PROPERTIES DEPENDS e2e_io_demo_transpile)
+
+add_test(
+    NAME    e2e_io_demo_run
+    COMMAND ${e2e_workdir}/io_app)
+set_tests_properties(e2e_io_demo_run PROPERTIES
+    DEPENDS                e2e_io_demo_compile
+    PASS_REGULAR_EXPRESSION "Hello, Vestra!")
+
 # §5/§18.4 split(at:) partition primitive.
 set(e2e_split_input  ${CMAKE_SOURCE_DIR}/examples/split_demo.vst)
 set(e2e_split_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_split_demo.cpp)

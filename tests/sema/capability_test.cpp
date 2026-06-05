@@ -792,3 +792,27 @@ TEST_CASE("Channel.new without a contextual type is rejected") {
     CHECK(r.error_count >= 1);
     CHECK(r.first_message.find("cannot infer Channel element type") != std::string::npos);
 }
+
+// ---- §18 stdout I/O capability gate ----------------------------------------
+
+TEST_CASE("§18 print / println require the Log capability") {
+    auto bad = check("func noisy() {\n"
+                     "    println(\"hi\")\n"
+                     "}\n");
+    CHECK(bad.error_count >= 1);
+    CHECK(bad.first_message.find("missing capability 'Log'") != std::string::npos);
+    // Under `using Log` (and via a `with Log` block) it is clean.
+    CHECK(check("func ok(_ s: Str) using Log {\n"
+                "    print(\"x\")\n"
+                "    println(s)\n"
+                "}\n")
+              .error_count
+          == 0);
+    CHECK(check("func ok() {\n"
+                "    with Log {\n"
+                "        println(\"scoped\")\n"
+                "    }\n"
+                "}\n")
+              .error_count
+          == 0);
+}

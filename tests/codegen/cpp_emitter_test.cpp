@@ -2878,6 +2878,17 @@ TEST_CASE("Vec[T] lowers to std::vector with push / len / index") {
     CHECK(f.out.source.find("static_cast<std::intptr_t>(xs.size())") != std::string::npos);
 }
 
+TEST_CASE("print / println lower to std::print / std::println") {
+    SemaEmitFixture f("func f(_ s: Str) using Log {\n"
+                      "    print(\"hi \")\n"
+                      "    println(s)\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    // The argument is a formatting argument, not the format string.
+    CHECK(f.out.source.find("std::print(\"{}\", std::string_view(\"hi \"))") != std::string::npos);
+    CHECK(f.out.source.find("std::println(\"{}\", s)") != std::string::npos);
+}
+
 TEST_CASE("Soa[T] lowers to a tuple-of-vectors with scatter push / gather get") {
     SemaEmitFixture f("struct Point { var x: Int32  var y: Int32 }\n"
                       "func build() using Alloc -> Int32 {\n"

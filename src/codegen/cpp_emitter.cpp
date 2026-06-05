@@ -3851,6 +3851,22 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << "__vstr::unreachable_fn()";
                 break;
             }
+            // §18 `print` / `println` → std::print / std::println. The argument
+            // is passed as a formatting *argument* (not the format string), so
+            // a `{` in the text is harmless. Guarded on the builtin symbol
+            // (decl == nullptr) so a user-defined print isn't intercepted.
+            if ((callee_ident.name == "print" || callee_ident.name == "println")
+                && c.args.size() == 1) {
+                const auto* sym =
+                    resolution_ != nullptr ? resolution_->symbol_of(c.callee.get()) : nullptr;
+                if (sym != nullptr && sym->decl == nullptr) {
+                    os << (callee_ident.name == "println" ? "std::println(\"{}\", "
+                                                          : "std::print(\"{}\", ");
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
+                    break;
+                }
+            }
             // §A5 (§14.10) sync-intrinsic builtins. Each one lowers
             // to its matching __vstr runtime shim. The names match
             // the Vestra-side spelling 1:1 except `nop` which

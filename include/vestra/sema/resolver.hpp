@@ -147,6 +147,10 @@ private:
     // __vstr runtime shim. Depends on the Ordering / BarrierScope /
     // BarrierKind enums registered in register_builtin_reflection.
     void register_builtin_sync();
+    // §18 I/O builtins: `print(Str)` / `println(Str)` write to stdout. Free
+    // functions gated by the `Log` capability (stdout is a side effect);
+    // codegen lowers them to std::print / std::println.
+    void register_builtin_io();
     void collect_top_level();
     void collect_decl(const ast::Decl& d);
     void collect_func(const ast::FuncDecl& f);
