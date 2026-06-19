@@ -704,6 +704,34 @@ TEST_CASE("§10 move-on-consume moves move-only lvalues, leaves copyable ones") 
     CHECK(f.out.source.find("std::tuple{std::move(b),") != std::string::npos);
 }
 
+TEST_CASE("§10 move-on-consume also covers struct / enum construction args") {
+    // A move-only lvalue passed into an enum-case payload or a struct field is a
+    // by-value aggregate position, so it must move too (a copy would be a hard
+    // error). Construction from a prvalue (Box.new(...)) already moves.
+    SemaEmitFixture f("enum Ast { case num(Int)\n"
+                      "    case bin(Box[Ast], Box[Ast]) }\n"
+                      "struct Pair { let lo: Box[Ast]\n"
+                      "    let hi: Box[Ast] }\n"
+                      "func f() using Alloc -> Int {\n"
+                      "    let a: Box[Ast] = Box.new(Ast.num(1))\n"
+                      "    let b: Box[Ast] = Box.new(Ast.num(2))\n"
+                      "    let n = Ast.bin(a, b)\n"
+                      "    return 0\n"
+                      "}\n"
+                      "func g() using Alloc -> Int {\n"
+                      "    let x: Box[Ast] = Box.new(Ast.num(3))\n"
+                      "    let y: Box[Ast] = Box.new(Ast.num(4))\n"
+                      "    let p = Pair(lo: x, hi: y)\n"
+                      "    return 0\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    // Enum payload: the move-only Box lvalues move into the variant aggregate.
+    CHECK(f.out.source.find("Ast::bin_t{std::move(a), std::move(b)}") != std::string::npos);
+    // Struct field: same, in the designated initializer.
+    CHECK(f.out.source.find(".lo = std::move(x)") != std::string::npos);
+    CHECK(f.out.source.find(".hi = std::move(y)") != std::string::npos);
+}
+
 TEST_CASE("§8 a payloaded-enum match emits its result type so mixed-typed arms unify") {
     SemaEmitFixture f("enum E { case a\n"
                       "    case b(Int) }\n"

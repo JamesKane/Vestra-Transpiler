@@ -277,6 +277,21 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
                 static_cast<const ast::EnumDecl*>(d.get());
         }
     }
+    // §10 — imported struct/enum decls participate in the move-only fixpoint too,
+    // so a let/var/tuple/construction of an *imported* move-only nominal also
+    // moves. Local decls win a name clash (emplace does not overwrite).
+    for (const auto& [decl, ns] : imported_qualifiers_) {
+        if (decl == nullptr) {
+            continue;
+        }
+        if (decl->kind == ast::NodeKind::Struct) {
+            structs_by_name_.emplace(static_cast<const ast::StructDecl&>(*decl).name,
+                                     static_cast<const ast::StructDecl*>(decl));
+        } else if (decl->kind == ast::NodeKind::Enum) {
+            enums_by_name_.emplace(static_cast<const ast::EnumDecl&>(*decl).name,
+                                   static_cast<const ast::EnumDecl*>(decl));
+        }
+    }
     compute_move_only_types();
     derives_by_target_.clear();
     for (const auto& d : unit.decls) {
@@ -4550,7 +4565,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                                 if (i != 0) {
                                     os << ", ";
                                 }
-                                emit_expr(os, *c.args[i].value);
+                                emit_value(os, *c.args[i].value);  // §10 move move-only payloads
                             }
                             os << "}}";
                             break;
@@ -4605,7 +4620,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                         if (i != 0) {
                             os << ", ";
                         }
-                        emit_expr(os, *c.args[i].value);
+                        emit_value(os, *c.args[i].value);  // §10 move move-only payloads
                     }
                     os << "}}";
                     break;
@@ -4663,7 +4678,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     if (!c.args[i].label.empty()) {
                         os << "." << c.args[i].label << " = ";
                     }
-                    emit_expr(os, *c.args[i].value);
+                    emit_value(os, *c.args[i].value);  // §10 move move-only fields
                 }
                 os << "}";
                 break;
@@ -4700,7 +4715,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     if (!c.args[i].label.empty()) {
                         os << "." << c.args[i].label << " = ";
                     }
-                    emit_expr(os, *c.args[i].value);
+                    emit_value(os, *c.args[i].value);  // §10 move move-only fields
                 }
                 os << "}";
                 break;
@@ -4743,7 +4758,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     if (!c.args[i].label.empty()) {
                         os << "." << c.args[i].label << " = ";
                     }
-                    emit_expr(os, *c.args[i].value);
+                    emit_value(os, *c.args[i].value);  // §10 move move-only fields
                 }
                 os << "}";
                 break;

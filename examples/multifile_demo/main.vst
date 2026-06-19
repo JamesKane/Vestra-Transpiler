@@ -58,3 +58,13 @@ func boxedValue() -> Int32 {
     let b: util.math.Boxed[Int32] = util.math.Boxed(item: 42)
     return b.item
 }
+
+// §10 imported move-only type: `util.math.Tree` owns a Box, so binding it from
+// one local to another (`var moved = t`) must *move* — a copy is a hard error.
+// This compiles only because the move-on-consume fixpoint recognizes the
+// imported nominal as move-only. wrapTwice(5) = node(node(leaf(5))), depth 7.
+func importedTree() using Alloc -> Int32 {
+    let t: util.math.Tree = util.math.wrapTwice(5)
+    var moved: util.math.Tree = t
+    return util.math.treeDepth(moved)
+}

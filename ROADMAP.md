@@ -603,10 +603,33 @@ style now works**: `let (rest, c) = parse(...); var acc: Ast = rest; return
 while the `Int` rides along as a copy. One codegen test pins the precision — a
 move-only `Box` binding/tuple-element gets `std::move`, a copyable `Vec` binding
 does not, and a call-result element is never wrapped. Full suite green (1079) —
-no existing copyable-type lowering changed. v0.5 carry-forwards (move):
-move-on-last-use for the *general* call-arg-by-value case behind an overload set
-(today only the no-inout sites move); and detecting move-only *imported*
-nominals (the fixpoint only sees this unit's decls).
+no existing copyable-type lowering changed.
+
+**Move-on-consume follow-ons shipped — construction args + imported nominals.**
+Two carry-forwards from the first move slice, now closed. (1) **Struct / enum
+construction args**: passing a move-only lvalue into an enum-case payload
+(`Ast.bin(a, b)`) or a struct field (`Pair(lo: x, hi: y)`) is a by-value
+aggregate position, so it copied — a hard error — until `emit_value` was applied
+at all five construction sites (bare / qualified / indexed struct, and the
+MemberExpr / leading-dot enum-case forms). Like the tuple/let sites these carry
+no `inout` risk (a field / payload is never `inout`), so the move is
+unconditionally safe there. Construction from a prvalue (`Box.new(...)`) already
+moved; this covers the lvalue case. (2) **Imported move-only nominals**: the
+`compute_move_only_types` fixpoint only scanned the importing unit's own decls,
+so a `let`/`var`/tuple/construction of an *imported* move-only type (an enum /
+struct from another module that owns a `Box`) wasn't recognized and copied. Fix:
+seed the by-name maps with the imported nominal decls (the keys of
+`imported_qualifiers_`, populated before `emit`) so the fixpoint covers them too;
+local decls win a name clash. One codegen test (enum-payload + struct-field
+construction from move-only lvalues both `std::move`) and an extension of the §5
+multifile e2e — `util.math` now exports a move-only `Tree` (its `node` case Boxes
+itself), and `demo.app` binds an imported `util.math.Tree` from one local to
+another (a move that only compiles because the importer recognizes the imported
+nominal as move-only) and folds it across the module boundary. Full suite green
+(1083). The move story is now complete for all by-value sites — let/var, tuples,
+struct/enum construction — across the unit boundary; the only remaining
+non-`sink` call-arg case is a hypothetical by-value (non-`inout`, non-`const&`)
+parameter mode, which v0.5 does not have.
 
 **Match-result-type fix shipped** — the orthogonal bug the move pass surfaced. A
 `match` lowers to a lambda (a `std::visit` visitor for a payloaded enum, an IIFE

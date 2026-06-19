@@ -13,13 +13,14 @@
 #include <cstdio>
 
 int main() {
-    assert(demo::app::compute() == 42);     // util.math.add(40, 2) across modules
-    assert(demo::app::viaConst() == 42);    // util.math.answer across modules
-    assert(demo::app::localAdd() == 38);    // the local add (40 - 2) shadows nothing
-    assert(demo::app::pairSum() == 42);     // cross-module struct: util.math.Pair
-    assert(demo::app::combined() == 42);    // imported fn over the module's own type
-    assert(demo::app::pairVecSum() == 42);  // computed imported type: Vec[util.math.Pair]
-    assert(demo::app::boxedValue() == 42);  // generic imported type: util.math.Boxed[Int32]
+    assert(demo::app::compute() == 42);      // util.math.add(40, 2) across modules
+    assert(demo::app::viaConst() == 42);     // util.math.answer across modules
+    assert(demo::app::localAdd() == 38);     // the local add (40 - 2) shadows nothing
+    assert(demo::app::pairSum() == 42);      // cross-module struct: util.math.Pair
+    assert(demo::app::combined() == 42);     // imported fn over the module's own type
+    assert(demo::app::pairVecSum() == 42);   // computed imported type: Vec[util.math.Pair]
+    assert(demo::app::boxedValue() == 42);   // generic imported type: util.math.Boxed[Int32]
+    assert(demo::app::importedTree() == 7);  // §10 imported move-only type, moved at a binding
     std::puts("multifile_demo OK");
     return 0;
 }

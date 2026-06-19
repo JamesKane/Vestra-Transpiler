@@ -40,3 +40,28 @@ public func combine(_ p: Pair) -> Int32 {
 public struct Boxed[T] {
     var item: T
 }
+
+// §10 a public *move-only* type export: the `node` case Boxes itself, so a
+// `Tree` owns a std::unique_ptr and is non-copyable. The importer can bind and
+// fold a `util.math.Tree`, which only compiles because the move-on-consume pass
+// recognizes the *imported* nominal as move-only (the fixpoint seeds itself with
+// imported decls, not just the importing unit's own).
+public enum Tree {
+    case leaf(Int32)
+    case node(Box[Tree])
+}
+
+// Wrap a leaf value in two nodes, so the depth fold has something to recurse on.
+public func wrapTwice(_ n: Int32) using Alloc -> Tree {
+    let base = Tree.leaf(n)
+    let once = Tree.node(Box.new(base))
+    return Tree.node(Box.new(once))
+}
+
+// Fold the tree to its depth (a leaf returns its own value, each node adds 1).
+public func treeDepth(_ t: Tree) -> Int32 {
+    return match t {
+        case .leaf(let n): n
+        case .node(let inner): treeDepth(inner.value) + 1
+    }
+}
