@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §18.5 number<->string conversion — the rendering / parsing pair every real
+// tool needs (a lexer reads integer literals; diagnostics print line numbers).
+//
+//   n.toString() -> String   render a numeric primitive as decimal text
+//   s.toInt()    -> Int?      parse the whole string as a decimal Int (nil on
+//                             malformed / partial input)
+//
+// `toString` allocates an owned String, so it needs `Alloc`. `toInt` parses a
+// borrowed view (std::from_chars, no allocation), so it needs no capability.
+
+module examples.string_convert_demo
+
+// Render an Int as decimal text.
+func render(_ n: Int) using Alloc -> String {
+    return n.toString()
+}
+
+// Render works across the numeric primitives, not just Int.
+func renderI32(_ n: Int32) using Alloc -> String {
+    return n.toString()
+}
+
+func renderF64(_ x: Float64) using Alloc -> String {
+    return x.toString()
+}
+
+// Parse a string, or fall back to a default (exercises the `Int?` via `??`).
+func parseOr(_ s: Str, _ d: Int) -> Int {
+    return s.toInt() ?? d
+}
+
+// Parse and double a string's integer, or fall back (exercises the `Int?` via
+// `if let` with a used binding).
+func doubleOr(_ s: Str, _ d: Int) -> Int {
+    if let n = s.toInt() {
+        return n * 2
+    }
+    return d
+}
+
+// Round-trip: render an Int, then parse it back. Returns the parsed value, or
+// -1 if the round-trip somehow failed. Exercises toString feeding toInt (the
+// rendered owned String read-borrows as a Str at the `toInt` receiver).
+func roundTrip(_ n: Int) using Alloc -> Int {
+    let text: String = n.toString()
+    return text.toInt() ?? -1
+}
+
+// A tiny real-world shape: sum the integer prefix of a "key=value" pair's value,
+// reading the number out of a borrowed slice.
+func valueOf(_ pair: Str, _ d: Int) -> Int {
+    if let eq = pair.find("=") {
+        return pair.slice(eq + 1, pair.len()).toInt() ?? d
+    }
+    return d
+}

@@ -445,6 +445,31 @@ TEST_CASE("byteAt yields a UInt8 optional, not a bare byte") {
     CHECK(r.error_count >= 1);
 }
 
+TEST_CASE("toString renders numeric primitives to an owned String") {
+    // Synthesized on the numeric primitives; the result is an owned String.
+    // (The Alloc gate is enforced in the capability phase — see capability_test.)
+    CHECK(check_errors("func r(_ n: Int) using Alloc -> String { return n.toString() }\n"
+                       "func r32(_ n: Int32) using Alloc -> String { return n.toString() }\n"
+                       "func rf(_ x: Float64) using Alloc -> String { return x.toString() }\n")
+          == 0);
+    // The 128-bit kinds are excluded (no portable __int128 formatter yet), so
+    // toString is not synthesized on them.
+    auto r = check_detail("func r(_ n: Int128) using Alloc -> String { return n.toString() }\n");
+    CHECK(r.error_count >= 1);
+}
+
+TEST_CASE("toInt parses a string to an Int optional") {
+    // Synthesized on Str / String; the result is `Int?` (nil on a bad parse).
+    CHECK(check_errors("func p(_ s: Str) -> Int { return s.toInt() ?? -1 }\n") == 0);
+    CHECK(check_errors("func p(_ s: String) -> Int { return s.toInt() ?? -1 }\n") == 0);
+    // The result is an optional, not a bare Int — binding to Int errors.
+    auto r = check_detail("func p(_ s: Str) -> Int {\n"
+                          "    let n: Int = s.toInt()\n"
+                          "    return n\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+}
+
 // ---- §9 Optional ----------------------------------------------------------
 
 TEST_CASE("nil is assignable to any Optional<T> slot") {

@@ -123,6 +123,23 @@ TEST_CASE("§18.5 String.new() requires Alloc; append/len under Alloc are clean"
           == 0);
 }
 
+TEST_CASE("§18.5 n.toString() requires Alloc; under Alloc it is clean") {
+    auto bad = check("func bad(_ n: Int) -> Int32 {\n"
+                     "    let s: String = n.toString()\n"
+                     "    return 0\n"
+                     "}\n");
+    CHECK(bad.error_count >= 1);
+    CHECK(bad.first_message.find("missing capability 'Alloc'") != std::string::npos);
+    CHECK(check("func ok(_ n: Int) using Alloc -> Int {\n"
+                "    let s: String = n.toString()\n"
+                "    return s.len()\n"
+                "}\n")
+              .error_count
+          == 0);
+    // toInt parses a borrowed view (no allocation) — clean without Alloc.
+    CHECK(check("func p(_ s: Str) -> Int { return s.toInt() ?? -1 }\n").error_count == 0);
+}
+
 TEST_CASE("§18.5 HashMap.new() requires Alloc; set/get/contains/len under Alloc are clean") {
     auto bad = check("func bad() -> Int32 {\n"
                      "    var m: HashMap[Str, Int32] = HashMap.new()\n"

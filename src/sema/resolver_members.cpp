@@ -159,11 +159,16 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
     //   contains(Str)    -> Bool     needle present
     //   startsWith(Str)  -> Bool     prefix test
     //   endsWith(Str)    -> Bool     suffix test
+    //   toInt()          -> Int?     parse the whole string as a decimal Int
     if (owner_type->kind() == TypeKind::String || owner_type->kind() == TypeKind::Str
         || owner_type->kind() == TypeKind::StrConst) {
         TypePtr str = types_->primitive(TypeKind::Str);
         if (name == "len") {
             return types_->make_function({}, types_->primitive(TypeKind::Int));
+        }
+        if (name == "toInt") {
+            return types_->make_function({},
+                                         types_->make_optional(types_->primitive(TypeKind::Int)));
         }
         if (name == "isEmpty") {
             return types_->make_function({}, types_->boolean());
@@ -182,6 +187,18 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
         }
         if (name == "contains" || name == "startsWith" || name == "endsWith") {
             return types_->make_function({str}, types_->boolean());
+        }
+    }
+    // §18.5 `n.toString() -> String` renders a numeric value into an owned,
+    // decimal string (the rendering counterpart of `Str.toInt()`). Synthesized
+    // on the standard arithmetic primitives; the 128-bit kinds are excluded
+    // because std::format / std::to_string have no portable __int128 formatter
+    // yet (a v0.5 carry-forward). Allocates an owned String, so the call is
+    // Alloc-gated in the capability checker.
+    if (owner_type->is_numeric() && owner_type->kind() != TypeKind::Int128
+        && owner_type->kind() != TypeKind::UInt128) {
+        if (name == "toString") {
+            return types_->make_function({}, types_->primitive(TypeKind::String));
         }
     }
     // §18.5 HashMap[K, V] methods (v0.5 core): `set(K, V)` inserts/updates,

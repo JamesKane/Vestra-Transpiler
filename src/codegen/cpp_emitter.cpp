@@ -320,6 +320,7 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "#include <concepts>\n";   // §7 generic bounds lower to requires-clauses
     hdr << "#include <coroutine>\n";  // §11 async func / await lower to coroutines
     hdr << "#include <deque>\n";      // §11 Channel[T] backs onto a deque
+    hdr << "#include <charconv>\n";   // §18.5 Str.toInt() → std::from_chars
     hdr << "#include <cstdint>\n";
     hdr << "#include <cstdlib>\n";     // §10 panic / abort → std::abort
     hdr << "#include <expected>\n";    // §9 throws(E) → T lowers to std::expected
@@ -422,6 +423,22 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    auto p = s.find(needle);\n";
     hdr << "    if (p == std::string_view::npos) return std::nullopt;\n";
     hdr << "    return static_cast<std::intptr_t>(p);\n";
+    hdr << "}\n\n";
+    // §18.5 number<->string. to_string renders any standard arithmetic value via
+    // std::format (decimal for integers, shortest round-trip for floats),
+    // backing the Alloc-gated `n.toString()`. parse_int folds std::from_chars
+    // over the whole view into the `Int?` the resolver promises: nil unless the
+    // entire string parses (from_chars rejects a leading '+' / whitespace and a
+    // trailing remainder, so the parse is strict and total).
+    hdr << "template <class T>\n";
+    hdr << "inline std::string to_string(T v) { return std::format(\"{}\", v); }\n\n";
+    hdr << "inline std::optional<std::intptr_t> parse_int(std::string_view s) {\n";
+    hdr << "    std::intptr_t v{};\n";
+    hdr << "    auto first = s.data();\n";
+    hdr << "    auto last = s.data() + s.size();\n";
+    hdr << "    auto [ptr, ec] = std::from_chars(first, last, v);\n";
+    hdr << "    if (ec != std::errc{} || ptr != last) return std::nullopt;\n";
+    hdr << "    return v;\n";
     hdr << "}\n\n";
     // §18 filesystem I/O. read_file slurps the whole file into a string
     // (std::nullopt if it can't be opened); write_file truncates + writes,
@@ -3859,6 +3876,12 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << ")";
                     break;
                 }
+                if (mem.member == "toInt" && c.args.empty()) {
+                    os << "__vstr::parse_int(";
+                    emit_expr(os, *mem.base);
+                    os << ")";
+                    break;
+                }
                 if ((mem.member == "contains" || mem.member == "startsWith"
                      || mem.member == "endsWith")
                     && c.args.size() == 1) {
@@ -3870,6 +3893,16 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << ")";
                     break;
                 }
+            }
+            // §18.5 `n.toString()` → `__vstr::to_string(n)` (std::format-backed);
+            // the receiver is any standard numeric primitive.
+            if (auto base_t = resolution_->type_of(mem.base.get());
+                base_t != nullptr && base_t->is_numeric() && mem.member == "toString"
+                && c.args.empty()) {
+                os << "__vstr::to_string(";
+                emit_expr(os, *mem.base);
+                os << ")";
+                break;
             }
             // §18.5 HashMap methods: `set(k, v)` → `.insert_or_assign(k, v)`;
             // `get(k)` → `__vstr::map_get(m, k)` yielding `std::optional<V>`;

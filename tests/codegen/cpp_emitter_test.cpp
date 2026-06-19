@@ -3036,6 +3036,16 @@ TEST_CASE("String/Str read-only queries lower to string_view members + str_* hel
     CHECK(f.out.source.find("s.ends_with(std::string_view(\"z\"))") != std::string::npos);
 }
 
+TEST_CASE("number<->string conversion lowers to __vstr::to_string / parse_int") {
+    SemaEmitFixture f("func c(_ n: Int, _ s: Str) using Alloc -> Int {\n"
+                      "    let t: String = n.toString()\n"
+                      "    return s.toInt() ?? -1\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.source.find("__vstr::to_string(n)") != std::string::npos);
+    CHECK(f.out.source.find("(__vstr::parse_int(s)).value_or(-1)") != std::string::npos);
+}
+
 TEST_CASE("HashMap[K, V] lowers to std::unordered_map with set / get / contains / len") {
     SemaEmitFixture f("func f(_ k: Str) using Alloc -> Int32 {\n"
                       "    var m: HashMap[Str, Int32] = HashMap.new()\n"

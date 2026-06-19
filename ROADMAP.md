@@ -294,10 +294,34 @@ borrow (today, like the Span partitioners, the borrow isn't tracked past the
 call); number↔string conversion (`String(n)` / parse); and `split(Str)` /
 char-iteration (needs an iterator or a Vec result) — the next string slices.
 
+**Slice 10 shipped** — **number↔string conversion** (the rendering / parsing
+pair a real tool needs — a lexer reads integer literals, diagnostics print line
+numbers). `n.toString() -> String` is synthesized in `lookup_method` on the
+standard numeric primitives (the 128-bit kinds are excluded — std::format /
+std::to_string have no portable `__int128` formatter yet) and lowers to a new
+`__vstr::to_string` helper (`std::format("{}", v)`: decimal for integers,
+shortest round-trip for floats); it allocates an owned String, so the call is
+Alloc-gated in the capability checker (keyed on the receiver's numeric type via
+`resolution_->type_of`, the same shape as the `PerCpu.slot` gate). `Str.toInt()
+-> Int?` is synthesized beside the other String/Str queries and lowers to a new
+`__vstr::parse_int` helper over `std::from_chars` (new `<charconv>` include): nil
+unless the *entire* view parses, so a leading `+`/whitespace or any trailing
+remainder yields nil — the parse is strict and total. Because `toInt` reads a
+borrowed view it never allocates, so it needs no capability. Four unit tests
+(toString type-checks + is excluded on Int128; toInt yields `Int?`; the Alloc
+gate fires without the capability and is clean with it, and toInt stays
+gate-free; the codegen lowering) plus a transpile→compile→run e2e
+(`examples/string_convert_demo.vst` + `tests/e2e/main_string_convert_demo.cpp`)
+covering rendering across Int / Int32 / Float64, the malformed/partial-input nil
+cases, the `??` and `if let` consumers, a render→parse round-trip, and a
+`slice(...).toInt()` chain over a `key=value` pair. v0.5 carry-forwards:
+`toString` on the 128-bit kinds (awaits a portable formatter); parsing the other
+numeric types (`toInt32` / `toFloat`); and a radix argument on both sides.
+
 That rounds out the bootstrap collection set: `Vec`, `String`, and `HashMap`
 each have construction, reads, mutation, iteration where applicable, the string
 read-borrow, inout-receiver discipline for their mutators, and (for strings) the
-read-only slicing + search query surface.
+read-only slicing + search query surface plus number↔string conversion.
 
 ### 0c. I/O + entry-point (self-hosting equipment) (multi-session)
 
