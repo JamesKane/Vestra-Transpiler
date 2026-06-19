@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// Self-hosting phase 2: a recursive-descent parser, written in Vestra. Where the
+// lexer (examples/lexer_demo.vst) turns characters into tokens, this is the next
+// front-end phase — a recursive-descent expression grammar with operator
+// precedence and parentheses. It evaluates as it parses (the classic calculator
+// shape), so it computes a value directly rather than materializing an AST; a
+// Box[Expr]-based tree is the follow-on.
+//
+//   expr   = term (('+' | '-') term)*
+//   term   = factor (('*' | '/') factor)*
+//   factor = number | '(' expr ')'
+//
+// Each parse function takes the source and a position and returns the
+// `(value, nextPosition)` pair (Vestra tuples thread the cursor through the
+// mutual recursion functionally — no shared mutable parser state). It uses only
+// the char toolkit + slice + toInt, so it allocates nothing and needs no
+// capability. `factor` and `expr` are mutually recursive (parentheses), which
+// the single-unit two-pass resolution handles regardless of definition order.
+
+module examples.calc_demo
+
+// Advance past spaces, returning the first non-space position at or after `pos`.
+func skipWs(_ s: Str, _ pos: Int) -> Int {
+    var i: Int = pos
+    while i < s.len() && (s.charAt(i) ?? '!').isSpace() {
+        i = i + 1
+    }
+    return i
+}
+
+// factor = number | '(' expr ')'
+func parseFactor(_ s: Str, _ pos: Int) -> (Int, Int) {
+    let i0 = skipWs(s, pos)
+    let c = s.charAt(i0) ?? '!'
+    if c == '(' {
+        let (v, j) = parseExpr(s, i0 + 1)
+        let k = skipWs(s, j)
+        // Consume the matching ')'. A malformed input simply stops here.
+        return (v, k + 1)
+    }
+    var i: Int = i0
+    while i < s.len() && (s.charAt(i) ?? '!').isDigit() {
+        i = i + 1
+    }
+    let v = s.slice(i0, i).toInt() ?? 0
+    return (v, i)
+}
+
+// term = factor (('*' | '/') factor)*
+func parseTerm(_ s: Str, _ pos: Int) -> (Int, Int) {
+    let (a0, p0) = parseFactor(s, pos)
+    var acc: Int = a0
+    var i: Int = p0
+    var more: Bool = true
+    while more {
+        let j = skipWs(s, i)
+        let c = s.charAt(j) ?? '!'
+        if c == '*' {
+            let (r, k) = parseFactor(s, j + 1)
+            acc = acc * r
+            i = k
+        } else if c == '/' {
+            let (r, k) = parseFactor(s, j + 1)
+            acc = acc / r
+            i = k
+        } else {
+            more = false
+        }
+    }
+    return (acc, i)
+}
+
+// expr = term (('+' | '-') term)*
+func parseExpr(_ s: Str, _ pos: Int) -> (Int, Int) {
+    let (a0, p0) = parseTerm(s, pos)
+    var acc: Int = a0
+    var i: Int = p0
+    var more: Bool = true
+    while more {
+        let j = skipWs(s, i)
+        let c = s.charAt(j) ?? '!'
+        if c == '+' {
+            let (r, k) = parseTerm(s, j + 1)
+            acc = acc + r
+            i = k
+        } else if c == '-' {
+            let (r, k) = parseTerm(s, j + 1)
+            acc = acc - r
+            i = k
+        } else {
+            more = false
+        }
+    }
+    return (acc, i)
+}
+
+// Evaluate a whole expression string to its integer value.
+func eval(_ s: Str) -> Int {
+    let (v, end) = parseExpr(s, 0)
+    return v
+}

@@ -530,6 +530,28 @@ the test merely *returning* is the assertion that the hang is gone. The whole
 class of "malformed input → runaway" in these loops is now closed by the
 guarantee that every iteration consumes at least one token.
 
+**Self-hosting phase 2 — recursive-descent parser shipped.** The front-end's
+next phase after the lexer: a recursive-descent expression grammar with operator
+precedence and parentheses, written in Vestra. `examples/calc_demo.vst`
+implements `expr = term (('+'|'-') term)*`, `term = factor (('*'|'/') factor)*`,
+`factor = number | '(' expr ')'`, with `factor`/`expr` mutually recursive for the
+parenthesis rule (the single-unit two-pass resolution handles the forward
+reference regardless of definition order). Each parse function takes
+`(source, position)` and returns a `(value, nextPosition)` tuple — Vestra tuples
+thread the cursor through the recursion functionally, with no shared mutable
+parser state, and the returned pairs destructure with `let (v, j) = …`. It
+evaluates as it parses (the calculator shape), so it computes a value directly;
+a materialized `Box[Expr]` AST is the follow-on. Uses only the char toolkit +
+`slice` + `toInt`, so it allocates nothing and needs no capability. The e2e
+(`tests/e2e/main_calc_demo.cpp`) pins the things a real grammar must get right —
+operator precedence (`2 + 3 * 4 == 14`), left-associativity (`10 - 3 - 2 == 5`),
+parentheses (`(2 + 3) * 4 == 20`), deep nesting (`2 * (3 + (4 * 5)) == 46`), and
+a larger mixed expression. With the lexer (phase 1) and this parser (phase 2),
+two of a front-end's core phases now run as standalone Vestra executables.
+Natural next steps: a materialized AST (needs recursive `Box[Expr]`
+enum payloads), or wiring the parser to consume the lexer's `Vec[Token]` stream
+rather than re-scanning characters.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
