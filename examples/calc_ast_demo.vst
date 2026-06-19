@@ -1,0 +1,152 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// Self-hosting phase 3: a materialized AST. Where calc_demo.vst evaluated as it
+// parsed, this builds an explicit tree first, then walks it twice — once to
+// evaluate, once to pretty-print. The tree is a recursive enum whose `binary`
+// case holds its children behind `Box` (the move-only heap pointer that breaks
+// the otherwise-infinite size), the canonical algebraic-data-type shape a real
+// front-end uses for its AST:
+//
+//   enum Ast { case num(Int); case binary(Box[Ast], Char, Box[Ast]) }
+//
+// (The enum is named `Ast`, not `Expr`: `Expr` is a reserved builtin — the
+// §12.4 quote/macro AST value type — so a user enum by that name is shadowed.)
+//
+// Because an `Ast` owns `Box`es it is move-only, so building the tree relies on
+// move semantics: the parser threads its cursor through an `inout Int` and
+// returns each node by value (C++ moves a local on return), and `Box.new` moves
+// its argument into the heap cell. `eval` and `render` read each child through
+// `.value` (a borrow — no move needed).
+
+module examples.calc_ast_demo
+
+enum Ast {
+    case num(Int)
+    case binary(Box[Ast], Char, Box[Ast])
+}
+
+// Advance the cursor past spaces, in place.
+func skipWs(_ s: Str, _ i: inout Int) {
+    while i < s.len() && (s.charAt(i) ?? '!').isSpace() {
+        i = i + 1
+    }
+}
+
+// factor = number | '(' expr ')'
+func pFactor(_ s: Str, _ i: inout Int) using Alloc -> Ast {
+    skipWs(s, &i)
+    let c = s.charAt(i) ?? '!'
+    if c == '(' {
+        i = i + 1
+        let inner = pExpr(s, &i)
+        skipWs(s, &i)
+        i = i + 1  // consume ')'
+        return inner
+    }
+    let start = i
+    while i < s.len() && (s.charAt(i) ?? '!').isDigit() {
+        i = i + 1
+    }
+    let v = s.slice(start, i).toInt() ?? 0
+    return Ast.num(v)
+}
+
+// term = factor (('*' | '/') factor)*  — folds left-associatively into nodes.
+func pTerm(_ s: Str, _ i: inout Int) using Alloc -> Ast {
+    var acc: Ast = pFactor(s, &i)
+    var more: Bool = true
+    while more {
+        skipWs(s, &i)
+        let c = s.charAt(i) ?? '!'
+        if c == '*' {
+            i = i + 1
+            let r = pFactor(s, &i)
+            acc = Ast.binary(Box.new(acc), '*', Box.new(r))
+        } else if c == '/' {
+            i = i + 1
+            let r = pFactor(s, &i)
+            acc = Ast.binary(Box.new(acc), '/', Box.new(r))
+        } else {
+            more = false
+        }
+    }
+    return acc
+}
+
+// expr = term (('+' | '-') term)*
+func pExpr(_ s: Str, _ i: inout Int) using Alloc -> Ast {
+    var acc: Ast = pTerm(s, &i)
+    var more: Bool = true
+    while more {
+        skipWs(s, &i)
+        let c = s.charAt(i) ?? '!'
+        if c == '+' {
+            i = i + 1
+            let r = pTerm(s, &i)
+            acc = Ast.binary(Box.new(acc), '+', Box.new(r))
+        } else if c == '-' {
+            i = i + 1
+            let r = pTerm(s, &i)
+            acc = Ast.binary(Box.new(acc), '-', Box.new(r))
+        } else {
+            more = false
+        }
+    }
+    return acc
+}
+
+func applyOp(_ a: Int, _ op: Char, _ b: Int) -> Int {
+    if op == '+' { return a + b }
+    if op == '-' { return a - b }
+    if op == '*' { return a * b }
+    return a / b
+}
+
+// Walk the tree, computing its value. Children are read through `.value`.
+func eval(_ e: Ast) -> Int {
+    return match e {
+        case .num(let n): n
+        case .binary(let l, let op, let r): applyOp(eval(l.value), op, eval(r.value))
+    }
+}
+
+func opStr(_ op: Char) -> Str {
+    if op == '+' { return "+" }
+    if op == '-' { return "-" }
+    if op == '*' { return "*" }
+    return "/"
+}
+
+func wrap(_ a: Str, _ op: Char, _ b: Str) using Alloc -> String {
+    var s: String = "("
+    s.append(a)
+    s.append(" ")
+    s.append(opStr(op))
+    s.append(" ")
+    s.append(b)
+    s.append(")")
+    return s
+}
+
+// Walk the tree, pretty-printing it fully parenthesized.
+func render(_ e: Ast) using Alloc -> String {
+    return match e {
+        case .num(let n): n.toString()
+        case .binary(let l, let op, let r): wrap(render(l.value), op, render(r.value))
+    }
+}
+
+// Parse, then evaluate the resulting tree.
+func evalStr(_ s: Str) using Alloc -> Int {
+    var i: Int = 0
+    let ast = pExpr(s, &i)
+    return eval(ast)
+}
+
+// Parse, then pretty-print the resulting tree.
+func renderStr(_ s: Str) using Alloc -> String {
+    var i: Int = 0
+    let ast = pExpr(s, &i)
+    return render(ast)
+}

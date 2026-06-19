@@ -552,6 +552,40 @@ Natural next steps: a materialized AST (needs recursive `Box[Expr]`
 enum payloads), or wiring the parser to consume the lexer's `Vec[Token]` stream
 rather than re-scanning characters.
 
+**Self-hosting phase 3 — materialized AST shipped** (plus the codegen fix it
+needed). `examples/calc_ast_demo.vst` builds an explicit tree first and then
+walks it twice — `eval` folds it to a value, `render` pretty-prints it fully
+parenthesized — over a recursive enum whose `binary` case Boxes its children
+(`enum Ast { case num(Int); case binary(Box[Ast], Char, Box[Ast]) }`), the
+canonical move-only algebraic-data-type AST shape. **The recursive `Box`-payload
+enum *type* already worked** (the type system handles the self-reference through
+`Box`, which lowers to `std::unique_ptr<Ast>` and breaks the infinite size);
+the blocker was that an `Ast` owns `Box`es so it is **move-only**, and codegen
+only emitted `std::move` for explicit `sink` params — so consuming a move-only
+value anywhere else copied, a hard compile error. Fix: **`Box.new(value)` now
+moves its argument** (`std::make_unique<T>(std::move(value))`) — the box
+unconditionally takes ownership, so the move is always correct (required for a
+move-only `T`, harmless for a copyable one). With that, the AST builds cleanly:
+the parser threads its cursor through an `inout Int` and returns each node by
+value (C++ moves a local on return, so no tuple-of-move-only copy is needed),
+`Box.new` moves the operands into the heap cells, and `eval`/`render` read each
+child through `.value` (a `*unique_ptr` borrow — no move). Two unit tests (the
+updated `Box.new` move lowering; a recursive `Box`-payload enum that builds via
+`make_unique(std::move(...))` and reads children through `(*l)`) plus a
+transpile→compile→run e2e (`tests/e2e/main_calc_ast_demo.cpp`) whose `render`
+checks pin the *tree shape* — `2 + 3 * 4` → `(2 + (3 * 4))`, `10 - 3 - 2` →
+`((10 - 3) - 2)` — making precedence/associativity structural, not just a number.
+Two gotchas worth recording: the enum can't be named `Expr` (reserved §12.4
+builtin — it silently shadows to a non-enum, producing confusing
+"non-enum type Expr" errors), and **general move-on-consume is still
+incomplete** — only `sink` params and now `Box.new` move; consuming a move-only
+local in a *tuple literal* or a *binding-from-a-binding* (`var b = a`) still
+copies (a compile error for move-only types), which the `inout` design sidesteps.
+A general `is_move_only`-driven move-on-last-use pass is the proper follow-on.
+v0.5 carry-forwards: that general move pass; wiring this AST to the lexer's
+`Vec[Token]` stream; and parse-error reporting (today a malformed expression
+just stops).
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
