@@ -262,13 +262,22 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
 
     // §13 — index the unit's top-level structs by name so a `Soa[Point]`
     // annotation can reach Point's fields when emitting its tuple-of-vectors.
+    // §10 — also index enums (for the move-only fixpoint below).
     structs_by_name_.clear();
+    enums_by_name_.clear();
     for (const auto& d : unit.decls) {
-        if (d != nullptr && d->kind == ast::NodeKind::Struct) {
+        if (d == nullptr) {
+            continue;
+        }
+        if (d->kind == ast::NodeKind::Struct) {
             structs_by_name_[static_cast<const ast::StructDecl&>(*d).name] =
                 static_cast<const ast::StructDecl*>(d.get());
+        } else if (d->kind == ast::NodeKind::Enum) {
+            enums_by_name_[static_cast<const ast::EnumDecl&>(*d).name] =
+                static_cast<const ast::EnumDecl*>(d.get());
         }
     }
+    compute_move_only_types();
     derives_by_target_.clear();
     for (const auto& d : unit.decls) {
         if (d->kind != ast::NodeKind::Derive) {
@@ -3034,6 +3043,163 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
     hdr << "};\n\n";
 }
 
+// §10 move-on-consume helpers ------------------------------------------------
+
+// An AST type annotation lowers to a non-copyable C++ type when it transitively
+// reaches a Box (→ std::unique_ptr). Only Box and its containers count: Vec /
+// String / HashMap are owning but *copyable* in C++, so they must NOT be treated
+// as move-only (a copy of them is legal, just deep). Nominal struct/enum names
+// are resolved against `move_only_types_`, which the fixpoint below fills.
+bool CppEmitter::ast_type_is_move_only(const ast::Type& t) const {
+    switch (t.kind) {
+    case ast::NodeKind::OptionalType: {
+        const auto& o = static_cast<const ast::OptionalType&>(t);
+        return o.inner != nullptr && ast_type_is_move_only(*o.inner);
+    }
+    case ast::NodeKind::VectorType: {  // `[N]T` fixed array: move-only iff T is
+        const auto& v = static_cast<const ast::VectorType&>(t);
+        return v.element != nullptr && ast_type_is_move_only(*v.element);
+    }
+    case ast::NodeKind::TupleType: {
+        for (const auto& el : static_cast<const ast::TupleType&>(t).elements) {
+            if (el != nullptr && ast_type_is_move_only(*el)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    case ast::NodeKind::NamedType: {
+        const auto& nt = static_cast<const ast::NamedType&>(t);
+        if (nt.path.empty()) {
+            return false;
+        }
+        const std::string& name = nt.path.back();
+        if (name == "Box") {
+            return true;
+        }
+        // A container is move-only exactly when an element type is.
+        if (name == "Vec" || name == "Optional" || name == "HashMap" || name == "Soa") {
+            for (const auto& a : nt.type_args) {
+                if (a != nullptr && ast_type_is_move_only(*a)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return move_only_types_.contains(name);
+    }
+    default:
+        return false;
+    }
+}
+
+// Seed `move_only_types_` with every struct/enum that transitively owns a Box.
+// Iterate to a fixpoint: a nominal becomes move-only once any field / case
+// payload is move-only given what's already known, which may in turn mark a
+// nominal that names it. Monotonic and bounded by the decl count.
+void CppEmitter::compute_move_only_types() {
+    move_only_types_.clear();
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto& [name, sd] : structs_by_name_) {
+            if (move_only_types_.contains(name)) {
+                continue;
+            }
+            for (const auto& f : sd->fields) {
+                if (f.type != nullptr && ast_type_is_move_only(*f.type)) {
+                    move_only_types_.insert(name);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        for (const auto& [name, ed] : enums_by_name_) {
+            if (move_only_types_.contains(name)) {
+                continue;
+            }
+            bool found = false;
+            for (const auto& c : ed->cases) {
+                for (const auto& [pn, pt] : c.payload) {
+                    if (pt != nullptr && ast_type_is_move_only(*pt)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) {
+                    break;
+                }
+            }
+            if (found) {
+                move_only_types_.insert(name);
+                changed = true;
+            }
+        }
+    }
+}
+
+// A resolved expression type is move-only on the same Box-transitive rule.
+bool CppEmitter::is_move_only(sema::TypePtr t) const {
+    if (t == nullptr) {
+        return false;
+    }
+    switch (t->kind()) {
+    case sema::TypeKind::Box:
+        return true;
+    case sema::TypeKind::Optional:
+    case sema::TypeKind::Vec:
+        return is_move_only(t->inner());
+    case sema::TypeKind::HashMap:
+    case sema::TypeKind::Soa:
+        for (const auto& p : t->parts()) {
+            if (is_move_only(p)) {
+                return true;
+            }
+        }
+        return false;
+    case sema::TypeKind::Tuple:
+        for (const auto& p : t->parts()) {
+            if (is_move_only(p)) {
+                return true;
+            }
+        }
+        return false;
+    case sema::TypeKind::Struct:
+    case sema::TypeKind::Enum: {
+        const auto* d = t->nominal_decl();
+        if (d == nullptr) {
+            return false;
+        }
+        const std::string& name = d->kind == ast::NodeKind::Struct
+                                      ? static_cast<const ast::StructDecl&>(*d).name
+                                      : static_cast<const ast::EnumDecl&>(*d).name;
+        return move_only_types_.contains(name);
+    }
+    default:
+        return false;
+    }
+}
+
+// Only an lvalue can be left dangling-but-valid by a move; a prvalue (a call
+// result, a literal, a fresh construction) is already an rvalue that binds /
+// elides without a copy, so std::move on it would only pessimize.
+bool CppEmitter::is_lvalue_expr(const ast::Expr& e) noexcept {
+    return e.kind == ast::NodeKind::IdentExpr || e.kind == ast::NodeKind::MemberExpr
+           || e.kind == ast::NodeKind::IndexExpr;
+}
+
+void CppEmitter::emit_value(std::ostream& os, const ast::Expr& e) {
+    const bool move =
+        resolution_ != nullptr && is_lvalue_expr(e) && is_move_only(resolution_->type_of(&e));
+    if (move) {
+        os << "std::move(";
+    }
+    emit_expr(os, e);
+    if (move) {
+        os << ")";
+    }
+}
+
 void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     // §12.1 folded literal short-circuit: when sema's comptime folder
     // computed a constant value for this expression, emit that value
@@ -3146,7 +3312,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << ", ";
             }
             if (tup.elements[i]) {
-                emit_expr(os, *tup.elements[i]);
+                emit_value(os, *tup.elements[i]);  // §10 move move-only elements in
             }
         }
         os << "}";

@@ -150,7 +150,7 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         }
         os << " = ";
         if (l.value) {
-            emit_expr(os, *l.value);
+            emit_value(os, *l.value);  // §10 move a move-only lvalue initializer
         }
         os << ";\n";
         break;
@@ -196,7 +196,7 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         }
         os << " = ";
         if (v.value) {
-            emit_expr(os, *v.value);
+            emit_value(os, *v.value);  // §10 move a move-only lvalue initializer
         }
         os << ";\n";
         break;

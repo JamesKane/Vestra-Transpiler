@@ -102,6 +102,18 @@ private:
     void emit_block(std::ostream& os, const ast::BlockExpr& b, int indent);
     void emit_stmt(std::ostream& os, const ast::Stmt& s, int indent);
     void emit_expr(std::ostream& os, const ast::Expr& e);
+    // §10 move-on-consume: emit `e`, wrapping it in std::move when `e` is a
+    // move-only-typed lvalue (a copy would be a compile error / a needless deep
+    // copy). Used at by-value sites — let/var initializers, tuple-literal
+    // elements, struct/enum-case construction args. The ownership checker has
+    // already verified the value is not used after this consume, so the move is
+    // sound; for a read (const-ref) position a std::move'd xvalue still binds, so
+    // restricting this to by-value sites keeps borrows untouched.
+    void emit_value(std::ostream& os, const ast::Expr& e);
+    [[nodiscard]] bool is_move_only(sema::TypePtr t) const;
+    [[nodiscard]] bool ast_type_is_move_only(const ast::Type& t) const;
+    void compute_move_only_types();
+    [[nodiscard]] static bool is_lvalue_expr(const ast::Expr& e) noexcept;
     void emit_match(std::ostream& os, const ast::MatchExpr& m);
     // §11 `select { … }` — lower to an IIFE that takes the first arm whose
     // Future event is ready (always, in the synchronous v0.5 model), binds
@@ -277,6 +289,15 @@ private:
     // §13 — the unit's top-level structs by name, so emit_type can reach a
     // `Soa[Point]` annotation's element fields. Rebuilt each emit() call.
     std::unordered_map<std::string, const ast::StructDecl*> structs_by_name_;
+
+    // §10 — the unit's top-level enums by name (companion to structs_by_name_),
+    // so the move-only fixpoint can walk an enum's case payloads.
+    std::unordered_map<std::string, const ast::EnumDecl*> enums_by_name_;
+
+    // §10 — nominal struct/enum types whose C++ lowering is non-copyable (they
+    // transitively contain a Box → std::unique_ptr). Computed once per emit() by
+    // a fixpoint over the decls; consumed by is_move_only.
+    std::unordered_set<std::string> move_only_types_;
 
     // §18 — true when the unit declares a `module`; a module-less `func main()`
     // is the real C++ entry point and captures argc/argv. Set each emit().

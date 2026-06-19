@@ -577,14 +577,41 @@ checks pin the *tree shape* — `2 + 3 * 4` → `(2 + (3 * 4))`, `10 - 3 - 2` �
 `((10 - 3) - 2)` — making precedence/associativity structural, not just a number.
 Two gotchas worth recording: the enum can't be named `Expr` (reserved §12.4
 builtin — it silently shadows to a non-enum, producing confusing
-"non-enum type Expr" errors), and **general move-on-consume is still
-incomplete** — only `sink` params and now `Box.new` move; consuming a move-only
-local in a *tuple literal* or a *binding-from-a-binding* (`var b = a`) still
-copies (a compile error for move-only types), which the `inout` design sidesteps.
-A general `is_move_only`-driven move-on-last-use pass is the proper follow-on.
-v0.5 carry-forwards: that general move pass; wiring this AST to the lexer's
-`Vec[Token]` stream; and parse-error reporting (today a malformed expression
-just stops).
+"non-enum type Expr" errors), and at the time this shipped general move-on-consume
+was incomplete (only `sink` params and `Box.new` moved) — now closed, see below.
+v0.5 carry-forwards: wiring this AST to the lexer's `Vec[Token]` stream; and
+parse-error reporting (today a malformed expression just stops).
+
+**Move-on-consume pass shipped** — the general follow-on, so an owned move-only
+value can be consumed anywhere it lands by value, not just into a `sink` param.
+A new codegen predicate `is_move_only(type)` marks the types whose C++ lowering
+is *non-copyable* — `Box` (→ `std::unique_ptr`) and, transitively, any
+struct/enum/tuple/`Vec`/`Optional`/`HashMap` that reaches a `Box`; the nominal
+cases are precomputed once per unit by a fixpoint over the decls
+(`compute_move_only_types`). Crucially it is **only** the Box family: `Vec` /
+`String` / `HashMap` are owning but *copyable* in C++, so they are deliberately
+left alone — moving them could break a legitimate later use. A helper
+`emit_value` wraps an expression in `std::move` exactly when it is a move-only
+*lvalue* (an identifier / field / index — never a prvalue, which already
+moves/elides), applied at the by-value sites that previously copied: **let/var
+initializers and tuple-literal elements**. General call arguments are left
+untouched on purpose — a read param is `const&` (binds an lvalue with no copy)
+and an `inout` param needs a real lvalue (a moved rvalue won't bind), so the move
+belongs only at genuine by-value sites. With this, the **tuple-returning parser
+style now works**: `let (rest, c) = parse(...); var acc: Ast = rest; return
+(acc, c)` moves the move-only `Ast` at the binding and into the returned tuple,
+while the `Int` rides along as a copy. One codegen test pins the precision — a
+move-only `Box` binding/tuple-element gets `std::move`, a copyable `Vec` binding
+does not, and a call-result element is never wrapped. Full suite green (1079) —
+no existing copyable-type lowering changed. Separately discovered (a real but
+orthogonal bug, recorded for later): a bare integer literal in one arm of a
+*payloaded-enum* `match` lowers to C++ `int` while a sibling `Int` arm is
+`intptr_t`, and `std::visit`'s single-return-type rule then rejects it — so a
+match arm like `case .empty: 0` beside `case .cons: ... 1 + …` fails to compile;
+the fix is to coerce each arm to the match's result type. v0.5 carry-forwards
+(move): move-on-last-use for the *general* call-arg-by-value case behind an
+overload set (today only the no-inout sites move); and detecting move-only
+*imported* nominals (the fixpoint only sees this unit's decls).
 
 ### 1. Generics phase 2 (multi-session)
 

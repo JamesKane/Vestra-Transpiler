@@ -684,6 +684,26 @@ TEST_CASE("a recursive Box-payload enum builds and walks (move-only AST node)") 
     CHECK(f.out.source.find("(*l)") != std::string::npos);
 }
 
+TEST_CASE("§10 move-on-consume moves move-only lvalues, leaves copyable ones") {
+    // A let/var initializer or tuple element that is a move-only-typed lvalue is
+    // std::move'd (a copy would be a hard error); a copyable owned type (Vec) is
+    // left as a copy, and a non-lvalue (a call result) is never wrapped.
+    SemaEmitFixture f("func mk() using Alloc -> (Box[Int], Int) {\n"
+                      "    var v: Vec[Int] = Vec.new()\n"
+                      "    let a: Box[Int] = Box.new(5)\n"
+                      "    var b: Box[Int] = a\n"
+                      "    var w: Vec[Int] = v\n"
+                      "    return (b, w.len())\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    // The move-only Box binding moves its lvalue initializer.
+    CHECK(f.out.source.find("= std::move(a)") != std::string::npos);
+    // The copyable Vec binding is left as a copy — NOT moved.
+    CHECK(f.out.source.find("std::move(v)") == std::string::npos);
+    // In the tuple, the Box element moves; the Int (a call result) does not.
+    CHECK(f.out.source.find("std::tuple{std::move(b),") != std::string::npos);
+}
+
 TEST_CASE("box.value lowers to (*box)") {
     SemaEmitFixture f("func deref(_ b: Box[Int32]) -> Int32 { return b.value }\n");
     CHECK(f.out.source.find("(*b)") != std::string::npos);
