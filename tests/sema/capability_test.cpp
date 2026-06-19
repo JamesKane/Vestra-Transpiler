@@ -161,6 +161,34 @@ TEST_CASE("§18.5 s.split(sep) requires Alloc; under Alloc it is clean") {
           == 0);
 }
 
+TEST_CASE("§18.5 s.chars() requires Alloc; charAt + classifiers do not") {
+    auto bad = check("func bad(_ s: Str) -> Int {\n"
+                     "    return s.chars().len()\n"
+                     "}\n");
+    CHECK(bad.error_count >= 1);
+    CHECK(bad.first_message.find("missing capability 'Alloc'") != std::string::npos);
+    CHECK(check("func ok(_ s: Str) using Alloc -> Int {\n"
+                "    return s.chars().len()\n"
+                "}\n")
+              .error_count
+          == 0);
+    // charAt (indexed read) and the Char classifiers allocate nothing — clean
+    // without Alloc.
+    CHECK(check("func scan(_ s: Str) -> Int {\n"
+                "    var n: Int = 0\n"
+                "    var i: Int = 0\n"
+                "    while i < s.len() {\n"
+                "        if (s.charAt(i) ?? ' ').isDigit() {\n"
+                "            n = n + 1\n"
+                "        }\n"
+                "        i = i + 1\n"
+                "    }\n"
+                "    return n\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 TEST_CASE("§18.5 HashMap.new() requires Alloc; set/get/contains/len under Alloc are clean") {
     auto bad = check("func bad() -> Int32 {\n"
                      "    var m: HashMap[Str, Int32] = HashMap.new()\n"

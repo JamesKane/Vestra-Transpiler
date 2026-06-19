@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §18.5 byte/char access for hand-tokenizing — the toolkit a real lexer needs,
+// past `split` on fixed separators. A string yields its bytes as `Char` values
+// (v0.5 is byte-oriented: one Char per byte; UTF-8 decoding is a carry-forward),
+// which compare directly against char literals (`c == '+'`, both Char) and carry
+// ASCII classification:
+//
+//   s.charAt(i) -> Char?      the i-th byte as a Char, nil out of range (no alloc)
+//   s.chars()   -> Vec[Char]  every byte as a Char, for `for c in s.chars()` (alloc)
+//   c.isDigit() / isAlpha() / isAlnum() / isSpace() -> Bool   (ASCII, locale-free)
+//
+// Combined with the existing `while`, char literals, `slice`, and `len`, this is
+// enough to write a scanning tokenizer by hand.
+
+module examples.tokenize_demo
+
+// The first character of a string (nil when empty) — non-allocating indexed read.
+func firstChar(_ s: Str) -> Char? {
+    return s.charAt(0)
+}
+
+// Count occurrences of a target character. Drives charAt + Char-vs-Char equality
+// (`c == target`), and allocates nothing.
+func countChar(_ s: Str, _ target: Char) -> Int {
+    var n: Int = 0
+    var i: Int = 0
+    while i < s.len() {
+        if (s.charAt(i) ?? ' ') == target {
+            n = n + 1
+        }
+        i = i + 1
+    }
+    return n
+}
+
+// Total characters, via the chars() iterator (allocates the Vec[Char]).
+func charCount(_ s: Str) using Alloc -> Int {
+    return s.chars().len()
+}
+
+// Count digit characters by iterating chars() and classifying each.
+func digitCount(_ s: Str) using Alloc -> Int {
+    var n: Int = 0
+    for c in s.chars() {
+        if c.isDigit() {
+            n = n + 1
+        }
+    }
+    return n
+}
+
+// Count whitespace characters.
+func spaceCount(_ s: Str) using Alloc -> Int {
+    var n: Int = 0
+    for c in s.chars() {
+        if c.isSpace() {
+            n = n + 1
+        }
+    }
+    return n
+}
+
+// A hand-written scanning tokenizer. Index-based with charAt — no allocation —
+// the shape a real front-end uses, with maximal-munch lookahead to consume each
+// whole token: an identifier is a letter followed by letters/digits, a number is
+// a run of digits, and everything else is a single operator/punctuation char.
+// identifierCount and numberCount run the *same* tokenizer (so the digits inside
+// an identifier like `bar123` belong to the identifier, not counted as a number)
+// and report their respective token kind.
+func identifierCount(_ s: Str) -> Int {
+    var ids: Int = 0
+    var i: Int = 0
+    while i < s.len() {
+        let c = s.charAt(i) ?? ' '
+        if c.isAlpha() {
+            ids = ids + 1
+            while i < s.len() && (s.charAt(i) ?? ' ').isAlnum() {
+                i = i + 1
+            }
+        } else if c.isDigit() {
+            while i < s.len() && (s.charAt(i) ?? ' ').isDigit() {
+                i = i + 1
+            }
+        } else {
+            i = i + 1
+        }
+    }
+    return ids
+}
+
+func numberCount(_ s: Str) -> Int {
+    var nums: Int = 0
+    var i: Int = 0
+    while i < s.len() {
+        let c = s.charAt(i) ?? ' '
+        if c.isAlpha() {
+            while i < s.len() && (s.charAt(i) ?? ' ').isAlnum() {
+                i = i + 1
+            }
+        } else if c.isDigit() {
+            nums = nums + 1
+            while i < s.len() && (s.charAt(i) ?? ' ').isDigit() {
+                i = i + 1
+            }
+        } else {
+            i = i + 1
+        }
+    }
+    return nums
+}

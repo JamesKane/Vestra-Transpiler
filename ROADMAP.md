@@ -346,11 +346,40 @@ and a `key=value` split. v0.5 carry-forwards: the lazy `SplitIter` combinator
 of separators / on whitespace runs; and cross-statement liveness of the borrowed
 piece views (shared with `slice`, like the Span partitioners).
 
+**Slice 12 shipped** — **byte/char access for hand-tokenizing** (past `split` on
+fixed separators — the toolkit a real lexer needs to scan character by
+character). The enabling discovery: `Char` (→ `char32_t`), char literals
+(`'a'`), `while`, and for-in over `Vec` already existed, so the gap was getting
+*characters* out of a string and *classifying* them. Three string methods plus a
+`Char` classifier set: `s.charAt(Int) -> Char?` (the bounds-checked indexed read,
+no allocation — the index-loop workhorse paired with `slice`), `s.chars() ->
+Vec[Char]` (one `Char` per byte, for `for c in s.chars()` — allocates, so
+Alloc-gated like `split`), and `c.isDigit() / isAlpha() / isAlnum() / isSpace()
+-> Bool` on `Char` (ASCII-only, locale-free). Because a `Char` compares directly
+against a char literal (`c == '('`, both `Char`), the canonical scanning loop —
+`while i < s.len() { let c = s.charAt(i) ?? ' '; if c.isAlpha() { … } }` with
+maximal-munch lookahead — reads idiomatically. v0.5 is byte-oriented (each byte
+maps to one `Char`); UTF-8 decoding into code points is a carry-forward. Codegen
+adds `__vstr::char_at` (`std::optional<char32_t>`), `__vstr::chars`
+(`std::vector<char32_t>`), and the four `__vstr::is_*(char32_t)` ASCII predicates;
+the classifiers lower on a `Char` receiver, `charAt`/`chars` on a string
+receiver. Five unit tests (charAt yields `Char?` / chars a `Vec[Char]`; the
+classifiers type-check and `c == 'x'` compares; the Char-only guard rejects
+`n.isDigit()` on an Int; the `chars()` Alloc gate fires/clears while charAt + the
+classifiers stay gate-free; the codegen lowering) plus a transpile→compile→run
+e2e (`examples/tokenize_demo.vst` + `tests/e2e/main_tokenize_demo.cpp`): a
+hand-written tokenizer counting identifier and number tokens over a real
+expression with maximal munch (so the digits in `bar123` belong to the
+identifier, not a separate number), char-counting via the `chars()` iterator,
+and char-vs-char equality. v0.5 carry-forwards: UTF-8 code-point decoding;
+`isUpper`/`isLower`/`isPunct`; a `Char -> UInt8` / digit-value conversion; and a
+zero-copy char iterator (today `chars()` materializes a vector).
+
 That rounds out the bootstrap collection set: `Vec`, `String`, and `HashMap`
 each have construction, reads, mutation, iteration where applicable, the string
 read-borrow, inout-receiver discipline for their mutators, and (for strings) the
-read-only slicing + search query surface, number↔string conversion, and
-separator splitting.
+read-only slicing + search query surface, number↔string conversion, separator
+splitting, and byte/char access for hand-tokenizing.
 
 ### 0c. I/O + entry-point (self-hosting equipment) (multi-session)
 

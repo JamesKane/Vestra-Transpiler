@@ -161,6 +161,8 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
     //   endsWith(Str)    -> Bool     suffix test
     //   toInt()          -> Int?     parse the whole string as a decimal Int
     //   split(Str)       -> Vec[Str] the pieces between each occurrence of sep
+    //   charAt(Int)      -> Char?    the i-th byte as a Char, nil out of range
+    //   chars()          -> Vec[Char] every byte as a Char (for hand-tokenizing)
     if (owner_type->kind() == TypeKind::String || owner_type->kind() == TypeKind::Str
         || owner_type->kind() == TypeKind::StrConst) {
         TypePtr str = types_->primitive(TypeKind::Str);
@@ -175,6 +177,19 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
         // allocates, so the call is Alloc-gated in the capability checker.
         if (name == "split") {
             return types_->make_function({str}, types_->make_vec(str));
+        }
+        // §18.5 byte/char access for hand-tokenizing. charAt is the Char analog
+        // of byteAt — a bounds-checked read with no allocation. chars()
+        // materializes a Vec[Char] (one Char per byte) so `for c in s.chars()`
+        // scans the input; it allocates, so it is Alloc-gated. Both are
+        // byte-oriented in v0.5 (each byte maps to one Char; UTF-8 decoding into
+        // code points is a carry-forward).
+        if (name == "charAt") {
+            return types_->make_function({types_->primitive(TypeKind::Int)},
+                                         types_->make_optional(types_->primitive(TypeKind::Char)));
+        }
+        if (name == "chars") {
+            return types_->make_function({}, types_->make_vec(types_->primitive(TypeKind::Char)));
         }
         if (name == "isEmpty") {
             return types_->make_function({}, types_->boolean());
@@ -205,6 +220,15 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
         && owner_type->kind() != TypeKind::UInt128) {
         if (name == "toString") {
             return types_->make_function({}, types_->primitive(TypeKind::String));
+        }
+    }
+    // §18.5 Char ASCII classification (the decision half of hand-tokenizing,
+    // paired with `s.chars()` / `s.charAt()`): isDigit / isAlpha / isAlnum /
+    // isSpace -> Bool. ASCII-only and locale-free; a Char compares directly
+    // against a char literal (`c == '('`) since both are Char.
+    if (owner_type->kind() == TypeKind::Char) {
+        if (name == "isDigit" || name == "isAlpha" || name == "isAlnum" || name == "isSpace") {
+            return types_->make_function({}, types_->boolean());
         }
     }
     // §18.5 HashMap[K, V] methods (v0.5 core): `set(K, V)` inserts/updates,

@@ -492,6 +492,39 @@ TEST_CASE("split yields a Vec[Str] usable through the Vec surface") {
     CHECK(r.error_count >= 1);
 }
 
+TEST_CASE("charAt yields a Char optional and chars a Vec[Char]") {
+    // charAt(i) -> Char? (no alloc); chars() -> Vec[Char] for for-in scanning.
+    CHECK(check_errors("func f(_ s: Str) -> Char { return s.charAt(0) ?? ' ' }\n") == 0);
+    CHECK(check_errors("func n(_ s: Str) using Alloc -> Int {\n"
+                       "    var c: Int = 0\n"
+                       "    for ch in s.chars() {\n"
+                       "        c = c + 1\n"
+                       "    }\n"
+                       "    return c\n"
+                       "}\n")
+          == 0);
+    // charAt's result is an optional, not a bare Char — binding to Char errors.
+    auto r = check_detail("func f(_ s: Str) -> Int {\n"
+                          "    let c: Char = s.charAt(0)\n"
+                          "    return 0\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+}
+
+TEST_CASE("Char ASCII classifiers type-check and compare against char literals") {
+    // isDigit/isAlpha/isAlnum/isSpace on a Char -> Bool; `c == 'x'` is Char==Char.
+    CHECK(check_errors("func f(_ s: Str) -> Bool {\n"
+                       "    let c: Char = s.charAt(0) ?? ' '\n"
+                       "    return c.isDigit() || c.isAlpha() || c.isAlnum()\n"
+                       "          || c.isSpace() || c == 'x'\n"
+                       "}\n")
+          == 0);
+    // The classifiers are Char-only — a non-existent method still errors, and a
+    // numeric receiver doesn't get them.
+    auto r = check_detail("func f(_ n: Int) -> Bool { return n.isDigit() }\n");
+    CHECK(r.error_count >= 1);
+}
+
 // ---- §9 Optional ----------------------------------------------------------
 
 TEST_CASE("nil is assignable to any Optional<T> slot") {

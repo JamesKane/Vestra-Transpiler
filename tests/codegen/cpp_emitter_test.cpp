@@ -3065,6 +3065,28 @@ TEST_CASE("split lowers to __vstr::split and drives the Vec surface") {
           != std::string::npos);
 }
 
+TEST_CASE("byte/char access lowers to __vstr::char_at / chars / is_* and Char compares") {
+    SemaEmitFixture f("func c(_ s: Str) using Alloc -> Int {\n"
+                      "    let first: Char = s.charAt(0) ?? ' '\n"
+                      "    let isd: Bool = first.isDigit()\n"
+                      "    let hit: Bool = first == 'x'\n"
+                      "    var n: Int = 0\n"
+                      "    for ch in s.chars() {\n"
+                      "        if ch.isAlpha() {\n"
+                      "            n = n + 1\n"
+                      "        }\n"
+                      "    }\n"
+                      "    return n\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.source.find("__vstr::char_at(s, static_cast<std::intptr_t>(0))")
+          != std::string::npos);
+    CHECK(f.out.source.find("__vstr::is_digit(first)") != std::string::npos);
+    CHECK(f.out.source.find("first == U'x'") != std::string::npos);
+    CHECK(f.out.source.find("for (auto&& ch : __vstr::chars(s))") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::is_alpha(ch)") != std::string::npos);
+}
+
 TEST_CASE("HashMap[K, V] lowers to std::unordered_map with set / get / contains / len") {
     SemaEmitFixture f("func f(_ k: Str) using Alloc -> Int32 {\n"
                       "    var m: HashMap[Str, Int32] = HashMap.new()\n"

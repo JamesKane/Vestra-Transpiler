@@ -2376,6 +2376,30 @@ set_tests_properties(e2e_string_split_demo_run PROPERTIES
     DEPENDS                e2e_string_split_demo_compile
     PASS_REGULAR_EXPRESSION "string_split_demo OK")
 
+# §18.5 byte/char access for hand-tokenizing (charAt / chars / Char classifiers).
+set(e2e_tokenize_input  ${CMAKE_SOURCE_DIR}/examples/tokenize_demo.vst)
+set(e2e_tokenize_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_tokenize_demo.cpp)
+
+add_test(
+    NAME    e2e_tokenize_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_tokenize_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_tokenize_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_tokenize_driver} ${e2e_workdir}/tokenize_demo.cpp
+            -o ${e2e_workdir}/tokenize_demo_app)
+set_tests_properties(e2e_tokenize_demo_compile PROPERTIES DEPENDS e2e_tokenize_demo_transpile)
+
+add_test(
+    NAME    e2e_tokenize_demo_run
+    COMMAND ${e2e_workdir}/tokenize_demo_app)
+set_tests_properties(e2e_tokenize_demo_run PROPERTIES
+    DEPENDS                e2e_tokenize_demo_compile
+    PASS_REGULAR_EXPRESSION "tokenize_demo OK")
+
 # §18.5 HashMap owned hash map (lowers to std::unordered_map<K, V>).
 set(e2e_hashmap_input  ${CMAKE_SOURCE_DIR}/examples/hashmap_demo.vst)
 set(e2e_hashmap_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_hashmap_demo.cpp)

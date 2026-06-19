@@ -458,6 +458,31 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    }\n";
     hdr << "    return out;\n";
     hdr << "}\n\n";
+    // §18.5 byte/char access for hand-tokenizing. char_at is the bounds-checked
+    // i-th byte as a char32_t (the `Char?` the resolver promises); chars
+    // materializes one char32_t per byte for `for c in s.chars()`. Both are
+    // byte-oriented in v0.5 (a byte maps to one Char; UTF-8 decoding is a
+    // carry-forward). The classifiers are ASCII-only and locale-free.
+    hdr << "inline std::optional<char32_t> char_at(std::string_view s, std::intptr_t i) {\n";
+    hdr << "    if (i < 0 || static_cast<std::size_t>(i) >= s.size()) return std::nullopt;\n";
+    hdr << "    return static_cast<char32_t>("
+           "static_cast<unsigned char>(s[static_cast<std::size_t>(i)]));\n";
+    hdr << "}\n\n";
+    hdr << "inline std::vector<char32_t> chars(std::string_view s) {\n";
+    hdr << "    std::vector<char32_t> out;\n";
+    hdr << "    out.reserve(s.size());\n";
+    hdr << "    for (unsigned char ch : s) out.push_back(static_cast<char32_t>(ch));\n";
+    hdr << "    return out;\n";
+    hdr << "}\n\n";
+    hdr << "inline bool is_digit(char32_t c) { return c >= U'0' && c <= U'9'; }\n";
+    hdr << "inline bool is_alpha(char32_t c) {\n";
+    hdr << "    return (c >= U'a' && c <= U'z') || (c >= U'A' && c <= U'Z');\n";
+    hdr << "}\n";
+    hdr << "inline bool is_alnum(char32_t c) { return is_digit(c) || is_alpha(c); }\n";
+    hdr << "inline bool is_space(char32_t c) {\n";
+    hdr << "    return c == U' ' || c == U'\\t' || c == U'\\n' || c == U'\\r' "
+           "|| c == U'\\f' || c == U'\\v';\n";
+    hdr << "}\n\n";
     // §18 filesystem I/O. read_file slurps the whole file into a string
     // (std::nullopt if it can't be opened); write_file truncates + writes,
     // returning whether the stream stayed good. Both back the Fs-gated
@@ -3908,6 +3933,20 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << ")";
                     break;
                 }
+                if (mem.member == "charAt" && c.args.size() == 1) {
+                    os << "__vstr::char_at(";
+                    emit_expr(os, *mem.base);
+                    os << ", static_cast<std::intptr_t>(";
+                    emit_expr(os, *c.args[0].value);
+                    os << "))";
+                    break;
+                }
+                if (mem.member == "chars" && c.args.empty()) {
+                    os << "__vstr::chars(";
+                    emit_expr(os, *mem.base);
+                    os << ")";
+                    break;
+                }
                 if ((mem.member == "contains" || mem.member == "startsWith"
                      || mem.member == "endsWith")
                     && c.args.size() == 1) {
@@ -3926,6 +3965,20 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 base_t != nullptr && base_t->is_numeric() && mem.member == "toString"
                 && c.args.empty()) {
                 os << "__vstr::to_string(";
+                emit_expr(os, *mem.base);
+                os << ")";
+                break;
+            }
+            // §18.5 Char classification → the matching `__vstr::is_*` ASCII
+            // predicate (isDigit / isAlpha / isAlnum / isSpace).
+            if (auto base_t = resolution_->type_of(mem.base.get());
+                base_t != nullptr && base_t->kind() == sema::TypeKind::Char && c.args.empty()
+                && (mem.member == "isDigit" || mem.member == "isAlpha" || mem.member == "isAlnum"
+                    || mem.member == "isSpace")) {
+                os << (mem.member == "isDigit"   ? "__vstr::is_digit("
+                       : mem.member == "isAlpha" ? "__vstr::is_alpha("
+                       : mem.member == "isAlnum" ? "__vstr::is_alnum("
+                                                 : "__vstr::is_space(");
                 emit_expr(os, *mem.base);
                 os << ")";
                 break;
