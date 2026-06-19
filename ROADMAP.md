@@ -490,6 +490,46 @@ stable/insertion-ordered map (today unordered); direct `for (k, v) in m` without
 the `.entries()` call; and a zero-copy entries iterator (today materializes a
 Vec). With both gaps closed, the only remaining PoC follow-on is `eprint`/stderr.
 
+**Self-hosting lexer milestone shipped** — the genuine self-hosting step the whole
+equipment arc was for: a real lexer for a small expression language, *written in
+Vestra*. `examples/lexer_demo.vst` declares a `TokKind` enum and a `Token` struct
+(`{ kind, text }`), then `tokenize(src) -> Vec[Token]` scans the input by
+character with maximal munch — whitespace skipped, a letter starts an identifier
+(`charAt` + `isAlpha`/`isAlnum`), a digit a number, anything else a
+single-character punctuation token (`punctKind` dispatching on char literals,
+`c == '+'`), each token's `text` a `slice` that borrows the source. `main` reads
+the source path from `args()`, `readFile`s it, walks the `Vec[Token]` (matching
+each kind to a name and `append`ing a `"<KIND> <lexeme>"` listing), `writeFile`s
+the listing, prints the token count, and reports each unexpected character on
+stderr via `eprint`. So it exercises the entire stack — enums, structs, `Vec`,
+`match`, `while`, char access + classification, `slice`, `String` building,
+`toString`, argv, file I/O, stdout, and stderr — to do real front-end work.
+Five-step e2e (`tests/e2e/lexer_input.txt` clean fixture, `lexer_bad.txt` with a
+stray `@`): transpile → compile → run (12 tokens, summary on stdout) → verify the
+written listing → and a bad-input run asserting the `lex error: unexpected '@'`
+on stderr. This is the first real phase of a self-hosted front-end running as a
+standalone Vestra executable. Natural next steps: a recursive-descent parser over
+this token stream (building an AST), then a tiny evaluator / pretty-printer — each
+a further self-hosting phase.
+
+**Parser fix — error-recovery forward-progress guard (found by the lexer work).**
+Writing the lexer surfaced a real compiler bug: a malformed `struct`/`enum` body
+*followed by another declaration* sent the parser into an unbounded-memory hang
+(it ballooned to 20 GB before being killed). Root cause: `sync_to_decl()` stops
+*at* a declaration keyword (or EOF) without consuming it, so when a body loop's
+error recovery landed on a following `struct`/`func`/… (the body's `}` missing),
+the `while (!RBrace && !at_end())` loop re-entered at the same token forever,
+emitting a diagnostic each pass — a single malformed decl escaped only because
+recovery reached EOF. Fix: a forward-progress guard at each of the four body-loop
+recovery sites (struct / enum / protocol / extension) — capture the token cursor
+before `sync_to_decl()`, and if it didn't advance, `break` out of the body (the
+top-level loop, which already has a `should_stop()` error cap, then parses the
+next declaration). Two parser regression tests pin it (a malformed enum then a
+struct, and a malformed struct then a well-formed one that recovery still finds);
+the test merely *returning* is the assertion that the hang is gone. The whole
+class of "malformed input → runaway" in these loops is now closed by the
+guarantee that every iteration consumes at least one token.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

@@ -1,0 +1,152 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// Self-hosting milestone: a real lexer for a small expression language, written
+// in Vestra. This is the first phase of a front-end — read source, scan it into
+// a token stream, report lexical errors — expressed in the language itself,
+// using the whole equipment stack the recent slices built:
+//
+//   * args() / readFile / writeFile — read the source path, slurp it, emit tokens
+//   * print (stdout) / eprint (stderr) — a summary on stdout, lex errors on stderr
+//   * charAt / isSpace / isAlpha / isDigit / isAlnum — hand-written scanning
+//   * slice — cut each lexeme out of the source (the token text borrows it)
+//   * enum + struct + Vec — the Token stream; match to name each kind
+//   * toString — render counts
+//
+// Usage: lexer <input> <output>. Writes "<KIND> <lexeme>" per token to <output>,
+// prints "tokens: N" (and "errors: M") to stdout, and reports each unexpected
+// character on stderr. Lex errors are non-fatal — it scans the whole input.
+
+enum TokKind {
+    case ident
+    case number
+    case plus
+    case minus
+    case star
+    case slash
+    case lparen
+    case rparen
+    case assign
+    case semicolon
+    case unknown
+}
+
+struct Token {
+    let kind: TokKind
+    let text: Str
+}
+
+// The single-character punctuation tokens. An unrecognized char is `unknown`,
+// which the driver reports as a lex error.
+func punctKind(_ c: Char) -> TokKind {
+    if c == '+' { return .plus }
+    if c == '-' { return .minus }
+    if c == '*' { return .star }
+    if c == '/' { return .slash }
+    if c == '(' { return .lparen }
+    if c == ')' { return .rparen }
+    if c == '=' { return .assign }
+    if c == ';' { return .semicolon }
+    return .unknown
+}
+
+// The human-readable name of a token kind, for the listing.
+func kindName(_ k: TokKind) -> Str {
+    return match k {
+        case .ident: "IDENT"
+        case .number: "NUMBER"
+        case .plus: "PLUS"
+        case .minus: "MINUS"
+        case .star: "STAR"
+        case .slash: "SLASH"
+        case .lparen: "LPAREN"
+        case .rparen: "RPAREN"
+        case .assign: "ASSIGN"
+        case .semicolon: "SEMI"
+        case .unknown: "UNKNOWN"
+    }
+}
+
+func isUnknown(_ k: TokKind) -> Bool {
+    return match k {
+        case .unknown: true
+        default: false
+    }
+}
+
+// The scanner proper. Walks the source by character with maximal munch:
+// whitespace is skipped, a letter starts an identifier (letters/digits), a digit
+// starts a number, and anything else is a single-character punctuation token.
+// Each token's `text` is a slice that borrows the source.
+func tokenize(_ src: Str) using Alloc -> Vec[Token] {
+    var toks: Vec[Token] = Vec.new()
+    var i: Int = 0
+    while i < src.len() {
+        let c = src.charAt(i) ?? ' '
+        if c.isSpace() {
+            i = i + 1
+        } else if c.isAlpha() {
+            let start = i
+            while i < src.len() && (src.charAt(i) ?? ' ').isAlnum() {
+                i = i + 1
+            }
+            toks.push(Token(kind: .ident, text: src.slice(start, i)))
+        } else if c.isDigit() {
+            let start = i
+            while i < src.len() && (src.charAt(i) ?? ' ').isDigit() {
+                i = i + 1
+            }
+            toks.push(Token(kind: .number, text: src.slice(start, i)))
+        } else {
+            toks.push(Token(kind: punctKind(c), text: src.slice(i, i + 1)))
+            i = i + 1
+        }
+    }
+    return toks
+}
+
+func main() -> Int32 {
+    with Alloc {
+        with Fs {
+            with Log {
+                let argv = args()
+                if argv.len() < 3 {
+                    eprintln("usage: lexer <input> <output>")
+                    return 1
+                }
+                let inPath = argv.get(1) ?? ""
+                let outPath = argv.get(2) ?? ""
+                if let src = readFile(inPath) {
+                    let toks = tokenize(src)
+                    var out: String = ""
+                    var errors: Int = 0
+                    for t in toks {
+                        if isUnknown(t.kind) {
+                            errors = errors + 1
+                            eprint("lex error: unexpected '")
+                            eprint(t.text)
+                            eprintln("'")
+                        }
+                        out.append(kindName(t.kind))
+                        out.append(" ")
+                        out.append(t.text)
+                        out.append("\n")
+                    }
+                    if writeFile(outPath, out) {
+                        print("tokens: ")
+                        println(toks.len().toString())
+                        if errors > 0 {
+                            eprint("errors: ")
+                            eprintln(errors.toString())
+                        }
+                        return 0
+                    }
+                    eprintln("write failed")
+                    return 1
+                }
+                eprintln("read failed")
+                return 1
+            }
+        }
+    }
+}

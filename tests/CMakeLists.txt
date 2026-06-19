@@ -2736,6 +2736,49 @@ set_tests_properties(e2e_args_demo_run PROPERTIES
     DEPENDS                e2e_args_demo_compile
     PASS_REGULAR_EXPRESSION "arg: beta")
 
+# Self-hosting milestone: a real lexer for a small expression language, written
+# in Vestra. Reads source (argv + readFile), scans it by character into a token
+# stream (enum + struct + Vec), writes a "<KIND> <lexeme>" listing (writeFile),
+# prints a count (stdout), and reports unexpected characters (eprint -> stderr).
+set(e2e_lexer_input   ${CMAKE_SOURCE_DIR}/examples/lexer_demo.vst)
+set(e2e_lexer_fixture ${CMAKE_SOURCE_DIR}/tests/e2e/lexer_input.txt)
+set(e2e_lexer_bad     ${CMAKE_SOURCE_DIR}/tests/e2e/lexer_bad.txt)
+
+add_test(
+    NAME    e2e_lexer_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_lexer_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_lexer_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/lexer_demo.cpp
+            -o ${e2e_workdir}/lexer_app)
+set_tests_properties(e2e_lexer_demo_compile PROPERTIES DEPENDS e2e_lexer_demo_transpile)
+
+# Clean source: 12 tokens, summary on stdout.
+add_test(
+    NAME    e2e_lexer_demo_run
+    COMMAND ${e2e_workdir}/lexer_app ${e2e_lexer_fixture} ${e2e_workdir}/lexer_out.txt)
+set_tests_properties(e2e_lexer_demo_run PROPERTIES
+    DEPENDS                 e2e_lexer_demo_compile
+    PASS_REGULAR_EXPRESSION "tokens: 12")
+
+# Verify the written token listing directly.
+add_test(
+    NAME    e2e_lexer_demo_verify
+    COMMAND grep -F "IDENT foo3" ${e2e_workdir}/lexer_out.txt)
+set_tests_properties(e2e_lexer_demo_verify PROPERTIES DEPENDS e2e_lexer_demo_run)
+
+# Bad source: the unexpected '@' is reported on stderr (keep only stderr).
+add_test(
+    NAME    e2e_lexer_demo_errors
+    COMMAND sh -c "${e2e_workdir}/lexer_app ${e2e_lexer_bad} ${e2e_workdir}/lexer_bad_out.txt 1>/dev/null")
+set_tests_properties(e2e_lexer_demo_errors PROPERTIES
+    DEPENDS                 e2e_lexer_demo_compile
+    PASS_REGULAR_EXPRESSION "lex error: unexpected '@'")
+
 # Self-hosting proof-of-concept: a standalone `func main` program that reads a
 # file (argv + readFile), tokenizes with split, tabulates with Vec + HashMap,
 # renders a report with String + toString, writes it (writeFile), and echoes it
