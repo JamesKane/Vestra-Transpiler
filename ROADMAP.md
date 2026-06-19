@@ -265,9 +265,39 @@ clean. Scoped to the builtin collection types (user-defined methods still have
 no receiver-mode story). Phase-1 exclusivity remains intra-call, so this fires
 when receiver and argument alias within one call.
 
+**Slice 9 shipped** — **String/Str read-only queries** (the byte-oriented
+slicing + search surface real string processing and the self-hosting front-end
+need). Eight methods, synthesized uniformly on the owned `String` and the
+borrowed `Str` / `StrConst` views since all three lower through a
+`std::string_view`: `len() -> Int`, `isEmpty() -> Bool`, `slice(Int, Int) ->
+Str` (the clamped `[from, to)` sub-view — out-of-range / inverted spans yield an
+empty view rather than UB), `byteAt(Int) -> UInt8?` (bounds-checked byte read),
+`find(Str) -> Int?` (first index of the needle, `npos` mapped to nil),
+`contains(Str) -> Bool`, `startsWith(Str) -> Bool`, `endsWith(Str) -> Bool`.
+Sema synthesizes them in `lookup_method` alongside `String.append` (which stays
+String-only, since it mutates); the needle args reuse the existing
+`read_borrows_as` relaxation so an owned `String` needle borrows as a `Str` at
+the call. None allocate (a sliced `Str` borrows the receiver's bytes), so they
+need no capability gate. Codegen lowers `len`/`isEmpty`/`contains`/`startsWith`/
+`endsWith` to the matching `std::string` / `std::string_view` member, and
+`slice`/`byteAt`/`find` to three new clamping `__vstr::str_*` preamble helpers
+(returning `string_view` / `optional<uint8_t>` / `optional<intptr_t>`); the
+helpers take a `string_view` so a `std::string` receiver converts implicitly and
+one lowering serves all three kinds. Five unit tests (the query surface on a Str
+and on a String; a non-Str needle rejects; `byteAt` yields `UInt8?` not a bare
+byte; the codegen lowering) plus a transpile→compile→run e2e
+(`examples/string_query_demo.vst` + `tests/e2e/main_string_query_demo.cpp`)
+covering each method, the clamped/out-of-range edges, `if let`/`??` over the
+optional results, the `afterDot` file-extension shape, and the owned-String
+receiver. v0.5 carry-forwards: cross-statement liveness of a sliced `Str`'s
+borrow (today, like the Span partitioners, the borrow isn't tracked past the
+call); number↔string conversion (`String(n)` / parse); and `split(Str)` /
+char-iteration (needs an iterator or a Vec result) — the next string slices.
+
 That rounds out the bootstrap collection set: `Vec`, `String`, and `HashMap`
 each have construction, reads, mutation, iteration where applicable, the string
-read-borrow, and inout-receiver discipline for their mutators.
+read-borrow, inout-receiver discipline for their mutators, and (for strings) the
+read-only slicing + search query surface.
 
 ### 0c. I/O + entry-point (self-hosting equipment) (multi-session)
 

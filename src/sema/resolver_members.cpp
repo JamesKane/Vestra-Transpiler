@@ -143,8 +143,45 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
         if (name == "append") {
             return types_->make_function({types_->primitive(TypeKind::Str)}, types_->unit());
         }
+    }
+    // §18.5 String/Str read-only queries (v0.5 core): the byte-oriented slicing
+    // and search surface, synthesized uniformly on the owned `String` and the
+    // borrowed `Str` / `StrConst` views since all three lower through a
+    // std::string_view. A returned `Str` from `slice` borrows the receiver's
+    // bytes (cross-statement liveness of that borrow is a v0.5 carry-forward,
+    // like the Span partitioners). Mutating methods (`append`) stay String-only
+    // above; these queries never allocate, so they need no capability gate.
+    //   len()            -> Int      byte length
+    //   isEmpty()        -> Bool     length == 0
+    //   slice(Int, Int)  -> Str      the [from, to) sub-view, clamped into range
+    //   byteAt(Int)      -> UInt8?   the i-th byte, nil when out of range
+    //   find(Str)        -> Int?     first index of the needle, nil when absent
+    //   contains(Str)    -> Bool     needle present
+    //   startsWith(Str)  -> Bool     prefix test
+    //   endsWith(Str)    -> Bool     suffix test
+    if (owner_type->kind() == TypeKind::String || owner_type->kind() == TypeKind::Str
+        || owner_type->kind() == TypeKind::StrConst) {
+        TypePtr str = types_->primitive(TypeKind::Str);
         if (name == "len") {
             return types_->make_function({}, types_->primitive(TypeKind::Int));
+        }
+        if (name == "isEmpty") {
+            return types_->make_function({}, types_->boolean());
+        }
+        if (name == "slice") {
+            return types_->make_function(
+                {types_->primitive(TypeKind::Int), types_->primitive(TypeKind::Int)}, str);
+        }
+        if (name == "byteAt") {
+            return types_->make_function({types_->primitive(TypeKind::Int)},
+                                         types_->make_optional(types_->primitive(TypeKind::UInt8)));
+        }
+        if (name == "find") {
+            return types_->make_function({str},
+                                         types_->make_optional(types_->primitive(TypeKind::Int)));
+        }
+        if (name == "contains" || name == "startsWith" || name == "endsWith") {
+            return types_->make_function({str}, types_->boolean());
         }
     }
     // §18.5 HashMap[K, V] methods (v0.5 core): `set(K, V)` inserts/updates,

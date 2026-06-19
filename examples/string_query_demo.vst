@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §18.5 String/Str read-only queries — the byte-oriented slicing and search
+// surface that real string processing (and the self-hosting front-end) needs.
+// Every method here is synthesized uniformly on the owned `String` and the
+// borrowed `Str` views, because all three lower through a std::string_view:
+//
+//   len()            -> Int      byte length
+//   isEmpty()        -> Bool     length == 0
+//   slice(from, to)  -> Str      the [from, to) sub-view, clamped into range
+//   byteAt(i)        -> UInt8?   the i-th byte, nil when out of range
+//   find(needle)     -> Int?     first index of the needle, nil when absent
+//   contains(needle) -> Bool     needle present
+//   startsWith(p)    -> Bool     prefix test
+//   endsWith(p)      -> Bool     suffix test
+//
+// None of these allocate (a sliced `Str` borrows the receiver's bytes), so they
+// need no capability gate — only building the owned `String` below wants Alloc.
+
+module examples.string_query_demo
+
+// Length and emptiness of a borrowed view.
+func length(_ s: Str) -> Int {
+    return s.len()
+}
+
+func empty(_ s: Str) -> Bool {
+    return s.isEmpty()
+}
+
+// The clamped sub-view: out-of-range / inverted spans yield an empty Str.
+func substr(_ s: Str, _ from: Int, _ to: Int) -> Str {
+    return s.slice(from, to)
+}
+
+// The i-th byte, or a caller-supplied default when out of range (exercises the
+// `UInt8?` result through the `??` operator).
+func byteOr(_ s: Str, _ i: Int, _ d: UInt8) -> UInt8 {
+    return s.byteAt(i) ?? d
+}
+
+// First index of a needle, or -1 when absent (exercises the `Int?` through
+// `if let`).
+func foundAt(_ s: Str, _ needle: Str) -> Int {
+    if let p = s.find(needle) {
+        return p
+    }
+    return -1
+}
+
+func has(_ s: Str, _ needle: Str) -> Bool {
+    return s.contains(needle)
+}
+
+func prefixed(_ s: Str, _ p: Str) -> Bool {
+    return s.startsWith(p)
+}
+
+func suffixed(_ s: Str, _ p: Str) -> Bool {
+    return s.endsWith(p)
+}
+
+// The file-extension shape a real tool needs: slice off everything after the
+// first dot. Returns the whole string when there is no dot.
+func afterDot(_ s: Str) -> Str {
+    if let dot = s.find(".") {
+        return s.slice(dot + 1, s.len())
+    }
+    return s
+}
+
+// The same queries run against an *owned* `String` receiver, proving the
+// synthesized surface is shared across String and Str. Builds "Hello, <who>!"
+// and reports whether the finished string contains an independent needle.
+func builtContains(_ who: Str, _ needle: Str) using Alloc -> Bool {
+    var s: String = "Hello, "
+    s.append(who)
+    s.append("!")
+    return s.contains(needle)
+}

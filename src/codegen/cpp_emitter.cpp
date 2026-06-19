@@ -396,6 +396,33 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    v.pop_back();\n";
     hdr << "    return last;\n";
     hdr << "}\n\n";
+    // §18.5 String/Str read-only query helpers. All operate on a
+    // std::string_view so the owned-String and borrowed-Str receivers share one
+    // lowering. str_slice clamps [from, to) into range (an out-of-range or
+    // inverted span yields an empty view rather than UB); str_byte_at folds the
+    // bounds check into the `UInt8?` the resolver promises; str_find maps the
+    // npos sentinel onto `Int?`.
+    hdr << "inline std::string_view str_slice(std::string_view s, std::intptr_t from, "
+           "std::intptr_t to) {\n";
+    hdr << "    auto n = static_cast<std::intptr_t>(s.size());\n";
+    hdr << "    if (from < 0) from = 0;\n";
+    hdr << "    if (to > n) to = n;\n";
+    hdr << "    if (from > to) from = to;\n";
+    hdr << "    return s.substr(static_cast<std::size_t>(from), "
+           "static_cast<std::size_t>(to - from));\n";
+    hdr << "}\n\n";
+    hdr << "inline std::optional<std::uint8_t> str_byte_at(std::string_view s, "
+           "std::intptr_t i) {\n";
+    hdr << "    if (i < 0 || static_cast<std::size_t>(i) >= s.size()) return std::nullopt;\n";
+    hdr << "    return static_cast<std::uint8_t>("
+           "static_cast<unsigned char>(s[static_cast<std::size_t>(i)]));\n";
+    hdr << "}\n\n";
+    hdr << "inline std::optional<std::intptr_t> str_find(std::string_view s, "
+           "std::string_view needle) {\n";
+    hdr << "    auto p = s.find(needle);\n";
+    hdr << "    if (p == std::string_view::npos) return std::nullopt;\n";
+    hdr << "    return static_cast<std::intptr_t>(p);\n";
+    hdr << "}\n\n";
     // §18 filesystem I/O. read_file slurps the whole file into a string
     // (std::nullopt if it can't be opened); write_file truncates + writes,
     // returning whether the stream stayed good. Both back the Fs-gated
@@ -3770,9 +3797,9 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     break;
                 }
             }
-            // §18.5 String methods: `append(x)` → `.append(x)` (std::string's
-            // string_view overload takes a Str/StrConst arg directly);
-            // `len()` → `.size()` as Int.
+            // §18.5 String mutator: `append(x)` → `.append(x)` (std::string's
+            // string_view overload takes a Str/StrConst arg directly). Owned
+            // String receiver only.
             if (auto base_t = resolution_->type_of(mem.base.get());
                 base_t != nullptr && base_t->kind() == sema::TypeKind::String) {
                 if (mem.member == "append" && c.args.size() == 1) {
@@ -3782,10 +3809,65 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << ")";
                     break;
                 }
+            }
+            // §18.5 String/Str read-only queries. The owned std::string and the
+            // borrowed std::string_view both carry these members, and the
+            // `__vstr::str_*` helpers take a string_view (a std::string receiver
+            // converts implicitly), so one lowering serves all three string
+            // kinds. len/isEmpty/contains/startsWith/endsWith map to the
+            // matching member; slice/byteAt/find go through the clamping
+            // preamble helpers (returning Str / UInt8? / Int?).
+            if (auto base_t = resolution_->type_of(mem.base.get());
+                base_t != nullptr
+                && (base_t->kind() == sema::TypeKind::String
+                    || base_t->kind() == sema::TypeKind::Str
+                    || base_t->kind() == sema::TypeKind::StrConst)) {
                 if (mem.member == "len" && c.args.empty()) {
                     os << "static_cast<std::intptr_t>(";
                     emit_expr(os, *mem.base);
                     os << ".size())";
+                    break;
+                }
+                if (mem.member == "isEmpty" && c.args.empty()) {
+                    emit_expr(os, *mem.base);
+                    os << ".empty()";
+                    break;
+                }
+                if (mem.member == "slice" && c.args.size() == 2) {
+                    os << "__vstr::str_slice(";
+                    emit_expr(os, *mem.base);
+                    os << ", static_cast<std::intptr_t>(";
+                    emit_expr(os, *c.args[0].value);
+                    os << "), static_cast<std::intptr_t>(";
+                    emit_expr(os, *c.args[1].value);
+                    os << "))";
+                    break;
+                }
+                if (mem.member == "byteAt" && c.args.size() == 1) {
+                    os << "__vstr::str_byte_at(";
+                    emit_expr(os, *mem.base);
+                    os << ", static_cast<std::intptr_t>(";
+                    emit_expr(os, *c.args[0].value);
+                    os << "))";
+                    break;
+                }
+                if (mem.member == "find" && c.args.size() == 1) {
+                    os << "__vstr::str_find(";
+                    emit_expr(os, *mem.base);
+                    os << ", ";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
+                    break;
+                }
+                if ((mem.member == "contains" || mem.member == "startsWith"
+                     || mem.member == "endsWith")
+                    && c.args.size() == 1) {
+                    emit_expr(os, *mem.base);
+                    os << (mem.member == "contains"     ? ".contains("
+                           : mem.member == "startsWith" ? ".starts_with("
+                                                        : ".ends_with(");
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
                     break;
                 }
             }

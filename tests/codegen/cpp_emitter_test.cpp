@@ -3011,6 +3011,31 @@ TEST_CASE("String lowers to std::string with new / append / len") {
     CHECK(f.out.source.find("static_cast<std::intptr_t>(s.size())") != std::string::npos);
 }
 
+TEST_CASE("String/Str read-only queries lower to string_view members + str_* helpers") {
+    SemaEmitFixture f("func q(_ s: Str) -> Int {\n"
+                      "    let n: Int = s.len()\n"
+                      "    let e: Bool = s.isEmpty()\n"
+                      "    let sub: Str = s.slice(1, n)\n"
+                      "    let b: UInt8? = s.byteAt(0)\n"
+                      "    let p: Int? = s.find(\".\")\n"
+                      "    let c: Bool = s.contains(\"x\")\n"
+                      "    let pre: Bool = s.startsWith(\"a\")\n"
+                      "    let suf: Bool = s.endsWith(\"z\")\n"
+                      "    return n\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.source.find("static_cast<std::intptr_t>(s.size())") != std::string::npos);
+    CHECK(f.out.source.find("s.empty()") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::str_slice(s, static_cast<std::intptr_t>(1)")
+          != std::string::npos);
+    CHECK(f.out.source.find("__vstr::str_byte_at(s, static_cast<std::intptr_t>(0))")
+          != std::string::npos);
+    CHECK(f.out.source.find("__vstr::str_find(s, std::string_view(\".\"))") != std::string::npos);
+    CHECK(f.out.source.find("s.contains(std::string_view(\"x\"))") != std::string::npos);
+    CHECK(f.out.source.find("s.starts_with(std::string_view(\"a\"))") != std::string::npos);
+    CHECK(f.out.source.find("s.ends_with(std::string_view(\"z\"))") != std::string::npos);
+}
+
 TEST_CASE("HashMap[K, V] lowers to std::unordered_map with set / get / contains / len") {
     SemaEmitFixture f("func f(_ k: Str) using Alloc -> Int32 {\n"
                       "    var m: HashMap[Str, Int32] = HashMap.new()\n"

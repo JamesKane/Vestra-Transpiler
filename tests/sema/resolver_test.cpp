@@ -397,6 +397,54 @@ TEST_CASE("string-literal patterns match a String scrutinee too") {
           == 0);
 }
 
+// ---- §18.5 String/Str read-only queries -----------------------------------
+
+TEST_CASE("the read-only query surface type-checks on a Str") {
+    // len/isEmpty/slice/byteAt/find/contains/startsWith/endsWith are all
+    // synthesized on a borrowed Str view, returning Int / Bool / Str / UInt8? /
+    // Int? respectively.
+    CHECK(check_errors("func q(_ s: Str) -> Int {\n"
+                       "    let n: Int = s.len()\n"
+                       "    let e: Bool = s.isEmpty()\n"
+                       "    let sub: Str = s.slice(0, n)\n"
+                       "    let b: UInt8? = s.byteAt(0)\n"
+                       "    let p: Int? = s.find(\".\")\n"
+                       "    let c: Bool = s.contains(\"x\")\n"
+                       "    let pre: Bool = s.startsWith(\"a\")\n"
+                       "    let suf: Bool = s.endsWith(\"z\")\n"
+                       "    return n\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("the read-only query surface type-checks on an owned String") {
+    // The same methods are shared with the owned String receiver.
+    CHECK(check_errors("func q(_ s: String) -> Bool {\n"
+                       "    let n: Int = s.len()\n"
+                       "    let sub: Str = s.slice(1, n)\n"
+                       "    let b: UInt8? = s.byteAt(0)\n"
+                       "    return s.contains(\"x\") && s.startsWith(\"a\")\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("a query needle must be a Str, not another type") {
+    // contains/find/startsWith/endsWith take a Str needle; an Int arg is a typed
+    // mismatch.
+    auto r = check_detail("func q(_ s: Str) -> Bool { return s.contains(5) }\n");
+    CHECK(r.error_count >= 1);
+}
+
+TEST_CASE("byteAt yields a UInt8 optional, not a bare byte") {
+    // The result is `UInt8?` — binding it to a non-optional UInt8 is an error,
+    // confirming the optional wrapping reached the binding.
+    auto r = check_detail("func q(_ s: Str) -> Int {\n"
+                          "    let b: UInt8 = s.byteAt(0)\n"
+                          "    return 0\n"
+                          "}\n");
+    CHECK(r.error_count >= 1);
+}
+
 // ---- §9 Optional ----------------------------------------------------------
 
 TEST_CASE("nil is assignable to any Optional<T> slot") {
