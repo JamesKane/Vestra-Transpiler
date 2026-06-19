@@ -397,6 +397,26 @@ transpiler needs is in place. Remaining niceties: `eprint`/`eprintln` to
 stderr, and formatted print over non-`Str` values (today the caller
 interpolates to a `String` first).
 
+**Self-hosting proof-of-concept shipped** — with §0 (modules), §0b (collections
++ the full string surface: query / number↔string / split) and §0c (I/O + entry
+point) all in place, the equipment stack now carries a real standalone program
+end to end. `examples/selfhost_demo.vst` is a `func main` word-frequency +
+integer-sum reporter that reads a file path from `args()`, `readFile`s it,
+tokenizes with `split` (lines then words), tabulates with a `Vec[Str]` of
+first-seen words and a `HashMap[Str, Int]` of counts, parses integer tokens with
+`toInt`, renders the report with `String.new` + `append` + `Int.toString`, echoes
+it with `print`, and `writeFile`s it — the read→tokenize→tabulate→emit shape a
+front-end takes. It transpiled clean on the first attempt (no equipment gaps
+surfaced), and the e2e (`tests/e2e/selfhost_input.txt` fixture) is a four-step
+transpile→compile→run→verify: the run asserts the summary on stdout, and a
+`grep` step verifies the written output file. This is the milestone the whole
+self-hosting arc was building toward — a non-trivial Vestra program that does
+real String/Vec/HashMap work compiles to a standalone executable and runs. Next
+real gaps it points at (the actual front-end, not toy I/O): a `Char`/byte
+iterator for hand-tokenizing, `HashMap` iteration (today set/get/contains/len
+only — the PoC tracks insertion order in a side `Vec` to emit deterministically),
+and `eprint`/stderr for diagnostics.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// Self-hosting proof-of-concept. A standalone Vestra program (a `func main` is
+// the real C++ entry, so this compiles to an executable with no driver) that
+// drives the whole self-hosting equipment stack end to end:
+//
+//   * §18 command-line args   — args() reads the input/output paths from argv
+//   * §18 filesystem I/O       — readFile slurps the input, writeFile emits the report
+//   * §18 stdout               — print echoes the report
+//   * §18.5 owned String        — the report is built with String.new + append
+//   * §18.5 Vec[T]              — distinct words tracked in first-seen order
+//   * §18.5 HashMap[K, V]       — word -> count
+//   * §18.5 String queries      — split / toInt / toString / slice / endsWith / isEmpty / len
+//
+// The task: read a text file, count word frequencies (a word is a non-empty
+// whitespace-separated token), sum the tokens that are integers, and write a
+// report. This is the shape a real front-end takes — read source, tokenize,
+// tabulate, emit — so getting it through the pipeline is the self-hosting probe.
+
+// Strip a trailing carriage return so CRLF input tokenizes like LF input.
+func trimCR(_ s: Str) -> Str {
+    if s.endsWith("\r") {
+        return s.slice(0, s.len() - 1)
+    }
+    return s
+}
+
+// Tabulate the words + integer sum of `content` and render the report.
+func buildReport(_ content: Str) using Alloc -> String {
+    var words: Vec[Str] = Vec.new()
+    var counts: HashMap[Str, Int] = HashMap.new()
+    var total: Int = 0
+    var sum: Int = 0
+
+    for line in content.split("\n") {
+        for token in line.split(" ") {
+            let word = trimCR(token)
+            if !word.isEmpty() {
+                total = total + 1
+                if let n = word.toInt() {
+                    sum = sum + n
+                }
+                if counts.contains(word) {
+                    counts.set(word, (counts.get(word) ?? 0) + 1)
+                } else {
+                    words.push(word)
+                    counts.set(word, 1)
+                }
+            }
+        }
+    }
+
+    var out: String = ""
+    out.append("words: ")
+    out.append(total.toString())
+    out.append("\n")
+    out.append("unique: ")
+    out.append(words.len().toString())
+    out.append("\n")
+    out.append("sum: ")
+    out.append(sum.toString())
+    out.append("\n")
+    for word in words {
+        out.append(word)
+        out.append(": ")
+        out.append((counts.get(word) ?? 0).toString())
+        out.append("\n")
+    }
+    return out
+}
+
+// Read `inPath`, build the report, echo it, and write it to `outPath`.
+func run(_ inPath: Str, _ outPath: Str) using Alloc, Fs, Log -> Int32 {
+    if let content = readFile(inPath) {
+        let report = buildReport(content)
+        print(report)
+        if writeFile(outPath, report) {
+            return 0
+        }
+        println("write failed")
+        return 1
+    }
+    println("read failed")
+    return 1
+}
+
+func main() -> Int32 {
+    with Alloc {
+        with Fs {
+            with Log {
+                let argv = args()
+                if argv.len() < 3 {
+                    println("usage: selfhost <input> <output>")
+                    return 1
+                }
+                let inPath = argv.get(1) ?? ""
+                let outPath = argv.get(2) ?? ""
+                return run(inPath, outPath)
+            }
+        }
+    }
+}

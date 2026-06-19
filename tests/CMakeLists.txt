@@ -2650,6 +2650,40 @@ set_tests_properties(e2e_args_demo_run PROPERTIES
     DEPENDS                e2e_args_demo_compile
     PASS_REGULAR_EXPRESSION "arg: beta")
 
+# Self-hosting proof-of-concept: a standalone `func main` program that reads a
+# file (argv + readFile), tokenizes with split, tabulates with Vec + HashMap,
+# renders a report with String + toString, writes it (writeFile), and echoes it
+# (print). Drives the whole self-hosting equipment stack end to end. The run
+# asserts the summary on stdout; a verify step greps the written output file.
+set(e2e_selfhost_input   ${CMAKE_SOURCE_DIR}/examples/selfhost_demo.vst)
+set(e2e_selfhost_fixture ${CMAKE_SOURCE_DIR}/tests/e2e/selfhost_input.txt)
+
+add_test(
+    NAME    e2e_selfhost_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_selfhost_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_selfhost_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/selfhost_demo.cpp
+            -o ${e2e_workdir}/selfhost_app)
+set_tests_properties(e2e_selfhost_demo_compile PROPERTIES DEPENDS e2e_selfhost_demo_transpile)
+
+add_test(
+    NAME    e2e_selfhost_demo_run
+    COMMAND ${e2e_workdir}/selfhost_app ${e2e_selfhost_fixture} ${e2e_workdir}/selfhost_out.txt)
+set_tests_properties(e2e_selfhost_demo_run PROPERTIES
+    DEPENDS                e2e_selfhost_demo_compile
+    PASS_REGULAR_EXPRESSION "words: 14\nunique: 10\nsum: 42")
+
+# Verify the written report file directly (the run only proves stdout).
+add_test(
+    NAME    e2e_selfhost_demo_verify
+    COMMAND grep -F "the: 4" ${e2e_workdir}/selfhost_out.txt)
+set_tests_properties(e2e_selfhost_demo_verify PROPERTIES DEPENDS e2e_selfhost_demo_run)
+
 # §5/§18.4 split(at:) partition primitive.
 set(e2e_split_input  ${CMAKE_SOURCE_DIR}/examples/split_demo.vst)
 set(e2e_split_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_split_demo.cpp)
