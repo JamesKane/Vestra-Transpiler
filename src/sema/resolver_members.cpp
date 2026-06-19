@@ -160,6 +160,7 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
     //   startsWith(Str)  -> Bool     prefix test
     //   endsWith(Str)    -> Bool     suffix test
     //   toInt()          -> Int?     parse the whole string as a decimal Int
+    //   split(Str)       -> Vec[Str] the pieces between each occurrence of sep
     if (owner_type->kind() == TypeKind::String || owner_type->kind() == TypeKind::Str
         || owner_type->kind() == TypeKind::StrConst) {
         TypePtr str = types_->primitive(TypeKind::Str);
@@ -169,6 +170,11 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
         if (name == "toInt") {
             return types_->make_function({},
                                          types_->make_optional(types_->primitive(TypeKind::Int)));
+        }
+        // split materializes an owned Vec of the (borrowed) pieces; it
+        // allocates, so the call is Alloc-gated in the capability checker.
+        if (name == "split") {
+            return types_->make_function({str}, types_->make_vec(str));
         }
         if (name == "isEmpty") {
             return types_->make_function({}, types_->boolean());

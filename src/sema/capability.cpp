@@ -225,6 +225,20 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                     missing_capability("Alloc", c.range);
                 }
             }
+            // §18.5 `s.split(sep)` materializes an owned Vec[Str] of the pieces,
+            // which heap-allocates — same Alloc gate, keyed on a string receiver
+            // (the Span `split(at:)` partitioner is a different, non-allocating
+            // `split`, so it is deliberately not caught here).
+            if (mem.member == "split" && c.args.size() == 1 && resolution_ != nullptr) {
+                if (auto base_t = resolution_->type_of(mem.base.get());
+                    base_t != nullptr
+                    && (base_t->kind() == sema::TypeKind::String
+                        || base_t->kind() == sema::TypeKind::Str
+                        || base_t->kind() == sema::TypeKind::StrConst)
+                    && !in_scope("Alloc")) {
+                    missing_capability("Alloc", c.range);
+                }
+            }
             // §A11 (§14.8) `pc.slot(hartId)` — cross-hart accessor.
             // The slot() returns a Ptr[T] into another hart's storage
             // without the borrow-tracking the spec's per-hart view

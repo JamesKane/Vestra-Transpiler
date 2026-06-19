@@ -318,10 +318,39 @@ cases, the `??` and `if let` consumers, a render→parse round-trip, and a
 `toString` on the 128-bit kinds (awaits a portable formatter); parsing the other
 numeric types (`toInt32` / `toFloat`); and a radix argument on both sides.
 
+**Slice 11 shipped** — **`split(sep) -> Vec[Str]`** (the tokenizer primitive a
+lexer needs). Synthesized in `lookup_method` beside the other String/Str
+queries; it materializes the pieces between each occurrence of the separator
+into an owned `Vec[Str]` (the piece views borrow the source), so the result
+plugs straight into the existing Vec surface — `for piece in s.split(",")`,
+`.len()`, `.get(i)` all work with no new machinery, and it composes with the
+previous slice's `.toInt()` for "sum the integer fields" shapes. The v0.5 choice
+is eager (a materialized vector) rather than a lazy `SplitIter` combinator — the
+result is random-access and reuses all of `Vec[T]`; the zero-allocation iterator
+form is a documented follow-on. Because it allocates the Vec, the call is
+Alloc-gated in the capability checker, keyed on a *string* receiver so it does
+not catch the unrelated, non-allocating Span `split(at:)` partitioner (which
+stays clean without Alloc — pinned by a test). Codegen lowers to a new
+`__vstr::split(s, sep)` preamble helper returning `std::vector<std::string_view>`
+(= `Vec[Str]`): adjacent / leading / trailing separators produce empty pieces so
+the piece count is always (occurrences + 1), and an empty separator yields the
+whole string as one piece rather than looping forever. Four unit tests (the
+Vec-surface use through for-in / len / get; a non-Str separator rejects; the
+Alloc gate fires/clears and the Span `split(at:)` stays gate-free; the codegen
+lowering + for-in drive) plus a transpile→compile→run e2e
+(`examples/string_split_demo.vst` + `tests/e2e/main_string_split_demo.cpp`)
+covering piece counts, the empty-piece edges, a multi-char separator, indexed
+field access, `split`+`toInt` CSV summing, word counting over non-empty pieces,
+and a `key=value` split. v0.5 carry-forwards: the lazy `SplitIter` combinator
+(zero-allocation `for`-iteration); a max-splits limit; splitting on any of a set
+of separators / on whitespace runs; and cross-statement liveness of the borrowed
+piece views (shared with `slice`, like the Span partitioners).
+
 That rounds out the bootstrap collection set: `Vec`, `String`, and `HashMap`
 each have construction, reads, mutation, iteration where applicable, the string
 read-borrow, inout-receiver discipline for their mutators, and (for strings) the
-read-only slicing + search query surface plus number↔string conversion.
+read-only slicing + search query surface, number↔string conversion, and
+separator splitting.
 
 ### 0c. I/O + entry-point (self-hosting equipment) (multi-session)
 

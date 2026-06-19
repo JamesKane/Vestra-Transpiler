@@ -440,6 +440,24 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    if (ec != std::errc{} || ptr != last) return std::nullopt;\n";
     hdr << "    return v;\n";
     hdr << "}\n\n";
+    // §18.5 String/Str.split(sep) → the owned Vec[Str] of the pieces between each
+    // occurrence of sep (the views borrow the source). Adjacent separators and a
+    // leading/trailing separator produce empty pieces, so the piece count is
+    // always (occurrences + 1); an empty separator yields the whole string as a
+    // single piece (rather than looping forever).
+    hdr << "inline std::vector<std::string_view> split(std::string_view s, "
+           "std::string_view sep) {\n";
+    hdr << "    std::vector<std::string_view> out;\n";
+    hdr << "    if (sep.empty()) { out.push_back(s); return out; }\n";
+    hdr << "    std::size_t pos = 0;\n";
+    hdr << "    while (true) {\n";
+    hdr << "        auto next = s.find(sep, pos);\n";
+    hdr << "        if (next == std::string_view::npos) { out.push_back(s.substr(pos)); break; }\n";
+    hdr << "        out.push_back(s.substr(pos, next - pos));\n";
+    hdr << "        pos = next + sep.size();\n";
+    hdr << "    }\n";
+    hdr << "    return out;\n";
+    hdr << "}\n\n";
     // §18 filesystem I/O. read_file slurps the whole file into a string
     // (std::nullopt if it can't be opened); write_file truncates + writes,
     // returning whether the stream stayed good. Both back the Fs-gated
@@ -3879,6 +3897,14 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 if (mem.member == "toInt" && c.args.empty()) {
                     os << "__vstr::parse_int(";
                     emit_expr(os, *mem.base);
+                    os << ")";
+                    break;
+                }
+                if (mem.member == "split" && c.args.size() == 1) {
+                    os << "__vstr::split(";
+                    emit_expr(os, *mem.base);
+                    os << ", ";
+                    emit_expr(os, *c.args[0].value);
                     os << ")";
                     break;
                 }

@@ -140,6 +140,27 @@ TEST_CASE("§18.5 n.toString() requires Alloc; under Alloc it is clean") {
     CHECK(check("func p(_ s: Str) -> Int { return s.toInt() ?? -1 }\n").error_count == 0);
 }
 
+TEST_CASE("§18.5 s.split(sep) requires Alloc; under Alloc it is clean") {
+    auto bad = check("func bad(_ s: Str) -> Int {\n"
+                     "    return s.split(\",\").len()\n"
+                     "}\n");
+    CHECK(bad.error_count >= 1);
+    CHECK(bad.first_message.find("missing capability 'Alloc'") != std::string::npos);
+    CHECK(check("func ok(_ s: Str) using Alloc -> Int {\n"
+                "    return s.split(\",\").len()\n"
+                "}\n")
+              .error_count
+          == 0);
+    // The Span split(at:) partitioner is a different, non-allocating `split` —
+    // it stays clean without Alloc.
+    CHECK(check("func part(_ xs: Span[Int32]) -> Int32 {\n"
+                "    let (lo, hi) = xs.split(at: 1)\n"
+                "    return 0\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 TEST_CASE("§18.5 HashMap.new() requires Alloc; set/get/contains/len under Alloc are clean") {
     auto bad = check("func bad() -> Int32 {\n"
                      "    var m: HashMap[Str, Int32] = HashMap.new()\n"

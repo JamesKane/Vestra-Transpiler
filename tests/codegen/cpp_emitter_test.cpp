@@ -3046,6 +3046,25 @@ TEST_CASE("number<->string conversion lowers to __vstr::to_string / parse_int") 
     CHECK(f.out.source.find("(__vstr::parse_int(s)).value_or(-1)") != std::string::npos);
 }
 
+TEST_CASE("split lowers to __vstr::split and drives the Vec surface") {
+    SemaEmitFixture f("func c(_ s: Str) using Alloc -> Int {\n"
+                      "    var t: Int = 0\n"
+                      "    for p in s.split(\",\") {\n"
+                      "        t = t + p.len()\n"
+                      "    }\n"
+                      "    return t + s.split(\",\").len()\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    CHECK(f.out.source.find("__vstr::split(s, std::string_view(\",\"))") != std::string::npos);
+    // The result is a Vec[Str] (std::vector<std::string_view>): the for-in
+    // iterates it and .len() reads .size().
+    CHECK(f.out.source.find("for (auto&& p : __vstr::split(s, std::string_view(\",\")))")
+          != std::string::npos);
+    CHECK(f.out.source.find(
+              "static_cast<std::intptr_t>(__vstr::split(s, std::string_view(\",\")).size())")
+          != std::string::npos);
+}
+
 TEST_CASE("HashMap[K, V] lowers to std::unordered_map with set / get / contains / len") {
     SemaEmitFixture f("func f(_ k: Str) using Alloc -> Int32 {\n"
                       "    var m: HashMap[Str, Int32] = HashMap.new()\n"

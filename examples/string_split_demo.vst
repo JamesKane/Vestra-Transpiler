@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §18.5 String/Str.split(sep) — the tokenizer primitive a lexer needs. It
+// materializes the pieces between each occurrence of the separator into an owned
+// `Vec[Str]` (the piece views borrow the source), so the result plugs straight
+// into the existing Vec surface: `for piece in s.split(...)`, `.len()`,
+// `.get(i)`. Adjacent / leading / trailing separators produce empty pieces, so
+// the piece count is always (occurrences + 1); an empty separator yields the
+// whole string as one piece.
+//
+// split allocates the Vec, so it needs `Alloc`. Parsing the pieces with
+// `.toInt()` (the previous slice) needs no further capability.
+
+module examples.string_split_demo
+
+// How many pieces a separator splits the string into.
+func pieceCount(_ s: Str, _ sep: Str) using Alloc -> Int {
+    return s.split(sep).len()
+}
+
+// The i-th field, or an empty default when out of range.
+func field(_ s: Str, _ sep: Str, _ i: Int) using Alloc -> Str {
+    return s.split(sep).get(i) ?? ""
+}
+
+// Sum the integer fields of a comma-separated record, skipping any field that
+// isn't a well-formed integer. Combines split (this slice) + toInt (previous).
+func sumCsv(_ record: Str) using Alloc -> Int {
+    var total: Int = 0
+    for field in record.split(",") {
+        total = total + (field.toInt() ?? 0)
+    }
+    return total
+}
+
+// Count the non-empty pieces (e.g. words separated by single spaces). Exercises
+// the for-in over a split result plus the isEmpty query.
+func wordCount(_ line: Str) using Alloc -> Int {
+    var n: Int = 0
+    for word in line.split(" ") {
+        if !word.isEmpty() {
+            n = n + 1
+        }
+    }
+    return n
+}
+
+// Parse a "key=value" line into its value's length, splitting on the first
+// delimiter. Shows split feeding the other string queries.
+func valueLen(_ line: Str) using Alloc -> Int {
+    let parts: Vec[Str] = line.split("=")
+    if parts.len() >= 2 {
+        return (parts.get(1) ?? "").len()
+    }
+    return 0
+}

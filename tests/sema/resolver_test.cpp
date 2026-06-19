@@ -470,6 +470,28 @@ TEST_CASE("toInt parses a string to an Int optional") {
     CHECK(r.error_count >= 1);
 }
 
+TEST_CASE("split yields a Vec[Str] usable through the Vec surface") {
+    // split(sep) -> Vec[Str]; the result drives for-in, len, and get.
+    CHECK(check_errors("func n(_ s: Str) using Alloc -> Int { return s.split(\",\").len() }\n")
+          == 0);
+    CHECK(check_errors("func f(_ s: Str) using Alloc -> Str {\n"
+                       "    let parts: Vec[Str] = s.split(\",\")\n"
+                       "    return parts.get(0) ?? \"\"\n"
+                       "}\n")
+          == 0);
+    CHECK(check_errors("func each(_ s: Str) using Alloc -> Int {\n"
+                       "    var c: Int = 0\n"
+                       "    for p in s.split(\",\") {\n"
+                       "        c = c + p.len()\n"
+                       "    }\n"
+                       "    return c\n"
+                       "}\n")
+          == 0);
+    // A non-Str separator is a typed mismatch.
+    auto r = check_detail("func n(_ s: Str) using Alloc -> Int { return s.split(5).len() }\n");
+    CHECK(r.error_count >= 1);
+}
+
 // ---- §9 Optional ----------------------------------------------------------
 
 TEST_CASE("nil is assignable to any Optional<T> slot") {
