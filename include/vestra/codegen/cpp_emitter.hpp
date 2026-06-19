@@ -115,6 +115,13 @@ private:
     void compute_move_only_types();
     [[nodiscard]] static bool is_lvalue_expr(const ast::Expr& e) noexcept;
     void emit_match(std::ostream& os, const ast::MatchExpr& m);
+    // §8 — write the explicit return type for a match-lowering lambda: the
+    // match's resolved result type, so each arm converts to one common type
+    // (a bare `int` literal arm beside an `intptr_t` arm would otherwise give
+    // the lambda / std::visit inconsistent per-arm return types). Falls back to
+    // `auto` for a Unit / Never / unresolved match (a statement-position match,
+    // where void deduction is already consistent).
+    void emit_match_result_type(std::ostream& os, const ast::MatchExpr& m);
     // §11 `select { … }` — lower to an IIFE that takes the first arm whose
     // Future event is ready (always, in the synchronous v0.5 model), binds
     // the value, and runs the body; default / std::unreachable otherwise.

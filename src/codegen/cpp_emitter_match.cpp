@@ -271,7 +271,9 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
         const bool use_if_chain = any_guard || any_duplicate;
 
         if (use_if_chain) {
-            os << "[&]() -> auto {\n";
+            os << "[&]() -> ";
+            emit_match_result_type(os, m);
+            os << " {\n";
             os << "        auto&& __vstr_m = ";
             emit_expr(os, *m.scrutinee);
             os << ";\n";
@@ -349,7 +351,9 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
         // Plain switch path — simple, no guards, distinct case labels.
         // Wildcard patterns map to `default:`; `case .a | .b:` stacks
         // both labels above one return statement.
-        os << "[&]{ switch (";
+        os << "[&]() -> ";
+        emit_match_result_type(os, m);
+        os << " { switch (";
         emit_expr(os, *m.scrutinee);
         os << ") {\n";
         auto emit_enum_labels = [&](const ast::Pattern& p, auto& self) -> bool {
@@ -409,7 +413,9 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
     // Sema verifies exhaustiveness so the std::unreachable() arm only
     // exists to satisfy C++'s "all paths must return" rule when there's
     // no user-supplied default.
-    os << "std::visit([&](auto&& __vstr_alt) -> auto {\n";
+    os << "std::visit([&](auto&& __vstr_alt) -> ";
+    emit_match_result_type(os, m);
+    os << " {\n";
     os << "        using __vstr_alt_t = std::decay_t<decltype(__vstr_alt)>;\n";
 
     // §8 group arms by case name so multiple arms for one case (the
@@ -733,8 +739,20 @@ void CppEmitter::emit_pat_bindings(std::ostream& os,
 // arm's predicate. Bindings (for IdentPat / BindPat / TuplePat
 // elements) land inside the matched branch's brace. Missing default
 // emits `std::unreachable()` to satisfy the C++ "no return path" rule.
+void CppEmitter::emit_match_result_type(std::ostream& os, const ast::MatchExpr& m) {
+    auto t = resolution_ != nullptr ? resolution_->type_of(&m) : nullptr;
+    if (t != nullptr && t->kind() != sema::TypeKind::Unit && t->kind() != sema::TypeKind::Never
+        && t->kind() != sema::TypeKind::Error) {
+        emit_sema_type(os, t);
+    } else {
+        os << "auto";
+    }
+}
+
 void CppEmitter::emit_match_value_scrutinee(std::ostream& os, const ast::MatchExpr& m) {
-    os << "[&]() -> auto {\n";
+    os << "[&]() -> ";
+    emit_match_result_type(os, m);
+    os << " {\n";
     os << "        auto&& __vstr_m = ";
     emit_expr(os, *m.scrutinee);
     os << ";\n";

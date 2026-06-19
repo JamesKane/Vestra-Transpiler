@@ -704,6 +704,22 @@ TEST_CASE("§10 move-on-consume moves move-only lvalues, leaves copyable ones") 
     CHECK(f.out.source.find("std::tuple{std::move(b),") != std::string::npos);
 }
 
+TEST_CASE("§8 a payloaded-enum match emits its result type so mixed-typed arms unify") {
+    SemaEmitFixture f("enum E { case a\n"
+                      "    case b(Int) }\n"
+                      "func f(_ e: E) -> Int {\n"
+                      "    return match e {\n"
+                      "        case .a: 0\n"
+                      "        case .b(let n): n + 1\n"
+                      "    }\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    // The visitor lambda carries an explicit result type, so the `0` (int) arm
+    // and the `n + 1` (intptr_t) arm both convert to it — std::visit requires a
+    // single return type, which a deduced `-> auto` would not give here.
+    CHECK(f.out.source.find("auto&& __vstr_alt) -> std::intptr_t") != std::string::npos);
+}
+
 TEST_CASE("box.value lowers to (*box)") {
     SemaEmitFixture f("func deref(_ b: Box[Int32]) -> Int32 { return b.value }\n");
     CHECK(f.out.source.find("(*b)") != std::string::npos);

@@ -603,15 +603,29 @@ style now works**: `let (rest, c) = parse(...); var acc: Ast = rest; return
 while the `Int` rides along as a copy. One codegen test pins the precision — a
 move-only `Box` binding/tuple-element gets `std::move`, a copyable `Vec` binding
 does not, and a call-result element is never wrapped. Full suite green (1079) —
-no existing copyable-type lowering changed. Separately discovered (a real but
-orthogonal bug, recorded for later): a bare integer literal in one arm of a
-*payloaded-enum* `match` lowers to C++ `int` while a sibling `Int` arm is
-`intptr_t`, and `std::visit`'s single-return-type rule then rejects it — so a
-match arm like `case .empty: 0` beside `case .cons: ... 1 + …` fails to compile;
-the fix is to coerce each arm to the match's result type. v0.5 carry-forwards
-(move): move-on-last-use for the *general* call-arg-by-value case behind an
-overload set (today only the no-inout sites move); and detecting move-only
-*imported* nominals (the fixpoint only sees this unit's decls).
+no existing copyable-type lowering changed. v0.5 carry-forwards (move):
+move-on-last-use for the *general* call-arg-by-value case behind an overload set
+(today only the no-inout sites move); and detecting move-only *imported*
+nominals (the fixpoint only sees this unit's decls).
+
+**Match-result-type fix shipped** — the orthogonal bug the move pass surfaced. A
+`match` lowers to a lambda (a `std::visit` visitor for a payloaded enum, an IIFE
+for a bare enum / value scrutinee) whose return type was deduced (`-> auto`).
+When one arm was a bare integer literal (C++ `int`) and a sibling was an `Int`
+expression (`intptr_t`), the per-arm deduced types disagreed and `std::visit`'s
+single-return-type requirement rejected it — so a fold like `case .empty: 0`
+beside `case .cons: head + sum(...)` failed to compile. Fix: emit an explicit
+lambda return type — the match's resolved result type — at all four lowering
+sites (value-scrutinee IIFE, guarded enum if-chain, bare-enum switch IIFE,
+payloaded `std::visit`), via a shared `emit_match_result_type` helper; each arm
+then converts to that one type. It falls back to `auto` for a Unit / Never /
+unresolved match (a statement-position match, where void deduction is already
+consistent). One codegen test (a payloaded-enum match with mixed `int`-literal /
+`intptr_t` arms emits `-> std::intptr_t`) and a transpile→compile→run e2e
+(`examples/movelist_demo.vst`) — a move-only recursive list built by a
+tuple-returning builder (move-on-consume) and folded by mixed-arm matches
+(`sum` / `length` / `maxElem`, each with a `case .empty: 0` base) — which
+exercises *both* this fix and the move pass together. Full suite green (1083).
 
 ### 1. Generics phase 2 (multi-session)
 
