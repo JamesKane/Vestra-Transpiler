@@ -80,3 +80,35 @@ TEST_CASE("enum with bare cases") {
     CHECK(e.cases.size() == 3);
     CHECK(e.cases[0].name == "red");
 }
+
+// Regression: two malformed declaration bodies in sequence must NOT hang the
+// parser. sync_to_decl() stops *at* a declaration keyword without consuming it,
+// so a malformed struct/enum body whose recovery lands on a following decl
+// keyword used to re-enter its body loop at the same token forever, emitting a
+// diagnostic each pass — an unbounded-memory hang. The forward-progress guard
+// breaks out of the body when recovery can't advance. The test passing at all
+// (parse_unit returns) is the assertion; we also confirm errors were reported.
+TEST_CASE("malformed enum followed by a struct terminates (no parse hang)") {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    // Bare enum variants (missing `case`) then a struct — the original hang.
+    auto unit = parse(sm, rep, "enum K { ident\n number\n }\nstruct T { let x: K }\n");
+    CHECK(rep.has_errors());
+}
+
+TEST_CASE("malformed struct followed by another decl terminates (no parse hang)") {
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    // Bare struct field (missing `let`/`var`) then another struct.
+    auto unit = parse(sm, rep, "struct A { x: Int }\nstruct B { let y: Int }\n");
+    CHECK(rep.has_errors());
+    // Recovery still finds the well-formed trailing struct.
+    bool found_b = false;
+    for (auto& d : unit.decls) {
+        if (d->kind == vestra::ast::NodeKind::Struct
+            && static_cast<vestra::ast::StructDecl&>(*d).name == "B") {
+            found_b = true;
+        }
+    }
+    CHECK(found_b);
+}

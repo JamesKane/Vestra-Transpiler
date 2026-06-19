@@ -67,7 +67,18 @@ Parser::parse_struct(std::vector<ast::Attribute> attrs, ast::Visibility vis, boo
                 f.kind = ast::StructDecl::Field::Kind::Embed;
             } else {
                 emit_error(peek().range, "expected 'let', 'var', 'embed', or 'func' inside struct");
+                // Forward-progress guard: sync_to_decl() stops *at* a
+                // declaration keyword (or EOF) without consuming it. If the
+                // recovery lands on one — e.g. a following `struct`/`func` when
+                // this body's closing `}` is missing — re-entering the loop here
+                // would spin forever, emitting a diagnostic each pass (an
+                // unbounded-memory hang). Bail out of the body instead; the
+                // top-level loop then parses the next declaration.
+                const auto before = pos_;
                 sync_to_decl();
+                if (pos_ == before) {
+                    break;
+                }
                 continue;
             }
             auto fstart = last_range();
@@ -292,7 +303,14 @@ std::unique_ptr<ast::EnumDecl> Parser::parse_enum(std::vector<ast::Attribute> at
                 e->methods.push_back(std::move(m));
             } else {
                 emit_error(peek().range, "expected 'case' or member in enum body");
+                // Forward-progress guard (see parse_struct): break out if the
+                // recovery stalled on a decl keyword / EOF so the body loop
+                // can't spin forever allocating diagnostics.
+                const auto before = pos_;
                 sync_to_decl();
+                if (pos_ == before) {
+                    break;
+                }
             }
         }
         skip_newlines();
@@ -347,7 +365,12 @@ std::unique_ptr<ast::ProtocolDecl> Parser::parse_protocol(ast::Visibility vis) {
             }
             if (!check(TokenKind::KwFunc) && !check(TokenKind::KwComptime)) {
                 emit_error(peek().range, "expected protocol requirement");
+                // Forward-progress guard (see parse_struct).
+                const auto before = pos_;
                 sync_to_decl();
+                if (pos_ == before) {
+                    break;
+                }
                 skip_newlines();
                 continue;
             }
@@ -382,7 +405,12 @@ std::unique_ptr<ast::ExtensionDecl> Parser::parse_extension(std::vector<ast::Att
         if (decl) {
             e->members.push_back(std::move(decl));
         } else {
+            // Forward-progress guard (see parse_struct).
+            const auto before = pos_;
             sync_to_decl();
+            if (pos_ == before) {
+                break;
+            }
         }
         skip_newlines();
     }
