@@ -323,6 +323,43 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
                 it != nullptr
                 && (it->kind() == sema::TypeKind::Vec || it->kind() == sema::TypeKind::Span
                     || it->kind() == sema::TypeKind::MutSpan)) {
+                // §18.5 tuple-pattern binding: `for (k, v) in m.entries()` over a
+                // Vec[(K, V)] lowers to a C++ structured binding in the range-for
+                // header. Nested sub-tuples bind a placeholder and unpack in
+                // sibling follow-on statements (same machinery as let / the
+                // iterator-protocol path).
+                if (f.pattern && f.pattern->kind == ast::NodeKind::TuplePat) {
+                    const auto& tp = static_cast<const ast::TuplePat&>(*f.pattern);
+                    std::vector<std::string> names;
+                    std::vector<std::pair<std::string, const ast::TuplePat*>> followons;
+                    collect_tuple_pat_names(tp, names, followons);
+                    os << "for (auto&& [";
+                    for (std::size_t i = 0; i < names.size(); ++i) {
+                        if (i != 0) {
+                            os << ", ";
+                        }
+                        os << names[i];
+                    }
+                    os << "] : ";
+                    emit_expr(os, *f.iter);
+                    os << ") ";
+                    if (followons.empty()) {
+                        if (f.body && f.body->kind == ast::NodeKind::BlockExpr) {
+                            emit_block(os, static_cast<const ast::BlockExpr&>(*f.body), indent);
+                            os << "\n";
+                        } else {
+                            os << "{}\n";
+                        }
+                    } else {
+                        os << "{ ";
+                        emit_tuple_pat_followons(os, followons, indent + 1);
+                        if (f.body && f.body->kind == ast::NodeKind::BlockExpr) {
+                            emit_block(os, static_cast<const ast::BlockExpr&>(*f.body), indent);
+                        }
+                        os << " }\n";
+                    }
+                    break;
+                }
                 os << "for (auto&& " << bind_name() << " : ";
                 emit_expr(os, *f.iter);
                 os << ") ";

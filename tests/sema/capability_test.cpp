@@ -189,6 +189,29 @@ TEST_CASE("§18.5 s.chars() requires Alloc; charAt + classifiers do not") {
           == 0);
 }
 
+TEST_CASE("§18.5 HashMap keys/values/entries require Alloc; reads do not") {
+    auto bad = check("func bad(_ m: HashMap[Str, Int]) -> Int {\n"
+                     "    return m.keys().len()\n"
+                     "}\n");
+    CHECK(bad.error_count >= 1);
+    CHECK(bad.first_message.find("missing capability 'Alloc'") != std::string::npos);
+    CHECK(check("func ok(_ m: HashMap[Str, Int]) using Alloc -> Int {\n"
+                "    var s: Int = 0\n"
+                "    for (k, v) in m.entries() {\n"
+                "        s = s + v\n"
+                "    }\n"
+                "    return s + m.values().len() + m.keys().len()\n"
+                "}\n")
+              .error_count
+          == 0);
+    // The reads (get/contains/len) allocate nothing — clean without Alloc.
+    CHECK(check("func r(_ m: HashMap[Str, Int], _ k: Str) -> Int {\n"
+                "    return (m.get(k) ?? 0) + m.len()\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 TEST_CASE("§18.5 HashMap.new() requires Alloc; set/get/contains/len under Alloc are clean") {
     auto bad = check("func bad() -> Int32 {\n"
                      "    var m: HashMap[Str, Int32] = HashMap.new()\n"

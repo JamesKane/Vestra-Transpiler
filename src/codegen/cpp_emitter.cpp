@@ -380,6 +380,31 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     hdr << "    if (it == m.end()) return std::nullopt;\n";
     hdr << "    return it->second;\n";
     hdr << "}\n\n";
+    // §18.5 HashMap iteration → owned Vecs of the keys / values / (key, value)
+    // tuples. Order is unspecified (it follows the unordered_map's bucket walk),
+    // matching the resolver's `keys()` / `values()` / `entries()` contract.
+    hdr << "template <class M>\n";
+    hdr << "std::vector<typename M::key_type> map_keys(const M& m) {\n";
+    hdr << "    std::vector<typename M::key_type> out;\n";
+    hdr << "    out.reserve(m.size());\n";
+    hdr << "    for (const auto& kv : m) out.push_back(kv.first);\n";
+    hdr << "    return out;\n";
+    hdr << "}\n\n";
+    hdr << "template <class M>\n";
+    hdr << "std::vector<typename M::mapped_type> map_values(const M& m) {\n";
+    hdr << "    std::vector<typename M::mapped_type> out;\n";
+    hdr << "    out.reserve(m.size());\n";
+    hdr << "    for (const auto& kv : m) out.push_back(kv.second);\n";
+    hdr << "    return out;\n";
+    hdr << "}\n\n";
+    hdr << "template <class M>\n";
+    hdr << "std::vector<std::tuple<typename M::key_type, typename M::mapped_type>> "
+           "map_entries(const M& m) {\n";
+    hdr << "    std::vector<std::tuple<typename M::key_type, typename M::mapped_type>> out;\n";
+    hdr << "    out.reserve(m.size());\n";
+    hdr << "    for (const auto& kv : m) out.emplace_back(kv.first, kv.second);\n";
+    hdr << "    return out;\n";
+    hdr << "}\n\n";
     // §18.5 Vec[T].get(i) → a bounds-checked `std::optional<T>` read (nil when
     // the signed index is out of range), and Vec[T].pop() → an
     // `std::optional<T>` that removes and returns the last element (nil when
@@ -4016,6 +4041,17 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << "static_cast<std::intptr_t>(";
                     emit_expr(os, *mem.base);
                     os << ".size())";
+                    break;
+                }
+                // §18.5 iteration: keys/values/entries → the matching __vstr
+                // helper, each returning an owned Vec (of K / V / tuple<K,V>).
+                if ((mem.member == "keys" || mem.member == "values" || mem.member == "entries")
+                    && c.args.empty()) {
+                    os << (mem.member == "keys"     ? "__vstr::map_keys("
+                           : mem.member == "values" ? "__vstr::map_values("
+                                                    : "__vstr::map_entries(");
+                    emit_expr(os, *mem.base);
+                    os << ")";
                     break;
                 }
             }

@@ -233,6 +233,12 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
     }
     // §18.5 HashMap[K, V] methods (v0.5 core): `set(K, V)` inserts/updates,
     // `get(K) -> V?` is the lookup, `contains(K) -> Bool`, `len() -> Int`.
+    // Iteration is the eager-Vec trio (mirrors `split` / `chars`): `keys() ->
+    // Vec[K]`, `values() -> Vec[V]`, `entries() -> Vec[(K, V)]`. Each
+    // materializes a Vec, so all three are Alloc-gated in the capability checker.
+    // `for (k, v) in m.entries()` destructures the 2-tuple element directly.
+    // Iteration order is unspecified (std::unordered_map) — a caller wanting a
+    // stable order sorts the Vec or keeps a side insertion-order Vec.
     if (owner_type->kind() == TypeKind::HashMap && owner_type->parts().size() == 2) {
         TypePtr K = owner_type->parts()[0];
         TypePtr V = owner_type->parts()[1];
@@ -247,6 +253,15 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
         }
         if (name == "len") {
             return types_->make_function({}, types_->primitive(TypeKind::Int));
+        }
+        if (name == "keys") {
+            return types_->make_function({}, types_->make_vec(K));
+        }
+        if (name == "values") {
+            return types_->make_function({}, types_->make_vec(V));
+        }
+        if (name == "entries") {
+            return types_->make_function({}, types_->make_vec(types_->make_tuple({K, V})));
         }
     }
     if (owner_type->kind() == TypeKind::PerCpu && owner_type->inner() != nullptr) {

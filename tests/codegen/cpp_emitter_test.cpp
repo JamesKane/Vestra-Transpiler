@@ -3087,6 +3087,26 @@ TEST_CASE("byte/char access lowers to __vstr::char_at / chars / is_* and Char co
     CHECK(f.out.source.find("__vstr::is_alpha(ch)") != std::string::npos);
 }
 
+TEST_CASE("HashMap iteration lowers to __vstr::map_* and for-(k,v) structured binding") {
+    SemaEmitFixture f("func it(_ m: HashMap[Str, Int]) using Alloc -> Int {\n"
+                      "    var s: Int = 0\n"
+                      "    for (k, v) in m.entries() {\n"
+                      "        s = s + k.len() + v\n"
+                      "    }\n"
+                      "    for x in m.values() {\n"
+                      "        s = s + x\n"
+                      "    }\n"
+                      "    return s + m.keys().len()\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    // entries() over a Vec[(K,V)] with a tuple pattern -> a C++ structured
+    // binding in the range-for header.
+    CHECK(f.out.source.find("for (auto&& [k, v] : __vstr::map_entries(m))") != std::string::npos);
+    CHECK(f.out.source.find("for (auto&& x : __vstr::map_values(m))") != std::string::npos);
+    CHECK(f.out.source.find("static_cast<std::intptr_t>(__vstr::map_keys(m).size())")
+          != std::string::npos);
+}
+
 TEST_CASE("HashMap[K, V] lowers to std::unordered_map with set / get / contains / len") {
     SemaEmitFixture f("func f(_ k: Str) using Alloc -> Int32 {\n"
                       "    var m: HashMap[Str, Int32] = HashMap.new()\n"

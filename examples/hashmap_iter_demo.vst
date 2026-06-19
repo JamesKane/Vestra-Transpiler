@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §18.5 HashMap iteration — the gap the self-hosting PoC flagged (it kept a side
+// Vec for deterministic output because the map couldn't be walked). The map now
+// yields its contents as eager Vecs, mirroring split / chars:
+//
+//   m.keys()    -> Vec[K]       every key
+//   m.values()  -> Vec[V]       every value
+//   m.entries() -> Vec[(K, V)]  every key/value pair, destructurable in for-in
+//
+// Iteration order is unspecified (the underlying std::unordered_map walks its
+// buckets) — a caller wanting a stable order sorts the Vec, so these demos only
+// assert order-independent aggregates. All three allocate a Vec, so they need
+// `Alloc`; the reads (set/get/contains/len) stay gate-free.
+
+module examples.hashmap_iter_demo
+
+// Build a word-count map from comma-separated words (each value is the count).
+// Kept private to the file; the public functions below each build one and walk
+// it, so no borrowed-view map escapes its source string.
+func countMap(_ csv: Str) using Alloc -> HashMap[Str, Int] {
+    var m: HashMap[Str, Int] = HashMap.new()
+    for w in csv.split(",") {
+        m.set(w, (m.get(w) ?? 0) + 1)
+    }
+    return m
+}
+
+// Number of distinct words — keys() into a Vec, then its length.
+func distinctCount(_ csv: Str) using Alloc -> Int {
+    return countMap(csv).keys().len()
+}
+
+// Total of all counts (= total words) — iterate values() directly.
+func totalCount(_ csv: Str) using Alloc -> Int {
+    var acc: Int = 0
+    for v in countMap(csv).values() {
+        acc = acc + v
+    }
+    return acc
+}
+
+// Sum of the key lengths — iterate keys() directly.
+func totalKeyLen(_ csv: Str) using Alloc -> Int {
+    var acc: Int = 0
+    for k in countMap(csv).keys() {
+        acc = acc + k.len()
+    }
+    return acc
+}
+
+// Sum of len(key) * count over every entry — `for (k, v)` destructures the
+// 2-tuple element of entries() directly.
+func weightedSum(_ csv: Str) using Alloc -> Int {
+    var acc: Int = 0
+    for (k, v) in countMap(csv).entries() {
+        acc = acc + k.len() * v
+    }
+    return acc
+}
+
+// The largest single count — also via entries() destructuring, proving the
+// pair is fully usable (not just summed).
+func maxCount(_ csv: Str) using Alloc -> Int {
+    var best: Int = 0
+    for (k, v) in countMap(csv).entries() {
+        if v > best {
+            best = v
+        }
+    }
+    return best
+}

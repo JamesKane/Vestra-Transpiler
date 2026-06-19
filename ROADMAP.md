@@ -446,6 +446,34 @@ iterator for hand-tokenizing, `HashMap` iteration (today set/get/contains/len
 only — the PoC tracks insertion order in a side `Vec` to emit deterministically),
 and `eprint`/stderr for diagnostics.
 
+**Char/byte tokenizing shipped** (§0b slice 12) — the first of the PoC's gaps:
+`s.charAt(Int) -> Char?`, `s.chars() -> Vec[Char]`, and `Char` ASCII classifiers
+(`isDigit`/`isAlpha`/`isAlnum`/`isSpace`), so a hand-written scanning lexer
+(comparing `c == '('`, maximal munch) is now expressible. See §0b above.
+
+**HashMap iteration shipped** — the second PoC gap. `m.keys() -> Vec[K]`,
+`m.values() -> Vec[V]`, and `m.entries() -> Vec[(K, V)]` (the eager-Vec trio,
+mirroring `split` / `chars`), so the map's contents are finally walkable —
+`for (k, v) in m.entries()` destructures the 2-tuple element directly. The
+enabling codegen change beyond the three methods + their Alloc gate (keyed on a
+HashMap receiver) was teaching the **Vec range-for path to emit a C++ structured
+binding** (`for (auto&& [k, v] : vec)`) when the loop variable is a tuple
+pattern — previously only the iterator-protocol (`.next()`) for-loop handled
+tuple patterns, and a Vec has no `.next()` to fall through to; nested sub-tuples
+reuse the same `collect_tuple_pat_names` / follow-on machinery as `let`
+destructuring. Iteration order is unspecified (the underlying `unordered_map`
+bucket walk), so a caller wanting determinism sorts the Vec or keeps a side
+insertion-order Vec (as the PoC does). Three unit tests (the Vec[K]/Vec[V]/
+Vec[(K,V)] shapes incl. `for (k, v)` destructuring; the Alloc gate fires/clears
+while the reads stay gate-free; the codegen `__vstr::map_*` + structured-binding
+lowering) plus a transpile→compile→run e2e (`examples/hashmap_iter_demo.vst` +
+`tests/e2e/main_hashmap_iter_demo.cpp`) over word-count maps, asserting only
+order-independent aggregates (distinct count via `keys`, total via `values`, and
+`len(key)*count` / max via destructured `entries`). v0.5 carry-forwards: a
+stable/insertion-ordered map (today unordered); direct `for (k, v) in m` without
+the `.entries()` call; and a zero-copy entries iterator (today materializes a
+Vec). With both gaps closed, the only remaining PoC follow-on is `eprint`/stderr.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

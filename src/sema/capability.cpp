@@ -253,6 +253,18 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                     missing_capability("Alloc", c.range);
                 }
             }
+            // §18.5 HashMap iteration — `keys()` / `values()` / `entries()` each
+            // materialize an owned Vec, so all three carry the Alloc gate (keyed
+            // on a HashMap receiver). The reads set/get/contains/len stay
+            // gate-free.
+            if ((mem.member == "keys" || mem.member == "values" || mem.member == "entries")
+                && c.args.empty() && resolution_ != nullptr) {
+                if (auto base_t = resolution_->type_of(mem.base.get());
+                    base_t != nullptr && base_t->kind() == sema::TypeKind::HashMap
+                    && !in_scope("Alloc")) {
+                    missing_capability("Alloc", c.range);
+                }
+            }
             // §A11 (§14.8) `pc.slot(hartId)` — cross-hart accessor.
             // The slot() returns a Ptr[T] into another hart's storage
             // without the borrow-tracking the spec's per-hart view

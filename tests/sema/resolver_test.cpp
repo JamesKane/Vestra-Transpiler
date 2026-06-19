@@ -525,6 +525,31 @@ TEST_CASE("Char ASCII classifiers type-check and compare against char literals")
     CHECK(r.error_count >= 1);
 }
 
+TEST_CASE("HashMap iteration yields Vec[K] / Vec[V] / Vec[(K,V)]") {
+    // keys/values return single-element Vecs; entries returns a Vec of 2-tuples
+    // destructurable in for-in.
+    CHECK(check_errors("func ks(_ m: HashMap[Str, Int]) using Alloc -> Int {\n"
+                       "    return m.keys().len()\n"
+                       "}\n")
+          == 0);
+    CHECK(check_errors("func vs(_ m: HashMap[Str, Int]) using Alloc -> Int {\n"
+                       "    var s: Int = 0\n"
+                       "    for x in m.values() {\n"
+                       "        s = s + x\n"
+                       "    }\n"
+                       "    return s\n"
+                       "}\n")
+          == 0);
+    CHECK(check_errors("func es(_ m: HashMap[Str, Int]) using Alloc -> Int {\n"
+                       "    var s: Int = 0\n"
+                       "    for (key, val) in m.entries() {\n"
+                       "        s = s + key.len() + val\n"
+                       "    }\n"
+                       "    return s\n"
+                       "}\n")
+          == 0);
+}
+
 // ---- §9 Optional ----------------------------------------------------------
 
 TEST_CASE("nil is assignable to any Optional<T> slot") {
