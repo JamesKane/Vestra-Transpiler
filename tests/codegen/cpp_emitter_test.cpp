@@ -652,11 +652,36 @@ TEST_CASE("Box[T] type lowers to std::unique_ptr<T>") {
     CHECK(out.header.find("std::unique_ptr<std::int32_t>") != std::string::npos);
 }
 
-TEST_CASE("Box.new(v) lowers to std::make_unique<T>(v)") {
+TEST_CASE("Box.new(v) lowers to std::make_unique<T>(std::move(v))") {
     SemaEmitFixture f("func mk(_ x: Int32) using Alloc -> Box[Int32] {\n"
                       "    return Box.new(x)\n"
                       "}\n");
-    CHECK(f.out.source.find("std::make_unique<std::int32_t>(x)") != std::string::npos);
+    // The box takes ownership, so the argument is moved in — required for a
+    // move-only T, harmless for a trivially-copyable one like Int32.
+    CHECK(f.out.source.find("std::make_unique<std::int32_t>(std::move(x))") != std::string::npos);
+}
+
+TEST_CASE("a recursive Box-payload enum builds and walks (move-only AST node)") {
+    // The materialized-AST shape: an enum whose payload Boxes itself is
+    // move-only, so building it relies on Box.new moving its argument and the
+    // local node being moved on return. Exercises the codegen end to end.
+    SemaEmitFixture f("enum Ast { case num(Int)\n"
+                      "    case bin(Box[Ast], Box[Ast]) }\n"
+                      "func leaf(_ n: Int) -> Ast { return Ast.num(n) }\n"
+                      "func join(_ a: Ast, _ b: Ast) using Alloc -> Ast {\n"
+                      "    return Ast.bin(Box.new(a), Box.new(b))\n"
+                      "}\n"
+                      "func size(_ e: Ast) -> Int {\n"
+                      "    return match e {\n"
+                      "        case .num(let n): 1\n"
+                      "        case .bin(let l, let r): size(l.value) + size(r.value)\n"
+                      "    }\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    // The Box-payload children move in (required — Ast is move-only).
+    CHECK(f.out.source.find("std::make_unique<Ast>(std::move(a))") != std::string::npos);
+    // Children are read through a borrow (no move): (*l) / (*r).
+    CHECK(f.out.source.find("(*l)") != std::string::npos);
 }
 
 TEST_CASE("box.value lowers to (*box)") {

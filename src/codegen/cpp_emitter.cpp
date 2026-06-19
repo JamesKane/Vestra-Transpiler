@@ -3580,9 +3580,13 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 break;
             }
         }
-        // §10 `Box.new(value)` lowers to `std::make_unique<T>(value)`.
+        // §10 `Box.new(value)` lowers to `std::make_unique<T>(std::move(value))`.
         // The element type T comes from the resolver (the type of the
-        // CallExpr itself is Box<T>; we peel that to get T).
+        // CallExpr itself is Box<T>; we peel that to get T). The argument is
+        // always consumed — the box takes sole ownership of the pointee — so it
+        // is moved in: required for a move-only T (e.g. a Box-containing
+        // recursive enum node), and harmless otherwise (`std::move` on a
+        // temporary just stays an rvalue; on a trivially-copyable T it copies).
         if (c.callee && c.callee->kind == ast::NodeKind::MemberExpr) {
             const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
             if (mem.base && mem.base->kind == ast::NodeKind::IdentExpr
@@ -3599,9 +3603,9 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 } else {
                     os << "auto";
                 }
-                os << ">(";
+                os << ">(std::move(";
                 emit_expr(os, *c.args[0].value);
-                os << ")";
+                os << "))";
                 break;
             }
             // §11 `Channel.new()` mints a fresh queue: `__vstr::Channel<T>{}`
