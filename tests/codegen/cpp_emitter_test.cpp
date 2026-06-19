@@ -2916,6 +2916,19 @@ TEST_CASE("print / println lower to std::print / std::println") {
     CHECK(f.out.source.find("std::println(\"{}\", s)") != std::string::npos);
 }
 
+TEST_CASE("eprint / eprintln lower to std::print / std::println on stderr") {
+    SemaEmitFixture f("func f(_ s: Str) using Log {\n"
+                      "    eprint(\"err: \")\n"
+                      "    eprintln(s)\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    // The stderr pair adds a leading `stderr` stream argument; the text stays a
+    // formatting argument.
+    CHECK(f.out.source.find("std::print(stderr, \"{}\", std::string_view(\"err: \"))")
+          != std::string::npos);
+    CHECK(f.out.source.find("std::println(stderr, \"{}\", s)") != std::string::npos);
+}
+
 TEST_CASE("Soa[T] lowers to a tuple-of-vectors with scatter push / gather get") {
     SemaEmitFixture f("struct Point { var x: Int32  var y: Int32 }\n"
                       "func build() using Alloc -> Int32 {\n"

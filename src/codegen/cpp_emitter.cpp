@@ -4128,17 +4128,27 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << "__vstr::unreachable_fn()";
                 break;
             }
-            // §18 `print` / `println` → std::print / std::println. The argument
-            // is passed as a formatting *argument* (not the format string), so
-            // a `{` in the text is harmless. Guarded on the builtin symbol
-            // (decl == nullptr) so a user-defined print isn't intercepted.
-            if ((callee_ident.name == "print" || callee_ident.name == "println")
+            // §18 `print` / `println` (stdout) and `eprint` / `eprintln`
+            // (stderr) → std::print / std::println, the stderr pair with a
+            // leading `stderr` stream argument. The text is passed as a
+            // formatting *argument* (not the format string), so a `{` in it is
+            // harmless. Guarded on the builtin symbol (decl == nullptr) so a
+            // user-defined print isn't intercepted.
+            if ((callee_ident.name == "print" || callee_ident.name == "println"
+                 || callee_ident.name == "eprint" || callee_ident.name == "eprintln")
                 && c.args.size() == 1) {
                 const auto* sym =
                     resolution_ != nullptr ? resolution_->symbol_of(c.callee.get()) : nullptr;
                 if (sym != nullptr && sym->decl == nullptr) {
-                    os << (callee_ident.name == "println" ? "std::println(\"{}\", "
-                                                          : "std::print(\"{}\", ");
+                    const bool err =
+                        callee_ident.name == "eprint" || callee_ident.name == "eprintln";
+                    const bool ln =
+                        callee_ident.name == "println" || callee_ident.name == "eprintln";
+                    os << (ln ? "std::println(" : "std::print(");
+                    if (err) {
+                        os << "stderr, ";
+                    }
+                    os << "\"{}\", ";
                     emit_expr(os, *c.args[0].value);
                     os << ")";
                     break;

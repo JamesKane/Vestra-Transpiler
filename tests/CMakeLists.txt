@@ -2650,6 +2650,44 @@ set_tests_properties(e2e_io_demo_run PROPERTIES
     DEPENDS                e2e_io_demo_compile
     PASS_REGULAR_EXPRESSION "Hello, Vestra!")
 
+# §18 stderr output: eprint/eprintln lower to std::print(stderr, ...). Standalone
+# (`func main`). Two redirected run steps prove the stream routing — keeping only
+# stdout shows the OUT line but not the ERR diagnostics, and keeping only stderr
+# shows the reverse.
+set(e2e_eprint_input ${CMAKE_SOURCE_DIR}/examples/eprint_demo.vst)
+
+add_test(
+    NAME    e2e_eprint_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_eprint_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_eprint_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/eprint_demo.cpp
+            -o ${e2e_workdir}/eprint_app)
+set_tests_properties(e2e_eprint_demo_compile PROPERTIES DEPENDS e2e_eprint_demo_transpile)
+
+# Keep only stdout: the OUT line is present, the ERR diagnostics are not.
+add_test(
+    NAME    e2e_eprint_demo_run_stdout
+    COMMAND sh -c "${e2e_workdir}/eprint_app 2>/dev/null")
+set_tests_properties(e2e_eprint_demo_run_stdout PROPERTIES
+    DEPENDS                 e2e_eprint_demo_compile
+    PASS_REGULAR_EXPRESSION "OUT:hello"
+    FAIL_REGULAR_EXPRESSION "ERR:")
+
+# Keep only stderr: the ERR diagnostics are present (eprint + eprintln join one
+# line), the OUT line is not.
+add_test(
+    NAME    e2e_eprint_demo_run_stderr
+    COMMAND sh -c "${e2e_workdir}/eprint_app 1>/dev/null")
+set_tests_properties(e2e_eprint_demo_run_stderr PROPERTIES
+    DEPENDS                 e2e_eprint_demo_compile
+    PASS_REGULAR_EXPRESSION "ERR:partial"
+    FAIL_REGULAR_EXPRESSION "OUT:")
+
 # §18 filesystem I/O: writeFile then readFile round-trip, printed. Standalone
 # (`func main`), so the program's own output is the assertion.
 set(e2e_fileio_input ${CMAKE_SOURCE_DIR}/examples/fileio_demo.vst)

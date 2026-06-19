@@ -422,9 +422,25 @@ args; the e2e runs it with `alpha beta`).
 
 With stdout (slice 1), file I/O (slice 2), and argv (slice 3) — plus the
 already-working `func main` entry point — the I/O equipment a self-hosting
-transpiler needs is in place. Remaining niceties: `eprint`/`eprintln` to
-stderr, and formatted print over non-`Str` values (today the caller
-interpolates to a `String` first).
+transpiler needs is in place. Remaining nicety: formatted print over non-`Str`
+values (today the caller interpolates to a `String` first, or uses `toString`).
+
+**Slice 4 shipped** — **stderr output**: `eprint(Str)` / `eprintln(Str)` are the
+stderr twins of print / println — the diagnostics channel a self-hosting
+front-end needs so errors don't pollute the program's real stdout. Same `Str`
+argument and same `Log` capability gate (writing to a standard stream is
+observable), registered in `register_builtin_io` beside print/println and
+sharing the builtin-symbol guard (`decl == nullptr`, so a user-defined `eprint`
+isn't hijacked). Codegen mirrors the print lowering with a leading stream
+argument: `std::print(stderr, "{}", x)` / `std::println(stderr, "{}", x)` (the
+same shape the panic shim already used). Two unit tests (the Log gate fires
+without the capability / clears with it; the codegen stderr lowering) plus a
+standalone-`func main` e2e (`examples/eprint_demo.vst`) whose two redirected run
+steps *prove* the stream routing — keeping only stdout (`2>/dev/null`) shows the
+`OUT:` line and not the `ERR:` diagnostics, keeping only stderr (`1>/dev/null`)
+shows the reverse (and that `eprint` + `eprintln` join one line). v0.5
+carry-forward: formatted variants over non-`Str` values (`eprintln(n)` today
+wants `n.toString()` first).
 
 **Self-hosting proof-of-concept shipped** — with §0 (modules), §0b (collections
 + the full string surface: query / number↔string / split) and §0c (I/O + entry

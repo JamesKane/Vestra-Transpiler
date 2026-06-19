@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §18 stderr output — the diagnostics channel a self-hosting front-end needs, so
+// errors and warnings don't pollute the program's real stdout. `eprint(Str)` /
+// `eprintln(Str)` are the stderr twins of print / println: same `Str` argument,
+// same `Log` capability gate (writing to a standard stream is observable), but
+// they lower to `std::print(stderr, ...)` / `std::println(stderr, ...)`. So a
+// transpiler can write its emitted output (or a tool its real result) to stdout
+// while reporting problems on stderr, and a caller can redirect the two apart.
+
+func main() -> Int32 {
+    with Log {
+        // The program's real output goes to stdout.
+        println("OUT:hello")
+        // Diagnostics go to stderr — kept off stdout.
+        eprintln("ERR:world")
+        // eprint (no newline) then eprintln continues the same stderr line.
+        eprint("ERR:")
+        eprintln("partial")
+    }
+    return 0
+}

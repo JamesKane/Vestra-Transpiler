@@ -355,11 +355,13 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                 && resolution_->symbol_of(c.callee.get()) == nullptr && !in_scope(AsyncCap)) {
                 missing_capability(AsyncCap, c.range);
             }
-            // §18 `print` / `println` write to stdout — an observable side
-            // effect — so they require the `Log` capability. Gated on the
-            // builtin symbol (decl == nullptr) so a user-defined print isn't
-            // affected.
-            if ((bi.name == "print" || bi.name == "println") && resolution_ != nullptr) {
+            // §18 `print` / `println` (stdout) and `eprint` / `eprintln`
+            // (stderr) write to a standard stream — an observable side effect —
+            // so they require the `Log` capability. Gated on the builtin symbol
+            // (decl == nullptr) so a user-defined print isn't affected.
+            if ((bi.name == "print" || bi.name == "println" || bi.name == "eprint"
+                 || bi.name == "eprintln")
+                && resolution_ != nullptr) {
                 const auto* sym = resolution_->symbol_of(c.callee.get());
                 if (sym != nullptr && sym->decl == nullptr && !in_scope("Log")) {
                     missing_capability("Log", c.range);

@@ -906,6 +906,20 @@ TEST_CASE("§18 print / println require the Log capability") {
           == 0);
 }
 
+TEST_CASE("§18 eprint / eprintln require the Log capability (stderr is observable)") {
+    auto bad = check("func noisy() {\n"
+                     "    eprintln(\"diag\")\n"
+                     "}\n");
+    CHECK(bad.error_count >= 1);
+    CHECK(bad.first_message.find("missing capability 'Log'") != std::string::npos);
+    CHECK(check("func ok(_ s: Str) using Log {\n"
+                "    eprint(\"err: \")\n"
+                "    eprintln(s)\n"
+                "}\n")
+              .error_count
+          == 0);
+}
+
 // ---- §18 filesystem I/O capability gate ------------------------------------
 
 TEST_CASE("§18 readFile / writeFile require the Fs capability") {

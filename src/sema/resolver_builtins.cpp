@@ -104,10 +104,13 @@ void Resolver::register_builtin_panic() {
 }
 
 void Resolver::register_builtin_io() {
-    // §18 stdout output. `print` / `println` take a `Str` (a literal, a view, or
-    // an owned String read-borrowed at the call) and return Unit. Codegen lowers
-    // them to std::print / std::println; the `Log` capability gates them
-    // (capability.cpp), since writing to stdout is an observable side effect.
+    // §18 stdout / stderr output. `print` / `println` (stdout) and `eprint` /
+    // `eprintln` (stderr) take a `Str` (a literal, a view, or an owned String
+    // read-borrowed at the call) and return Unit. Codegen lowers them to
+    // std::print / std::println (the stderr pair adds a leading `stderr`
+    // stream argument); the `Log` capability gates all four (capability.cpp),
+    // since writing to a standard stream is an observable side effect. stderr is
+    // where a self-hosting front-end writes its diagnostics.
     auto unit = types_->unit();
     auto str = types_->primitive(TypeKind::Str);
     auto insert = [&](std::string name) {
@@ -122,6 +125,8 @@ void Resolver::register_builtin_io() {
     };
     insert("print");
     insert("println");
+    insert("eprint");
+    insert("eprintln");
 
     // §18 filesystem I/O (Fs-gated, see capability.cpp). `readFile(path)` reads
     // a whole file into a `String?` (nil when it can't be read); `writeFile(path,
