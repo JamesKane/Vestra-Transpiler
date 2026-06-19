@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// A move-only recursive list, built and folded — exercising two codegen fixes
+// together: the move-on-consume pass (a `List` owns a `Box`, so it is move-only,
+// and the tuple-returning builder moves it at the binding and into the returned
+// tuple) and the match-result-type fix (the folds below have a bare-literal arm
+// `case .empty: 0` beside an `intptr_t` arm, which `std::visit` rejected until
+// each arm was made to convert to the match's result type).
+
+module examples.movelist_demo
+
+enum List {
+    case empty
+    case cons(Int, Box[List])
+}
+
+// Build cons(lo, cons(lo+1, … empty)) for the half-open range [lo, hi). Returns
+// the list paired with its length — the `(value, n)` tuple-returning style.
+func build(_ lo: Int, _ hi: Int) using Alloc -> (List, Int) {
+    if lo >= hi {
+        return (List.empty, 0)
+    }
+    let (rest, n) = build(lo + 1, hi)
+    return (List.cons(lo, Box.new(rest)), n + 1)
+}
+
+// Fold: a bare-literal base-case arm beside a recursive intptr arm.
+func sum(_ xs: List) -> Int {
+    return match xs {
+        case .empty: 0
+        case .cons(let head, let tail): head + sum(tail.value)
+    }
+}
+
+func length(_ xs: List) -> Int {
+    return match xs {
+        case .empty: 0
+        case .cons(let head, let tail): 1 + length(tail.value)
+    }
+}
+
+// The largest element, or 0 for the empty list (another mixed-arm match).
+func maxElem(_ xs: List) -> Int {
+    return match xs {
+        case .empty: 0
+        case .cons(let head, let tail): {
+            let rest = maxElem(tail.value)
+            if head > rest { head } else { rest }
+        }
+    }
+}
+
+func sumRange(_ lo: Int, _ hi: Int) using Alloc -> Int {
+    let (lst, n) = build(lo, hi)
+    return sum(lst)
+}
+
+func lenRange(_ lo: Int, _ hi: Int) using Alloc -> Int {
+    let (lst, n) = build(lo, hi)
+    return length(lst)
+}
+
+func maxRange(_ lo: Int, _ hi: Int) using Alloc -> Int {
+    let (lst, n) = build(lo, hi)
+    return maxElem(lst)
+}
