@@ -1,0 +1,11 @@
+print "hello", "world";
+x = 10;
+y = 20;
+print "x =", x, "y =", y;
+print "sum =", x + y;
+print 1, 2, 3;
+print "single";
+s = "abc";
+print s, len(s), substr(s, 0, 2);
+print "mixed:", 1 < 2, "end";
+print "done"

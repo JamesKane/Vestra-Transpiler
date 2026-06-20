@@ -3196,6 +3196,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_strlib_app ${e2e_interpstr_program} | grep -qx 11 && ${e2e_workdir}/interp_strlib_app ${e2e_interpstr_program} | grep -qx Vestra")
 set_tests_properties(e2e_interp_strlib_demo_verify PROPERTIES DEPENDS e2e_interp_strlib_demo_compile)
 
+# Multi-value print: a `print` statement takes a comma-separated list of
+# expressions and prints their rendered values on one line, space-separated. A
+# single-value print is the one-element case (backward compatible). The committed
+# program proves multi-value lines, expressions in the list, mixed value types
+# per line, builtins in the list, and the single-value case.
+set(e2e_interpprn_input   ${CMAKE_SOURCE_DIR}/examples/interp_print_demo.vst)
+set(e2e_interpprn_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_print_program.calc)
+
+add_test(
+    NAME    e2e_interp_print_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpprn_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_print_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_print_demo.cpp
+            -o ${e2e_workdir}/interp_print_app)
+set_tests_properties(e2e_interp_print_demo_compile PROPERTIES DEPENDS e2e_interp_print_demo_transpile)
+
+# Run the multi-value print interpreter on the committed program; final result.
+add_test(
+    NAME    e2e_interp_print_demo_run
+    COMMAND ${e2e_workdir}/interp_print_app ${e2e_interpprn_program})
+set_tests_properties(e2e_interp_print_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_print_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify multi-value lines reached stdout: a labelled int pair (x = 10 y = 20)
+# and a mixed string/bool/string line (mixed: true end).
+add_test(
+    NAME    e2e_interp_print_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_print_app ${e2e_interpprn_program} | grep -qx 'x = 10 y = 20' && ${e2e_workdir}/interp_print_app ${e2e_interpprn_program} | grep -qx 'mixed: true end'")
+set_tests_properties(e2e_interp_print_demo_verify PROPERTIES DEPENDS e2e_interp_print_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

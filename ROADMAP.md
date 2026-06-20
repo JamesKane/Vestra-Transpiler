@@ -944,6 +944,27 @@ dynamically-typed interpreter can now both construct and decompose strings.
 Natural next steps: `find` / `contains` builtins (the search half of the string
 surface), or `print` of multiple comma-separated values.
 
+**Multi-value `print` shipped.** `examples/interp_print_demo.vst` grows the
+`print` statement from a single expression to a comma-separated list, printed on
+one line, space-separated (Python-style) and newline-terminated. A single-value
+`print` is just the one-element case, so every earlier program prints
+identically (the e2e suite for the prior interpreter slices is unchanged). The
+`print` arm of `pStmt` parses the first expression, then while a comma follows
+parses the next, appending `" "` + its `format` to one line `String`, and
+`println`s the line once; each operand is rendered by its tag, so a single
+`print` can mix ints, bools, and strings. Building the line is unconditional but
+only the `println` is gated on `live`, so re-parsing a body (the while-loop and
+untaken-branch skip passes) advances the token cursor identically. The statement
+returns the last value. No compiler change. The e2e runs the built tool on a
+committed program (`tests/e2e/interp_print_program.calc`) asserting a two-string
+line (`hello world`), a labelled int pair (`x = 10 y = 20`), an expression in the
+list (`sum = 30`), a three-int line (`1 2 3`), the single-value case (`single`),
+builtins in the list (`s, len(s), substr(s, 0, 2)` = `abc 3 ab`), and a mixed
+string/bool/string line (`mixed: true end`). The interpreter's output side is now
+a real `print`, not a one-value echo. Natural next steps: `find` / `contains`
+string builtins (the search half of the surface), or a string-keyed value map as
+a first compound data type.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
