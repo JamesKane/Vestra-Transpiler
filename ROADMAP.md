@@ -1206,6 +1206,26 @@ interpreter is now genuinely higher-order over its list type. Natural next steps
 a `filterList(xs, fn)` companion (keep elements where the named predicate is true),
 or a `set(xs, i, v)` / `remove(m, k)` pair to modify lists and maps in place.
 
+**`filterList(xs, fn)` shipped, the higher-order companion to `mapList`.**
+`examples/interp_filter_demo.vst` keeps each element of a list value for which a
+named predicate returns a truthy value, collecting the survivors into a new list.
+Like `mapList`, the predicate is resolved by name through `callFunc` (a user `fn`
+or a builtin), and the keep decision uses the same `truthy` rule the interpreter
+applies to `if` / `while`, so a predicate returning a boolean, a nonzero int, a
+string, or a compound all behave consistently. With `mapList` and the reductions,
+the interpreter now has the full map / filter / reduce pipeline. No compiler
+change. The e2e runs the built tool on a committed program
+(`tests/e2e/interp_filter_program.calc`) building `1..10` and asserting an
+even-number filter (`filterList(nums, "isEven")` = `2,4,6,8,10`), a
+greater-than-5 filter (`6,7,8,9,10`), filter-then-reduce
+(`len(filterList(...))` = 5, `sum(filterList(...))` = 30), a full
+filter-then-map-then-join pipeline (`mapList(filterList(nums, "isEven"),
+"square")` = `4 16 36 64 100`), and an empty result (`filterList(nums, "huge")`
+has length 0). The interpreter is now a small but complete list-processing
+language. Natural next steps: a `reduceList(xs, fn, init)` to fold with a
+two-argument user function (generalizing `sum`), or a `set(xs, i, v)` /
+`remove(m, k)` pair to modify lists and maps in place.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

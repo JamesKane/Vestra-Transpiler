@@ -1,0 +1,14 @@
+fn isEven(x) = x - (x / 2) * 2 == 0;
+fn big(x) = x > 5;
+fn square(x) = x * x;
+fn huge(x) = x > 100;
+nums = listNew();
+i = 1;
+while i < 11 do { nums = push(nums, i); i = i + 1 };
+print "evens:", join(filterList(nums, "isEven"), ",");
+print "bigs:", join(filterList(nums, "big"), ",");
+print "count evens:", len(filterList(nums, "isEven"));
+print "sum evens:", sum(filterList(nums, "isEven"));
+print "even sq:", join(mapList(filterList(nums, "isEven"), "square"), " ");
+print "huge:", len(filterList(nums, "huge"));
+print "done"
