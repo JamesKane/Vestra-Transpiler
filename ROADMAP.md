@@ -866,6 +866,32 @@ tagged values — the data side of a dynamically-typed language, in Vestra.
 Natural next steps: string concatenation (an owned `String` in the value), or
 variables / `print` over `Value` in the full interpreter.
 
+**The tagged `Value` threaded through the *full* interpreter shipped.**
+`examples/interp_value_demo.vst` merges the two prior strands: the focused
+evaluator's `Value` (int / bool / str) is now the value type of the *whole*
+standalone tool — lexer, token-stream parser, the variable environment,
+recursive n-ary functions, `while` loops, and `print`. The environment is now
+`HashMap[Str, Value]` (was `HashMap[Str, Int]`), so a variable can hold an
+integer, a boolean, or a string; function arguments are a `Vec[Value]` and the
+call frame a `HashMap[Str, Value]`; `print` renders any value by its tag via
+`format`; comparison / `==` produce booleans; and `if` may pick between branches
+of *different* value types. The one thing worth recording: storing a move-only
+`Value` in a `HashMap` and reading it back (`env.set(name, v)` then
+`env.get(name) ?? Value.int(0)`) just works — every Vestra enum is
+copy-constructible at the C++ layer, so the read out of the map copies rather
+than moves, and the checker did not flag a use-after-move (no compiler change
+needed). The `str` payload is a `Str` view that borrows the program source,
+which outlives the run. It transpiled and compiled clean on the first pass; the
+e2e runs the built executable on a committed program
+(`tests/e2e/interp_value_program.calc`) and asserts a string variable (`hello`),
+recursion over `Value` (`fact(6)` = 720), a while-loop accumulation (55), a
+structural `==` (`true`), and a heterogeneous `if` (`big`) all flow through the
+tagged value type, plus the final `result: done` (the last statement is a
+string). The self-hosting interpreter is now a small dynamically-typed language —
+variables, recursion, loops, and output, all over a tagged value. Natural next
+steps: string concatenation (an owned `String` in the value, the first heap-owned
+payload), or comparison operators producing typed errors on bad operands.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

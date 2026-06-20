@@ -3083,6 +3083,45 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_app ${e2e_interp_program} | grep -qx 120")
 set_tests_properties(e2e_interp_demo_verify PROPERTIES DEPENDS e2e_interp_demo_compile)
 
+# The tagged Value, threaded through the *full* standalone interpreter: the
+# variable environment is now HashMap[Str, Value], so a variable can hold an int,
+# a bool, or a string; `print` renders each by its tag; comparison / == produce
+# bool; and `if` may pick between branches of different value types. The run
+# executes a committed .calc program whose output proves a string variable
+# (hello), recursion over Value (fact(6) = 720), a while-loop accumulation (55),
+# and a heterogeneous `if` (big) all flow through the tagged value type.
+set(e2e_interpval_input   ${CMAKE_SOURCE_DIR}/examples/interp_value_demo.vst)
+set(e2e_interpval_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_value_program.calc)
+
+add_test(
+    NAME    e2e_interp_value_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpval_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_value_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_value_demo.cpp
+            -o ${e2e_workdir}/interp_value_app)
+set_tests_properties(e2e_interp_value_demo_compile PROPERTIES DEPENDS e2e_interp_value_demo_transpile)
+
+# Run the value interpreter on the committed program; its final `result: done`
+# (the last statement is a string) goes to stdout.
+add_test(
+    NAME    e2e_interp_value_demo_run
+    COMMAND ${e2e_workdir}/interp_value_app ${e2e_interpval_program})
+set_tests_properties(e2e_interp_value_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_value_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify the value-typed outputs reached stdout: a string variable (hello) and
+# recursion producing an int (720) — both rendered through the tagged Value.
+add_test(
+    NAME    e2e_interp_value_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_value_app ${e2e_interpval_program} | grep -qx hello && ${e2e_workdir}/interp_value_app ${e2e_interpval_program} | grep -qx 720")
+set_tests_properties(e2e_interp_value_demo_verify PROPERTIES DEPENDS e2e_interp_value_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

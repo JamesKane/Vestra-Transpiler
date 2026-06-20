@@ -1,0 +1,11 @@
+greeting = "hello";
+print greeting;
+fn fact(n) = if n < 2 then 1 else n * fact(n - 1);
+print fact(6);
+sum = 0;
+i = 1;
+while i < 11 do { sum = sum + i; i = i + 1 };
+print sum;
+print greeting == "hello";
+print if fact(6) < sum then "small" else "big";
+print "done"
