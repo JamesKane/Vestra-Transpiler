@@ -1322,6 +1322,28 @@ while the original still has `b`, the removed map lacking `b`, and a missing-key
 not only rebuilt. Natural next steps: a `hasValue(m, v)` or list membership test,
 or numeric `abs` / `mod` builtins to round out the arithmetic surface.
 
+**`abs` / `mod` shipped, rounding out the arithmetic, plus a FizzBuzz capstone.**
+`examples/interp_arith_demo.vst` adds the two numeric builtins the operators
+(`+ - * /`) left out: `abs(x)` is the absolute value, and `mod(a, b)` is the
+remainder `a - (a / b) * b` (0 when `b` is 0). The mini-language has no `%`, so
+`mod` is the one it most lacked; with it an even check is just `mod(x, 2) == 0`
+instead of the `x - (x / 2) * 2` workaround the earlier slices used. Both coerce
+their operands with `asInt`, like the operators. No compiler change. One honest
+finding while writing the demo: the language has no *unary minus*, so a literal
+`-7` does not parse as a negative (the `-` is consumed as a stray factor and the
+`7` is left dangling); a negative is written as a subtraction, e.g. `abs(0 - 7)`.
+The e2e runs the built tool on a committed program
+(`tests/e2e/interp_arith_program.calc`) asserting `abs(0 - 7)` = 7, `abs(5)` = 5,
+`mod(17, 5)` = 2, the divide-by-zero guard (`mod(10, 0)` = 0), a `mod`-based even
+filter (`filterList(range(10), "isEven")` = `0,2,4,6,8`), and the headline: a
+**FizzBuzz** over 1..15 written as a `fizzbuzz` function (nested `if` on `mod`,
+falling back to `toStr(n)`) mapped over a list and joined
+(`1 2 Fizz 4 Buzz Fizz 7 8 Fizz Buzz 11 Fizz 13 14 FizzBuzz`), which exercises
+`mod`, nested `if`, `mapList`, `toStr`, `range`/list build, and `join` together.
+The interpreter is now a genuinely usable small dynamic language. Natural next
+steps: unary minus in the parser (so `-7` is a literal), or a `hasValue(m, v)` /
+list membership test.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
