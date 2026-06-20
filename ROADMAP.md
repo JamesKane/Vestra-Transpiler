@@ -698,9 +698,33 @@ function's statement level (a `throw` inside an `if` is fine). One codegen test
 (the unwrap-move + the Unit cond-hoist success return) and a transpile→compile→
 run e2e (`tests/e2e/main_parser_errors_demo.cpp`) that checks a typed error for
 each of unexpected-token / unclosed-paren / trailing-input / unknown-char / empty
-input, plus `do/catch` recovery. Full suite green (1087). Natural next step: a
-multi-statement / variable-binding grammar (a `HashMap` symbol table over the
-existing collection surface).
+input, plus `do/catch` recovery. Full suite green (1087).
+
+**Variable-binding mini-language shipped — a symbol table.**
+`examples/calc_vars_demo.vst` grows the front-end into a small language with
+variables: a program is `stmt (';' stmt)*`, a statement is `ident '=' expr` (an
+assignment that binds the name) or a bare `expr`, and an identifier in an
+expression is *looked up* — so later statements use values bound by earlier ones.
+The environment is a `HashMap[Str, Int]` over the existing collection surface:
+assignment is `env.set(name, v)`, a reference is `env.get(name) ?? 0` (an
+undefined name reads as 0). The token stream now carries identifier names as
+`Str` slices of the source (`Token { kind, value, name }`, still a copyable value
+so `Vec[Token]` stays an ordinary stream), so the map keys borrow the source,
+which lives for the whole run. Evaluation happens as the parser descends (the env
+threads through `pExpr`/`pTerm`/`pFactor` as a read parameter for lookups; the
+statement driver `set`s it between statements), so the slice's focus is the
+symbol table rather than another AST. It needed no compiler changes — it composes
+the char toolkit, `Vec`, `HashMap`, enums, structs, and `inout` threading that
+the recent slices built — and transpiled + compiled clean on the first attempt.
+The e2e (`tests/e2e/main_calc_vars_demo.cpp`) checks binding + reference
+(`x = 5; x + 3 == 8`), several bindings (`a = 2; b = 3; a * b == 6`), a binding
+that uses an earlier one (`x = 10; y = x * 2; x + y == 30`), reassignment that
+reads the old value (`x = 1; x = x + 1; x = x + 1; x == 3`), multi-letter names,
+and undefined / empty programs. The self-hosting front-end now spans lexing,
+token-stream parsing, a move-only AST, evaluation, typed parse errors, and a
+variable environment — a real, if small, interpreter. Natural next steps:
+functions / `if` in the mini-language, or wiring the typed parse errors into the
+variable interpreter.
 
 ### 1. Generics phase 2 (multi-session)
 
