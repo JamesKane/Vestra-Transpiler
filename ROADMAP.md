@@ -1043,6 +1043,28 @@ interpreter now has two compound types (map and list) and can enumerate a map.
 Natural next steps: `split(s, sep)` returning a list (a producer for the list
 type from strings), or list builtins `push` / `concat` to build lists directly.
 
+**`split(s, sep)` returning a list shipped.** `examples/interp_split_demo.vst`
+adds the other natural producer of the list value (the first was `keys`): `split`
+cuts a string value into the pieces between each occurrence of a separator and
+returns them as a list of string values, which the existing `len` / `at` consume.
+It lowers onto the synthesized `Str.split(sep) -> Vec[Str]`, copying each piece
+into an owned-`String` value so the list owns its bytes rather than borrowing the
+source. The piece count is always occurrences + 1, so adjacent / leading /
+trailing separators yield empty pieces, and an empty separator yields the whole
+string as one piece. Unlike a `keys` list, a `split` list preserves order, so
+indexed access and a rebuild-by-iteration are deterministic. No compiler change.
+The e2e runs the built tool on a committed program
+(`tests/e2e/interp_split_program.calc`) asserting the piece count
+(`len(split("a,b,c,d", ","))` = 4), indexed access (`at(parts, 0)` = `a`,
+`at(parts, 3)` = `d`), a deterministic rebuild that concatenates the pieces back
+(`joined: abcd`), a space split (`split("the quick brown fox", " ")` has 4
+pieces, piece 1 is `quick`), the empty-middle-piece edge case
+(`len(split("a,,b", ","))` = 3), and the no-separator case
+(`at(split("nosep", ","), 0)` = `nosep`). The interpreter can now turn a string
+into a list and walk it. Natural next steps: a `join(list, sep)` builtin (the
+inverse of `split`), or a `toInt` builtin so split pieces can be summed
+numerically.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

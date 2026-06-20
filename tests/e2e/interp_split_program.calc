@@ -1,0 +1,14 @@
+parts = split("a,b,c,d", ",");
+print "n:", len(parts);
+print "first:", at(parts, 0);
+print "last:", at(parts, 3);
+joined = "";
+i = 0;
+while i < len(parts) do { joined = joined + at(parts, i); i = i + 1 };
+print "joined:", joined;
+words = split("the quick brown fox", " ");
+print "words:", len(words);
+print "word2:", at(words, 1);
+print "edge:", len(split("a,,b", ","));
+print "whole:", at(split("nosep", ","), 0);
+print "done"

@@ -3340,6 +3340,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_keys_app ${e2e_interpkeys_program} | grep -qx 'nkeys: 3' && ${e2e_workdir}/interp_keys_app ${e2e_interpkeys_program} | grep -qx 'total: 60' && ${e2e_workdir}/interp_keys_app ${e2e_interpkeys_program} | grep -qx 'big: 2'")
 set_tests_properties(e2e_interp_keys_demo_verify PROPERTIES DEPENDS e2e_interp_keys_demo_compile)
 
+# split(s, sep) returning a list: a producer for the list value from strings. It
+# cuts a string value into its pieces around a separator (piece count =
+# occurrences + 1) and returns them as a list of string values, consumed by len /
+# at. The committed program proves the piece count, indexed access, a deterministic
+# rebuild-by-iteration, an empty-middle-piece edge case, and the no-separator case.
+set(e2e_interpsplit_input   ${CMAKE_SOURCE_DIR}/examples/interp_split_demo.vst)
+set(e2e_interpsplit_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_split_program.calc)
+
+add_test(
+    NAME    e2e_interp_split_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpsplit_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_split_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_split_demo.cpp
+            -o ${e2e_workdir}/interp_split_app)
+set_tests_properties(e2e_interp_split_demo_compile PROPERTIES DEPENDS e2e_interp_split_demo_transpile)
+
+# Run the split interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_split_demo_run
+    COMMAND ${e2e_workdir}/interp_split_app ${e2e_interpsplit_program})
+set_tests_properties(e2e_interp_split_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_split_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify split feeding the list type: a piece count (n: 4) and a deterministic
+# rebuild-by-iteration over the pieces (joined: abcd).
+add_test(
+    NAME    e2e_interp_split_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_split_app ${e2e_interpsplit_program} | grep -qx 'n: 4' && ${e2e_workdir}/interp_split_app ${e2e_interpsplit_program} | grep -qx 'joined: abcd' && ${e2e_workdir}/interp_split_app ${e2e_interpsplit_program} | grep -qx 'edge: 3'")
+set_tests_properties(e2e_interp_split_demo_verify PROPERTIES DEPENDS e2e_interp_split_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.
