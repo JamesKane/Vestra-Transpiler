@@ -3772,6 +3772,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_zipmap_app ${e2e_interpzip_program} | grep -qx 'b: 2' && ${e2e_workdir}/interp_zipmap_app ${e2e_interpzip_program} | grep -qx 'sq3: 9' && ${e2e_workdir}/interp_zipmap_app ${e2e_interpzip_program} | grep -qx 'sorted: a,b,c'")
 set_tests_properties(e2e_interp_zipmap_demo_verify PROPERTIES DEPENDS e2e_interp_zipmap_demo_compile)
 
+# values(m) / entries(m): read a map's contents as lists, completing map iteration
+# alongside keys(m). values returns the value list; entries returns one [key, value]
+# two-element list per binding (read with at, since there is no tuple type). The
+# committed program aggregates over values (sum / max / sort) and sums values by
+# walking entries with nested at.
+set(e2e_interpvalues_input   ${CMAKE_SOURCE_DIR}/examples/interp_values_demo.vst)
+set(e2e_interpvalues_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_values_program.calc)
+
+add_test(
+    NAME    e2e_interp_values_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpvalues_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_values_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_values_demo.cpp
+            -o ${e2e_workdir}/interp_values_app)
+set_tests_properties(e2e_interp_values_demo_compile PROPERTIES DEPENDS e2e_interp_values_demo_transpile)
+
+# Run the values interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_values_demo_run
+    COMMAND ${e2e_workdir}/interp_values_app ${e2e_interpvalues_program})
+set_tests_properties(e2e_interp_values_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_values_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify map-reading reached stdout: a sum over the value list (vsum: 6) and a
+# sum walked over entries with nested at (entry sum: 6).
+add_test(
+    NAME    e2e_interp_values_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_values_app ${e2e_interpvalues_program} | grep -qx 'vsum: 6' && ${e2e_workdir}/interp_values_app ${e2e_interpvalues_program} | grep -qx 'entry sum: 6' && ${e2e_workdir}/interp_values_app ${e2e_interpvalues_program} | grep -qx 'sorted vals: 1,2,3'")
+set_tests_properties(e2e_interp_values_demo_verify PROPERTIES DEPENDS e2e_interp_values_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

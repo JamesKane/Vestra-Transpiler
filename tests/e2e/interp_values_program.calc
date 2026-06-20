@@ -1,0 +1,16 @@
+m = mapNew();
+m = put(m, "a", 1);
+m = put(m, "b", 2);
+m = put(m, "c", 3);
+print "vsum:", sum(values(m));
+print "nvals:", len(values(m));
+print "sorted vals:", join(sort(values(m)), ",");
+es = entries(m);
+print "nentries:", len(es);
+total = 0;
+i = 0;
+while i < len(es) do { total = total + at(at(es, i), 1); i = i + 1 };
+print "entry sum:", total;
+print "vmax:", max(values(m));
+print "empty vals:", len(values(mapNew()));
+print "done"

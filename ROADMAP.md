@@ -1283,6 +1283,24 @@ interpreter can now flow data between its two compound types in both directions
 lists). Natural next steps: a `set(xs, i, v)` / `remove(m, k)` pair to modify lists
 and maps in place, or `values(m)` / `entries(m)` to read a map's contents as lists.
 
+**`values(m)` / `entries(m)` shipped, completing map iteration.**
+`examples/interp_values_demo.vst` adds the two counterparts to `keys(m)` that round
+out reading a map: `values(m)` returns the map's values as a list, and `entries(m)`
+returns one `[key, value]` two-element list per binding. With no tuple type an
+entry is just a two-element list, read with `at(entry, 0)` / `at(entry, 1)`, which
+also exercises nested lists (a list of lists). Both mirror the underlying HashMap
+surface (`keys` / `values` / `entries`); order is unspecified, so the demos assert
+order-independent aggregates and `sort` the value list where a stable order is
+wanted. No compiler change. The e2e runs the built tool on a committed program
+(`tests/e2e/interp_values_program.calc`) aggregating over `values(m)`
+(`sum(values(m))` = 6, `max(values(m))` = 3, `sort(values(m))` joined = `1,2,3`,
+`len(values(m))` = 3) and summing values by walking `entries(m)` with a nested
+`at(at(es, i), 1)` (= 6), plus the empty-map case (`len(values(mapNew()))` = 0). A
+map's keys, values, and entries are all now readable as lists, so map and list
+data flows freely in both directions. Natural next steps: a `set(xs, i, v)` /
+`remove(m, k)` pair to modify lists and maps in place, or a `contains`-style
+`hasValue(m, v)` / membership test over a list.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
