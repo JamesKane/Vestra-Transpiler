@@ -1,0 +1,17 @@
+m = mapNew();
+m = put(m, "a", 10);
+m = put(m, "b", 20);
+m = put(m, "c", 30);
+ks = keys(m);
+print "nkeys:", len(ks);
+total = 0;
+i = 0;
+while i < len(ks) do { total = total + get(m, at(ks, i)); i = i + 1 };
+print "total:", total;
+big = 0;
+i = 0;
+while i < len(ks) do { big = big + (get(m, at(ks, i)) > 15); i = i + 1 };
+print "big:", big;
+print "empty:", len(keys(mapNew()));
+print "at oob:", at(ks, 99);
+print "done"

@@ -3304,6 +3304,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_map_app ${e2e_interpmap_program} | grep -qx 'computed: 99' && ${e2e_workdir}/interp_map_app ${e2e_interpmap_program} | grep -qx 'inner.x: 42' && ${e2e_workdir}/interp_map_app ${e2e_interpmap_program} | grep -qx 'count a: 2'")
 set_tests_properties(e2e_interp_map_demo_verify PROPERTIES DEPENDS e2e_interp_map_demo_compile)
 
+# keys(m) and an ordered list value: the interpreter's second compound type. The
+# tagged Value gains `case list(Vec[Value])`; keys(m) returns the map's keys as a
+# list, at(xs, i) indexes it, and len now spans strings and lists. The committed
+# program iterates a map by key (order-independent aggregates): a value sum, a
+# threshold count, the empty-map case, and an out-of-range index.
+set(e2e_interpkeys_input   ${CMAKE_SOURCE_DIR}/examples/interp_keys_demo.vst)
+set(e2e_interpkeys_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_keys_program.calc)
+
+add_test(
+    NAME    e2e_interp_keys_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpkeys_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_keys_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_keys_demo.cpp
+            -o ${e2e_workdir}/interp_keys_app)
+set_tests_properties(e2e_interp_keys_demo_compile PROPERTIES DEPENDS e2e_interp_keys_demo_transpile)
+
+# Run the keys interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_keys_demo_run
+    COMMAND ${e2e_workdir}/interp_keys_app ${e2e_interpkeys_program})
+set_tests_properties(e2e_interp_keys_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_keys_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify list/keys behavior reached stdout: the key count (nkeys: 3) and a
+# map-iteration value sum (total: 60), both order-independent.
+add_test(
+    NAME    e2e_interp_keys_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_keys_app ${e2e_interpkeys_program} | grep -qx 'nkeys: 3' && ${e2e_workdir}/interp_keys_app ${e2e_interpkeys_program} | grep -qx 'total: 60' && ${e2e_workdir}/interp_keys_app ${e2e_interpkeys_program} | grep -qx 'big: 2'")
+set_tests_properties(e2e_interp_keys_demo_verify PROPERTIES DEPENDS e2e_interp_keys_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

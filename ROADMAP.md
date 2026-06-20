@@ -1019,6 +1019,30 @@ real compound, recursive, value-semantic data structure. Natural next steps: a
 `keys(m)` builtin (needs an ordered list value first), or `split` returning a list
 value as the second compound type.
 
+**`keys(m)` and an ordered list value shipped, the second compound type.**
+`examples/interp_keys_demo.vst` adds a fifth `Value` case,
+`case list(Vec[Value])` (recursive like the map), so that `keys(m)` has somewhere
+to return the map's keys. Three builtins land: `keys(m)` (the keys as a list of
+string values, built by walking `m.keys()` and copying each into an owned-`String`
+value), `at(xs, i)` (the i-th element, or `int(0)` out of range), and `len`
+extended to also report a list's element count (`strLen` gained a `.list` arm
+alongside `.str`). The five exhaustive `Value` matches each gained a `.list` arm
+(a list renders as a `<list>` placeholder, is truthy, coerces to 0, is not a
+string, compares unequal). Map key order is unspecified (the backing
+`std::unordered_map` walks buckets), so `keys` is used by length and indexed
+traversal rather than by printing the list, and the demo asserts only
+order-independent aggregates. The idiom this unlocks is iterating a map: walk
+`0` up to `len(keys(m))`, `at`-index each key, and `get` its value. No compiler
+change. The e2e runs the built tool on a committed program
+(`tests/e2e/interp_keys_program.calc`) that builds a 3-entry map and asserts the
+key count (`len(keys(m))` = 3), a map-iteration value sum (`total: 60`), a
+threshold count using boolean-to-int coercion in arithmetic
+(`big = big + (get(m, at(ks, i)) > 15)` gives `big: 2`), the empty-map case
+(`len(keys(mapNew()))` = 0), and an out-of-range index (`at(ks, 99)` = 0). The
+interpreter now has two compound types (map and list) and can enumerate a map.
+Natural next steps: `split(s, sep)` returning a list (a producer for the list
+type from strings), or list builtins `push` / `concat` to build lists directly.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
