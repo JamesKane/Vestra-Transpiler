@@ -1226,6 +1226,25 @@ language. Natural next steps: a `reduceList(xs, fn, init)` to fold with a
 two-argument user function (generalizing `sum`), or a `set(xs, i, v)` /
 `remove(m, k)` pair to modify lists and maps in place.
 
+**`reduceList(xs, fn, init)` shipped, completing map / filter / reduce.**
+`examples/interp_fold_demo.vst` adds a left fold with a *two-argument* user
+function, the general form of `sum` / `min` / `max`. Starting from `init`, it
+threads an accumulator through the list, replacing it with `fn(acc, element)` at
+each step. The combining function is resolved by name through `callFunc` like
+`mapList` / `filterList`, but called with *two* arguments, so this is the first
+builtin to drive a binary user function. The accumulator loop pushes `acc` into
+the call args and then reassigns `acc` from the result (a move-then-reassign of a
+local), which the checker accepts. No compiler change. With one fold a program
+expresses many reductions; the e2e runs the built tool on a committed program
+(`tests/e2e/interp_fold_program.calc`) expressing sum (`reduceList(nums, "add",
+0)` = 14), product (`"mul", 1` = 60), max (`"maxOf", 0` = 5), a count that ignores
+the element (`fn inc(a, x) = a + 1` = 5), a string-concatenation fold
+(`reduceList(split("a,b,c", ","), "cat", "")` = `abc`), and the empty-list case
+returning `init` (42). The interpreter now has the complete map / filter / reduce
+trio over user code, plus build / read / sort on two compound types. Natural next
+steps: a `set(xs, i, v)` / `remove(m, k)` pair to modify lists and maps in place,
+or `range(n)` / `zip(xs, ys)` list producers to round out the comprehension shape.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

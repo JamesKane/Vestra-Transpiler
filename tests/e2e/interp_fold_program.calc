@@ -1,0 +1,18 @@
+fn add(a, b) = a + b;
+fn mul(a, b) = a * b;
+fn maxOf(a, b) = if a > b then a else b;
+fn cat(a, b) = a + b;
+fn inc(a, x) = a + 1;
+nums = listNew();
+nums = push(nums, 3);
+nums = push(nums, 1);
+nums = push(nums, 4);
+nums = push(nums, 1);
+nums = push(nums, 5);
+print "sum:", reduceList(nums, "add", 0);
+print "product:", reduceList(nums, "mul", 1);
+print "max:", reduceList(nums, "maxOf", 0);
+print "count:", reduceList(nums, "inc", 0);
+print "concat:", reduceList(split("a,b,c", ","), "cat", "");
+print "empty:", reduceList(listNew(), "add", 42);
+print "done"
