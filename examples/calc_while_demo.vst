@@ -1,0 +1,401 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// `while` loops — the mini-language gains iteration, so it can compute
+// imperatively. A loop needs mutable state to make progress, which adds the
+// missing piece the language did not have before: a *statement* layer that can
+// reassign variables, threaded with an `inout` environment, sitting above the
+// (read-only) expression layer.
+//
+//   stmt  = 'while' expr 'do' stmt  |  block  |  ident '=' expr  |  expr
+//   block = '{' stmt (';' stmt)* '}'
+//
+// A `while` records its condition's and body's token positions and, each
+// iteration, re-runs the parser over them (the same trick a function call uses)
+// against the shared mutable environment — so the body's assignments persist and
+// the condition eventually changes. So `sum 1..10`, an iterative factorial, and
+// even nested loops are expressible:
+//
+//   s = 0; i = 1; while i < 11 do { s = s + i; i = i + 1 }; s        -> 55
+//   f = 1; i = 1; while i < 6  do { f = f * i; i = i + 1 }; f        -> 120
+//   p = 0; i = 0; while i < 3 do { j = 0; while j < 4 do { p = p + 1; j = j + 1 }; i = i + 1 }; p -> 12
+
+module examples.calc_while_demo
+
+enum Tok {
+    case num
+    case ident
+    case kwFn
+    case kwIf
+    case kwThen
+    case kwElse
+    case kwWhile
+    case kwDo
+    case plus
+    case minus
+    case star
+    case slash
+    case lt
+    case gt
+    case lparen
+    case rparen
+    case lbrace
+    case rbrace
+    case comma
+    case assign
+    case semicolon
+    case end
+    case bad
+}
+
+struct Token {
+    let kind: Tok
+    let value: Int
+    let name: Str
+}
+
+// ---- lexer -----------------------------------------------------------------
+
+func punct(_ c: Char) -> Tok {
+    if c == '+' { return .plus }
+    if c == '-' { return .minus }
+    if c == '*' { return .star }
+    if c == '/' { return .slash }
+    if c == '<' { return .lt }
+    if c == '>' { return .gt }
+    if c == '(' { return .lparen }
+    if c == ')' { return .rparen }
+    if c == '{' { return .lbrace }
+    if c == '}' { return .rbrace }
+    if c == ',' { return .comma }
+    if c == '=' { return .assign }
+    if c == ';' { return .semicolon }
+    return .bad
+}
+
+func wordKind(_ nm: Str) -> Tok {
+    return match nm {
+        case "fn": .kwFn
+        case "if": .kwIf
+        case "then": .kwThen
+        case "else": .kwElse
+        case "while": .kwWhile
+        case "do": .kwDo
+        default: .ident
+    }
+}
+
+func lex(_ s: Str) using Alloc -> Vec[Token] {
+    var toks: Vec[Token] = Vec.new()
+    var i: Int = 0
+    while i < s.len() {
+        let c = s.charAt(i) ?? ' '
+        if c.isSpace() {
+            i = i + 1
+        } else if c.isDigit() {
+            let start = i
+            while i < s.len() && (s.charAt(i) ?? ' ').isDigit() {
+                i = i + 1
+            }
+            let v = s.slice(start, i).toInt() ?? 0
+            toks.push(Token(kind: .num, value: v, name: ""))
+        } else if c.isAlpha() {
+            let start = i
+            while i < s.len() && (s.charAt(i) ?? ' ').isAlnum() {
+                i = i + 1
+            }
+            let nm = s.slice(start, i)
+            toks.push(Token(kind: wordKind(nm), value: 0, name: nm))
+        } else {
+            toks.push(Token(kind: punct(c), value: 0, name: ""))
+            i = i + 1
+        }
+    }
+    toks.push(Token(kind: .end, value: 0, name: ""))
+    return toks
+}
+
+func peekKind(_ ts: Vec[Token], _ i: Int) -> Tok {
+    if let t = ts.get(i) {
+        return t.kind
+    }
+    return Tok.end
+}
+
+func peekVal(_ ts: Vec[Token], _ i: Int) -> Int {
+    if let t = ts.get(i) {
+        return t.value
+    }
+    return 0
+}
+
+func peekName(_ ts: Vec[Token], _ i: Int) -> Str {
+    if let t = ts.get(i) {
+        return t.name
+    }
+    return ""
+}
+
+// ---- expression layer (reads the environment) ------------------------------
+
+func callFunc(_ ts: Vec[Token], _ name: Str, _ args: Vec[Int],
+              _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int]) using Alloc -> Int {
+    if let start = fbody.get(name) {
+        if let params = fparams.get(name) {
+            var callEnv: HashMap[Str, Int] = HashMap.new()
+            var j: Int = 0
+            while j < params.len() && j < args.len() {
+                callEnv.set(params.get(j) ?? "", args.get(j) ?? 0)
+                j = j + 1
+            }
+            var bi: Int = start
+            return pExpr(ts, &bi, callEnv, fparams, fbody, true)
+        }
+    }
+    return 0
+}
+
+func pFactor(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Int],
+             _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc -> Int {
+    let k = peekKind(ts, i)
+    if k == Tok.num {
+        let v = peekVal(ts, i)
+        i = i + 1
+        return v
+    }
+    if k == Tok.ident {
+        let name = peekName(ts, i)
+        if peekKind(ts, i + 1) == Tok.lparen {
+            i = i + 2  // skip the name and '('
+            var args: Vec[Int] = Vec.new()
+            if peekKind(ts, i) != Tok.rparen {
+                args.push(pExpr(ts, &i, env, fparams, fbody, live))
+                while peekKind(ts, i) == Tok.comma {
+                    i = i + 1
+                    args.push(pExpr(ts, &i, env, fparams, fbody, live))
+                }
+            }
+            i = i + 1  // consume ')'
+            if live {
+                return callFunc(ts, name, args, fparams, fbody)
+            }
+            return 0
+        }
+        i = i + 1
+        if live {
+            return env.get(name) ?? 0
+        }
+        return 0
+    }
+    if k == Tok.lparen {
+        i = i + 1
+        let v = pExpr(ts, &i, env, fparams, fbody, live)
+        i = i + 1  // consume ')'
+        return v
+    }
+    i = i + 1
+    return 0
+}
+
+func pTerm(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Int],
+           _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc -> Int {
+    var acc: Int = pFactor(ts, &i, env, fparams, fbody, live)
+    var more: Bool = true
+    while more {
+        let k = peekKind(ts, i)
+        if k == Tok.star {
+            i = i + 1
+            acc = acc * pFactor(ts, &i, env, fparams, fbody, live)
+        } else if k == Tok.slash {
+            i = i + 1
+            let d = pFactor(ts, &i, env, fparams, fbody, live)
+            if d != 0 {
+                acc = acc / d
+            } else {
+                acc = 0
+            }
+        } else {
+            more = false
+        }
+    }
+    return acc
+}
+
+func pSum(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Int],
+          _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc -> Int {
+    var acc: Int = pTerm(ts, &i, env, fparams, fbody, live)
+    var more: Bool = true
+    while more {
+        let k = peekKind(ts, i)
+        if k == Tok.plus {
+            i = i + 1
+            acc = acc + pTerm(ts, &i, env, fparams, fbody, live)
+        } else if k == Tok.minus {
+            i = i + 1
+            acc = acc - pTerm(ts, &i, env, fparams, fbody, live)
+        } else {
+            more = false
+        }
+    }
+    return acc
+}
+
+func pCmp(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Int],
+          _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc -> Int {
+    let a = pSum(ts, &i, env, fparams, fbody, live)
+    let k = peekKind(ts, i)
+    if k == Tok.lt {
+        i = i + 1
+        let b = pSum(ts, &i, env, fparams, fbody, live)
+        if a < b {
+            return 1
+        }
+        return 0
+    }
+    if k == Tok.gt {
+        i = i + 1
+        let b = pSum(ts, &i, env, fparams, fbody, live)
+        if a > b {
+            return 1
+        }
+        return 0
+    }
+    return a
+}
+
+func pExpr(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Int],
+          _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc -> Int {
+    if peekKind(ts, i) == Tok.kwIf {
+        i = i + 1
+        let c = pCmp(ts, &i, env, fparams, fbody, live)
+        if peekKind(ts, i) == Tok.kwThen {
+            i = i + 1
+        }
+        let t = pExpr(ts, &i, env, fparams, fbody, live && c != 0)
+        if peekKind(ts, i) == Tok.kwElse {
+            i = i + 1
+        }
+        let e = pExpr(ts, &i, env, fparams, fbody, live && c == 0)
+        if c != 0 {
+            return t
+        }
+        return e
+    }
+    return pCmp(ts, &i, env, fparams, fbody, live)
+}
+
+// ---- statement layer (mutates the environment) -----------------------------
+
+// block = '{' stmt (';' stmt)* '}'
+func pBlock(_ ts: Vec[Token], _ i: inout Int, _ env: inout HashMap[Str, Int],
+            _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc -> Int {
+    i = i + 1  // consume '{'
+    var last: Int = 0
+    var more: Bool = true
+    while more {
+        let k = peekKind(ts, i)
+        if k == Tok.rbrace || k == Tok.end {
+            more = false
+        } else {
+            last = pStmt(ts, &i, &env, fparams, fbody, live)
+            if peekKind(ts, i) == Tok.semicolon {
+                i = i + 1
+            }
+        }
+    }
+    if peekKind(ts, i) == Tok.rbrace {
+        i = i + 1  // consume '}'
+    }
+    return last
+}
+
+// stmt = 'while' expr 'do' stmt | block | ident '=' expr | expr
+func pStmt(_ ts: Vec[Token], _ i: inout Int, _ env: inout HashMap[Str, Int],
+          _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc -> Int {
+    let k = peekKind(ts, i)
+    if k == Tok.kwWhile {
+        i = i + 1  // consume 'while'
+        let condStart = i
+        // Skip the condition to reach 'do', then the body to find where it ends.
+        let cskip = pExpr(ts, &i, env, fparams, fbody, false)
+        if peekKind(ts, i) == Tok.kwDo {
+            i = i + 1
+        }
+        let bodyStart = i
+        let bskip = pStmt(ts, &i, &env, fparams, fbody, false)
+        let afterBody = i
+        if live {
+            // Re-run the condition and the body against the shared environment
+            // until the condition is false. A guard bounds a runaway loop.
+            var ci: Int = condStart
+            var c: Int = pExpr(ts, &ci, env, fparams, fbody, true)
+            var guard: Int = 0
+            while c != 0 && guard < 1000000 {
+                var bi: Int = bodyStart
+                let rb = pStmt(ts, &bi, &env, fparams, fbody, true)
+                ci = condStart
+                c = pExpr(ts, &ci, env, fparams, fbody, true)
+                guard = guard + 1
+            }
+        }
+        i = afterBody
+        return 0
+    }
+    if k == Tok.lbrace {
+        return pBlock(ts, &i, &env, fparams, fbody, live)
+    }
+    if k == Tok.ident && peekKind(ts, i + 1) == Tok.assign {
+        let name = peekName(ts, i)
+        i = i + 2  // skip the name and '='
+        let v = pExpr(ts, &i, env, fparams, fbody, live)
+        if live {
+            env.set(name, v)
+        }
+        return v
+    }
+    return pExpr(ts, &i, env, fparams, fbody, live)
+}
+
+// ---- the program driver ----------------------------------------------------
+
+func runProgram(_ s: Str) using Alloc -> Int {
+    let toks = lex(s)
+    var env: HashMap[Str, Int] = HashMap.new()
+    var fparams: HashMap[Str, Vec[Str]] = HashMap.new()
+    var fbody: HashMap[Str, Int] = HashMap.new()
+    var i: Int = 0
+    var last: Int = 0
+    var more: Bool = true
+    while more {
+        let k = peekKind(toks, i)
+        if k == Tok.end {
+            more = false
+        } else if k == Tok.kwFn {
+            i = i + 1  // 'fn'
+            let name = peekName(toks, i)
+            i = i + 2  // skip the name and '('
+            var params: Vec[Str] = Vec.new()
+            if peekKind(toks, i) != Tok.rparen {
+                params.push(peekName(toks, i))
+                i = i + 1
+                while peekKind(toks, i) == Tok.comma {
+                    i = i + 1
+                    params.push(peekName(toks, i))
+                    i = i + 1
+                }
+            }
+            i = i + 1  // ')'
+            i = i + 1  // '='
+            let bodyStart = i
+            let skip = pExpr(toks, &i, env, fparams, fbody, false)
+            fparams.set(name, params)
+            fbody.set(name, bodyStart)
+        } else {
+            last = pStmt(toks, &i, &env, fparams, fbody, true)
+        }
+        if peekKind(toks, i) == Tok.semicolon {
+            i = i + 1
+        }
+    }
+    return last
+}

@@ -3019,6 +3019,33 @@ set_tests_properties(e2e_calc_multifn_demo_run PROPERTIES
     DEPENDS                 e2e_calc_multifn_demo_compile
     PASS_REGULAR_EXPRESSION "calc_multifn_demo OK")
 
+# while loops: a statement layer with a mutable (inout) environment above the
+# read-only expression layer. A loop re-runs its condition + body token ranges
+# against the shared environment. Exercises iterative sum / factorial / power,
+# nested loops, and a loop calling a function.
+set(e2e_calcwhile_input  ${CMAKE_SOURCE_DIR}/examples/calc_while_demo.vst)
+set(e2e_calcwhile_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_calc_while_demo.cpp)
+
+add_test(
+    NAME    e2e_calc_while_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_calcwhile_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_calc_while_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_calcwhile_driver} ${e2e_workdir}/calc_while_demo.cpp
+            -o ${e2e_workdir}/calc_while_demo_app)
+set_tests_properties(e2e_calc_while_demo_compile PROPERTIES DEPENDS e2e_calc_while_demo_transpile)
+
+add_test(
+    NAME    e2e_calc_while_demo_run
+    COMMAND ${e2e_workdir}/calc_while_demo_app)
+set_tests_properties(e2e_calc_while_demo_run PROPERTIES
+    DEPENDS                 e2e_calc_while_demo_compile
+    PASS_REGULAR_EXPRESSION "calc_while_demo OK")
+
 # Self-hosting proof-of-concept: a standalone `func main` program that reads a
 # file (argv + readFile), tokenizes with split, tabulates with Vec + HashMap,
 # renders a report with String + toString, writes it (writeFile), and echoes it

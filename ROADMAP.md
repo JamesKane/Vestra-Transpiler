@@ -794,9 +794,33 @@ compiled clean on the first attempt; the capped run terminated. The e2e
 positional/expression arguments, nested cross-function calls, `pow` / `gcd`
 recursion at several inputs, and the zero/one-argument cases. The self-hosting
 interpreter is now a small applicative language with recursion and n-ary
-functions, written entirely in Vestra. Natural next step: `while` loops (the
-parser would re-run a body token range like a function call), or a richer value
-type than `Int` (booleans / a tagged value via an enum payload).
+functions, written entirely in Vestra.
+
+**`while` loops shipped — the language becomes imperative.** A loop needs
+*mutable* state to make progress, which is the piece the language lacked: every
+prior layer threaded the environment *read-only*. `examples/calc_while_demo.vst`
+adds a **statement layer** above the expression layer that threads an **`inout`
+environment** — `pStmt` / `pBlock` mutate it (assignment, the loop body), while
+the expression rules still read it (passing the `inout` env onward as a read
+argument, which Vestra allows). A `while expr do stmt` records its condition's
+and body's token positions and, each iteration, re-runs the parser over them
+against the shared environment — the same token-range-replay trick a function
+call uses — so the body's assignments persist and the condition eventually
+flips; a `{ … }` block sequences statements, and a per-loop guard bounds a
+runaway. This is the first place the env is mutated *inside* evaluation, so it
+also exercises the `inout`-param-passed-onward patterns (probed first: an `inout`
+binding flows both to a read parameter and, via `&env`, to another `inout`
+parameter). It needed no compiler changes and transpiled + compiled clean on the
+first attempt; the capped run terminated (the loops converge). The e2e
+(`tests/e2e/main_calc_while_demo.cpp`) checks iterative sum / factorial / power,
+a single-statement body, a zero-iteration loop, iterative Fibonacci, a loop that
+calls a function each iteration, and **nested loops** — plus that conditionals
+and functions still compose with loops. The self-hosting interpreter now has
+lexing, token-stream parsing, a move-only AST, evaluation, typed parse errors,
+variables, control flow, recursive n-ary functions, and imperative loops — a
+genuinely usable little language, written entirely in Vestra. Natural next step:
+a richer value type than `Int` (booleans / strings via an enum-payload tagged
+value), or `print`-style output from the interpreted program.
 
 ### 1. Generics phase 2 (multi-session)
 
