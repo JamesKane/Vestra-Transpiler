@@ -1,0 +1,13 @@
+s = "hello world";
+print "find world:", find(s, "world");
+print "find o:", find(s, "o");
+print "find xyz:", find(s, "xyz");
+print "contains world:", contains(s, "world");
+print "contains xyz:", contains(s, "xyz");
+print "contains empty:", contains(s, "");
+greeting = "Hello, Vestra";
+print "find Vestra:", find(greeting, "Vestra");
+fn locate(t, n) = find(t, n);
+print "locate:", locate("abcabc", "bc");
+print "compose:", substr(s, find(s, "world"), len(s));
+print "done"

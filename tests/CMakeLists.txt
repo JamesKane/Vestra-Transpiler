@@ -3232,6 +3232,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_print_app ${e2e_interpprn_program} | grep -qx 'x = 10 y = 20' && ${e2e_workdir}/interp_print_app ${e2e_interpprn_program} | grep -qx 'mixed: true end'")
 set_tests_properties(e2e_interp_print_demo_verify PROPERTIES DEPENDS e2e_interp_print_demo_compile)
 
+# Search builtins: `find` and `contains` over string values, the search half of
+# the string surface. `find(s, needle)` returns the first index or -1,
+# `contains(s, needle)` a bool; both lower onto the synthesized String/Str search
+# surface. The committed program proves find/contains, the absent and empty-needle
+# cases, a user function calling a builtin, and a find+substr+len composition.
+set(e2e_interpsrch_input   ${CMAKE_SOURCE_DIR}/examples/interp_search_demo.vst)
+set(e2e_interpsrch_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_search_program.calc)
+
+add_test(
+    NAME    e2e_interp_search_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpsrch_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_search_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_search_demo.cpp
+            -o ${e2e_workdir}/interp_search_app)
+set_tests_properties(e2e_interp_search_demo_compile PROPERTIES DEPENDS e2e_interp_search_demo_transpile)
+
+# Run the search interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_search_demo_run
+    COMMAND ${e2e_workdir}/interp_search_app ${e2e_interpsrch_program})
+set_tests_properties(e2e_interp_search_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_search_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify search outputs reached stdout: a found index (find world: 6) and a
+# four-builtin composition (compose: world).
+add_test(
+    NAME    e2e_interp_search_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_search_app ${e2e_interpsrch_program} | grep -qx 'find world: 6' && ${e2e_workdir}/interp_search_app ${e2e_interpsrch_program} | grep -qx 'compose: world'")
+set_tests_properties(e2e_interp_search_demo_verify PROPERTIES DEPENDS e2e_interp_search_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

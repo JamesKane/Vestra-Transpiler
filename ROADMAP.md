@@ -965,6 +965,29 @@ a real `print`, not a one-value echo. Natural next steps: `find` / `contains`
 string builtins (the search half of the surface), or a string-keyed value map as
 a first compound data type.
 
+**Search builtins shipped: `find` and `contains`.**
+`examples/interp_search_demo.vst` adds the search half of the string surface to
+the mini-language, completing the `len` / `substr` set with the two operations
+that locate substrings: `find(s, needle)` returns the index of the first
+occurrence (or -1 when absent), and `contains(s, needle)` returns whether the
+needle occurs at all. Both lower onto the synthesized String/Str search surface
+(`s.find(needle)`, `s.contains(needle)`); `find`'s `Int?` result becomes -1 via
+`?? -1`. Each operand is a string value matched out to its payload through a
+nested `match` (a non-string haystack or needle yields -1 / false rather than
+faulting), and the owned-`String` binding coerces to the `Str` the search methods
+expect at the call. They join `len` / `substr` in the `callFunc` dispatch
+`match`, after the user-function lookup, so a program can still define its own
+function of any other name. No compiler change. The e2e runs the built tool on a
+committed program (`tests/e2e/interp_search_program.calc`) asserting a found
+index (`find("hello world", "world")` = 6), first-occurrence (`find(s, "o")` =
+4), the absent case (-1), `contains` true / false, the empty-needle case
+(`contains(s, "")` = true), a user function that calls a builtin (`locate`), and
+a four-builtin composition that slices from a found index to the end
+(`substr(s, find(s, "world"), len(s))` = `world`). The interpreter's string
+library is now construct (concat), measure / slice (`len` / `substr`), and search
+(`find` / `contains`). Natural next steps: a string-keyed value map as the
+interpreter's first compound data type, or `split` returning a list value.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
