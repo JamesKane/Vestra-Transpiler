@@ -1187,6 +1187,25 @@ The list type now has build, read, sort, and reduce. Natural next steps: a
 a `map`-style transform (`mapList(xs, fn)`) applying a user function to each
 element.
 
+**`mapList(xs, fn)` shipped, the interpreter's first higher-order operation.**
+`examples/interp_maplist_demo.vst` adds a transform that applies a function, named
+by a string, to each element of a list value and collects the results into a new
+list. The function is resolved through the very same `callFunc` an ordinary call
+uses, so it works with a user-defined `fn` *and* with any builtin: `callFunc` and
+the new `mapListInto` are mutually recursive (a builtin that calls back into user
+code, one argument per element), which transpiled and compiled clean. This is the
+first time the interpreter treats a function as data, passed by name. It composes
+with the rest of the list surface. No compiler change. The e2e runs the built tool
+on a committed program (`tests/e2e/interp_maplist_program.calc`) asserting a user
+function mapped over a list (`mapList(nums, "double")` joined = `2,4,6,8`,
+`mapList(nums, "square")` = `1 4 9 16`), the result folded by a reduction
+(`sum(mapList(nums, "square"))` = 30), a *builtin* mapped over a list
+(`mapList(words, "len")` over `split("a,bb,ccc", ",")` = `1,2,3`), a map-then-reduce
+(`max(mapList(words, "len"))` = 3), and a map through `toStr` (`1-2-3-4`). The
+interpreter is now genuinely higher-order over its list type. Natural next steps:
+a `filterList(xs, fn)` companion (keep elements where the named predicate is true),
+or a `set(xs, i, v)` / `remove(m, k)` pair to modify lists and maps in place.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

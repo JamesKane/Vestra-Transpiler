@@ -1,0 +1,15 @@
+fn double(x) = x * 2;
+fn square(x) = x * x;
+nums = listNew();
+nums = push(nums, 1);
+nums = push(nums, 2);
+nums = push(nums, 3);
+nums = push(nums, 4);
+print "doubled:", join(mapList(nums, "double"), ",");
+print "squared:", join(mapList(nums, "square"), " ");
+print "sum sq:", sum(mapList(nums, "square"));
+words = split("a,bb,ccc", ",");
+print "lengths:", join(mapList(words, "len"), ",");
+print "max len:", max(mapList(words, "len"));
+print "upper:", join(mapList(nums, "toStr"), "-");
+print "done"
