@@ -3083,6 +3083,32 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_app ${e2e_interp_program} | grep -qx 120")
 set_tests_properties(e2e_interp_demo_verify PROPERTIES DEPENDS e2e_interp_demo_compile)
 
+# A richer value type: a tagged Value enum (int / bool / str). Literals carry a
+# type, arithmetic stays int, comparison / == produce bool, and `if` may pick
+# between branches of different types; `format` renders by tag.
+set(e2e_calcval_input  ${CMAKE_SOURCE_DIR}/examples/calc_value_demo.vst)
+set(e2e_calcval_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_calc_value_demo.cpp)
+
+add_test(
+    NAME    e2e_calc_value_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_calcval_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_calc_value_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_calcval_driver} ${e2e_workdir}/calc_value_demo.cpp
+            -o ${e2e_workdir}/calc_value_demo_app)
+set_tests_properties(e2e_calc_value_demo_compile PROPERTIES DEPENDS e2e_calc_value_demo_transpile)
+
+add_test(
+    NAME    e2e_calc_value_demo_run
+    COMMAND ${e2e_workdir}/calc_value_demo_app)
+set_tests_properties(e2e_calc_value_demo_run PROPERTIES
+    DEPENDS                 e2e_calc_value_demo_compile
+    PASS_REGULAR_EXPRESSION "calc_value_demo OK")
+
 # Self-hosting proof-of-concept: a standalone `func main` program that reads a
 # file (argv + readFile), tokenizes with split, tabulates with Vec + HashMap,
 # renders a report with String + toString, writes it (writeFile), and echoes it

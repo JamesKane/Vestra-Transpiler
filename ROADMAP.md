@@ -838,9 +838,33 @@ that a program `print` (the recursive `fact(5) = 120`) reached stdout. It needed
 no compiler changes and transpiled + compiled clean on the first attempt; the
 capped run terminated. This is the capstone of the interpreter arc: a self-hosted
 interpreter for a small imperative language with recursion, written in Vestra,
-that you can run on a file. Natural next step: a richer value type than `Int`
-(booleans / strings via an enum-payload tagged value), or string/print
-formatting of multiple values.
+that you can run on a file.
+
+**A richer value type shipped — a tagged `Value`.** `examples/calc_value_demo.vst`
+makes the interpreter's values an algebraic data type rather than just `Int`:
+`enum Value { case int(Int); case boolean(Bool); case str(Str) }`. A literal
+carries its type (`42`, `true`, `"hi"` via a string-literal lexer rule), integer
+arithmetic produces `int`, `<` / `>` / `==` produce `boolean` (`==` is
+structural and cross-type-safe — a nested match per tag, using `Str ==` for
+strings), and `if` may pick between branches of *different* types (so `if 1 < 2
+then "small" else 99` is a string). `format` renders a value by its tag, so the
+e2e's expected output pins the result *type* as well as its value: `"14"` (int),
+`"true"` (bool), `"small"` (str). The one subtlety, found and fixed while
+writing it: `pTerm` / `pSum` must only collapse to an integer *when an arithmetic
+operator actually follows* — otherwise a bare `true` or `"hi"` would be coerced
+to `int` (it was, until each rule learned to return its single factor's `Value`
+unchanged when no `*`/`+` follows). That restructure also tripped a precise
+ownership rule — `if c { return first }` then `asInt(first)` reads as
+use-after-move because the checker doesn't model the early `return` skipping the
+later use — sidestepped by moving the arithmetic inside the operator branch so
+`first` is consumed on exactly one path (a recorded language-ergonomics note, not
+a compiler change). No compiler changes; transpiled + compiled clean after that
+fix; the e2e covers arithmetic, comparison, structural / cross-type equality,
+string + boolean literals, type preservation, and heterogeneous `if` branches.
+The interpreter now manipulates integers, booleans, and strings as first-class
+tagged values — the data side of a dynamically-typed language, in Vestra.
+Natural next steps: string concatenation (an owned `String` in the value), or
+variables / `print` over `Value` in the full interpreter.
 
 ### 1. Generics phase 2 (multi-session)
 

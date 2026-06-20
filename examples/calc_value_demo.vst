@@ -1,0 +1,352 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// A richer value type: the interpreter's values are no longer just `Int` but a
+// tagged `Value` — an integer, a boolean, or a string. A literal carries its
+// type (`42`, `true`, `"hi"`), arithmetic produces integers, a comparison or
+// `==` produces a boolean, and `if` can pick between branches of *different*
+// types (so `if 1 < 2 then "small" else 99` is a string). `format` renders a
+// value by its tag, so the result prints the way each type should:
+//
+//   enum Value { case int(Int); case boolean(Bool); case str(Str) }
+//
+//   2 + 3 * 4               -> 14
+//   3 < 5                   -> true
+//   "abc" == "abc"          -> true
+//   if 1 < 2 then "yes" else "no"  -> yes
+//
+// This is the algebraic-data-type machinery (an enum + match) doing the work a
+// dynamically-typed interpreter needs: one value type that tags its payload.
+
+module examples.calc_value_demo
+
+enum Tok {
+    case num
+    case strlit
+    case kwTrue
+    case kwFalse
+    case kwIf
+    case kwThen
+    case kwElse
+    case plus
+    case minus
+    case star
+    case slash
+    case lt
+    case gt
+    case eq
+    case lparen
+    case rparen
+    case end
+    case bad
+}
+
+struct Token {
+    let kind: Tok
+    let value: Int
+    let name: Str
+}
+
+enum Value {
+    case int(Int)
+    case boolean(Bool)
+    case str(Str)
+}
+
+// ---- value helpers ---------------------------------------------------------
+
+// Coerce to an integer for arithmetic (a bool is 1/0, a string is 0).
+func asInt(_ v: Value) -> Int {
+    return match v {
+        case .int(let n): n
+        case .boolean(let b): if b { 1 } else { 0 }
+        case .str(let s): 0
+    }
+}
+
+// Truthiness for `if`: a nonzero int, a true bool, or any string.
+func truthy(_ v: Value) -> Bool {
+    return match v {
+        case .int(let n): n != 0
+        case .boolean(let b): b
+        case .str(let s): true
+    }
+}
+
+// Structural equality: same tag and equal payload; cross-type is never equal.
+func valEq(_ a: Value, _ b: Value) -> Bool {
+    return match a {
+        case .int(let x): match b {
+            case .int(let y): x == y
+            default: false
+        }
+        case .boolean(let x): match b {
+            case .boolean(let y): x == y
+            default: false
+        }
+        case .str(let x): match b {
+            case .str(let y): x == y
+            default: false
+        }
+    }
+}
+
+func boolStr(_ b: Bool) using Alloc -> String {
+    if b {
+        var t: String = "true"
+        return t
+    }
+    var f: String = "false"
+    return f
+}
+
+func strOf(_ s: Str) using Alloc -> String {
+    var out: String = ""
+    out.append(s)
+    return out
+}
+
+// Render a value by its tag.
+func format(_ v: Value) using Alloc -> String {
+    return match v {
+        case .int(let n): n.toString()
+        case .boolean(let b): boolStr(b)
+        case .str(let s): strOf(s)
+    }
+}
+
+// ---- lexer -----------------------------------------------------------------
+
+func punct(_ c: Char) -> Tok {
+    if c == '+' { return .plus }
+    if c == '-' { return .minus }
+    if c == '*' { return .star }
+    if c == '/' { return .slash }
+    if c == '<' { return .lt }
+    if c == '>' { return .gt }
+    if c == '(' { return .lparen }
+    if c == ')' { return .rparen }
+    return .bad
+}
+
+func wordKind(_ nm: Str) -> Tok {
+    return match nm {
+        case "true": .kwTrue
+        case "false": .kwFalse
+        case "if": .kwIf
+        case "then": .kwThen
+        case "else": .kwElse
+        default: .bad
+    }
+}
+
+func lex(_ s: Str) using Alloc -> Vec[Token] {
+    var toks: Vec[Token] = Vec.new()
+    var i: Int = 0
+    while i < s.len() {
+        let c = s.charAt(i) ?? ' '
+        if c.isSpace() {
+            i = i + 1
+        } else if c.isDigit() {
+            let start = i
+            while i < s.len() && (s.charAt(i) ?? ' ').isDigit() {
+                i = i + 1
+            }
+            let v = s.slice(start, i).toInt() ?? 0
+            toks.push(Token(kind: .num, value: v, name: ""))
+        } else if c == '"' {
+            i = i + 1  // skip opening quote
+            let start = i
+            while i < s.len() && (s.charAt(i) ?? '"') != '"' {
+                i = i + 1
+            }
+            let lit = s.slice(start, i)
+            i = i + 1  // skip closing quote
+            toks.push(Token(kind: .strlit, value: 0, name: lit))
+        } else if c.isAlpha() {
+            let start = i
+            while i < s.len() && (s.charAt(i) ?? ' ').isAlnum() {
+                i = i + 1
+            }
+            let nm = s.slice(start, i)
+            toks.push(Token(kind: wordKind(nm), value: 0, name: nm))
+        } else if c == '=' && (s.charAt(i + 1) ?? ' ') == '=' {
+            toks.push(Token(kind: .eq, value: 0, name: ""))
+            i = i + 2
+        } else {
+            toks.push(Token(kind: punct(c), value: 0, name: ""))
+            i = i + 1
+        }
+    }
+    toks.push(Token(kind: .end, value: 0, name: ""))
+    return toks
+}
+
+func peekKind(_ ts: Vec[Token], _ i: Int) -> Tok {
+    if let t = ts.get(i) {
+        return t.kind
+    }
+    return Tok.end
+}
+
+func peekVal(_ ts: Vec[Token], _ i: Int) -> Int {
+    if let t = ts.get(i) {
+        return t.value
+    }
+    return 0
+}
+
+func peekName(_ ts: Vec[Token], _ i: Int) -> Str {
+    if let t = ts.get(i) {
+        return t.name
+    }
+    return ""
+}
+
+// ---- evaluator (produces a Value) ------------------------------------------
+
+func pFactor(_ ts: Vec[Token], _ i: inout Int) using Alloc -> Value {
+    let k = peekKind(ts, i)
+    if k == Tok.num {
+        let v = peekVal(ts, i)
+        i = i + 1
+        return Value.int(v)
+    }
+    if k == Tok.strlit {
+        let s = peekName(ts, i)
+        i = i + 1
+        return Value.str(s)
+    }
+    if k == Tok.kwTrue {
+        i = i + 1
+        return Value.boolean(true)
+    }
+    if k == Tok.kwFalse {
+        i = i + 1
+        return Value.boolean(false)
+    }
+    if k == Tok.lparen {
+        i = i + 1
+        let v = pExpr(ts, &i)
+        i = i + 1  // consume ')'
+        return v
+    }
+    i = i + 1
+    return Value.int(0)
+}
+
+func pTerm(_ ts: Vec[Token], _ i: inout Int) using Alloc -> Value {
+    let first = pFactor(ts, &i)
+    let k0 = peekKind(ts, i)
+    // Only when a `*` / `/` follows does this collapse to an integer; otherwise
+    // the factor's value (and its type) is preserved.
+    if k0 == Tok.star || k0 == Tok.slash {
+        var acc: Int = asInt(first)
+        var more: Bool = true
+        while more {
+            let k = peekKind(ts, i)
+            if k == Tok.star {
+                i = i + 1
+                acc = acc * asInt(pFactor(ts, &i))
+            } else if k == Tok.slash {
+                i = i + 1
+                let d = asInt(pFactor(ts, &i))
+                if d != 0 {
+                    acc = acc / d
+                } else {
+                    acc = 0
+                }
+            } else {
+                more = false
+            }
+        }
+        return Value.int(acc)
+    }
+    return first
+}
+
+func pSum(_ ts: Vec[Token], _ i: inout Int) using Alloc -> Value {
+    let first = pTerm(ts, &i)
+    let k0 = peekKind(ts, i)
+    if k0 == Tok.plus || k0 == Tok.minus {
+        var acc: Int = asInt(first)
+        var more: Bool = true
+        while more {
+            let k = peekKind(ts, i)
+            if k == Tok.plus {
+                i = i + 1
+                acc = acc + asInt(pTerm(ts, &i))
+            } else if k == Tok.minus {
+                i = i + 1
+                acc = acc - asInt(pTerm(ts, &i))
+            } else {
+                more = false
+            }
+        }
+        return Value.int(acc)
+    }
+    return first
+}
+
+// cmp = sum (('<' | '>') sum)?  -> a boolean Value
+func pCmp(_ ts: Vec[Token], _ i: inout Int) using Alloc -> Value {
+    let a = pSum(ts, &i)
+    let k = peekKind(ts, i)
+    if k == Tok.lt {
+        i = i + 1
+        let b = pSum(ts, &i)
+        return Value.boolean(asInt(a) < asInt(b))
+    }
+    if k == Tok.gt {
+        i = i + 1
+        let b = pSum(ts, &i)
+        return Value.boolean(asInt(a) > asInt(b))
+    }
+    return a
+}
+
+// eq = cmp ('==' cmp)?  -> a boolean Value (structural, across types)
+func pEq(_ ts: Vec[Token], _ i: inout Int) using Alloc -> Value {
+    let a = pCmp(ts, &i)
+    if peekKind(ts, i) == Tok.eq {
+        i = i + 1
+        let b = pCmp(ts, &i)
+        return Value.boolean(valEq(a, b))
+    }
+    return a
+}
+
+// expr = 'if' expr 'then' expr 'else' expr | eq. The branches may have different
+// value types; the taken one is returned.
+func pExpr(_ ts: Vec[Token], _ i: inout Int) using Alloc -> Value {
+    if peekKind(ts, i) == Tok.kwIf {
+        i = i + 1
+        let c = pEq(ts, &i)
+        if peekKind(ts, i) == Tok.kwThen {
+            i = i + 1
+        }
+        let t = pExpr(ts, &i)
+        if peekKind(ts, i) == Tok.kwElse {
+            i = i + 1
+        }
+        let e = pExpr(ts, &i)
+        if truthy(c) {
+            return t
+        }
+        return e
+    }
+    return pEq(ts, &i)
+}
+
+// ---- the pipeline ----------------------------------------------------------
+
+func eval(_ s: Str) using Alloc -> Value {
+    let toks = lex(s)
+    var i: Int = 0
+    return pExpr(toks, &i)
+}
+
+// Evaluate, then render the resulting value as a string.
+func evalStr(_ s: Str) using Alloc -> String {
+    return format(eval(s))
+}
