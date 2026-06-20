@@ -1,0 +1,23 @@
+xs = listNew();
+xs = push(xs, "a");
+xs = push(xs, "b");
+xs = push(xs, "c");
+print "n:", len(xs);
+print "joined:", join(xs, ",");
+print "at1:", at(xs, 1);
+ys = listNew();
+ys = push(ys, 1);
+ys = push(ys, 2);
+ys = push(ys, 3);
+print "nums:", join(ys, "+");
+zs = concat(xs, ys);
+print "catlen:", len(zs);
+print "cat:", join(zs, ",");
+rs = listNew();
+i = 1;
+while i < 5 do { rs = push(rs, i * i); i = i + 1 };
+print "squares:", join(rs, " ");
+combo = concat(split("x,y", ","), listNew());
+print "combo:", join(combo, "-");
+print "empty:", len(listNew());
+print "done"

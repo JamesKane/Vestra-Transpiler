@@ -1105,6 +1105,27 @@ two compound types (map and list). Natural next steps: list builtins
 `push` / `concat` to build lists directly (not only via `keys` / `split`), or a
 `toStr` builtin to round-trip numbers back to text explicitly.
 
+**List builders shipped: `listNew` / `push` / `concat`.**
+`examples/interp_listbuild_demo.vst` lets a program construct a list value
+directly, element by element, where before a list could only come from `keys` or
+`split`. `listNew()` is a fresh empty list, `push(xs, v)` returns a new list equal
+to `xs` with `v` appended, and `concat(xs, ys)` returns a new list of the elements
+of `xs` followed by those of `ys`. Like `put` for maps, they are value-semantic
+and functional: `push` / `concat` copy the backing `Vec` (`var dup = xs`, the same
+copy-a-borrowed-container move proved for the map), append, and return the new
+list, so `xs = push(xs, v)` is the update idiom. With `len` / `at` / `join`, a
+program can now accumulate a list in a loop and render it. No compiler change. The
+e2e runs the built tool on a committed program
+(`tests/e2e/interp_listbuild_program.calc`) asserting a string list built by
+`push` (`join` = `a,b,c`, `len` = 3, `at(xs, 1)` = `b`), an int list
+(`join(ys, "+")` = `1+2+3`), a `concat` that preserves order across mixed types
+(`len` = 6, `join` = `a,b,c,1,2,3`), a list accumulated in a `while` loop
+(`push(rs, i * i)` gives `squares: 1 4 9 16`), a `concat` of a `split` result with
+an empty list (`x-y`), and the empty-list case (`len(listNew())` = 0). The list
+type now has direct constructors to match the map's. Natural next steps: a `toStr`
+builtin to round-trip numbers back to text explicitly, or a `set(m, ...)` /
+`remove` pair to mutate maps and lists by index/key beyond rebuild-from-scratch.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
