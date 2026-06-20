@@ -741,9 +741,38 @@ condition over a comparison + variable, `max(a, b)` and `abs(n)` via conditional
 a nested `if` in the else branch, and the total-division safety of the untaken
 branch. The interpreter now has lexing, token-stream parsing, a move-only AST,
 evaluation, typed parse errors, a variable environment, and control flow — the
-core of a usable little language. Natural next steps: user-defined functions (a
-function table + call frames), or `while` loops (which need the parser to revisit
-a body, so a token-range or AST rather than pure eval-as-parse).
+core of a usable little language.
+
+**User-defined recursive functions shipped — the mini-language is now
+(recursively) programmable.** `examples/calc_fn_demo.vst` adds `fn name(p) = expr`
+definitions and `name(arg)` calls, so the language can express factorial and
+Fibonacci:
+
+    fn fact(n) = if n < 2 then 1 else n * fact(n - 1);  fact(6)     -> 720
+    fn fib(n)  = if n < 2 then n else fib(n-1) + fib(n-2);  fib(10) -> 55
+
+Two ideas make recursion work in the eval-as-parse design. (1) A function is
+stored as the *start index* of its body in the token stream (the body is one
+expression, so re-running the parser from there consumes exactly it); a call
+re-runs the parser over that body with a fresh single-binding environment, so
+each recursion level has its own cursor and scope. The function is registered
+*after* its body is skip-parsed at definition time, so the define-time scan
+doesn't fire the (not-yet-registered) self-call. (2) The conditional became
+**lazy**: a `live` flag threads through every rule, and the untaken `if` branch
+is parsed-to-advance-the-cursor but not evaluated — *no function call fires in a
+dead branch* — which is exactly what lets a recursive base case terminate
+(eval-both, fine for the non-recursive calc_if, would recurse forever here). The
+evaluation context — variable `env`, the `fparam` / `fbody` function table, and
+`live` — threads through `pExpr` / `pCmp` / `pSum` / `pTerm` / `pFactor` /
+`callFunc`. It needed no compiler changes; the capped run terminated (the lazy
+conditional did its job). The e2e (`tests/e2e/main_calc_fn_demo.cpp`) checks
+define+call, an expression argument, nested calls (`inc(inc(inc(0)))`), a call
+over a variable, and factorial / Fibonacci at several inputs. The self-hosting
+interpreter now spans lexing, token-stream parsing, a move-only AST, evaluation,
+typed parse errors, variables, control flow, and recursive functions — a small
+but genuinely Turing-capable language written in Vestra. Natural next steps:
+multi-argument functions (a `Vec[Str]` of params + a `Vec[Int]` of args), or
+`while` loops (the parser would re-run a body token range like a function call).
 
 ### 1. Generics phase 2 (multi-session)
 
