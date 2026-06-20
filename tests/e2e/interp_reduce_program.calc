@@ -1,0 +1,16 @@
+nums = listNew();
+nums = push(nums, 30);
+nums = push(nums, 10);
+nums = push(nums, 50);
+nums = push(nums, 20);
+print "sum:", sum(nums);
+print "min:", min(nums);
+print "max:", max(nums);
+print "avg:", sum(nums) / len(nums);
+print "csv sum:", sum(split("1,2,3,4,5", ","));
+words = split("delta,alpha,charlie", ",");
+print "min word:", min(words);
+print "max word:", max(words);
+print "empty sum:", sum(listNew());
+print "empty max:", max(listNew());
+print "done"

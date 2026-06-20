@@ -3557,6 +3557,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_sort_app ${e2e_interpsort_program} | grep -qx 'sorted keys: apple,banana,cherry' && ${e2e_workdir}/interp_sort_app ${e2e_interpsort_program} | grep -qx 'sorted nums: 5 10 20 30'")
 set_tests_properties(e2e_interp_sort_demo_verify PROPERTIES DEPENDS e2e_interp_sort_demo_compile)
 
+# List reductions: sum / min / max fold a list value to a single value. sum coerces
+# each element via toInt (so split string pieces sum directly); min / max reuse the
+# type-aware lessVal ordering from sort. The committed program proves int sum / min
+# / max, the average idiom, a CSV sum over split pieces, lexicographic min / max on
+# a string list, and the empty-list cases.
+set(e2e_interpreduce_input   ${CMAKE_SOURCE_DIR}/examples/interp_reduce_demo.vst)
+set(e2e_interpreduce_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_reduce_program.calc)
+
+add_test(
+    NAME    e2e_interp_reduce_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpreduce_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_reduce_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_reduce_demo.cpp
+            -o ${e2e_workdir}/interp_reduce_app)
+set_tests_properties(e2e_interp_reduce_demo_compile PROPERTIES DEPENDS e2e_interp_reduce_demo_transpile)
+
+# Run the reduce interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_reduce_demo_run
+    COMMAND ${e2e_workdir}/interp_reduce_app ${e2e_interpreduce_program})
+set_tests_properties(e2e_interp_reduce_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_reduce_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify reductions reached stdout: an int sum (sum: 110), a CSV sum over split
+# pieces (csv sum: 15), and a lexicographic max (max word: delta).
+add_test(
+    NAME    e2e_interp_reduce_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_reduce_app ${e2e_interpreduce_program} | grep -qx 'sum: 110' && ${e2e_workdir}/interp_reduce_app ${e2e_interpreduce_program} | grep -qx 'csv sum: 15' && ${e2e_workdir}/interp_reduce_app ${e2e_interpreduce_program} | grep -qx 'max word: delta'")
+set_tests_properties(e2e_interp_reduce_demo_verify PROPERTIES DEPENDS e2e_interp_reduce_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

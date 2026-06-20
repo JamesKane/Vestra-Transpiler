@@ -1167,6 +1167,26 @@ next steps: a `set(xs, i, v)` / `remove(m, k)` pair to modify lists and maps by
 index / key (note `HashMap` has no `remove`, so map removal would rebuild by
 iteration), or `min` / `max` / `sum` reductions over a list.
 
+**List reductions shipped: `sum` / `min` / `max`.**
+`examples/interp_reduce_demo.vst` adds the aggregate side of the list surface
+(after build, read, sort): three builtins fold a list value down to a single
+value. `sum(xs)` totals the elements, coercing each with the same parse as the
+`toInt` builtin, so a list of numeric strings sums too (the motivating case,
+`sum(split("1,2,3", ","))` = 6, with no manual loop); `min(xs)` and `max(xs)`
+return the extreme element by the type-aware `lessVal` ordering that `sort`
+introduced (ints numerically, strings lexicographically), returning `int(0)` for
+an empty list. `min` / `max` reuse `lessVal` directly, so the reductions and the
+sort stay consistent. No compiler change. The e2e runs the built tool on a
+committed program (`tests/e2e/interp_reduce_program.calc`) asserting an integer
+sum / min / max over a built list (`sum` = 110, `min` = 10, `max` = 50), the
+average idiom (`sum(nums) / len(nums)` = 27), a CSV sum straight over `split`
+pieces (`sum(split("1,2,3,4,5", ","))` = 15), lexicographic `min` / `max` on a
+string list (`alpha` / `delta`), and the empty-list cases (`sum` = 0, `max` = 0).
+The list type now has build, read, sort, and reduce. Natural next steps: a
+`set(xs, i, v)` / `remove(m, k)` pair to modify lists and maps by index / key, or
+a `map`-style transform (`mapList(xs, fn)`) applying a user function to each
+element.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
