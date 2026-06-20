@@ -670,8 +670,35 @@ lexer's token counts and the end-to-end value over precedence / associativity /
 parentheses / nesting (`2 + 3 * 4 == 14`, `(2 + 3) * 4 == 20`, `2 * (3 + (4 *
 5)) == 46`, a larger mixed expression). Four of a front-end's phases now run as
 standalone Vestra executables — lexer, char-level parser, AST builder, and now a
-token-stream lexer+parser+evaluator pipeline. Natural next steps: parse-error
-reporting (today a malformed expression just produces `lit(0)` / stops), and
+token-stream lexer+parser+evaluator pipeline.
+
+**Parse-error reporting shipped (plus the §9 codegen fixes it needed).**
+`examples/parser_errors_demo.vst` is the token-stream parser written with
+Vestra's §9 error channel: each parse function `throws(ParseError)` and
+propagates with `try`, so a structural error (an unexpected token, an unclosed
+`(`, trailing input after a complete expression) unwinds the whole recursive
+descent to the entry point as a *typed* error rather than producing silent
+garbage. `parse(s) throws(ParseError) -> Int` lowers to a function returning
+`std::expected<Int, ParseError>`, so the e2e driver inspects the value path and
+the specific error for each malformed input, and `evalOr` recovers in-Vestra via
+`do/catch`. Building the **move-only** `Box[Ast]` tree *through* `try` surfaced
+three codegen gaps in the §9 machinery, all fixed: (1) the `try`-unwrap
+(`auto v = *expected`) now **moves** a move-only result out of the
+`std::expected` (a copy was a hard error); (2) `emit_value` treats a hoisted
+`try` as a move-only lvalue, so `let x = try f()` moves the hoisted temp into the
+binding; and (3) the conditional-hoist lambda for a **Unit-typed** node (an `if`
+whose branch holds a propagating `try` but yields no value) now emits a terminal
+success `return {};` — without it the `std::expected<void, E>` lambda returned an
+indeterminate value and its `has_value()` check was UB (the bug manifested as a
+spurious parse error on *valid* input). One restructuring note for parser
+authors, recorded in the example: a `try` and a value-`return` in the *same*
+`if`-branch still trips the cond-hoist (the branch lifts to an `expected<void>`
+lambda the `return` escapes wrongly) — keep the `try` and the `return` at the
+function's statement level (a `throw` inside an `if` is fine). One codegen test
+(the unwrap-move + the Unit cond-hoist success return) and a transpile→compile→
+run e2e (`tests/e2e/main_parser_errors_demo.cpp`) that checks a typed error for
+each of unexpected-token / unclosed-paren / trailing-input / unknown-char / empty
+input, plus `do/catch` recovery. Full suite green (1087). Natural next step: a
 multi-statement / variable-binding grammar (a `HashMap` symbol table over the
 existing collection surface).
 

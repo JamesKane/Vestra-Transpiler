@@ -1,0 +1,203 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// Parse-error reporting: the front-end now *diagnoses* malformed input instead
+// of silently producing garbage. The parser is written with Vestra's §9 error
+// channel — each parse function `throws(ParseError)` and propagates with `try`,
+// so a structural error (an unexpected token, a missing `)`, trailing input)
+// unwinds the whole recursive descent to the entry point as a typed error.
+//
+//   * parse(s) throws(ParseError) -> Int   evaluates, or throws a typed error
+//   * evalOr(s, d) -> Int                  parse via do/catch, default on error
+//
+// Building the move-only Box[Ast] tree *through* `try` is what exercised the
+// move-on-consume extension into the §9 machinery (the `try`-unwrap now moves a
+// move-only result out of the std::expected rather than copying it).
+
+module examples.parser_errors_demo
+
+enum Tok {
+    case num
+    case plus
+    case minus
+    case star
+    case slash
+    case lparen
+    case rparen
+    case end
+    case bad
+}
+
+struct Token {
+    let kind: Tok
+    let value: Int
+}
+
+enum Ast {
+    case lit(Int)
+    case bin(Box[Ast], Tok, Box[Ast])
+}
+
+enum ParseError {
+    case unexpected      // a token where a number or '(' was expected
+    case expectedRParen  // a '(' group never closed
+    case trailing        // input left over after a complete expression
+}
+
+// ---- lexer -----------------------------------------------------------------
+
+func punct(_ c: Char) -> Tok {
+    if c == '+' { return .plus }
+    if c == '-' { return .minus }
+    if c == '*' { return .star }
+    if c == '/' { return .slash }
+    if c == '(' { return .lparen }
+    if c == ')' { return .rparen }
+    return .bad  // any other character is an unknown token
+}
+
+func lex(_ s: Str) using Alloc -> Vec[Token] {
+    var toks: Vec[Token] = Vec.new()
+    var i: Int = 0
+    while i < s.len() {
+        let c = s.charAt(i) ?? ' '
+        if c.isSpace() {
+            i = i + 1
+        } else if c.isDigit() {
+            let start = i
+            while i < s.len() && (s.charAt(i) ?? ' ').isDigit() {
+                i = i + 1
+            }
+            let v = s.slice(start, i).toInt() ?? 0
+            toks.push(Token(kind: .num, value: v))
+        } else {
+            toks.push(Token(kind: punct(c), value: 0))
+            i = i + 1
+        }
+    }
+    toks.push(Token(kind: .end, value: 0))
+    return toks
+}
+
+func peekKind(_ ts: Vec[Token], _ i: Int) -> Tok {
+    if let t = ts.get(i) {
+        return t.kind
+    }
+    return Tok.end
+}
+
+func peekVal(_ ts: Vec[Token], _ i: Int) -> Int {
+    if let t = ts.get(i) {
+        return t.value
+    }
+    return 0
+}
+
+// ---- parser (throws on a structural error) ---------------------------------
+
+// factor = num | '(' expr ')'. The `try` and the value-`return`s stay at the
+// function's top level (not nested inside the `if`-branch), so the §9 try-hoist
+// lifts each propagating `try` at statement level rather than wrapping a whole
+// branch — `throw` inside an `if` is fine (it lowers to a direct early return of
+// the error).
+func pFactor(_ ts: Vec[Token], _ i: inout Int) using Alloc throws(ParseError) -> Ast {
+    let k = peekKind(ts, i)
+    if k == Tok.num {
+        let v = peekVal(ts, i)
+        i = i + 1
+        return Ast.lit(v)
+    }
+    if k != Tok.lparen {
+        throw ParseError.unexpected
+    }
+    i = i + 1
+    let inner = try pExpr(ts, &i)
+    if peekKind(ts, i) != Tok.rparen {
+        throw ParseError.expectedRParen
+    }
+    i = i + 1
+    return inner
+}
+
+// term = factor (('*' | '/') factor)*
+func pTerm(_ ts: Vec[Token], _ i: inout Int) using Alloc throws(ParseError) -> Ast {
+    var acc: Ast = try pFactor(ts, &i)
+    var more: Bool = true
+    while more {
+        let k = peekKind(ts, i)
+        if k == Tok.star {
+            i = i + 1
+            let r = try pFactor(ts, &i)
+            acc = Ast.bin(Box.new(acc), Tok.star, Box.new(r))
+        } else if k == Tok.slash {
+            i = i + 1
+            let r = try pFactor(ts, &i)
+            acc = Ast.bin(Box.new(acc), Tok.slash, Box.new(r))
+        } else {
+            more = false
+        }
+    }
+    return acc
+}
+
+// expr = term (('+' | '-') term)*
+func pExpr(_ ts: Vec[Token], _ i: inout Int) using Alloc throws(ParseError) -> Ast {
+    var acc: Ast = try pTerm(ts, &i)
+    var more: Bool = true
+    while more {
+        let k = peekKind(ts, i)
+        if k == Tok.plus {
+            i = i + 1
+            let r = try pTerm(ts, &i)
+            acc = Ast.bin(Box.new(acc), Tok.plus, Box.new(r))
+        } else if k == Tok.minus {
+            i = i + 1
+            let r = try pTerm(ts, &i)
+            acc = Ast.bin(Box.new(acc), Tok.minus, Box.new(r))
+        } else {
+            more = false
+        }
+    }
+    return acc
+}
+
+// ---- evaluator -------------------------------------------------------------
+
+func apply(_ a: Int, _ op: Tok, _ b: Int) -> Int {
+    if op == Tok.plus { return a + b }
+    if op == Tok.minus { return a - b }
+    if op == Tok.star { return a * b }
+    return a / b
+}
+
+func eval(_ e: Ast) -> Int {
+    return match e {
+        case .lit(let n): n
+        case .bin(let l, let op, let r): apply(eval(l.value), op, eval(r.value))
+    }
+}
+
+// ---- the pipeline ----------------------------------------------------------
+
+// Lex, parse, and evaluate — propagating a typed error to the caller. The
+// trailing-input check turns "2 3" into a `trailing` error rather than silently
+// returning 2.
+func parse(_ s: Str) using Alloc throws(ParseError) -> Int {
+    let toks = lex(s)
+    var i: Int = 0
+    let ast = try pExpr(toks, &i)
+    if peekKind(toks, i) != Tok.end {
+        throw ParseError.trailing
+    }
+    return eval(ast)
+}
+
+// The same, recovered in-Vestra with do/catch: the value, or a default on any
+// parse error.
+func evalOr(_ s: Str, _ fallback: Int) using Alloc -> Int {
+    return do {
+        try parse(s)
+    } catch e {
+        fallback
+    }
+}

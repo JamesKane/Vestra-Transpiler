@@ -2886,6 +2886,34 @@ set_tests_properties(e2e_frontend_demo_run PROPERTIES
     DEPENDS                 e2e_frontend_demo_compile
     PASS_REGULAR_EXPRESSION "frontend_demo OK")
 
+# Parse-error reporting: a token-stream parser written with §9 throws(ParseError)
+# + try, so malformed input unwinds to a typed error. The driver inspects the
+# std::expected each kind of bad input produces; evalOr exercises do/catch
+# recovery. Building the move-only Box[Ast] through `try` exercises the move-on-
+# consume extension into the §9 machinery.
+set(e2e_parserr_input  ${CMAKE_SOURCE_DIR}/examples/parser_errors_demo.vst)
+set(e2e_parserr_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_parser_errors_demo.cpp)
+
+add_test(
+    NAME    e2e_parser_errors_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_parserr_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_parser_errors_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_parserr_driver} ${e2e_workdir}/parser_errors_demo.cpp
+            -o ${e2e_workdir}/parser_errors_demo_app)
+set_tests_properties(e2e_parser_errors_demo_compile PROPERTIES DEPENDS e2e_parser_errors_demo_transpile)
+
+add_test(
+    NAME    e2e_parser_errors_demo_run
+    COMMAND ${e2e_workdir}/parser_errors_demo_app)
+set_tests_properties(e2e_parser_errors_demo_run PROPERTIES
+    DEPENDS                 e2e_parser_errors_demo_compile
+    PASS_REGULAR_EXPRESSION "parser_errors_demo OK")
+
 # Self-hosting proof-of-concept: a standalone `func main` program that reads a
 # file (argv + readFile), tokenizes with split, tabulates with Vec + HashMap,
 # renders a report with String + toString, writes it (writeFile), and echoes it
