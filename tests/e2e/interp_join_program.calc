@@ -1,0 +1,9 @@
+parts = split("a,b,c,d", ",");
+print "comma:", join(parts, ",");
+print "dash:", join(parts, "-");
+print "tight:", join(parts, "");
+print "arrow:", join(split("x y z", " "), " -> ");
+print "roundtrip:", join(split("a,b,c,d", ","), ",") == "a,b,c,d";
+print "single:", join(split("solo", ","), ",");
+print "empty:", join(keys(mapNew()), ",");
+print "done"

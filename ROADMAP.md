@@ -1065,6 +1065,26 @@ into a list and walk it. Natural next steps: a `join(list, sep)` builtin (the
 inverse of `split`), or a `toInt` builtin so split pieces can be summed
 numerically.
 
+**`join(list, sep)` shipped, the inverse of `split`.**
+`examples/interp_join_demo.vst` adds the list type's first consumer back to a
+string: `join(xs, sep)` renders each element of a list value (via `format`, so a
+list of ints or bools joins as readily as a list of strings) into one string with
+the separator placed only between elements, so an n-element list yields n-1
+separators (an empty list joins to `""`, a singleton to just its element). It is
+built directly with a `String` accumulator over the backing `Vec`, so the result
+owns its bytes. With the prior slice, `join` and `split` round-trip:
+`join(split(s, sep), sep) == s`. No compiler change. The e2e runs the built tool
+on a committed program (`tests/e2e/interp_join_program.calc`) asserting a
+comma round-trip (`join(parts, ",")` = `a,b,c,d`), other separators
+(`-` gives `a-b-c-d`, `""` gives `abcd`), a multi-character separator
+(`join(split("x y z", " "), " -> ")` = `x -> y -> z`), the round-trip identity as
+a boolean (`join(split("a,b,c,d", ","), ",") == "a,b,c,d"` = true), the singleton
+case (`join(split("solo", ","), ",")` = `solo`), and the empty-list case
+(`join(keys(mapNew()), ",")` = `""`). The interpreter can now convert freely
+between strings and lists in both directions. Natural next steps: a `toInt`
+builtin so split pieces can be summed numerically, or list builtins
+`push` / `concat` to build lists directly (not only via `keys` / `split`).
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
