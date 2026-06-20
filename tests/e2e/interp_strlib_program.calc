@@ -1,0 +1,13 @@
+s = "hello world";
+print len(s);
+print substr(s, 0, 5);
+print substr(s, 6, 11);
+print len("");
+print len(substr(s, 0, 5));
+fn firstFive(t) = substr(t, 0, 5);
+print firstFive("hello!!");
+greeting = substr("Hello, Vestra", 7, 13);
+print greeting;
+print len(greeting);
+print substr(s, 6, 100);
+print "done"

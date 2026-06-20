@@ -917,6 +917,33 @@ interpreter now produces and stores heap-owned strings, not just borrowed views.
 Natural next steps: a string-length / substring builtin on string values, or
 `print` of multiple comma-separated values.
 
+**String builtins shipped: `len` and `substr` over string values.**
+`examples/interp_strlib_demo.vst` gives the mini-language two built-in functions
+so it can take strings apart, not just build them up: `len(s)` returns the byte
+length of a string value (0 otherwise), and `substr(s, a, b)` returns the
+`[a, b)` sub-string. They lower onto the synthesized String/Str query surface
+(`s.len()`, `s.slice(a, b)`); `substr` builds a fresh owned String from the
+sliced view (the view borrows the receiver, so the result must own its bytes),
+and `slice` clamps out-of-range / inverted spans to empty, so the builtins never
+fault on bad indices. The builtins are dispatched in `callFunc` after the
+user-function lookup, as a fallback for names a program did not define as `fn`s,
+so a user can still define a function of any other name. The one thing that bit:
+the dispatch was first written as `if name == "len"`, which the checker rejected
+(`binary operator operands of different types: Str vs StrConst` — a `Str`
+variable cannot be `==`-compared to a string literal); the working idiom is a
+`match name { case "len": ...; case "substr": ...; default: ... }`, the same
+string-literal matching `wordKind` already uses in the lexer (recorded as a
+language-ergonomics note, not a compiler change). The e2e runs the built tool on
+a committed program (`tests/e2e/interp_strlib_program.calc`) asserting a length
+(`len("hello world")` = 11), slicing (`substr(s, 0, 5)` = `hello`,
+`substr(s, 6, 11)` = `world`), the empty case (`len("")` = 0), nested builtins
+(`len(substr(s, 0, 5))` = 5), a user function that calls a builtin (`firstFive`),
+a substring of a string literal (`substr("Hello, Vestra", 7, 13)` = `Vestra`),
+and a clamped out-of-range span (`substr(s, 6, 100)` = `world`). The
+dynamically-typed interpreter can now both construct and decompose strings.
+Natural next steps: `find` / `contains` builtins (the search half of the string
+surface), or `print` of multiple comma-separated values.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

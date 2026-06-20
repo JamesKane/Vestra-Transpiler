@@ -3160,6 +3160,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_concat_app ${e2e_interpcat_program} | grep -qx 'Hi Vestra!' && ${e2e_workdir}/interp_concat_app ${e2e_interpcat_program} | grep -qx ababab")
 set_tests_properties(e2e_interp_concat_demo_verify PROPERTIES DEPENDS e2e_interp_concat_demo_compile)
 
+# String builtins: `len` and `substr` over string values, dispatched in callFunc
+# as a fallback for names not defined as `fn`s. `len` measures a string value,
+# `substr(s, a, b)` builds a fresh owned String from the [a, b) sub-view (clamped).
+# The committed program proves length, slicing, nested builtins (len(substr(...))),
+# a user function calling a builtin, substring of a literal, and a clamped span.
+set(e2e_interpstr_input   ${CMAKE_SOURCE_DIR}/examples/interp_strlib_demo.vst)
+set(e2e_interpstr_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_strlib_program.calc)
+
+add_test(
+    NAME    e2e_interp_strlib_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpstr_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_strlib_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_strlib_demo.cpp
+            -o ${e2e_workdir}/interp_strlib_app)
+set_tests_properties(e2e_interp_strlib_demo_compile PROPERTIES DEPENDS e2e_interp_strlib_demo_transpile)
+
+# Run the strlib interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_strlib_demo_run
+    COMMAND ${e2e_workdir}/interp_strlib_app ${e2e_interpstr_program})
+set_tests_properties(e2e_interp_strlib_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_strlib_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify the builtin outputs reached stdout: a length (11) and a substring of a
+# string literal (Vestra).
+add_test(
+    NAME    e2e_interp_strlib_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_strlib_app ${e2e_interpstr_program} | grep -qx 11 && ${e2e_workdir}/interp_strlib_app ${e2e_interpstr_program} | grep -qx Vestra")
+set_tests_properties(e2e_interp_strlib_demo_verify PROPERTIES DEPENDS e2e_interp_strlib_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.
