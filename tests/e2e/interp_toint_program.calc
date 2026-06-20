@@ -1,0 +1,13 @@
+nums = split("10,20,30,40", ",");
+total = 0;
+i = 0;
+while i < len(nums) do { total = total + toInt(at(nums, i)); i = i + 1 };
+print "total:", total;
+print "avg:", total / len(nums);
+print "parse:", toInt("42");
+print "neg:", toInt("-7");
+print "bad:", toInt("abc");
+print "passthrough:", toInt(99);
+print "bool:", toInt(true);
+print "sumcsv:", toInt("100") + toInt("23");
+print "done"

@@ -1085,6 +1085,26 @@ between strings and lists in both directions. Natural next steps: a `toInt`
 builtin so split pieces can be summed numerically, or list builtins
 `push` / `concat` to build lists directly (not only via `keys` / `split`).
 
+**`toInt(v)` shipped, closing the loop on numeric text.**
+`examples/interp_toint_demo.vst` adds a builtin that parses a string value's
+digits into an integer value, so `split` pieces (always strings) can finally be
+summed and compared as numbers. It is deliberately distinct from the interpreter's
+internal `asInt` arithmetic coercion (which treats any string as 0): `toInt`
+actually parses via the synthesized `Str.toInt() -> Int?`, falling back to 0 when
+the text is malformed; ints and bools pass through (a bool as 1 / 0), maps and
+lists are 0. No compiler change. The motivating idiom now works end to end: split
+a CSV of numbers, `toInt` each piece, accumulate. The e2e runs the built tool on a
+committed program (`tests/e2e/interp_toint_program.calc`) asserting a CSV sum via
+split + toInt (`split("10,20,30,40", ",")` summed = 100) and its average
+(`total / len(nums)` = 25), a plain parse (`toInt("42")` = 42), a negative
+(`toInt("-7")` = -7), the malformed fallback (`toInt("abc")` = 0), int passthrough
+(`toInt(99)` = 99), a bool conversion (`toInt(true)` = 1), and a two-field numeric
+sum (`toInt("100") + toInt("23")` = 123). The interpreter's string library now
+spans construct, measure / slice, search, split / join, and numeric parse, with
+two compound types (map and list). Natural next steps: list builtins
+`push` / `concat` to build lists directly (not only via `keys` / `split`), or a
+`toStr` builtin to round-trip numbers back to text explicitly.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

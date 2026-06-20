@@ -3412,6 +3412,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_join_app ${e2e_interpjoin_program} | grep -qx 'arrow: x -> y -> z' && ${e2e_workdir}/interp_join_app ${e2e_interpjoin_program} | grep -qx 'roundtrip: true' && ${e2e_workdir}/interp_join_app ${e2e_interpjoin_program} | grep -qx 'comma: a,b,c,d'")
 set_tests_properties(e2e_interp_join_demo_verify PROPERTIES DEPENDS e2e_interp_join_demo_compile)
 
+# toInt(v): parse a string value's digits into an integer (distinct from the
+# internal asInt coercion, which treats any string as 0). This closes the loop on
+# numeric text: split a CSV of numbers, toInt each piece, sum them. The committed
+# program proves a CSV sum and average, a plain parse, a negative, a malformed
+# fallback to 0, int passthrough, and a bool conversion.
+set(e2e_interptoint_input   ${CMAKE_SOURCE_DIR}/examples/interp_toint_demo.vst)
+set(e2e_interptoint_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_toint_program.calc)
+
+add_test(
+    NAME    e2e_interp_toint_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interptoint_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_toint_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_toint_demo.cpp
+            -o ${e2e_workdir}/interp_toint_app)
+set_tests_properties(e2e_interp_toint_demo_compile PROPERTIES DEPENDS e2e_interp_toint_demo_transpile)
+
+# Run the toInt interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_toint_demo_run
+    COMMAND ${e2e_workdir}/interp_toint_app ${e2e_interptoint_program})
+set_tests_properties(e2e_interp_toint_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_toint_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify numeric parsing reached stdout: the split + toInt CSV sum (total: 100), a
+# negative parse (neg: -7), and the malformed fallback (bad: 0).
+add_test(
+    NAME    e2e_interp_toint_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_toint_app ${e2e_interptoint_program} | grep -qx 'total: 100' && ${e2e_workdir}/interp_toint_app ${e2e_interptoint_program} | grep -qx 'neg: -7' && ${e2e_workdir}/interp_toint_app ${e2e_interptoint_program} | grep -qx 'bad: 0'")
+set_tests_properties(e2e_interp_toint_demo_verify PROPERTIES DEPENDS e2e_interp_toint_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.
