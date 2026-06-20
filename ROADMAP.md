@@ -1245,6 +1245,25 @@ trio over user code, plus build / read / sort on two compound types. Natural nex
 steps: a `set(xs, i, v)` / `remove(m, k)` pair to modify lists and maps in place,
 or `range(n)` / `zip(xs, ys)` list producers to round out the comprehension shape.
 
+**`range(n)` shipped, completing the comprehension shape.**
+`examples/interp_range_demo.vst` adds the list producer for the integers
+`[0, n)` (an empty list when `n <= 0`), the generator that pairs with the existing
+higher-order trio: produce a range, then map / filter / reduce over it, instead of
+writing a counter loop by hand. With it the interpreter is a small comprehension
+engine. No compiler change (a `Vec`-building loop returning a list value). The
+e2e runs the built tool on a committed program
+(`tests/e2e/interp_range_program.calc`) feeding `range` into the whole pipeline:
+the range itself (`join(range(5), ",")` = `0,1,2,3,4`), range then map
+(`mapList(range(5), "square")` = `0,1,4,9,16`), range then filter
+(`filterList(range(10), "isOdd")` = `1,3,5,7,9`), range then reduce
+(`reduceList(range(100), "add", 0)` = 4950), range then map then sum
+(`sum(mapList(range(5), "square"))` = 30), a map then filter then len
+(`count odd` = 5), and the empty / negative-n cases (both length 0). The
+interpreter can now express list comprehensions over a generated range without an
+explicit loop. Natural next steps: a `set(xs, i, v)` / `remove(m, k)` pair to
+modify lists and maps in place, or a `zipMap(keys, values)` producer that builds a
+map from two parallel lists.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

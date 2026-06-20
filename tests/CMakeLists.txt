@@ -3701,6 +3701,41 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_fold_app ${e2e_interpfold_program} | grep -qx 'sum: 14' && ${e2e_workdir}/interp_fold_app ${e2e_interpfold_program} | grep -qx 'product: 60' && ${e2e_workdir}/interp_fold_app ${e2e_interpfold_program} | grep -qx 'concat: abc'")
 set_tests_properties(e2e_interp_fold_demo_verify PROPERTIES DEPENDS e2e_interp_fold_demo_compile)
 
+# range(n): a list producer for [0, n), the generator that completes the
+# comprehension shape (produce a range, then map / filter / reduce over it). The
+# committed program feeds range into the higher-order trio: range -> map, range ->
+# filter, range -> reduce, range -> map -> sum, plus the empty and negative cases.
+set(e2e_interprange_input   ${CMAKE_SOURCE_DIR}/examples/interp_range_demo.vst)
+set(e2e_interprange_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_range_program.calc)
+
+add_test(
+    NAME    e2e_interp_range_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interprange_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_range_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_range_demo.cpp
+            -o ${e2e_workdir}/interp_range_app)
+set_tests_properties(e2e_interp_range_demo_compile PROPERTIES DEPENDS e2e_interp_range_demo_transpile)
+
+# Run the range interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_range_demo_run
+    COMMAND ${e2e_workdir}/interp_range_app ${e2e_interprange_program})
+set_tests_properties(e2e_interp_range_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_range_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify the comprehension pipeline reached stdout: range -> map (squares:
+# 0,1,4,9,16) and range -> reduce (sum 0..99: 4950).
+add_test(
+    NAME    e2e_interp_range_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_range_app ${e2e_interprange_program} | grep -qx 'squares: 0,1,4,9,16' && ${e2e_workdir}/interp_range_app ${e2e_interprange_program} | grep -qx 'sum 0..99: 4950' && ${e2e_workdir}/interp_range_app ${e2e_interprange_program} | grep -qx 'odds: 1,3,5,7,9'")
+set_tests_properties(e2e_interp_range_demo_verify PROPERTIES DEPENDS e2e_interp_range_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

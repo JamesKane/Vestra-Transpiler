@@ -1,0 +1,12 @@
+fn square(x) = x * x;
+fn isOdd(x) = x - (x / 2) * 2 == 1;
+fn add(a, b) = a + b;
+print "range:", join(range(5), ",");
+print "squares:", join(mapList(range(5), "square"), ",");
+print "odds:", join(filterList(range(10), "isOdd"), ",");
+print "sum 0..99:", reduceList(range(100), "add", 0);
+print "sum sq:", sum(mapList(range(5), "square"));
+print "count odd:", len(filterList(range(10), "isOdd"));
+print "empty:", len(range(0));
+print "neg:", len(range(-3));
+print "done"
