@@ -770,9 +770,33 @@ define+call, an expression argument, nested calls (`inc(inc(inc(0)))`), a call
 over a variable, and factorial / Fibonacci at several inputs. The self-hosting
 interpreter now spans lexing, token-stream parsing, a move-only AST, evaluation,
 typed parse errors, variables, control flow, and recursive functions — a small
-but genuinely Turing-capable language written in Vestra. Natural next steps:
-multi-argument functions (a `Vec[Str]` of params + a `Vec[Int]` of args), or
-`while` loops (the parser would re-run a body token range like a function call).
+but genuinely Turing-capable language written in Vestra.
+
+**Multi-argument functions shipped.** `examples/calc_multifn_demo.vst` grows the
+single-parameter functions into a comma-separated parameter list, so the language
+expresses binary and n-ary operations — max, gcd, power, 3-argument sum:
+
+    fn max(a, b) = if a < b then b else a;            max(3, 7)   -> 7
+    fn pow(b, e) = if e < 1 then 1 else b * pow(b, e - 1);  pow(2, 10) -> 1024
+    fn gcd(a, b) = if b < 1 then a else gcd(b, a - (a / b) * b);  gcd(48, 36) -> 12
+
+The function table now stores each function's parameters as a `Vec[Str]` — a
+*value in a `HashMap[Str, Vec[Str]]`* (which works: the map lowers to
+`unordered_map<string_view, vector<string_view>>`) — and a call collects its
+argument values into a `Vec[Int]` (parsing the comma-separated list, advancing
+the cursor) and binds them positionally into a fresh environment. Everything else
+carries over unchanged: the lazy conditional (`live`) still gates recursion, so
+two-argument recursion (power, gcd — the latter with integer division for the
+modulo) terminates; zero- and one-argument functions still work (an empty list
+parses to an empty `Vec`). It needed no compiler changes and transpiled +
+compiled clean on the first attempt; the capped run terminated. The e2e
+(`tests/e2e/main_calc_multifn_demo.cpp`) checks 2- and 3-parameter functions,
+positional/expression arguments, nested cross-function calls, `pow` / `gcd`
+recursion at several inputs, and the zero/one-argument cases. The self-hosting
+interpreter is now a small applicative language with recursion and n-ary
+functions, written entirely in Vestra. Natural next step: `while` loops (the
+parser would re-run a body token range like a function call), or a richer value
+type than `Int` (booleans / a tagged value via an enum payload).
 
 ### 1. Generics phase 2 (multi-session)
 
