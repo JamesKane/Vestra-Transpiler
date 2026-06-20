@@ -732,6 +732,32 @@ TEST_CASE("§10 move-on-consume also covers struct / enum construction args") {
     CHECK(f.out.source.find(".hi = std::move(y)") != std::string::npos);
 }
 
+TEST_CASE("§9 try over a move-only result moves; a Unit cond-hoist returns success") {
+    SemaEmitFixture f("enum E { case bad }\n"
+                      "enum Ast { case lit(Int)\n"
+                      "    case bin(Box[Ast], Box[Ast]) }\n"
+                      "func leaf(_ n: Int) throws(E) -> Ast { return Ast.lit(n) }\n"
+                      "func build(_ a: Int) using Alloc throws(E) -> Ast {\n"
+                      "    var acc: Ast = try leaf(a)\n"
+                      "    var more: Bool = true\n"
+                      "    while more {\n"
+                      "        if a > 0 {\n"
+                      "            let y = try leaf(a)\n"
+                      "            acc = Ast.bin(Box.new(acc), Box.new(y))\n"
+                      "        } else {\n"
+                      "            more = false\n"
+                      "        }\n"
+                      "    }\n"
+                      "    return acc\n"
+                      "}\n");
+    CHECK_FALSE(f.rep.has_errors());
+    // The try-unwrap moves the move-only Ast out of the std::expected.
+    CHECK(f.out.source.find("= std::move(*") != std::string::npos);
+    // The Unit cond-hoist (the if-with-try inside the loop) lowers to an
+    // expected<void> lambda that returns a success value on the fall-through.
+    CHECK(f.out.source.find("return {};") != std::string::npos);
+}
+
 TEST_CASE("§8 a payloaded-enum match emits its result type so mixed-typed arms unify") {
     SemaEmitFixture f("enum E { case a\n"
                       "    case b(Int) }\n"

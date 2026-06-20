@@ -3204,8 +3204,12 @@ bool CppEmitter::is_lvalue_expr(const ast::Expr& e) noexcept {
 }
 
 void CppEmitter::emit_value(std::ostream& os, const ast::Expr& e) {
-    const bool move =
-        resolution_ != nullptr && is_lvalue_expr(e) && is_move_only(resolution_->type_of(&e));
+    // A propagating `try` is hoisted to a temp before this point, so in a
+    // by-value position it reads as an lvalue identifier (`__vstr_tN`) — treat it
+    // like one so a move-only `try` result moves rather than copies.
+    const bool hoisted_try = e.kind == ast::NodeKind::TryExpr && lookup_try_hoist(&e) != nullptr;
+    const bool move = resolution_ != nullptr && (is_lvalue_expr(e) || hoisted_try)
+                      && is_move_only(resolution_->type_of(&e));
     if (move) {
         os << "std::move(";
     }

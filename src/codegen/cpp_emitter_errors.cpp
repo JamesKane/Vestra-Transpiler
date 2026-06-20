@@ -265,7 +265,15 @@ void CppEmitter::emit_try_hoist(std::ostream& os, const TryHoist& h, int indent)
            << (current_func_is_async_ ? "co_return" : "return") << " std::unexpected{" << r
            << ".error()}; }\n";
         write_indent(os, indent);
-        os << "auto " << h.name << " = *" << r << ";\n";
+        // §10 move the unwrapped value out of the std::expected when it is
+        // move-only (a Box-owning AST node, say) — `*expected` is an lvalue, so a
+        // plain `= *r` would copy, which is a hard error for a move-only T.
+        auto vt = resolution_ != nullptr ? resolution_->type_of(&tx) : nullptr;
+        if (is_move_only(vt)) {
+            os << "auto " << h.name << " = std::move(*" << r << ");\n";
+        } else {
+            os << "auto " << h.name << " = *" << r << ";\n";
+        }
         return;
     }
     if (h.node->kind == ast::NodeKind::IfExpr || h.node->kind == ast::NodeKind::MatchExpr
@@ -321,6 +329,16 @@ void CppEmitter::emit_cond_hoist(std::ostream& os, const TryHoist& h, int indent
     }
     current_func_is_async_ = prev_async;
     skip_hoist_ = prev_skip;
+
+    // A Unit-typed (statement-form) hoisted node — e.g. an `if` whose branch
+    // contains a propagating `try` but that yields no value — has control paths
+    // that fall through without returning. The lambda is std::expected<void, E>,
+    // so those paths still owe a success value; without it the lambda returns
+    // an indeterminate expected and its has_value() check is undefined behaviour.
+    if (value_type == nullptr || value_type->kind() == sema::TypeKind::Unit) {
+        write_indent(os, indent + 1);
+        os << "return {};\n";
+    }
 
     write_indent(os, indent);
     os << "}();\n";
