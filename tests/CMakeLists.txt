@@ -3808,6 +3808,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_values_app ${e2e_interpvalues_program} | grep -qx 'vsum: 6' && ${e2e_workdir}/interp_values_app ${e2e_interpvalues_program} | grep -qx 'entry sum: 6' && ${e2e_workdir}/interp_values_app ${e2e_interpvalues_program} | grep -qx 'sorted vals: 1,2,3'")
 set_tests_properties(e2e_interp_values_demo_verify PROPERTIES DEPENDS e2e_interp_values_demo_compile)
 
+# set(xs, i, v) / remove(m, k): functional modification by index / key. set copies
+# the list and overwrites one slot via Vec.set; remove rebuilds the map without one
+# key (HashMap has no in-place delete). Both leave their inputs intact. The
+# committed program replaces a list element, removes a map key, and checks the
+# originals are unchanged plus the out-of-range / missing-key no-ops.
+set(e2e_interpsetrm_input   ${CMAKE_SOURCE_DIR}/examples/interp_setremove_demo.vst)
+set(e2e_interpsetrm_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_setremove_program.calc)
+
+add_test(
+    NAME    e2e_interp_setremove_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpsetrm_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_setremove_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_setremove_demo.cpp
+            -o ${e2e_workdir}/interp_setremove_app)
+set_tests_properties(e2e_interp_setremove_demo_compile PROPERTIES DEPENDS e2e_interp_setremove_demo_transpile)
+
+# Run the set/remove interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_setremove_demo_run
+    COMMAND ${e2e_workdir}/interp_setremove_app ${e2e_interpsetrm_program})
+set_tests_properties(e2e_interp_setremove_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_setremove_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify functional modification reached stdout: a list element replaced
+# (set: 10,99,30) and a map key removed (removed b: a,c), with the original intact.
+add_test(
+    NAME    e2e_interp_setremove_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_setremove_app ${e2e_interpsetrm_program} | grep -qx 'set: 10,99,30' && ${e2e_workdir}/interp_setremove_app ${e2e_interpsetrm_program} | grep -qx 'removed b: a,c' && ${e2e_workdir}/interp_setremove_app ${e2e_interpsetrm_program} | grep -qx 'orig: 10,20,30'")
+set_tests_properties(e2e_interp_setremove_demo_verify PROPERTIES DEPENDS e2e_interp_setremove_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

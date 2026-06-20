@@ -1,0 +1,19 @@
+xs = listNew();
+xs = push(xs, 10);
+xs = push(xs, 20);
+xs = push(xs, 30);
+ys = set(xs, 1, 99);
+print "set:", join(ys, ",");
+print "orig:", join(xs, ",");
+print "oob:", join(set(xs, 5, 99), ",");
+m = mapNew();
+m = put(m, "a", 1);
+m = put(m, "b", 2);
+m = put(m, "c", 3);
+m2 = remove(m, "b");
+print "removed b:", join(sort(keys(m2)), ",");
+print "orig has b:", has(m, "b");
+print "m2 has b:", has(m2, "b");
+print "m2 keys:", len(keys(m2));
+print "remove missing:", len(keys(remove(m, "zzz")));
+print "done"

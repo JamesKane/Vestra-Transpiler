@@ -1301,6 +1301,27 @@ data flows freely in both directions. Natural next steps: a `set(xs, i, v)` /
 `remove(m, k)` pair to modify lists and maps in place, or a `contains`-style
 `hasValue(m, v)` / membership test over a list.
 
+**`set(xs, i, v)` / `remove(m, k)` shipped, functional modification.**
+`examples/interp_setremove_demo.vst` fills the gap between rebuild-from-scratch and
+the read accessors: `set(xs, i, v)` returns a copy of a list with element `i`
+replaced (out of range leaves it unchanged), and `remove(m, k)` returns a copy of a
+map without key `k` (a missing key is a no-op). Both are functional, like every
+other container op here, so the inputs are left intact. `set` copies the backing
+`Vec` and overwrites one slot with `Vec.set`; `remove` rebuilds the map by iterating
+its entries and copying every binding whose key differs from `k`, because the
+backing `HashMap` has no in-place delete. The key comparison needed care: a
+`String` key cannot be `==`-compared to the `Str` argument (the same `String` vs
+`Str` operand-type rule seen before), so `remove` converts the target to an owned
+`String` once and compares `String == String` (the comparison `valEq` already
+uses). No compiler change. The e2e runs the built tool on a committed program
+(`tests/e2e/interp_setremove_program.calc`) replacing a list element
+(`set(xs, 1, 99)` = `10,99,30`) while the original is unchanged (`10,20,30`), an
+out-of-range `set` no-op, removing a map key (`remove(m, "b")` leaves keys `a,c`)
+while the original still has `b`, the removed map lacking `b`, and a missing-key
+`remove` no-op (still 3 keys). Lists and maps can now be modified by index / key,
+not only rebuilt. Natural next steps: a `hasValue(m, v)` or list membership test,
+or numeric `abs` / `mod` builtins to round out the arithmetic surface.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
