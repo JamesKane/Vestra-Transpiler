@@ -3520,6 +3520,43 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_tostr_app ${e2e_interptostr_program} | grep -qx 'sq3: 9' && ${e2e_workdir}/interp_tostr_app ${e2e_interptostr_program} | grep -qx 'labels: 1,4,9' && ${e2e_workdir}/interp_tostr_app ${e2e_interptostr_program} | grep -qx 'rt: 123'")
 set_tests_properties(e2e_interp_tostr_demo_verify PROPERTIES DEPENDS e2e_interp_tostr_demo_compile)
 
+# sort(xs): sort a list value ascending (functional selection sort over Vec.get /
+# Vec.set, type-aware comparison: ints numerically, strings lexicographically).
+# This makes a keys list deterministic, so a map can finally be rendered in a
+# stable order. The committed program proves sorted keys, a numeric sort (not
+# lexicographic), a string sort, and the empty / singleton cases.
+set(e2e_interpsort_input   ${CMAKE_SOURCE_DIR}/examples/interp_sort_demo.vst)
+set(e2e_interpsort_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_sort_program.calc)
+
+add_test(
+    NAME    e2e_interp_sort_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpsort_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_sort_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_sort_demo.cpp
+            -o ${e2e_workdir}/interp_sort_app)
+set_tests_properties(e2e_interp_sort_demo_compile PROPERTIES DEPENDS e2e_interp_sort_demo_transpile)
+
+# Run the sort interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_sort_demo_run
+    COMMAND ${e2e_workdir}/interp_sort_app ${e2e_interpsort_program})
+set_tests_properties(e2e_interp_sort_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_sort_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify sorting reached stdout: deterministic sorted map keys
+# (sorted keys: apple,banana,cherry) and a numeric (not lexicographic) sort
+# (sorted nums: 5 10 20 30).
+add_test(
+    NAME    e2e_interp_sort_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_sort_app ${e2e_interpsort_program} | grep -qx 'sorted keys: apple,banana,cherry' && ${e2e_workdir}/interp_sort_app ${e2e_interpsort_program} | grep -qx 'sorted nums: 5 10 20 30'")
+set_tests_properties(e2e_interp_sort_demo_verify PROPERTIES DEPENDS e2e_interp_sort_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

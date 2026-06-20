@@ -1146,6 +1146,27 @@ the interpreter's value library is broadly complete. Natural next steps: a
 `set(xs, i, v)` / `remove(m, k)` pair to modify lists and maps by index / key, or
 a `sort(xs)` builtin so a `keys` list can be rendered deterministically.
 
+**`sort(xs)` shipped, closing the keys-order gap.** `examples/interp_sort_demo.vst`
+adds a builtin that sorts a list value ascending, which finally makes a `keys`
+list deterministic: every map slice noted that `keys(m)` returns an unspecified
+order, so `join(sort(keys(m)), ",")` is the first way to print a map in a stable
+order. `sort` is functional (copies the backing `Vec`, selection-sorts in place
+via `Vec.get` / `Vec.set`, returns the new list) and its comparison is type-aware:
+two ints compare numerically and two strings lexicographically (`Str <`), with any
+other mix falling back to the integer coercion. Two small capabilities were probed
+before building (both already present, no compiler change): `Str` supports `<`, and
+`Vec` has `.set(i, v)`. The e2e runs the built tool on a committed program
+(`tests/e2e/interp_sort_program.calc`) asserting deterministically sorted map keys
+(`sort(keys(m))` joined = `apple,banana,cherry` whatever the map's internal order),
+a numeric sort that proves the comparison is by value not lexicographic
+(`sort([30, 10, 20, 5])` = `5 10 20 30`, not `10 20 30 5`), an alphabetic string
+sort (`sort(split("delta,alpha,charlie,bravo", ","))` = `alpha bravo charlie
+delta`), indexed access into the sorted result (`at(words, 0)` = `alpha`), and the
+empty / singleton cases. A map can now be enumerated and printed in order. Natural
+next steps: a `set(xs, i, v)` / `remove(m, k)` pair to modify lists and maps by
+index / key (note `HashMap` has no `remove`, so map removal would rebuild by
+iteration), or `min` / `max` / `sum` reductions over a list.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

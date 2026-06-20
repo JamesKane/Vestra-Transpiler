@@ -1,0 +1,17 @@
+m = mapNew();
+m = put(m, "banana", 3);
+m = put(m, "apple", 1);
+m = put(m, "cherry", 2);
+print "sorted keys:", join(sort(keys(m)), ",");
+nums = listNew();
+nums = push(nums, 30);
+nums = push(nums, 10);
+nums = push(nums, 20);
+nums = push(nums, 5);
+print "sorted nums:", join(sort(nums), " ");
+words = sort(split("delta,alpha,charlie,bravo", ","));
+print "words:", join(words, " ");
+print "first:", at(words, 0);
+print "empty:", len(sort(listNew()));
+print "single:", join(sort(split("solo", ",")), ",");
+print "done"
