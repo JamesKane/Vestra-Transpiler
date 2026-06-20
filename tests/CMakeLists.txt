@@ -3268,6 +3268,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_search_app ${e2e_interpsrch_program} | grep -qx 'find world: 6' && ${e2e_workdir}/interp_search_app ${e2e_interpsrch_program} | grep -qx 'compose: world'")
 set_tests_properties(e2e_interp_search_demo_verify PROPERTIES DEPENDS e2e_interp_search_demo_compile)
 
+# A string-keyed value map: the interpreter's first compound data type. The
+# tagged Value gains a recursive `case map(HashMap[String, Value])` and four
+# functional builtins (mapNew / put / get / has). The committed program proves
+# string/int/bool values in a map, the absent-key default, a computed key (owned
+# String keys), a nested map, and a frequency-count idiom.
+set(e2e_interpmap_input   ${CMAKE_SOURCE_DIR}/examples/interp_map_demo.vst)
+set(e2e_interpmap_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_map_program.calc)
+
+add_test(
+    NAME    e2e_interp_map_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpmap_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_map_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_map_demo.cpp
+            -o ${e2e_workdir}/interp_map_app)
+set_tests_properties(e2e_interp_map_demo_compile PROPERTIES DEPENDS e2e_interp_map_demo_transpile)
+
+# Run the map interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_map_demo_run
+    COMMAND ${e2e_workdir}/interp_map_app ${e2e_interpmap_program})
+set_tests_properties(e2e_interp_map_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_map_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify compound-value behavior reached stdout: a computed-key lookup
+# (computed: 99) and a nested-map read (inner.x: 42).
+add_test(
+    NAME    e2e_interp_map_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_map_app ${e2e_interpmap_program} | grep -qx 'computed: 99' && ${e2e_workdir}/interp_map_app ${e2e_interpmap_program} | grep -qx 'inner.x: 42' && ${e2e_workdir}/interp_map_app ${e2e_interpmap_program} | grep -qx 'count a: 2'")
+set_tests_properties(e2e_interp_map_demo_verify PROPERTIES DEPENDS e2e_interp_map_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

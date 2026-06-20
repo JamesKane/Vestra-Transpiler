@@ -988,6 +988,37 @@ library is now construct (concat), measure / slice (`len` / `substr`), and searc
 (`find` / `contains`). Natural next steps: a string-keyed value map as the
 interpreter's first compound data type, or `split` returning a list value.
 
+**A string-keyed value map shipped, the interpreter's first compound data type.**
+`examples/interp_map_demo.vst` adds a fourth `Value` case,
+`case map(HashMap[String, Value])`, which makes `Value` recursive (a map holds
+values, a value may be a map) and gives it its first move-only heap-container
+payload. Four functional builtins operate on it: `mapNew()` (a fresh empty map),
+`put(m, k, v)` (a new map equal to `m` with key `k` bound to `v`), `get(m, k)`
+(the value at `k`, or `int(0)` when absent), and `has(m, k)` (a bool). Maps are
+value-semantic and functional: `put` copies the backing map, inserts, and returns
+the new map, so `m = put(m, k, v)` is the update idiom, which falls out naturally
+from the fact that a map-bearing `Value` already deep-copies when read back out of
+the environment. Keys are owned `String`s (the map calls `strOf` to copy the key
+bytes), not `Str` views, so a computed key such as `"k" + "ey"` is safe rather
+than a dangling borrow of a temporary. This was de-risked with two standalone
+probes before any interpreter change: the first proved a recursive `enum` through
+`HashMap`, the env round-trip of a map value, and a deep-copying functional `put`
+(`var dup = m` copies the borrowed map); the second proved owned-`String` keys
+with a borrowed-`Str` query (`m.get(k)`). No compiler change. The five existing
+`Value` helpers that match exhaustively (`format`, `asInt`, `truthy`, `isStr`,
+`valEq`) each gained a `.map` arm: a map renders as a fixed `<map>` placeholder
+(its entry order is unspecified, so printing contents would not be
+deterministic), is always truthy, coerces to 0, is not a string, and compares
+unequal to everything. The e2e runs the built tool on a committed program
+(`tests/e2e/interp_map_program.calc`) asserting string / int / bool values stored
+and retrieved by key, the absent-key default (`get(m, "nope")` = 0), `has`
+true / false, a computed key (`"k" + "ey"` then `get(m, "key")` = 99), a nested
+map (`get(get(m, "inner"), "x")` = 42), and a frequency-count idiom
+(`put(c, k, get(c, k) + 1)` twice gives `count a: 2`). The interpreter now has a
+real compound, recursive, value-semantic data structure. Natural next steps: a
+`keys(m)` builtin (needs an ordered list value first), or `split` returning a list
+value as the second compound type.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

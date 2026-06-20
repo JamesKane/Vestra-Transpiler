@@ -1,0 +1,23 @@
+m = mapNew();
+m = put(m, "name", "Vestra");
+m = put(m, "year", 2026);
+m = put(m, "cool", true);
+print "name:", get(m, "name");
+print "year:", get(m, "year");
+print "cool:", get(m, "cool");
+print "has name:", has(m, "name");
+print "has nope:", has(m, "nope");
+print "missing:", get(m, "nope");
+m = put(m, "k" + "ey", 99);
+print "computed:", get(m, "key");
+inner = mapNew();
+inner = put(inner, "x", 42);
+m = put(m, "inner", inner);
+print "inner.x:", get(get(m, "inner"), "x");
+counts = mapNew();
+counts = put(counts, "a", get(counts, "a") + 1);
+counts = put(counts, "a", get(counts, "a") + 1);
+counts = put(counts, "b", get(counts, "b") + 1);
+print "count a:", get(counts, "a");
+print "count b:", get(counts, "b");
+print "done"
