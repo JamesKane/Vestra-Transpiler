@@ -892,6 +892,31 @@ variables, recursion, loops, and output, all over a tagged value. Natural next
 steps: string concatenation (an owned `String` in the value, the first heap-owned
 payload), or comparison operators producing typed errors on bad operands.
 
+**String concatenation shipped, the interpreter's first heap-owned payload.**
+`examples/interp_concat_demo.vst` changes the tagged `Value`'s string case from a
+borrowed view (`case str(Str)`) to an *owned* `case str(String)`, because a
+concatenation result is a fresh string that is not a slice of the program source.
+`+` becomes string-led: if the left operand is a string, the whole run of `+`s
+concatenates (each operand rendered by its tag via `format`, so `"n=" + 42` is
+`n=42`); otherwise `+` stays integer arithmetic, selected by an `isStr(Value)`
+test on the first operand. The interesting part is ownership. An owned-`String`
+`Value` now rides through the variable environment (`HashMap[Str, Value]`) and the
+`Vec[Value]` argument lists, and a read back out (`env.get(name) ?? Value.int(0)`,
+`args.get(j) ?? Value.int(0)`) copies the owned value, because Vestra enums are
+copy-constructible at the C++ layer, so the heap payload survives being stored and
+re-read with no compiler change. This was verified first with a standalone probe
+(an owned-String enum into a `HashMap` and back), then built into the full
+interpreter; it transpiled and compiled clean. `String == String` in `valEq`
+worked directly (owned-String structural equality). The e2e runs the built tool
+on a committed program (`tests/e2e/interp_concat_program.calc`) asserting literal
+concatenation (`Hello, world`), variable concatenation (`Hi Vestra!`), string-led
+mixed concat (`n=42`), a recursion that builds owned strings through `Vec[Value]`
+(`rep("ab", 3)` is `ababab`), and an owned `String` round-tripping through the env
+in a `while` loop (`acc = acc + "x"` gives `xxx`). The dynamically-typed
+interpreter now produces and stores heap-owned strings, not just borrowed views.
+Natural next steps: a string-length / substring builtin on string values, or
+`print` of multiple comma-separated values.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

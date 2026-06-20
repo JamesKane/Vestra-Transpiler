@@ -1,0 +1,13 @@
+greeting = "Hello, " + "world";
+print greeting;
+name = "Vestra";
+print "Hi " + name + "!";
+print "n=" + 42;
+fn rep(s, n) = if n < 1 then "" else s + rep(s, n - 1);
+print rep("ab", 3);
+acc = "";
+i = 0;
+while i < 3 do { acc = acc + "x"; i = i + 1 };
+print acc;
+print "Hello, world" == greeting;
+print "done"

@@ -3122,6 +3122,44 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_value_app ${e2e_interpval_program} | grep -qx hello && ${e2e_workdir}/interp_value_app ${e2e_interpval_program} | grep -qx 720")
 set_tests_properties(e2e_interp_value_demo_verify PROPERTIES DEPENDS e2e_interp_value_demo_compile)
 
+# String concatenation — the interpreter's first heap-owned value payload. The
+# tagged Value's `str` case now holds an owned `String` (was a borrowed `Str`),
+# and `+` over a string operand concatenates (each operand rendered by its tag).
+# A fresh owned String rides through the variable environment and the Vec[Value]
+# argument lists. The committed program proves literal + variable concatenation,
+# string-led mixed concat ("n=" + 42), recursion that builds strings, and an
+# owned String round-tripping through the env in a while loop.
+set(e2e_interpcat_input   ${CMAKE_SOURCE_DIR}/examples/interp_concat_demo.vst)
+set(e2e_interpcat_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_concat_program.calc)
+
+add_test(
+    NAME    e2e_interp_concat_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpcat_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_concat_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_concat_demo.cpp
+            -o ${e2e_workdir}/interp_concat_app)
+set_tests_properties(e2e_interp_concat_demo_compile PROPERTIES DEPENDS e2e_interp_concat_demo_transpile)
+
+# Run the concat interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_concat_demo_run
+    COMMAND ${e2e_workdir}/interp_concat_app ${e2e_interpcat_program})
+set_tests_properties(e2e_interp_concat_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_concat_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify the concatenation outputs reached stdout: a variable-interpolated concat
+# (Hi Vestra!) and a recursion that builds an owned String (ababab).
+add_test(
+    NAME    e2e_interp_concat_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_concat_app ${e2e_interpcat_program} | grep -qx 'Hi Vestra!' && ${e2e_workdir}/interp_concat_app ${e2e_interpcat_program} | grep -qx ababab")
+set_tests_properties(e2e_interp_concat_demo_verify PROPERTIES DEPENDS e2e_interp_concat_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.
