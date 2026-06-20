@@ -1126,6 +1126,26 @@ type now has direct constructors to match the map's. Natural next steps: a `toSt
 builtin to round-trip numbers back to text explicitly, or a `set(m, ...)` /
 `remove` pair to mutate maps and lists by index/key beyond rebuild-from-scratch.
 
+**`toStr(v)` shipped, the symmetric counterpart of `toInt`.**
+`examples/interp_tostr_demo.vst` adds a builtin that renders any value to a string
+value by exposing the interpreter's internal `format` (an int or bool becomes its
+text, a string is returned verbatim, a map or list as its placeholder). Its real
+payoff is producing a string where one is required: a number can now be a *map
+key* or a list element directly, which previously needed the string-led concat
+hack (`"" + i`). `toStr` and `toInt` round-trip on integers
+(`toInt(toStr(n)) == n`). No compiler change (a two-line wrapper over `format`).
+The e2e runs the built tool on a committed program
+(`tests/e2e/interp_tostr_program.calc`) that builds a map keyed by number strings
+in a loop (`put(sq, toStr(i), i * i)`) and reads it back both by literal key and
+by `toStr` (`get(sq, "3")` = 9, `get(sq, toStr(4))` = 16, `len(keys(sq))` = 4),
+converts an int / bool / string (`toStr(42)` = 42, `toStr(true)` = true,
+`toStr("hi")` = hi), builds a stringified list (`push(labels, toStr(i * i))` then
+`join` = `1,4,9`), and round-trips (`toInt(toStr(123))` = 123). With numeric text
+flowing both directions and two compound types with full build / read surfaces,
+the interpreter's value library is broadly complete. Natural next steps: a
+`set(xs, i, v)` / `remove(m, k)` pair to modify lists and maps by index / key, or
+a `sort(xs)` builtin so a `keys` list can be rendered deterministically.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

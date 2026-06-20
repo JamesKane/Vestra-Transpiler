@@ -3484,6 +3484,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_listbuild_app ${e2e_interplist_program} | grep -qx 'cat: a,b,c,1,2,3' && ${e2e_workdir}/interp_listbuild_app ${e2e_interplist_program} | grep -qx 'squares: 1 4 9 16'")
 set_tests_properties(e2e_interp_listbuild_demo_verify PROPERTIES DEPENDS e2e_interp_listbuild_demo_compile)
 
+# toStr(v): render any value to a string value, the symmetric counterpart of
+# toInt (it exposes the internal format as a builtin). Its payoff is numeric and
+# computed map keys (put(m, toStr(i), v)) and stringified list elements. The
+# committed program builds a map keyed by number strings, converts int/bool/string,
+# builds a stringified list, and round-trips toInt(toStr(n)) == n.
+set(e2e_interptostr_input   ${CMAKE_SOURCE_DIR}/examples/interp_tostr_demo.vst)
+set(e2e_interptostr_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_tostr_program.calc)
+
+add_test(
+    NAME    e2e_interp_tostr_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interptostr_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_tostr_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_tostr_demo.cpp
+            -o ${e2e_workdir}/interp_tostr_app)
+set_tests_properties(e2e_interp_tostr_demo_compile PROPERTIES DEPENDS e2e_interp_tostr_demo_transpile)
+
+# Run the toStr interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_tostr_demo_run
+    COMMAND ${e2e_workdir}/interp_tostr_app ${e2e_interptostr_program})
+set_tests_properties(e2e_interp_tostr_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_tostr_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify toStr behavior reached stdout: a number-keyed map lookup (sq3: 9), a
+# stringified list (labels: 1,4,9), and the toInt/toStr round-trip (rt: 123).
+add_test(
+    NAME    e2e_interp_tostr_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_tostr_app ${e2e_interptostr_program} | grep -qx 'sq3: 9' && ${e2e_workdir}/interp_tostr_app ${e2e_interptostr_program} | grep -qx 'labels: 1,4,9' && ${e2e_workdir}/interp_tostr_app ${e2e_interptostr_program} | grep -qx 'rt: 123'")
+set_tests_properties(e2e_interp_tostr_demo_verify PROPERTIES DEPENDS e2e_interp_tostr_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.
