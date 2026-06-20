@@ -1,0 +1,265 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// Control flow: the variable mini-language gains conditionals and comparisons,
+// so it can branch on its data. `if cond then a else b` is an expression, and
+// `<` / `>` compare (yielding 1 or 0), so a program can compute an absolute
+// value or a maximum:
+//
+//   prog   = stmt (';' stmt)*
+//   stmt   = ident '=' expr  |  expr
+//   expr   = 'if' cmp 'then' expr 'else' expr  |  cmp
+//   cmp    = sum (('<' | '>') sum)?
+//   sum    = term (('+' | '-') term)*
+//   term   = factor (('*' | '/') factor)*
+//   factor = num | ident | '(' expr ')'
+//
+// `if` / `then` / `else` are recognized as keyword tokens at lex time (a string
+// `match` on each identifier). Expressions here are side-effect free — a
+// reference only reads the environment, and division is made total (x / 0 = 0) —
+// so the conditional can evaluate *both* branches and select the taken one
+// without changing the result, which keeps the eval-as-parse shape simple.
+
+module examples.calc_if_demo
+
+enum Tok {
+    case num
+    case ident
+    case kwIf
+    case kwThen
+    case kwElse
+    case plus
+    case minus
+    case star
+    case slash
+    case lt
+    case gt
+    case lparen
+    case rparen
+    case assign
+    case semicolon
+    case end
+    case bad
+}
+
+struct Token {
+    let kind: Tok
+    let value: Int
+    let name: Str
+}
+
+// ---- lexer -----------------------------------------------------------------
+
+func punct(_ c: Char) -> Tok {
+    if c == '+' { return .plus }
+    if c == '-' { return .minus }
+    if c == '*' { return .star }
+    if c == '/' { return .slash }
+    if c == '<' { return .lt }
+    if c == '>' { return .gt }
+    if c == '(' { return .lparen }
+    if c == ')' { return .rparen }
+    if c == '=' { return .assign }
+    if c == ';' { return .semicolon }
+    return .bad
+}
+
+// An identifier is a keyword if it spells one — recognized by a string match.
+func wordKind(_ nm: Str) -> Tok {
+    return match nm {
+        case "if": .kwIf
+        case "then": .kwThen
+        case "else": .kwElse
+        default: .ident
+    }
+}
+
+func lex(_ s: Str) using Alloc -> Vec[Token] {
+    var toks: Vec[Token] = Vec.new()
+    var i: Int = 0
+    while i < s.len() {
+        let c = s.charAt(i) ?? ' '
+        if c.isSpace() {
+            i = i + 1
+        } else if c.isDigit() {
+            let start = i
+            while i < s.len() && (s.charAt(i) ?? ' ').isDigit() {
+                i = i + 1
+            }
+            let v = s.slice(start, i).toInt() ?? 0
+            toks.push(Token(kind: .num, value: v, name: ""))
+        } else if c.isAlpha() {
+            let start = i
+            while i < s.len() && (s.charAt(i) ?? ' ').isAlnum() {
+                i = i + 1
+            }
+            let nm = s.slice(start, i)
+            toks.push(Token(kind: wordKind(nm), value: 0, name: nm))
+        } else {
+            toks.push(Token(kind: punct(c), value: 0, name: ""))
+            i = i + 1
+        }
+    }
+    toks.push(Token(kind: .end, value: 0, name: ""))
+    return toks
+}
+
+func peekKind(_ ts: Vec[Token], _ i: Int) -> Tok {
+    if let t = ts.get(i) {
+        return t.kind
+    }
+    return Tok.end
+}
+
+func peekVal(_ ts: Vec[Token], _ i: Int) -> Int {
+    if let t = ts.get(i) {
+        return t.value
+    }
+    return 0
+}
+
+func peekName(_ ts: Vec[Token], _ i: Int) -> Str {
+    if let t = ts.get(i) {
+        return t.name
+    }
+    return ""
+}
+
+// ---- parser + evaluator ----------------------------------------------------
+
+func pFactor(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Int]) -> Int {
+    let k = peekKind(ts, i)
+    if k == Tok.num {
+        let v = peekVal(ts, i)
+        i = i + 1
+        return v
+    }
+    if k == Tok.ident {
+        let name = peekName(ts, i)
+        i = i + 1
+        return env.get(name) ?? 0
+    }
+    if k == Tok.lparen {
+        i = i + 1
+        let v = pExpr(ts, &i, env)
+        i = i + 1  // consume ')'
+        return v
+    }
+    i = i + 1
+    return 0
+}
+
+func pTerm(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Int]) -> Int {
+    var acc: Int = pFactor(ts, &i, env)
+    var more: Bool = true
+    while more {
+        let k = peekKind(ts, i)
+        if k == Tok.star {
+            i = i + 1
+            acc = acc * pFactor(ts, &i, env)
+        } else if k == Tok.slash {
+            i = i + 1
+            let d = pFactor(ts, &i, env)
+            if d != 0 {
+                acc = acc / d  // division is total: x / 0 = 0
+            } else {
+                acc = 0
+            }
+        } else {
+            more = false
+        }
+    }
+    return acc
+}
+
+func pSum(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Int]) -> Int {
+    var acc: Int = pTerm(ts, &i, env)
+    var more: Bool = true
+    while more {
+        let k = peekKind(ts, i)
+        if k == Tok.plus {
+            i = i + 1
+            acc = acc + pTerm(ts, &i, env)
+        } else if k == Tok.minus {
+            i = i + 1
+            acc = acc - pTerm(ts, &i, env)
+        } else {
+            more = false
+        }
+    }
+    return acc
+}
+
+// cmp = sum (('<' | '>') sum)? — yields 1 (true) or 0 (false), else the sum.
+func pCmp(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Int]) -> Int {
+    let a = pSum(ts, &i, env)
+    let k = peekKind(ts, i)
+    if k == Tok.lt {
+        i = i + 1
+        let b = pSum(ts, &i, env)
+        if a < b {
+            return 1
+        }
+        return 0
+    }
+    if k == Tok.gt {
+        i = i + 1
+        let b = pSum(ts, &i, env)
+        if a > b {
+            return 1
+        }
+        return 0
+    }
+    return a
+}
+
+// expr = 'if' cmp 'then' expr 'else' expr | cmp. Both branches are evaluated
+// (side-effect free) and the taken one is selected.
+func pExpr(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Int]) -> Int {
+    if peekKind(ts, i) == Tok.kwIf {
+        i = i + 1  // consume 'if'
+        let c = pCmp(ts, &i, env)
+        if peekKind(ts, i) == Tok.kwThen {
+            i = i + 1
+        }
+        let t = pExpr(ts, &i, env)
+        if peekKind(ts, i) == Tok.kwElse {
+            i = i + 1
+        }
+        let e = pExpr(ts, &i, env)
+        if c != 0 {
+            return t
+        }
+        return e
+    }
+    return pCmp(ts, &i, env)
+}
+
+// ---- the program driver ----------------------------------------------------
+
+func runProgram(_ s: Str) using Alloc -> Int {
+    let toks = lex(s)
+    var env: HashMap[Str, Int] = HashMap.new()
+    var i: Int = 0
+    var last: Int = 0
+    var more: Bool = true
+    while more {
+        if peekKind(toks, i) == Tok.end {
+            more = false
+        } else {
+            if peekKind(toks, i) == Tok.ident && peekKind(toks, i + 1) == Tok.assign {
+                let name = peekName(toks, i)
+                i = i + 2  // skip the name and the '='
+                let v = pExpr(toks, &i, env)
+                env.set(name, v)
+                last = v
+            } else {
+                last = pExpr(toks, &i, env)
+            }
+            if peekKind(toks, i) == Tok.semicolon {
+                i = i + 1
+            }
+        }
+    }
+    return last
+}

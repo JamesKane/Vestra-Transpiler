@@ -722,9 +722,28 @@ that uses an earlier one (`x = 10; y = x * 2; x + y == 30`), reassignment that
 reads the old value (`x = 1; x = x + 1; x = x + 1; x == 3`), multi-letter names,
 and undefined / empty programs. The self-hosting front-end now spans lexing,
 token-stream parsing, a move-only AST, evaluation, typed parse errors, and a
-variable environment — a real, if small, interpreter. Natural next steps:
-functions / `if` in the mini-language, or wiring the typed parse errors into the
-variable interpreter.
+variable environment — a real, if small, interpreter.
+
+**Control flow shipped — conditionals + comparisons.**
+`examples/calc_if_demo.vst` gives the variable mini-language branching: `if cond
+then a else b` is an expression and `<` / `>` compare (yielding 1 / 0), so a
+program can compute `abs` / `max` over its variables. `if` / `then` / `else` are
+recognized as keyword tokens *at lex time* — a string `match` on each identifier
+maps it to a `kwIf` / `kwThen` / `kwElse` token, so the parser dispatches on enum
+equality rather than re-comparing strings. Because the expression language is
+side-effect free — a reference only reads the environment, and division is made
+total (`x / 0 = 0`) — the conditional evaluates *both* branches and selects the
+taken one, which keeps the eval-as-parse shape simple without changing results
+(the untaken branch, even `10 / 0`, computes harmlessly). It needed no compiler
+changes and transpiled + compiled clean on the first attempt. The e2e
+(`tests/e2e/main_calc_if_demo.cpp`) checks comparisons, basic selection, a
+condition over a comparison + variable, `max(a, b)` and `abs(n)` via conditionals,
+a nested `if` in the else branch, and the total-division safety of the untaken
+branch. The interpreter now has lexing, token-stream parsing, a move-only AST,
+evaluation, typed parse errors, a variable environment, and control flow — the
+core of a usable little language. Natural next steps: user-defined functions (a
+function table + call frames), or `while` loops (which need the parser to revisit
+a body, so a token-range or AST rather than pure eval-as-parse).
 
 ### 1. Generics phase 2 (multi-session)
 
