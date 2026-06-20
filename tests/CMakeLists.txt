@@ -3046,6 +3046,43 @@ set_tests_properties(e2e_calc_while_demo_run PROPERTIES
     DEPENDS                 e2e_calc_while_demo_compile
     PASS_REGULAR_EXPRESSION "calc_while_demo OK")
 
+# The interpreter as a standalone tool: a `func main` reads a program file from
+# argv (args + readFile), runs the whole mini-language, and the program's `print`
+# statements appear on stdout. The run executes a committed .calc program; the
+# stdout assertion (fact(5) = 120, the loop's print) proves print + recursion +
+# the file pipeline work together as an executable.
+set(e2e_interp_input   ${CMAKE_SOURCE_DIR}/examples/interp_demo.vst)
+set(e2e_interp_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_program.calc)
+
+add_test(
+    NAME    e2e_interp_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interp_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_demo.cpp
+            -o ${e2e_workdir}/interp_app)
+set_tests_properties(e2e_interp_demo_compile PROPERTIES DEPENDS e2e_interp_demo_transpile)
+
+# Run the interpreter on the committed program. Its prints (120 from fact(5), 55
+# from the loop, 7 from max) and the final `result: 7` go to stdout.
+add_test(
+    NAME    e2e_interp_demo_run
+    COMMAND ${e2e_workdir}/interp_app ${e2e_interp_program})
+set_tests_properties(e2e_interp_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_demo_compile
+    PASS_REGULAR_EXPRESSION "result: 7")
+
+# Verify a program `print` reached stdout (a recursive function's result),
+# distinct from main's own `result:` echo.
+add_test(
+    NAME    e2e_interp_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_app ${e2e_interp_program} | grep -qx 120")
+set_tests_properties(e2e_interp_demo_verify PROPERTIES DEPENDS e2e_interp_demo_compile)
+
 # Self-hosting proof-of-concept: a standalone `func main` program that reads a
 # file (argv + readFile), tokenizes with split, tabulates with Vec + HashMap,
 # renders a report with String + toString, writes it (writeFile), and echoes it

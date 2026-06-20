@@ -818,9 +818,29 @@ calls a function each iteration, and **nested loops** — plus that conditionals
 and functions still compose with loops. The self-hosting interpreter now has
 lexing, token-stream parsing, a move-only AST, evaluation, typed parse errors,
 variables, control flow, recursive n-ary functions, and imperative loops — a
-genuinely usable little language, written entirely in Vestra. Natural next step:
-a richer value type than `Int` (booleans / strings via an enum-payload tagged
-value), or `print`-style output from the interpreted program.
+genuinely usable little language, written entirely in Vestra.
+
+**The interpreter as a standalone tool shipped.** `examples/interp_demo.vst`
+packages the whole mini-language as a `func main` executable: it reads a program
+file named on the command line (`args()` + `readFile`, Fs-gated), runs it, and
+the program's output appears on stdout. The one new language feature is a `print
+expr` statement, which evaluates and emits its value (`println(v.toString())`);
+because printing is a side effect, the *statement* layer (`pStmt` / `pBlock` /
+`runProgram`) now carries the `Log` capability while the read-only expression
+layer does not — a clean illustration of the capability row tracking exactly
+where effects happen. So the entire self-hosting arc — lexer, token-stream
+parser, variables, conditionals, recursive n-ary functions, while loops — becomes
+something you invoke: `interp program.calc`. The e2e runs the built executable on
+a committed program (`tests/e2e/interp_program.calc`: a recursive factorial, a
+while-loop sum, a max function, each `print`ed) and asserts both the final
+`result:` line and — via a `grep` verify step distinct from `main`'s own echo —
+that a program `print` (the recursive `fact(5) = 120`) reached stdout. It needed
+no compiler changes and transpiled + compiled clean on the first attempt; the
+capped run terminated. This is the capstone of the interpreter arc: a self-hosted
+interpreter for a small imperative language with recursion, written in Vestra,
+that you can run on a file. Natural next step: a richer value type than `Int`
+(booleans / strings via an enum-payload tagged value), or string/print
+formatting of multiple values.
 
 ### 1. Generics phase 2 (multi-session)
 
