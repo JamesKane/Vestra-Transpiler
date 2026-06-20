@@ -3736,6 +3736,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_range_app ${e2e_interprange_program} | grep -qx 'squares: 0,1,4,9,16' && ${e2e_workdir}/interp_range_app ${e2e_interprange_program} | grep -qx 'sum 0..99: 4950' && ${e2e_workdir}/interp_range_app ${e2e_interprange_program} | grep -qx 'odds: 1,3,5,7,9'")
 set_tests_properties(e2e_interp_range_demo_verify PROPERTIES DEPENDS e2e_interp_range_demo_compile)
 
+# zipMap(keys, values): build a map from two parallel lists, the bridge from the
+# list type into the map type. Each key element is rendered with format (so integer
+# keys from range become string keys), pairing up to the shorter list. The committed
+# program zips parallel lists, zips range with mapped squares, and handles a length
+# mismatch.
+set(e2e_interpzip_input   ${CMAKE_SOURCE_DIR}/examples/interp_zipmap_demo.vst)
+set(e2e_interpzip_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_zipmap_program.calc)
+
+add_test(
+    NAME    e2e_interp_zipmap_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpzip_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_zipmap_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_zipmap_demo.cpp
+            -o ${e2e_workdir}/interp_zipmap_app)
+set_tests_properties(e2e_interp_zipmap_demo_compile PROPERTIES DEPENDS e2e_interp_zipmap_demo_transpile)
+
+# Run the zipMap interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_zipmap_demo_run
+    COMMAND ${e2e_workdir}/interp_zipmap_app ${e2e_interpzip_program})
+set_tests_properties(e2e_interp_zipmap_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_zipmap_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify zipMap reached stdout: a value looked up by zipped key (b: 2) and a
+# number-to-square table built from range + mapList (sq3: 9).
+add_test(
+    NAME    e2e_interp_zipmap_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_zipmap_app ${e2e_interpzip_program} | grep -qx 'b: 2' && ${e2e_workdir}/interp_zipmap_app ${e2e_interpzip_program} | grep -qx 'sq3: 9' && ${e2e_workdir}/interp_zipmap_app ${e2e_interpzip_program} | grep -qx 'sorted: a,b,c'")
+set_tests_properties(e2e_interp_zipmap_demo_verify PROPERTIES DEPENDS e2e_interp_zipmap_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

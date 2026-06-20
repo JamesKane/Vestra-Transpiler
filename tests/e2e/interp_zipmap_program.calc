@@ -1,0 +1,16 @@
+fn square(x) = x * x;
+ids = split("a,b,c", ",");
+vals = listNew();
+vals = push(vals, 1);
+vals = push(vals, 2);
+vals = push(vals, 3);
+m = zipMap(ids, vals);
+print "b:", get(m, "b");
+print "nkeys:", len(keys(m));
+print "sorted:", join(sort(keys(m)), ",");
+sq = zipMap(range(4), mapList(range(4), "square"));
+print "sq2:", get(sq, "2");
+print "sq3:", get(sq, "3");
+short = zipMap(split("x,y,z", ","), range(2));
+print "short keys:", len(keys(short));
+print "done"

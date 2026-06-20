@@ -1264,6 +1264,25 @@ explicit loop. Natural next steps: a `set(xs, i, v)` / `remove(m, k)` pair to
 modify lists and maps in place, or a `zipMap(keys, values)` producer that builds a
 map from two parallel lists.
 
+**`zipMap(keys, values)` shipped, the list-to-map bridge.**
+`examples/interp_zipmap_demo.vst` builds a map from two parallel lists: the i-th
+key element is bound to the i-th value element, pairing up to the shorter list. A
+map key is always a string, so each key element is rendered with `format` (the
+same coercion `toStr` uses), which lets a list of integer keys (e.g. from `range`)
+become string keys. This is the bridge from the list type back into the map type:
+with `range` / `mapList` it assembles a map out of computed lists without an index
+loop. No compiler change. The e2e runs the built tool on a committed program
+(`tests/e2e/interp_zipmap_program.calc`) zipping two parallel lists and looking up
+a value by key (`zipMap(ids, vals)` then `get(m, "b")` = 2, `len(keys(m))` = 3,
+`sort(keys(m))` = `a,b,c`), building a number-to-square table from `range` plus a
+mapped `square` (`zipMap(range(4), mapList(range(4), "square"))` then `get(sq, "2")`
+= 4, `get(sq, "3")` = 9, the integer keys stringified), and a length mismatch that
+pairs to the shorter list (`zipMap(split("x,y,z", ","), range(2))` has 2 keys). The
+interpreter can now flow data between its two compound types in both directions
+(`keys` / `split` produce lists from a map / string, `zipMap` produces a map from
+lists). Natural next steps: a `set(xs, i, v)` / `remove(m, k)` pair to modify lists
+and maps in place, or `values(m)` / `entries(m)` to read a map's contents as lists.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
