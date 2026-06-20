@@ -1,0 +1,179 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// Self-hosting milestone: a real two-phase front-end in Vestra. The earlier
+// demos either evaluated as they scanned (calc_demo) or parsed characters
+// straight into a tree (calc_ast_demo); this one is the genuine pipeline a
+// compiler uses — a *lexer* turns the source into a token stream, and a separate
+// *parser* consumes that token stream (not the characters) into an AST, which an
+// evaluator then walks:
+//
+//   source  --lex-->  Vec[Token]  --parse-->  Ast (Box tree)  --eval-->  Int
+//
+// It pulls together the whole language: the char toolkit (lexer), Vec[Token] as
+// the stream, an enum token kind, a recursive Box[Ast] tree (move-only — built
+// with the move-on-consume pass), enum equality for token dispatch, inout cursor
+// threading, and a mixed-arm match for the fold.
+
+module examples.frontend_demo
+
+enum Tok {
+    case num
+    case plus
+    case minus
+    case star
+    case slash
+    case lparen
+    case rparen
+    case end
+}
+
+// A token carries its kind and, for a `num`, its already-parsed value (so the
+// parser works on values, never re-scanning characters). Token is a plain value
+// type, so Vec[Token] is an ordinary copyable stream.
+struct Token {
+    let kind: Tok
+    let value: Int
+}
+
+enum Ast {
+    case lit(Int)
+    case bin(Box[Ast], Tok, Box[Ast])
+}
+
+// ---- phase 1: lexer (source -> Vec[Token]) --------------------------------
+
+func punct(_ c: Char) -> Tok {
+    if c == '+' { return .plus }
+    if c == '-' { return .minus }
+    if c == '*' { return .star }
+    if c == '/' { return .slash }
+    if c == '(' { return .lparen }
+    return .rparen
+}
+
+func lex(_ s: Str) using Alloc -> Vec[Token] {
+    var toks: Vec[Token] = Vec.new()
+    var i: Int = 0
+    while i < s.len() {
+        let c = s.charAt(i) ?? ' '
+        if c.isSpace() {
+            i = i + 1
+        } else if c.isDigit() {
+            let start = i
+            while i < s.len() && (s.charAt(i) ?? ' ').isDigit() {
+                i = i + 1
+            }
+            let v = s.slice(start, i).toInt() ?? 0
+            toks.push(Token(kind: .num, value: v))
+        } else {
+            toks.push(Token(kind: punct(c), value: 0))
+            i = i + 1
+        }
+    }
+    toks.push(Token(kind: .end, value: 0))
+    return toks
+}
+
+// ---- phase 2: parser (Vec[Token] -> Ast) ----------------------------------
+
+// Token-stream lookahead: the kind / value at position i (`.end` past the end).
+func peekKind(_ ts: Vec[Token], _ i: Int) -> Tok {
+    if let t = ts.get(i) {
+        return t.kind
+    }
+    return Tok.end
+}
+
+func peekVal(_ ts: Vec[Token], _ i: Int) -> Int {
+    if let t = ts.get(i) {
+        return t.value
+    }
+    return 0
+}
+
+// factor = num | '(' expr ')'
+func pFactor(_ ts: Vec[Token], _ i: inout Int) using Alloc -> Ast {
+    if peekKind(ts, i) == Tok.lparen {
+        i = i + 1
+        let inner = pExpr(ts, &i)
+        i = i + 1  // consume ')'
+        return inner
+    }
+    let v = peekVal(ts, i)
+    i = i + 1
+    return Ast.lit(v)
+}
+
+// term = factor (('*' | '/') factor)*
+func pTerm(_ ts: Vec[Token], _ i: inout Int) using Alloc -> Ast {
+    var acc: Ast = pFactor(ts, &i)
+    var more: Bool = true
+    while more {
+        let k = peekKind(ts, i)
+        if k == Tok.star {
+            i = i + 1
+            let r = pFactor(ts, &i)
+            acc = Ast.bin(Box.new(acc), Tok.star, Box.new(r))
+        } else if k == Tok.slash {
+            i = i + 1
+            let r = pFactor(ts, &i)
+            acc = Ast.bin(Box.new(acc), Tok.slash, Box.new(r))
+        } else {
+            more = false
+        }
+    }
+    return acc
+}
+
+// expr = term (('+' | '-') term)*
+func pExpr(_ ts: Vec[Token], _ i: inout Int) using Alloc -> Ast {
+    var acc: Ast = pTerm(ts, &i)
+    var more: Bool = true
+    while more {
+        let k = peekKind(ts, i)
+        if k == Tok.plus {
+            i = i + 1
+            let r = pTerm(ts, &i)
+            acc = Ast.bin(Box.new(acc), Tok.plus, Box.new(r))
+        } else if k == Tok.minus {
+            i = i + 1
+            let r = pTerm(ts, &i)
+            acc = Ast.bin(Box.new(acc), Tok.minus, Box.new(r))
+        } else {
+            more = false
+        }
+    }
+    return acc
+}
+
+// ---- phase 3: evaluator (Ast -> Int) --------------------------------------
+
+func apply(_ a: Int, _ op: Tok, _ b: Int) -> Int {
+    if op == Tok.plus { return a + b }
+    if op == Tok.minus { return a - b }
+    if op == Tok.star { return a * b }
+    return a / b
+}
+
+func eval(_ e: Ast) -> Int {
+    return match e {
+        case .lit(let n): n
+        case .bin(let l, let op, let r): apply(eval(l.value), op, eval(r.value))
+    }
+}
+
+// ---- the pipeline ----------------------------------------------------------
+
+// Number of tokens (including the trailing `.end`) the lexer produces.
+func tokenCount(_ s: Str) using Alloc -> Int {
+    return lex(s).len()
+}
+
+// Lex, parse, and evaluate an arithmetic expression end to end.
+func run(_ s: Str) using Alloc -> Int {
+    let toks = lex(s)
+    var i: Int = 0
+    let ast = pExpr(toks, &i)
+    return eval(ast)
+}

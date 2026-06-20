@@ -650,6 +650,31 @@ tuple-returning builder (move-on-consume) and folded by mixed-arm matches
 (`sum` / `length` / `maxElem`, each with a `case .empty: 0` base) — which
 exercises *both* this fix and the move pass together. Full suite green (1083).
 
+**Self-hosting phase 4 — a two-phase front-end shipped.** The capstone: a real
+lexer→parser pipeline in one Vestra program, where the parser consumes a *token
+stream* rather than re-scanning characters. `examples/frontend_demo.vst` runs
+`source --lex→ Vec[Token] --parse→ Box[Ast] --eval→ Int`: phase 1 (`lex`) scans
+the source with the char toolkit into a `Vec[Token]` (each `Token` a `{ kind:
+Tok, value: Int }` value, so the stream is an ordinary copyable `Vec`); phase 2
+(`pExpr`/`pTerm`/`pFactor`) is recursive descent over that stream — `peekKind`/
+`peekVal` index into the `Vec[Token]` (via `.get(i)` + field access on the
+`Token?`), token dispatch is enum equality (`peekKind(ts, i) == Tok.plus`), and
+the cursor threads through an `inout Int` — building a move-only `Box[Ast]` tree;
+phase 3 (`eval`) folds the tree with a mixed-arm match. It pulls together nearly
+the whole language at once — char access + classification, `Vec` as a stream,
+enums (token kind + AST), a recursive `Box` ADT built with move-on-consume, enum
+`==` dispatch, `inout` threading, and the match-result-type fold — and it
+transpiled + compiled clean on the first attempt (every supporting fix from the
+recent slices held). The e2e (`tests/e2e/main_frontend_demo.cpp`) checks the
+lexer's token counts and the end-to-end value over precedence / associativity /
+parentheses / nesting (`2 + 3 * 4 == 14`, `(2 + 3) * 4 == 20`, `2 * (3 + (4 *
+5)) == 46`, a larger mixed expression). Four of a front-end's phases now run as
+standalone Vestra executables — lexer, char-level parser, AST builder, and now a
+token-stream lexer+parser+evaluator pipeline. Natural next steps: parse-error
+reporting (today a malformed expression just produces `lit(0)` / stops), and
+multi-statement / variable-binding grammar (a `HashMap` symbol table over the
+existing collection surface).
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
