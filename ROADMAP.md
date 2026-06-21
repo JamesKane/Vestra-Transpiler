@@ -1344,6 +1344,27 @@ The interpreter is now a genuinely usable small dynamic language. Natural next
 steps: unary minus in the parser (so `-7` is a literal), or a `hasValue(m, v)` /
 list membership test.
 
+**Unary minus shipped, closing the negative-literal gap.**
+`examples/interp_unaryminus_demo.vst` adds one rule to `pFactor`: a `-` in factor
+position consumes the following factor and negates it (`Value.int(0 - asInt(f))`),
+the gap the `abs` slice surfaced (`-7` previously left the `-` dangling and forced
+`0 - 7`). Handling it at the factor level gives the right precedence for free:
+unary minus binds tighter than `* / + -`, so `-3 * 4` is `(-3) * 4`, and because
+`pFactor` recurses, `--5` is double negation. It composes everywhere a factor can
+appear, with no conflict with binary minus (the binary case only fires once `pSum`
+has already consumed a left operand). This is a parser rule in the interpreter, so
+no Vestra compiler change. The e2e runs the built tool on a committed program
+(`tests/e2e/interp_unaryminus_program.calc`) asserting a negative literal
+(`-7`), a negative in an expression (`-7 + 10` = 3), precedence against `*`
+(`-3 * 4` = -12), double negation (`--5` = 5), negating a parenthesized expression
+(`-(2 + 3)` = -5), a negative literal as a builtin argument (`abs(-9)` = 9, which
+the `abs` slice could not write), a negative bound to a variable (`x = -4`), binary
+minus then unary minus (`10 - -2` = 12), a negating user function
+(`fn neg(n) = -n`, `neg(8)` = -8), and a fold over negated range values
+(`sum(mapList(range(4), "neg"))` = -6). Negatives are now first-class in the
+language. Natural next steps: a `hasValue(m, v)` / list membership test, or a
+`reverse(xs)` list builtin.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

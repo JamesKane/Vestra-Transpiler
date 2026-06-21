@@ -1,0 +1,13 @@
+print "neg lit:", -7;
+print "neg expr:", -7 + 10;
+print "neg mul:", -3 * 4;
+print "double neg:", --5;
+print "neg paren:", -(2 + 3);
+print "abs lit:", abs(-9);
+x = -4;
+print "var:", x;
+print "sub neg:", 10 - -2;
+fn neg(n) = -n;
+print "fn neg:", neg(8);
+print "sum negs:", sum(mapList(range(4), "neg"));
+print "done"

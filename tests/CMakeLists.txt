@@ -3879,6 +3879,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_arith_app ${e2e_interparith_program} | grep -qx 'mod: 2' && ${e2e_workdir}/interp_arith_app ${e2e_interparith_program} | grep -qx 'fizzbuzz: 1 2 Fizz 4 Buzz Fizz 7 8 Fizz Buzz 11 Fizz 13 14 FizzBuzz' && ${e2e_workdir}/interp_arith_app ${e2e_interparith_program} | grep -qx 'abs neg: 7'")
 set_tests_properties(e2e_interp_arith_demo_verify PROPERTIES DEPENDS e2e_interp_arith_demo_compile)
 
+# Unary minus: a leading `-` on a factor, closing the gap the abs slice found
+# (negatives previously had to be written as 0 - n). Handled in pFactor, so it binds
+# tighter than the binary operators and composes everywhere a factor can. The
+# committed program covers a negative literal, precedence vs *, double negation,
+# negating a parenthesized expression, a negative variable, and -n in a function.
+set(e2e_interpneg_input   ${CMAKE_SOURCE_DIR}/examples/interp_unaryminus_demo.vst)
+set(e2e_interpneg_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_unaryminus_program.calc)
+
+add_test(
+    NAME    e2e_interp_unaryminus_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpneg_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_unaryminus_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_unaryminus_demo.cpp
+            -o ${e2e_workdir}/interp_unaryminus_app)
+set_tests_properties(e2e_interp_unaryminus_demo_compile PROPERTIES DEPENDS e2e_interp_unaryminus_demo_transpile)
+
+# Run the unary-minus interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_unaryminus_demo_run
+    COMMAND ${e2e_workdir}/interp_unaryminus_app ${e2e_interpneg_program})
+set_tests_properties(e2e_interp_unaryminus_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_unaryminus_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify unary minus reached stdout: precedence vs * (neg mul: -12) and negating a
+# parenthesized expression (neg paren: -5).
+add_test(
+    NAME    e2e_interp_unaryminus_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_unaryminus_app ${e2e_interpneg_program} | grep -qx 'neg mul: -12' && ${e2e_workdir}/interp_unaryminus_app ${e2e_interpneg_program} | grep -qx 'neg paren: -5' && ${e2e_workdir}/interp_unaryminus_app ${e2e_interpneg_program} | grep -qx 'abs lit: 9'")
+set_tests_properties(e2e_interp_unaryminus_demo_verify PROPERTIES DEPENDS e2e_interp_unaryminus_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.
