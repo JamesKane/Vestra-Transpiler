@@ -1,0 +1,10 @@
+nums = listNew();
+nums = push(nums, 10);
+nums = push(nums, 20);
+nums = push(nums, 30);
+nums = push(nums, 40);
+print "sum:", sum(nums);
+print "avg:", avg(nums);
+print "trunc:", avg(range(10));
+print "empty:", avg(listNew());
+print "done"

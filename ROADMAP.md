@@ -1713,8 +1713,18 @@ built 1..n list or a running total as a sum. No compiler change. The e2e runs th
 tool on a committed program (`tests/e2e/interp_product_program.calc`) summing and
 multiplying a small list (`sum` = 9, `product` = 24), computing 5! as the product of a
 1..5 list (`factorial5` = 120), and checking the empty-list identity (`empty` = 1).
-Natural next steps: an `indexOf`-style position search, an `avg(xs)` mean over `sum` and
-`len`, or string case builtins if a byte-to-string primitive lands.
+
+**`avg(xs)` shipped, the integer mean.**
+`examples/interp_avg_demo.vst` composes the two pieces the language already has into a
+single builtin: `avg(xs)` is `sum(xs) / len(xs)`, truncating toward zero the way the `/`
+operator does. The empty list is guarded explicitly and returns 0 rather than dividing
+by zero. With `sum`, `product`, `min`, `max`, and now `avg`, the list has a small but
+useful numeric-summary surface. No compiler change. The e2e runs the built tool on a
+committed program (`tests/e2e/interp_avg_program.calc`) averaging a list (`avg` = 25),
+checking the truncating mean over a range (`avg(range(10))` = 4, from 45 / 10), and the
+empty-list guard (`empty` = 0). Natural next steps: an `indexOf`-style position search,
+a `reverse(xs)` list builtin, or string case builtins if a byte-to-string primitive
+lands.
 
 ### 1. Generics phase 2 (multi-session)
 
