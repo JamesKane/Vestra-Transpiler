@@ -1,0 +1,9 @@
+print "slashes:", replace("a-b-c", "-", "/");
+print "double l:", replace("hello", "l", "L");
+print "remove:", replace("a,b,c", ",", "");
+print "spaces:", replace("one two three", " ", "_");
+print "noop:", replace("abc", "x", "y");
+print "word:", replace("the cat sat", "cat", "dog");
+print "adjacent:", replace("aaa", "a", "x");
+print "roundtrip:", replace(replace("a.b.c", ".", "-"), "-", ".");
+print "done"

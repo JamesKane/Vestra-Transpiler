@@ -4198,6 +4198,41 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_anyall_app ${e2e_interpaa_program} | grep -qx 'all even: true' && ${e2e_workdir}/interp_anyall_app ${e2e_interpaa_program} | grep -qx 'any even mixed: true' && ${e2e_workdir}/interp_anyall_app ${e2e_interpaa_program} | grep -qx 'all empty: true'")
 set_tests_properties(e2e_interp_anyall_demo_verify PROPERTIES DEPENDS e2e_interp_anyall_demo_compile)
 
+# replace(s, old, new): replace every occurrence of a substring, implemented over
+# Str.split (append each piece with new between), which handles the edges (adjacent
+# matches, empty old) for free. The committed program covers single- and multi-char
+# replaces, removal, a no-match no-op, adjacent matches, and a round-trip.
+set(e2e_interprp_input   ${CMAKE_SOURCE_DIR}/examples/interp_replace_demo.vst)
+set(e2e_interprp_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_replace_program.calc)
+
+add_test(
+    NAME    e2e_interp_replace_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interprp_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_replace_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_replace_demo.cpp
+            -o ${e2e_workdir}/interp_replace_app)
+set_tests_properties(e2e_interp_replace_demo_compile PROPERTIES DEPENDS e2e_interp_replace_demo_transpile)
+
+# Run the replace interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_replace_demo_run
+    COMMAND ${e2e_workdir}/interp_replace_app ${e2e_interprp_program})
+set_tests_properties(e2e_interp_replace_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_replace_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify replace reached stdout: a delimiter swap (slashes: a/b/c) and a word
+# replace (word: the dog sat).
+add_test(
+    NAME    e2e_interp_replace_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_replace_app ${e2e_interprp_program} | grep -qx 'slashes: a/b/c' && ${e2e_workdir}/interp_replace_app ${e2e_interprp_program} | grep -qx 'word: the dog sat' && ${e2e_workdir}/interp_replace_app ${e2e_interprp_program} | grep -qx 'adjacent: xxx'")
+set_tests_properties(e2e_interp_replace_demo_verify PROPERTIES DEPENDS e2e_interp_replace_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

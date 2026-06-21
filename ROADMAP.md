@@ -1510,6 +1510,24 @@ The list now answers existential and universal questions, not just collects. Nat
 next steps: a `count(xs, fn)` tally, or consolidating the whole builtin set into a
 standalone `interp` capstone tool with a real program.
 
+**`replace(s, old, new)` shipped, substring replacement.**
+`examples/interp_replace_demo.vst` adds the string transform the surface was
+missing, and it falls out of the split / join pair already in place: replacing every
+`old` with `new` is splitting on `old` and joining the pieces with `new`. It is
+implemented directly over `Str.split(old)` (append each piece, with `new` between
+pieces), which gives the edge behavior for free: adjacent matches leave empty pieces
+(`replace("aaa", "a", "x")` is `xxx`), and an empty `old` matches nothing (the whole
+string is one piece, returned unchanged). No compiler change. The e2e runs the built
+tool on a committed program (`tests/e2e/interp_replace_program.calc`) covering a
+delimiter swap (`replace("a-b-c", "-", "/")` = `a/b/c`), a single-character replace
+(`heLLo`), removal with an empty replacement (`abc`), a multi-character word replace
+(`replace("the cat sat", "cat", "dog")` = `the dog sat`), a no-match no-op, adjacent
+matches (`xxx`), and a two-step round-trip (`a.b.c`). The string surface now spans
+build (concat), measure / slice (`len` / `substr`), search (`find` / `contains`),
+split / join, parse / render (`toInt` / `toStr`), and rewrite (`replace`). Natural
+next steps: a `count(xs, fn)` tally, or consolidating the whole builtin set into a
+standalone `interp` capstone tool with a real program.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
