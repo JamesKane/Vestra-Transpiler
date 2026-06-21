@@ -1722,9 +1722,20 @@ by zero. With `sum`, `product`, `min`, `max`, and now `avg`, the list has a smal
 useful numeric-summary surface. No compiler change. The e2e runs the built tool on a
 committed program (`tests/e2e/interp_avg_program.calc`) averaging a list (`avg` = 25),
 checking the truncating mean over a range (`avg(range(10))` = 4, from 45 / 10), and the
-empty-list guard (`empty` = 0). Natural next steps: an `indexOf`-style position search,
-a `reverse(xs)` list builtin, or string case builtins if a byte-to-string primitive
-lands.
+empty-list guard (`empty` = 0).
+
+**`unique(xs)` shipped, list deduplication.**
+`examples/interp_unique_demo.vst` adds the deduplication counterpart to `member` /
+`indexOf`: where those ask whether and where a value occurs, `unique` returns a new
+list keeping each distinct element once in first-seen order. Equality is `valEq` (the
+same notion the search builtins use), and the running output is checked with `listHas`,
+so the input list is left untouched. It composes cleanly: `sort(unique(xs))` is a
+sorted distinct set and `len(unique(xs))` counts distinct values. No compiler change.
+The e2e runs the built tool on a committed program (`tests/e2e/interp_unique_program.calc`)
+deduping a list (`unique` = 1,2,3), counting distinct letters of "mississippi"
+(`len(unique(chars(...)))` = 4), and producing a sorted distinct set (`sort(unique)` =
+1,2,3). Natural next steps: a `flatten(xs)` for a list of lists, an `enumerate(xs)`
+yielding index/value pairs, or string case builtins if a byte-to-string primitive lands.
 
 ### 1. Generics phase 2 (multi-session)
 

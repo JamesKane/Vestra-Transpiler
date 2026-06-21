@@ -1,0 +1,12 @@
+nums = listNew();
+nums = push(nums, 1);
+nums = push(nums, 2);
+nums = push(nums, 2);
+nums = push(nums, 3);
+nums = push(nums, 1);
+print "unique:", join(unique(nums), ",");
+print "distinct count:", len(unique(nums));
+print "letters:", len(unique(chars("mississippi")));
+print "sorted set:", join(sort(unique(nums)), ",");
+print "empty:", len(unique(listNew()));
+print "done"

@@ -4659,6 +4659,40 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_avg_app ${e2e_interpav_program} | grep -qx 'avg: 25' && ${e2e_workdir}/interp_avg_app ${e2e_interpav_program} | grep -qx 'trunc: 4' && ${e2e_workdir}/interp_avg_app ${e2e_interpav_program} | grep -qx 'empty: 0'")
 set_tests_properties(e2e_interp_avg_demo_verify PROPERTIES DEPENDS e2e_interp_avg_demo_compile)
 
+# unique(xs): a new list keeping each distinct element once, in first-seen order,
+# with equality by valEq (the member / indexOf notion). The committed program dedupes
+# a list, counts distinct values, and combines with sort for a sorted distinct set.
+set(e2e_interpun_input   ${CMAKE_SOURCE_DIR}/examples/interp_unique_demo.vst)
+set(e2e_interpun_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_unique_program.calc)
+
+add_test(
+    NAME    e2e_interp_unique_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpun_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_unique_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_unique_demo.cpp
+            -o ${e2e_workdir}/interp_unique_app)
+set_tests_properties(e2e_interp_unique_demo_compile PROPERTIES DEPENDS e2e_interp_unique_demo_transpile)
+
+# Run the unique interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_unique_demo_run
+    COMMAND ${e2e_workdir}/interp_unique_app ${e2e_interpun_program})
+set_tests_properties(e2e_interp_unique_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_unique_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify unique reached stdout: the deduped list (unique: 1,2,3), the distinct letter
+# count (letters: 4), and the sorted distinct set (sorted set: 1,2,3).
+add_test(
+    NAME    e2e_interp_unique_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_unique_app ${e2e_interpun_program} | grep -qx 'unique: 1,2,3' && ${e2e_workdir}/interp_unique_app ${e2e_interpun_program} | grep -qx 'letters: 4' && ${e2e_workdir}/interp_unique_app ${e2e_interpun_program} | grep -qx 'sorted set: 1,2,3'")
+set_tests_properties(e2e_interp_unique_demo_verify PROPERTIES DEPENDS e2e_interp_unique_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.
