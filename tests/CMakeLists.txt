@@ -4414,6 +4414,43 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_chars_app ${e2e_interpch_program} | grep -qx 'chars: h,e,l,l,o' && ${e2e_workdir}/interp_chars_app ${e2e_interpch_program} | grep -qx 'reversed: cba' && ${e2e_workdir}/interp_chars_app ${e2e_interpch_program} | grep -qx 'vowels: euaio'")
 set_tests_properties(e2e_interp_chars_demo_verify PROPERTIES DEPENDS e2e_interp_chars_demo_compile)
 
+# Second capstone: a CSV-to-records pipeline on the complete interpreter
+# (interp_chars_demo.vst, the full builtin set). No new interpreter code; the program
+# parses rows / fields with split, zips the header over each row into a record map
+# with zipMap, then queries columns and aggregates (toInt + sum) -- both compound
+# types working together on structured data.
+set(e2e_interpcsv_input   ${CMAKE_SOURCE_DIR}/examples/interp_chars_demo.vst)
+set(e2e_interpcsv_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_csv_program.calc)
+
+add_test(
+    NAME    e2e_interp_csv_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpcsv_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_csv_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_chars_demo.cpp
+            -o ${e2e_workdir}/interp_csv_app)
+set_tests_properties(e2e_interp_csv_compile PROPERTIES DEPENDS e2e_interp_csv_transpile)
+
+# Run the complete interpreter on the committed CSV program; final `report done`.
+add_test(
+    NAME    e2e_interp_csv_run
+    COMMAND ${e2e_workdir}/interp_csv_app ${e2e_interpcsv_program})
+set_tests_properties(e2e_interp_csv_run PROPERTIES
+    DEPENDS                 e2e_interp_csv_compile
+    PASS_REGULAR_EXPRESSION "result: report done")
+
+# Verify the records pipeline reached stdout: a field query (alice age: 30), an
+# extracted+sorted column (names: alice,bob,carol), and a numeric aggregate
+# (total age: 90).
+add_test(
+    NAME    e2e_interp_csv_verify
+    COMMAND sh -c "${e2e_workdir}/interp_csv_app ${e2e_interpcsv_program} | grep -qx 'alice age: 30' && ${e2e_workdir}/interp_csv_app ${e2e_interpcsv_program} | grep -qx 'names: alice,bob,carol' && ${e2e_workdir}/interp_csv_app ${e2e_interpcsv_program} | grep -qx 'total age: 90'")
+set_tests_properties(e2e_interp_csv_verify PROPERTIES DEPENDS e2e_interp_csv_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

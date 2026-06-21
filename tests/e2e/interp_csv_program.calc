@@ -1,0 +1,28 @@
+# CSV-to-records pipeline: parse rows and fields, zip the header over each row into
+# a record map, then query columns and aggregate, run on the complete interpreter.
+# Rows are separated by ';', fields by ',', since a .calc string literal is one line.
+data = "name,age,city;alice,30,NYC;bob,25,LA;carol,35,SF";
+rows = split(data, ";");
+header = split(at(rows, 0), ",");
+print "columns:", join(header, ",");
+print "nrows:", len(rows);
+
+records = listNew();
+i = 1;
+while i < len(rows) do { fields = split(at(rows, i), ","); records = push(records, zipMap(header, fields)); i = i + 1 };
+print "nrecords:", len(records);
+print "alice age:", get(at(records, 0), "age");
+print "bob city:", get(at(records, 1), "city");
+print "carol name:", get(at(records, 2), "name");
+
+names = listNew();
+i = 0;
+while i < len(records) do { names = push(names, get(at(records, i), "name")); i = i + 1 };
+print "names:", join(sort(names), ",");
+
+total = 0;
+i = 0;
+while i < len(records) do { total = total + toInt(get(at(records, i), "age")); i = i + 1 };
+print "total age:", total;
+print "avg age:", total / len(records);
+print "report done"

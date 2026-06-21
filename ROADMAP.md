@@ -1624,6 +1624,24 @@ case. Characters are now first-class list elements. Natural next steps: string c
 builtins (`upper` / `lower`), a `count(xs, fn)` tally, or a `zipMap`-based
 CSV-to-records demo.
 
+**Second capstone shipped: a CSV-to-records pipeline.**
+After the map/list arc, a real structured-data program rather than another feature,
+exercising both compound types together. It adds no new interpreter code: the e2e
+reuses the complete interpreter (`examples/interp_chars_demo.vst`) and runs a
+committed program (`tests/e2e/interp_csv_program.calc`) that parses a small CSV (rows
+separated by `;`, fields by `,`, since a `.calc` string literal is one line), zips the
+header over each row into a record map with `zipMap`, collects the records into a
+list, then queries columns (`get(at(records, 0), "age")` = 30), extracts and sorts a
+column (`names` = `alice,bob,carol`), and aggregates numerically (`toInt` each age,
+summed = 90, averaged = 30). It was checked against the `upper` / `lower` idea first,
+which was dropped: the `Str` surface has no case-conversion method (`toUpper` /
+`uppercased` both absent) and only `byteAt -> UInt8?`, so case folding has no clean
+primitive yet. The e2e asserts a field query, the extracted sorted column, and the
+numeric total. The interpreter handles records (maps) inside a list, the shape real
+tabular data needs. Natural next steps: string case builtins via `byteAt` arithmetic
+(if a byte-to-string primitive lands), a `count(xs, fn)` tally, or a `sortBy(xs, fn)`
+that sorts a list by a key function.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
