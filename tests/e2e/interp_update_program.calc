@@ -1,0 +1,16 @@
+fn inc(n) = n + 1;
+fn double(n) = n * 2;
+counts = mapNew();
+words = split("the,cat,the,dog,the,cat", ",");
+i = 0;
+while i < len(words) do { counts = update(counts, at(words, i), "inc"); i = i + 1 };
+print "the:", get(counts, "the");
+print "cat:", get(counts, "cat");
+print "dog:", get(counts, "dog");
+print "distinct:", len(keys(counts));
+counts = update(counts, "the", "double");
+print "the doubled:", get(counts, "the");
+counts = update(counts, "new", "inc");
+print "new:", get(counts, "new");
+print "total:", sum(values(counts));
+print "done"

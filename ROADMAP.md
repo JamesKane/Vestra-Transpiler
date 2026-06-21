@@ -1458,6 +1458,23 @@ builtin set into one committed standalone `interp` tool (a capstone with a
 runnable program file), or a `update(m, k, fn)` that maps a function over one map
 value in place.
 
+**`update(m, k, fn)` shipped, derive-a-map-value from the old.**
+`examples/interp_update_demo.vst` applies a one-argument function to a single map
+value: it reads the current value at key `k` (using `int(0)` when the key is
+absent), calls `fn` on it through `callFunc`, and binds the result back, returning a
+new map. It is the derive-from-old counterpart to `put` (which overwrites with a
+given value). Because a missing key reads as `int(0)`, the canonical word-frequency
+count collapses to `update(counts, word, "inc")` with `fn inc(n) = n + 1`, no
+get-or-default dance. No compiler change. The e2e runs the built tool on a committed
+program (`tests/e2e/interp_update_program.calc`) counting words by folding `update`
+over a split list (`the` = 3, `cat` = 2, `dog` = 1, `len(keys)` = 3), deriving a new
+value with another function (`update(counts, "the", "double")` then `get` = 6), the
+absent-key case (`update(counts, "new", "inc")` = 1, since `inc(0)`), and a total
+over the values (`sum(values(counts))` = 10). The map now supports both overwrite
+(`put`) and transform (`update`) of a value. Natural next steps: consolidating the
+whole builtin set into one committed standalone `interp` tool with a real program
+(a capstone), or a `merge(m1, m2)` that combines two maps.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

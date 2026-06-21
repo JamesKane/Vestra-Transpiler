@@ -4092,6 +4092,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_groupby_app ${e2e_interpgb_program} | grep -qx 'evens: 0,2,4,6,8' && ${e2e_workdir}/interp_groupby_app ${e2e_interpgb_program} | grep -qx 'a words: apple,avocado' && ${e2e_workdir}/interp_groupby_app ${e2e_interpgb_program} | grep -qx 'sum evens: 20'")
 set_tests_properties(e2e_interp_groupby_demo_verify PROPERTIES DEPENDS e2e_interp_groupby_demo_compile)
 
+# update(m, k, fn): apply a one-arg function to a single map value (int(0) if the
+# key is absent), the derive-from-old counterpart to put. Resolved through callFunc.
+# A missing key reading as 0 makes the word-frequency count just update(counts, w,
+# "inc"). The committed program counts words, updates with another fn, and the
+# missing-key case.
+set(e2e_interpup_input   ${CMAKE_SOURCE_DIR}/examples/interp_update_demo.vst)
+set(e2e_interpup_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_update_program.calc)
+
+add_test(
+    NAME    e2e_interp_update_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpup_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_update_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_update_demo.cpp
+            -o ${e2e_workdir}/interp_update_app)
+set_tests_properties(e2e_interp_update_demo_compile PROPERTIES DEPENDS e2e_interp_update_demo_transpile)
+
+# Run the update interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_update_demo_run
+    COMMAND ${e2e_workdir}/interp_update_app ${e2e_interpup_program})
+set_tests_properties(e2e_interp_update_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_update_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify update reached stdout: a word-frequency count (the: 3) and a derive-from-old
+# update (the doubled: 6).
+add_test(
+    NAME    e2e_interp_update_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_update_app ${e2e_interpup_program} | grep -qx 'the: 3' && ${e2e_workdir}/interp_update_app ${e2e_interpup_program} | grep -qx 'the doubled: 6' && ${e2e_workdir}/interp_update_app ${e2e_interpup_program} | grep -qx 'new: 1'")
+set_tests_properties(e2e_interp_update_demo_verify PROPERTIES DEPENDS e2e_interp_update_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.
