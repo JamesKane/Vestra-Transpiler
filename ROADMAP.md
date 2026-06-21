@@ -1475,6 +1475,24 @@ over the values (`sum(values(counts))` = 10). The map now supports both overwrit
 whole builtin set into one committed standalone `interp` tool with a real program
 (a capstone), or a `merge(m1, m2)` that combines two maps.
 
+**`merge(m1, m2)` shipped, combining two maps.**
+`examples/interp_merge_demo.vst` overlays two maps: the result has every binding of
+`m1` with `m2`'s bindings set on top, so `m2` wins on a shared key. It is functional
+(a copy of `m1` with `m2`'s entries `set` over it via an `entries()` walk), so both
+inputs are untouched. This completes the map's combiners alongside `put` (one key)
+and `update` (transform one key): `merge` folds in a whole second map at once, the
+shape config-overlay and record-update need. No compiler change. The e2e runs the
+built tool on a committed program (`tests/e2e/interp_merge_program.calc`) merging
+`{a:1, b:2}` with `{b:20, c:30}` and asserting the unshared keys (`a` = 1, `c` = 30),
+the override (`b` = 20), the merged key count (3) and sorted keys (`a,b,c`), that the
+first input is untouched (`get(m1, "b")` = 2), a value total (`sum(values(m))` = 51),
+and an empty merge preserving the original (2 keys). The map is now fully featured:
+build, read, modify (`put` / `update` / `remove`), iterate (`keys` / `values` /
+`entries`), and combine (`merge`). Natural next steps: consolidating the whole
+builtin set into one committed standalone `interp` tool with a real program (a
+capstone), or a `count(xs, fn)` that tallies how many list elements satisfy a
+predicate.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

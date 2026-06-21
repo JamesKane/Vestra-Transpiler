@@ -4128,6 +4128,41 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_update_app ${e2e_interpup_program} | grep -qx 'the: 3' && ${e2e_workdir}/interp_update_app ${e2e_interpup_program} | grep -qx 'the doubled: 6' && ${e2e_workdir}/interp_update_app ${e2e_interpup_program} | grep -qx 'new: 1'")
 set_tests_properties(e2e_interp_update_demo_verify PROPERTIES DEPENDS e2e_interp_update_demo_compile)
 
+# merge(m1, m2): combine two maps, m1 overlaid with m2 (m2 wins on a shared key).
+# Functional (a copy of m1 with m2's entries set on top), so both inputs are intact.
+# Completes the map combiners alongside put and update. The committed program merges
+# overlapping maps, checks the override and the untouched original, and an empty merge.
+set(e2e_interpmg_input   ${CMAKE_SOURCE_DIR}/examples/interp_merge_demo.vst)
+set(e2e_interpmg_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_merge_program.calc)
+
+add_test(
+    NAME    e2e_interp_merge_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpmg_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_merge_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_merge_demo.cpp
+            -o ${e2e_workdir}/interp_merge_app)
+set_tests_properties(e2e_interp_merge_demo_compile PROPERTIES DEPENDS e2e_interp_merge_demo_transpile)
+
+# Run the merge interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_merge_demo_run
+    COMMAND ${e2e_workdir}/interp_merge_app ${e2e_interpmg_program})
+set_tests_properties(e2e_interp_merge_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_merge_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify merge reached stdout: the override (b: 20) and the merged key set
+# (sorted: a,b,c).
+add_test(
+    NAME    e2e_interp_merge_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_merge_app ${e2e_interpmg_program} | grep -qx 'b: 20' && ${e2e_workdir}/interp_merge_app ${e2e_interpmg_program} | grep -qx 'sorted: a,b,c' && ${e2e_workdir}/interp_merge_app ${e2e_interpmg_program} | grep -qx 'total: 51'")
+set_tests_properties(e2e_interp_merge_demo_verify PROPERTIES DEPENDS e2e_interp_merge_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.
