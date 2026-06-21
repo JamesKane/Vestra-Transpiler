@@ -4233,6 +4233,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_replace_app ${e2e_interprp_program} | grep -qx 'slashes: a/b/c' && ${e2e_workdir}/interp_replace_app ${e2e_interprp_program} | grep -qx 'word: the dog sat' && ${e2e_workdir}/interp_replace_app ${e2e_interprp_program} | grep -qx 'adjacent: xxx'")
 set_tests_properties(e2e_interp_replace_demo_verify PROPERTIES DEPENDS e2e_interp_replace_demo_compile)
 
+# Capstone: the complete interpreter (interp_replace_demo.vst, the full builtin set)
+# running a real word-frequency report program, end to end. No new interpreter code;
+# this proves the whole language solves a genuine task (tokenize, count, sort,
+# aggregate, render) rather than exercising one feature. Reuses the latest complete
+# interpreter input.
+set(e2e_interprep_input   ${CMAKE_SOURCE_DIR}/examples/interp_replace_demo.vst)
+set(e2e_interprep_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_report_program.calc)
+
+add_test(
+    NAME    e2e_interp_report_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interprep_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_report_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_replace_demo.cpp
+            -o ${e2e_workdir}/interp_report_app)
+set_tests_properties(e2e_interp_report_compile PROPERTIES DEPENDS e2e_interp_report_transpile)
+
+# Run the complete interpreter on the committed report program; final `report done`.
+add_test(
+    NAME    e2e_interp_report_run
+    COMMAND ${e2e_workdir}/interp_report_app ${e2e_interprep_program})
+set_tests_properties(e2e_interp_report_run PROPERTIES
+    DEPENDS                 e2e_interp_report_compile
+    PASS_REGULAR_EXPRESSION "result: report done")
+
+# Verify the report's analytics reached stdout: the word total, the length-reduce
+# (longest word: quick), and the replace-normalized sorted key list.
+add_test(
+    NAME    e2e_interp_report_verify
+    COMMAND sh -c "${e2e_workdir}/interp_report_app ${e2e_interprep_program} | grep -qx 'total words: 10' && ${e2e_workdir}/interp_report_app ${e2e_interprep_program} | grep -qx 'longest word: quick' && ${e2e_workdir}/interp_report_app ${e2e_interprep_program} | grep -qx 'normalized: brown_dog_fox_lazy_quick_the'")
+set_tests_properties(e2e_interp_report_verify PROPERTIES DEPENDS e2e_interp_report_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

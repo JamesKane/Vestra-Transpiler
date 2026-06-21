@@ -1528,6 +1528,28 @@ split / join, parse / render (`toInt` / `toStr`), and rewrite (`replace`). Natur
 next steps: a `count(xs, fn)` tally, or consolidating the whole builtin set into a
 standalone `interp` capstone tool with a real program.
 
+**Capstone shipped: the complete interpreter running a real word-frequency report.**
+After the long builtin arc, this slice proves the whole language solves a genuine
+task rather than exercising one feature. It adds no new interpreter code: the e2e
+reuses the latest complete interpreter input (`examples/interp_replace_demo.vst`,
+all ~33 builtins) and runs it on a committed report program
+(`tests/e2e/interp_report_program.calc`) that tokenizes a text with `split`, counts
+word frequencies with `update` over a fold, and renders a report with `keys` /
+`sort` / `get` / `len` / `max` / `values` / `sum` / `mapList` / `reduceList` / `join`
+/ `replace` / concat. Two honest language limits surfaced while writing it, both
+recorded as notes (not compiler changes): user functions are not closures (a `fn`
+sees only its parameters and the global function table, not the surrounding
+variables, so a predicate cannot reference an outer `counts` map), and the
+comparison operators are only `<` / `>` / `==` (no `>=` / `<=` / `!=`, so a
+length-tiebreak `longerOf` uses `>`). The e2e asserts the analytics: total words
+(10), distinct words (6), total characters via `sum(mapList(words, "len"))` (37), the
+longest word via a length-reducing fold (`quick`), the most frequent count
+(`max(values)` = 3), an alphabetical `word: count` listing, and a `replace`-normalized
+sorted key list (`brown_dog_fox_lazy_quick_the`). The interpreter is a small but
+genuinely capable dynamic language. Natural next steps: a `count(xs, fn)` tally, a
+`zipMap`-based CSV-to-records demo, or `>=` / `<=` / `!=` comparison operators in the
+parser (closing the gap this capstone found).
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

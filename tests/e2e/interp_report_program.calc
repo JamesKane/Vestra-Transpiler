@@ -1,0 +1,25 @@
+# Word-frequency report over a fixed text, exercising the whole builtin set:
+# split, update, keys, sort, get, len, max, values, sum, mapList, reduceList,
+# join, replace, and concat, run on the complete interpreter as a real program.
+fn inc(n) = n + 1;
+fn longerOf(a, b) = if len(a) > len(b) then a else b;
+
+text = "the quick brown fox the lazy dog the quick fox";
+words = split(text, " ");
+
+counts = mapNew();
+i = 0;
+while i < len(words) do { counts = update(counts, at(words, i), "inc"); i = i + 1 };
+
+print "total words:", len(words);
+print "distinct words:", len(keys(counts));
+print "total chars:", sum(mapList(words, "len"));
+print "longest word:", reduceList(words, "longerOf", "");
+print "most frequent count:", max(values(counts));
+
+ks = sort(keys(counts));
+i = 0;
+while i < len(ks) do { k = at(ks, i); print "  " + k + ":", get(counts, k); i = i + 1 };
+
+print "normalized:", replace(join(ks, " "), " ", "_");
+print "report done"
