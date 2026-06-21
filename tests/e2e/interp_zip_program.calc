@@ -1,0 +1,18 @@
+names = split("alice,bob,carol", ",");
+ages = listNew();
+ages = push(ages, 30);
+ages = push(ages, 25);
+ages = push(ages, 35);
+pairs = zip(names, ages);
+print "npairs:", len(pairs);
+print "first name:", at(at(pairs, 0), 0);
+print "first age:", at(at(pairs, 0), 1);
+out = listNew();
+i = 0;
+while i < len(pairs) do { p = at(pairs, i); out = push(out, at(p, 0) + "=" + toStr(at(p, 1))); i = i + 1 };
+print "joined:", join(out, ",");
+idx = zip(range(3), names);
+print "indexed:", at(at(idx, 1), 0), at(at(idx, 1), 1);
+short = zip(names, range(2));
+print "short:", len(short);
+print "done"

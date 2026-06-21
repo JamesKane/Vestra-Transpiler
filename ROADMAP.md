@@ -1419,6 +1419,24 @@ build (`listNew` / `push` / `concat` / `range` / `split` / `keys`), read (`len` 
 moving the interpreter capstone into a single committed `interp_*` standalone tool
 that wires the whole builtin set.
 
+**`zip(xs, ys)` shipped, pairing two lists.**
+`examples/interp_zip_demo.vst` pairs two list values element-wise into a list of
+two-element lists (no tuple type, so a pair is a `[x, y]` list read with
+`at(pair, 0)` / `at(pair, 1)`), pairing up to the shorter input. It is the list
+counterpart of `zipMap`: `zip` keeps the pairs as an ordered list of any-typed
+values, where `zipMap` keys a map by the stringified first list. No compiler change.
+The e2e runs the built tool on a committed program
+(`tests/e2e/interp_zip_program.calc`) zipping parallel name / age lists
+(`len(zip(names, ages))` = 3, `at(at(pairs, 0), 0)` = `alice`, `at(at(pairs, 0), 1)`
+= 30), walking the pairs to build `name=age` strings
+(`join` = `alice=30,bob=25,carol=35`), zipping a `range` for indices
+(`at(at(zip(range(3), names), 1), 0)` = 1 paired with `bob`), and a length mismatch
+that pairs to the shorter (`len(zip(names, range(2)))` = 2). The two compound types
+now have matching producers from parallel lists (`zip` to a list of pairs, `zipMap`
+to a map). Natural next steps: consolidating the whole builtin set into one
+committed standalone `interp` tool (a capstone), or a `groupBy(xs, fn)` that buckets
+list elements into a map.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

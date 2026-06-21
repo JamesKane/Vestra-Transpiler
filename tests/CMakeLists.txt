@@ -4022,6 +4022,41 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_revidx_app ${e2e_interpri_program} | grep -qx 'reversed: d,c,b,a' && ${e2e_workdir}/interp_revidx_app ${e2e_interpri_program} | grep -qx 'idx c: 2' && ${e2e_workdir}/interp_revidx_app ${e2e_interpri_program} | grep -qx 'rev range: 4,3,2,1,0'")
 set_tests_properties(e2e_interp_revidx_demo_verify PROPERTIES DEPENDS e2e_interp_revidx_demo_compile)
 
+# zip(xs, ys): pair two lists element-wise into a list of two-element lists (no
+# tuple type), the list counterpart of zipMap, pairing up to the shorter input. The
+# committed program zips parallel lists, reads pairs with nested at, builds name=age
+# strings, zips a range for indices, and handles a length mismatch.
+set(e2e_interpzl_input   ${CMAKE_SOURCE_DIR}/examples/interp_zip_demo.vst)
+set(e2e_interpzl_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_zip_program.calc)
+
+add_test(
+    NAME    e2e_interp_zip_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpzl_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_zip_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_zip_demo.cpp
+            -o ${e2e_workdir}/interp_zip_app)
+set_tests_properties(e2e_interp_zip_demo_compile PROPERTIES DEPENDS e2e_interp_zip_demo_transpile)
+
+# Run the zip interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_zip_demo_run
+    COMMAND ${e2e_workdir}/interp_zip_app ${e2e_interpzl_program})
+set_tests_properties(e2e_interp_zip_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_zip_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify zip reached stdout: a paired-and-rendered list (joined:
+# alice=30,bob=25,carol=35) and a range-indexed pair (indexed: 1 bob).
+add_test(
+    NAME    e2e_interp_zip_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_zip_app ${e2e_interpzl_program} | grep -qx 'joined: alice=30,bob=25,carol=35' && ${e2e_workdir}/interp_zip_app ${e2e_interpzl_program} | grep -qx 'indexed: 1 bob'")
+set_tests_properties(e2e_interp_zip_demo_verify PROPERTIES DEPENDS e2e_interp_zip_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.
