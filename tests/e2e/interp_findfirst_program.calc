@@ -1,0 +1,15 @@
+fn isBig(x) = x > 25;
+fn isHuge(x) = x > 100;
+fn gt2(x) = x > 2;
+fn isVowel(s) = s == "a" or s == "e" or s == "i" or s == "o" or s == "u";
+nums = listNew();
+nums = push(nums, 10);
+nums = push(nums, 20);
+nums = push(nums, 30);
+nums = push(nums, 40);
+print "first big:", findFirst(nums, "isBig");
+print "none:", findFirst(nums, "isHuge");
+print "first gt2:", findFirst(range(10), "gt2");
+print "first vowel:", findFirst(chars("xyzebra"), "isVowel");
+print "empty:", findFirst(listNew(), "isBig");
+print "done"

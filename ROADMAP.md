@@ -1673,9 +1673,23 @@ and shortest word by length (`banana` / `fig`), the max and min number by identi
 / 10), the max via a negated key (`minBy(nums, "negate")` = 50), and the empty-list
 case. The list's higher-order surface is now broad: transform (`mapList`), filter
 (`filterList`), fold (`reduceList`), quantify (`any` / `all`), sort (`sort` /
-`sortBy`), and extremes (`min` / `max` / `minBy` / `maxBy`). Natural next steps: a
-`count(xs, fn)` tally, a `find`-by-predicate (first matching element), or string case
-builtins if a byte-to-string primitive lands.
+`sortBy`), and extremes (`min` / `max` / `minBy` / `maxBy`).
+
+**`findFirst(xs, fn)` shipped, the linear-search reducer.**
+`examples/interp_findfirst_demo.vst` adds the predicate search: it walks the list and
+returns the first element for which `fn(element)` is truthy, or `int(0)` when nothing
+matches (and for the empty list). The predicate is resolved through `callFunc` like the
+other higher-order builtins, and the scan returns the element itself the moment the
+predicate holds rather than folding to the end. This is the clean way to ask "the first
+big number" without a hand-rolled loop, and it composes with the generators: it can
+search a `range`, a `chars` list, or any built list. No compiler change. The e2e runs
+the built tool on a committed program (`tests/e2e/interp_findfirst_program.calc`)
+finding the first big number (`findFirst(nums, "isBig")` = 30), the no-match case (0),
+the first value over two in a range (`findFirst(range(10), "gt2")` = 3), the first vowel
+in a char list (`findFirst(chars("xyzebra"), "isVowel")` = e), and the empty-list case.
+The list's higher-order surface now covers transform, filter, fold, quantify, sort,
+extremes, and search. Natural next steps: a `count(xs, fn)` tally, an `indexOf`-style
+position search, or string case builtins if a byte-to-string primitive lands.
 
 ### 1. Generics phase 2 (multi-session)
 
