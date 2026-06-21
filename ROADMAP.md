@@ -1642,6 +1642,23 @@ tabular data needs. Natural next steps: string case builtins via `byteAt` arithm
 (if a byte-to-string primitive lands), a `count(xs, fn)` tally, or a `sortBy(xs, fn)`
 that sorts a list by a key function.
 
+**`sortBy(xs, fn)` shipped, sort by a key function.**
+`examples/interp_sortby_demo.vst` generalizes `sort`: where `sort` orders by the
+elements themselves, `sortBy` orders by `fn(element)`, the higher-order version. The
+key function is resolved by name through `callFunc` (a user `fn` or a builtin) and the
+derived keys are compared with the same type-aware `lessVal` as `sort`; it is a
+functional selection sort over a copy (recomputing the key per comparison, fine at
+this scale). This unlocks the orderings `sort` cannot express: ascending via an
+identity key, descending by sorting on a negated key, by string length, or a record
+list by one field. No compiler change. The e2e runs the built tool on a committed
+program (`tests/e2e/interp_sortby_program.calc`) sorting numbers ascending
+(`sortBy(nums, "id")` = `1,2,3,5`), descending via a negated key
+(`sortBy(nums, "negate")` = `5,3,2,1`), words by length
+(`sortBy(words, "wlen")` = `fig,kiwi,cherry,banana`), and words alphabetically
+(`banana,cherry,fig,kiwi`). The list now sorts by any computed key. Natural next
+steps: a `count(xs, fn)` tally, string case builtins (if a byte-to-string primitive
+lands), or `min`/`max`-by-key variants.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

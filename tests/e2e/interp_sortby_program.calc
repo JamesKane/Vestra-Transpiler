@@ -1,0 +1,14 @@
+fn id(x) = x;
+fn negate(x) = 0 - x;
+fn wlen(s) = len(s);
+nums = listNew();
+nums = push(nums, 3);
+nums = push(nums, 1);
+nums = push(nums, 5);
+nums = push(nums, 2);
+print "ascending:", join(sortBy(nums, "id"), ",");
+print "descending:", join(sortBy(nums, "negate"), ",");
+words = split("banana,fig,cherry,kiwi", ",");
+print "by length:", join(sortBy(words, "wlen"), ",");
+print "by value:", join(sortBy(words, "id"), ",");
+print "done"

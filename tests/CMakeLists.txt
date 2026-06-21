@@ -4451,6 +4451,41 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_csv_app ${e2e_interpcsv_program} | grep -qx 'alice age: 30' && ${e2e_workdir}/interp_csv_app ${e2e_interpcsv_program} | grep -qx 'names: alice,bob,carol' && ${e2e_workdir}/interp_csv_app ${e2e_interpcsv_program} | grep -qx 'total age: 90'")
 set_tests_properties(e2e_interp_csv_verify PROPERTIES DEPENDS e2e_interp_csv_compile)
 
+# sortBy(xs, fn): sort a list by a key function (higher-order generalization of
+# sort), resolved through callFunc, keys compared with the type-aware lessVal.
+# Unlocks orderings sort cannot express. The committed program sorts ascending (via
+# identity), descending (via a negated key), and by string length.
+set(e2e_interpsby_input   ${CMAKE_SOURCE_DIR}/examples/interp_sortby_demo.vst)
+set(e2e_interpsby_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_sortby_program.calc)
+
+add_test(
+    NAME    e2e_interp_sortby_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpsby_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_sortby_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_sortby_demo.cpp
+            -o ${e2e_workdir}/interp_sortby_app)
+set_tests_properties(e2e_interp_sortby_demo_compile PROPERTIES DEPENDS e2e_interp_sortby_demo_transpile)
+
+# Run the sortBy interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_sortby_demo_run
+    COMMAND ${e2e_workdir}/interp_sortby_app ${e2e_interpsby_program})
+set_tests_properties(e2e_interp_sortby_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_sortby_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify sortBy reached stdout: a descending sort via a negated key
+# (descending: 5,3,2,1) and a by-length sort (by length: fig,kiwi,cherry,banana).
+add_test(
+    NAME    e2e_interp_sortby_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_sortby_app ${e2e_interpsby_program} | grep -qx 'descending: 5,3,2,1' && ${e2e_workdir}/interp_sortby_app ${e2e_interpsby_program} | grep -qx 'by length: fig,kiwi,cherry,banana'")
+set_tests_properties(e2e_interp_sortby_demo_verify PROPERTIES DEPENDS e2e_interp_sortby_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.
