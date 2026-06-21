@@ -3915,6 +3915,41 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_unaryminus_app ${e2e_interpneg_program} | grep -qx 'neg mul: -12' && ${e2e_workdir}/interp_unaryminus_app ${e2e_interpneg_program} | grep -qx 'neg paren: -5' && ${e2e_workdir}/interp_unaryminus_app ${e2e_interpneg_program} | grep -qx 'abs lit: 9'")
 set_tests_properties(e2e_interp_unaryminus_demo_verify PROPERTIES DEPENDS e2e_interp_unaryminus_demo_compile)
 
+# Membership tests member / hasValue: search the compound types by value (not just
+# by key / string content). Both compare with the structural valEq, so the test is
+# type-aware (int 20 matches int 20 but not string "20"). The committed program
+# tests list membership, map value membership, the cross-type case, and empties.
+set(e2e_interpmember_input   ${CMAKE_SOURCE_DIR}/examples/interp_member_demo.vst)
+set(e2e_interpmember_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_member_program.calc)
+
+add_test(
+    NAME    e2e_interp_member_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpmember_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_member_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_member_demo.cpp
+            -o ${e2e_workdir}/interp_member_app)
+set_tests_properties(e2e_interp_member_demo_compile PROPERTIES DEPENDS e2e_interp_member_demo_transpile)
+
+# Run the member interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_member_demo_run
+    COMMAND ${e2e_workdir}/interp_member_app ${e2e_interpmember_program})
+set_tests_properties(e2e_interp_member_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_member_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify membership reached stdout: a list hit (has banana: true), a map value hit
+# (hasval 2: true), and the cross-type miss (cross type: false).
+add_test(
+    NAME    e2e_interp_member_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_member_app ${e2e_interpmember_program} | grep -qx 'has banana: true' && ${e2e_workdir}/interp_member_app ${e2e_interpmember_program} | grep -qx 'hasval 2: true' && ${e2e_workdir}/interp_member_app ${e2e_interpmember_program} | grep -qx 'cross type: false'")
+set_tests_properties(e2e_interp_member_demo_verify PROPERTIES DEPENDS e2e_interp_member_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

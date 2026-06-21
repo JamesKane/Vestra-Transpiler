@@ -1,0 +1,18 @@
+xs = split("apple,banana,cherry", ",");
+print "has banana:", member(xs, "banana");
+print "has grape:", member(xs, "grape");
+nums = listNew();
+nums = push(nums, 10);
+nums = push(nums, 20);
+nums = push(nums, 30);
+print "has 20:", member(nums, 20);
+print "has 99:", member(nums, 99);
+print "cross type:", member(nums, "20");
+m = mapNew();
+m = put(m, "a", 1);
+m = put(m, "b", 2);
+m = put(m, "c", 3);
+print "hasval 2:", hasValue(m, 2);
+print "hasval 9:", hasValue(m, 9);
+print "empty:", member(listNew(), 1);
+print "done"

@@ -1365,6 +1365,22 @@ minus then unary minus (`10 - -2` = 12), a negating user function
 language. Natural next steps: a `hasValue(m, v)` / list membership test, or a
 `reverse(xs)` list builtin.
 
+**`member(xs, v)` / `hasValue(m, v)` shipped, value membership tests.**
+`examples/interp_member_demo.vst` adds the value-search the containers lacked: they
+could be searched by key (`has(m, k)`) or string content (`contains`), but not for
+a value. `member(xs, v)` walks a list value and `hasValue(m, v)` walks a map's
+values, each comparing with the interpreter's structural `valEq` (the same equality
+`==` uses), so the test is type-aware: an integer element matches an integer target
+but never a string one. No compiler change. The e2e runs the built tool on a
+committed program (`tests/e2e/interp_member_program.calc`) asserting list hits and
+misses (`member(split("apple,banana,cherry", ","), "banana")` = true, `"grape"`
+false, `member(nums, 20)` true, `99` false), the cross-type case
+(`member(nums, "20")` = false, since the int `20` is not the string `"20"`), map
+value membership (`hasValue(m, 2)` = true, `9` false), and an empty list (false).
+The compound types can now be searched by key, by string content, and by value.
+Natural next steps: a `reverse(xs)` list builtin, or `take(xs, n)` / `drop(xs, n)`
+list slicing.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
