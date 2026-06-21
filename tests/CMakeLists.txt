@@ -4486,6 +4486,41 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_sortby_app ${e2e_interpsby_program} | grep -qx 'descending: 5,3,2,1' && ${e2e_workdir}/interp_sortby_app ${e2e_interpsby_program} | grep -qx 'by length: fig,kiwi,cherry,banana'")
 set_tests_properties(e2e_interp_sortby_demo_verify PROPERTIES DEPENDS e2e_interp_sortby_demo_compile)
 
+# minBy(xs, fn) / maxBy(xs, fn): the element with the least / greatest key(element),
+# the reduce-to-extreme counterparts of sortBy (and by-key min / max). They return
+# the element, not the key, comparing keys with lessVal. The committed program finds
+# the longest / shortest word, the min / max number, and a max via a negated key.
+set(e2e_interpeb_input   ${CMAKE_SOURCE_DIR}/examples/interp_extremeby_demo.vst)
+set(e2e_interpeb_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_extremeby_program.calc)
+
+add_test(
+    NAME    e2e_interp_extremeby_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpeb_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_extremeby_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_extremeby_demo.cpp
+            -o ${e2e_workdir}/interp_extremeby_app)
+set_tests_properties(e2e_interp_extremeby_demo_compile PROPERTIES DEPENDS e2e_interp_extremeby_demo_transpile)
+
+# Run the minBy/maxBy interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_extremeby_demo_run
+    COMMAND ${e2e_workdir}/interp_extremeby_app ${e2e_interpeb_program})
+set_tests_properties(e2e_interp_extremeby_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_extremeby_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify minBy/maxBy reached stdout: the longest word (longest: banana) and a max
+# found via a negated key (max via neg: 50).
+add_test(
+    NAME    e2e_interp_extremeby_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_extremeby_app ${e2e_interpeb_program} | grep -qx 'longest: banana' && ${e2e_workdir}/interp_extremeby_app ${e2e_interpeb_program} | grep -qx 'shortest: fig' && ${e2e_workdir}/interp_extremeby_app ${e2e_interpeb_program} | grep -qx 'max via neg: 50'")
+set_tests_properties(e2e_interp_extremeby_demo_verify PROPERTIES DEPENDS e2e_interp_extremeby_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

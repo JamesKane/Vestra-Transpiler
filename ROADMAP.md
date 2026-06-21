@@ -1659,6 +1659,24 @@ program (`tests/e2e/interp_sortby_program.calc`) sorting numbers ascending
 steps: a `count(xs, fn)` tally, string case builtins (if a byte-to-string primitive
 lands), or `min`/`max`-by-key variants.
 
+**`minBy(xs, fn)` / `maxBy(xs, fn)` shipped, the by-key extremes.**
+`examples/interp_extremeby_demo.vst` adds the reduce-to-extreme counterparts of
+`sortBy` (and the by-key generalization of `min` / `max`): they return the element
+whose `fn(element)` key is least / greatest. The key function is resolved through
+`callFunc` and keys compared with the same `lessVal`; they return the *element* (not
+the key) and `int(0)` for an empty list, scanning once and keeping the best element
+and its key together (a double conditional-move the checker accepts). This is the
+clean way to ask "the longest word" (`maxBy(words, "wlen")`), which the first capstone
+had to write as a hand-rolled fold. No compiler change. The e2e runs the built tool
+on a committed program (`tests/e2e/interp_extremeby_program.calc`) finding the longest
+and shortest word by length (`banana` / `fig`), the max and min number by identity (50
+/ 10), the max via a negated key (`minBy(nums, "negate")` = 50), and the empty-list
+case. The list's higher-order surface is now broad: transform (`mapList`), filter
+(`filterList`), fold (`reduceList`), quantify (`any` / `all`), sort (`sort` /
+`sortBy`), and extremes (`min` / `max` / `minBy` / `maxBy`). Natural next steps: a
+`count(xs, fn)` tally, a `find`-by-predicate (first matching element), or string case
+builtins if a byte-to-string primitive lands.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

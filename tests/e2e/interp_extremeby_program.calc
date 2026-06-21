@@ -1,0 +1,16 @@
+fn wlen(s) = len(s);
+fn id(x) = x;
+fn negate(x) = 0 - x;
+words = split("fig,banana,kiwi,apple", ",");
+print "longest:", maxBy(words, "wlen");
+print "shortest:", minBy(words, "wlen");
+nums = listNew();
+nums = push(nums, 30);
+nums = push(nums, 10);
+nums = push(nums, 50);
+nums = push(nums, 20);
+print "max:", maxBy(nums, "id");
+print "min:", minBy(nums, "id");
+print "max via neg:", minBy(nums, "negate");
+print "empty:", minBy(listNew(), "id");
+print "done"
