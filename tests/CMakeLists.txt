@@ -4556,6 +4556,41 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_findfirst_app ${e2e_interpff_program} | grep -qx 'first big: 30' && ${e2e_workdir}/interp_findfirst_app ${e2e_interpff_program} | grep -qx 'first gt2: 3' && ${e2e_workdir}/interp_findfirst_app ${e2e_interpff_program} | grep -qx 'first vowel: e'")
 set_tests_properties(e2e_interp_findfirst_demo_verify PROPERTIES DEPENDS e2e_interp_findfirst_demo_compile)
 
+# count(xs, fn): the tally counterpart of findFirst. It scans the whole list and
+# returns how many elements make the named predicate truthy (0 for the empty list).
+# The committed program counts the big numbers, the vowels in a char list, and the
+# even values over a range.
+set(e2e_interpct_input   ${CMAKE_SOURCE_DIR}/examples/interp_count_demo.vst)
+set(e2e_interpct_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_count_program.calc)
+
+add_test(
+    NAME    e2e_interp_count_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpct_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_count_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_count_demo.cpp
+            -o ${e2e_workdir}/interp_count_app)
+set_tests_properties(e2e_interp_count_demo_compile PROPERTIES DEPENDS e2e_interp_count_demo_transpile)
+
+# Run the count interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_count_demo_run
+    COMMAND ${e2e_workdir}/interp_count_app ${e2e_interpct_program})
+set_tests_properties(e2e_interp_count_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_count_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify count reached stdout: the big numbers (big count: 2), the vowels in a char
+# list (vowels: 2), and the even values over a range (evens: 5).
+add_test(
+    NAME    e2e_interp_count_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_count_app ${e2e_interpct_program} | grep -qx 'big count: 2' && ${e2e_workdir}/interp_count_app ${e2e_interpct_program} | grep -qx 'vowels: 2' && ${e2e_workdir}/interp_count_app ${e2e_interpct_program} | grep -qx 'evens: 5'")
+set_tests_properties(e2e_interp_count_demo_verify PROPERTIES DEPENDS e2e_interp_count_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

@@ -1688,8 +1688,22 @@ finding the first big number (`findFirst(nums, "isBig")` = 30), the no-match cas
 the first value over two in a range (`findFirst(range(10), "gt2")` = 3), the first vowel
 in a char list (`findFirst(chars("xyzebra"), "isVowel")` = e), and the empty-list case.
 The list's higher-order surface now covers transform, filter, fold, quantify, sort,
-extremes, and search. Natural next steps: a `count(xs, fn)` tally, an `indexOf`-style
-position search, or string case builtins if a byte-to-string primitive lands.
+extremes, and search.
+
+**`count(xs, fn)` shipped, the predicate tally.**
+`examples/interp_count_demo.vst` adds the counting counterpart of `findFirst`: where
+`findFirst` returns the first matching element and stops, `count` scans the whole list
+and returns how many elements make the predicate truthy (`int(0)` for the empty list).
+The predicate is resolved through `callFunc` and judged by `truthy`, the same machinery
+the other higher-order builtins share. With `any` / `all` (some / every), `findFirst`
+(the first), and now `count` (how many), the predicate-query surface is complete: a
+program can ask whether, which, and how many in the same vocabulary. No compiler change.
+The e2e runs the built tool on a committed program (`tests/e2e/interp_count_program.calc`)
+counting the big numbers (`count(nums, "isBig")` = 2), the vowels in a char list
+(`count(chars("xyzebra"), "isVowel")` = 2), the even values over a range
+(`count(range(10), "even")` = 5), and the empty-list case. Natural next steps: an
+`indexOf`-style position search, a `sum(xs)` / `product(xs)` numeric fold, or string
+case builtins if a byte-to-string primitive lands.
 
 ### 1. Generics phase 2 (multi-session)
 

@@ -1,0 +1,13 @@
+fn isBig(x) = x > 25;
+fn isVowel(s) = s == "a" or s == "e" or s == "i" or s == "o" or s == "u";
+fn even(x) = x - (x / 2) * 2 == 0;
+nums = listNew();
+nums = push(nums, 10);
+nums = push(nums, 20);
+nums = push(nums, 30);
+nums = push(nums, 40);
+print "big count:", count(nums, "isBig");
+print "vowels:", count(chars("xyzebra"), "isVowel");
+print "evens:", count(range(10), "even");
+print "empty:", count(listNew(), "isBig");
+print "done"
