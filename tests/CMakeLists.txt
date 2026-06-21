@@ -4343,6 +4343,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_logic_app ${e2e_interplc_program} | grep -qx 'and tf: false' && ${e2e_workdir}/interp_logic_app ${e2e_interplc_program} | grep -qx 'short or: true' && ${e2e_workdir}/interp_logic_app ${e2e_interplc_program} | grep -qx 'filtered: 0,2,4'")
 set_tests_properties(e2e_interp_logic_demo_verify PROPERTIES DEPENDS e2e_interp_logic_demo_compile)
 
+# Unary logical not: completes the boolean trio (and / or / not). A new pNot level
+# between pAnd and pEq, so not binds above and but below the comparisons (not a == b
+# is not (a == b)); pNot recurses for not not x. The committed program checks
+# negation, double negation, precedence with and / or and ==, composition with a
+# builtin, and use in a user predicate.
+set(e2e_interpnt_input   ${CMAKE_SOURCE_DIR}/examples/interp_not_demo.vst)
+set(e2e_interpnt_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_not_program.calc)
+
+add_test(
+    NAME    e2e_interp_not_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpnt_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_not_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_not_demo.cpp
+            -o ${e2e_workdir}/interp_not_app)
+set_tests_properties(e2e_interp_not_demo_compile PROPERTIES DEPENDS e2e_interp_not_demo_transpile)
+
+# Run the not interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_not_demo_run
+    COMMAND ${e2e_workdir}/interp_not_app ${e2e_interpnt_program})
+set_tests_properties(e2e_interp_not_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_not_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify not reached stdout: a negation (not f: true), precedence with and
+# (with and: true), and a not-based user predicate filter (odds: 1,3,5,7).
+add_test(
+    NAME    e2e_interp_not_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_not_app ${e2e_interpnt_program} | grep -qx 'not f: true' && ${e2e_workdir}/interp_not_app ${e2e_interpnt_program} | grep -qx 'with and: true' && ${e2e_workdir}/interp_not_app ${e2e_interpnt_program} | grep -qx 'odds: 1,3,5,7'")
+set_tests_properties(e2e_interp_not_demo_verify PROPERTIES DEPENDS e2e_interp_not_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

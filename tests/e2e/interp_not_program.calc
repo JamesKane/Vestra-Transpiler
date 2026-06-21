@@ -1,0 +1,12 @@
+fn isEven(x) = mod(x, 2) == 0;
+fn odd(x) = not isEven(x);
+print "not t:", not 1 < 2;
+print "not f:", not 5 < 2;
+print "double:", not not 1 < 2;
+print "with and:", not 5 < 2 and 1 < 2;
+print "with or:", not 1 < 2 or 3 < 4;
+print "not eq:", not 3 == 4;
+print "not contains:", not contains("hello", "z");
+print "odds:", join(filterList(range(8), "odd"), ",");
+print "not true:", not true;
+print "done"

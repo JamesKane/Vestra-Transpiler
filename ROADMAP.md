@@ -1588,6 +1588,23 @@ needs. No Vestra compiler change. The e2e runs the built tool on a committed pro
 mini-language can now combine conditions directly. Natural next steps: a logical
 `not` (unary), a `count(xs, fn)` tally, or a `zipMap`-based CSV-to-records demo.
 
+**Unary logical `not` shipped, completing the boolean trio.**
+`examples/interp_not_demo.vst` adds `not`, the negation that joins `and` / `or`. It
+is a keyword at the conventional precedence (Python's `or` < `and` < `not` <
+comparisons): a new `pNot` level sits between `pAnd` and `pEq`, so `not a == b` is
+`not (a == b)` while `not a and b` is `(not a) and b`, and `pNot` recurses so
+`not not x` double-negates. The result is `Value.boolean(!truthy(operand))`. No
+Vestra compiler change. The e2e runs the built tool on a committed program
+(`tests/e2e/interp_not_program.calc`) checking negation (`not (1 < 2)` = false,
+`not (5 < 2)` = true), double negation (true), precedence with `and` / `or`
+(`not 5 < 2 and 1 < 2` = true, `not 1 < 2 or 3 < 4` = true) and with `==`
+(`not 3 == 4` = true), composition with a builtin (`not contains("hello", "z")`
+= true), `not` on a bare boolean (`not true` = false), and a `not`-based user
+predicate (`fn odd(x) = not isEven(x)` filtering `range(8)` to `1,3,5,7`). The
+mini-language's boolean logic is now complete (`and` / `or` / `not` plus the six
+comparisons). Natural next steps: a `count(xs, fn)` tally, a `zipMap`-based
+CSV-to-records demo, or string case builtins (`upper` / `lower`).
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
