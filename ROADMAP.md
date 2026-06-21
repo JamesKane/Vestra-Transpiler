@@ -1437,6 +1437,27 @@ to a map). Natural next steps: consolidating the whole builtin set into one
 committed standalone `interp` tool (a capstone), or a `groupBy(xs, fn)` that buckets
 list elements into a map.
 
+**`groupBy(xs, fn)` shipped, the interpreter's richest builtin.**
+`examples/interp_groupby_demo.vst` buckets a list value into a map by a key
+function: for each element it computes the key by calling `fn` (a user `fn` or a
+builtin) through `callFunc`, stringifies it with `format`, and appends the element
+to that key's bucket list (built functionally with `pushVal`). It is the first
+builtin to combine all three machineries at once: higher-order calls, the map type
+(one bucket per key), and the list type (each bucket a list). The accumulation reads
+the bucket with `m.get(key)` (borrow) and writes it back with `m.set(key, updated)`
+(move) in the same iteration, which the checker accepts. Buckets preserve input
+order, so the demo is deterministic. No compiler change. The e2e runs the built tool
+on a committed program (`tests/e2e/interp_groupby_program.calc`) partitioning
+`range(10)` by parity (`get(g, "even")` = `0,2,4,6,8`, `"odd"` = `1,3,5,7,9`,
+`len(get(g, "even"))` = 5), grouping words by first letter
+(`groupBy(words, "firstChar")` gives `a` = `apple,avocado`, `b` =
+`banana,blueberry`, `len(keys(...))` = 3), and folding a bucket
+(`sum(get(g, "even"))` = 20). The interpreter now expresses real aggregation
+pipelines (generate, group, reduce). Natural next steps: consolidating the whole
+builtin set into one committed standalone `interp` tool (a capstone with a
+runnable program file), or a `update(m, k, fn)` that maps a function over one map
+value in place.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

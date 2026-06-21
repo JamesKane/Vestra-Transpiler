@@ -1,0 +1,13 @@
+fn parity(n) = if mod(n, 2) == 0 then "even" else "odd";
+fn firstChar(s) = substr(s, 0, 1);
+g = groupBy(range(10), "parity");
+print "evens:", join(get(g, "even"), ",");
+print "odds:", join(get(g, "odd"), ",");
+print "even count:", len(get(g, "even"));
+words = split("apple,avocado,banana,cherry,blueberry", ",");
+byFirst = groupBy(words, "firstChar");
+print "a words:", join(get(byFirst, "a"), ",");
+print "b words:", join(get(byFirst, "b"), ",");
+print "groups:", len(keys(byFirst));
+print "sum evens:", sum(get(g, "even"));
+print "done"
