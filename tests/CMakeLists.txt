@@ -4379,6 +4379,41 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_not_app ${e2e_interpnt_program} | grep -qx 'not f: true' && ${e2e_workdir}/interp_not_app ${e2e_interpnt_program} | grep -qx 'with and: true' && ${e2e_workdir}/interp_not_app ${e2e_interpnt_program} | grep -qx 'odds: 1,3,5,7'")
 set_tests_properties(e2e_interp_not_demo_verify PROPERTIES DEPENDS e2e_interp_not_demo_compile)
 
+# chars(s): explode a string into a list of one-character strings (over slice), the
+# bridge from string to list at character granularity. join(chars(s), "") rebuilds s.
+# The committed program lists characters, reverses a string via chars+reverse+join,
+# and filters/counts vowels with a user predicate using the new or operator.
+set(e2e_interpch_input   ${CMAKE_SOURCE_DIR}/examples/interp_chars_demo.vst)
+set(e2e_interpch_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_chars_program.calc)
+
+add_test(
+    NAME    e2e_interp_chars_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpch_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_chars_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_chars_demo.cpp
+            -o ${e2e_workdir}/interp_chars_app)
+set_tests_properties(e2e_interp_chars_demo_compile PROPERTIES DEPENDS e2e_interp_chars_demo_transpile)
+
+# Run the chars interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_chars_demo_run
+    COMMAND ${e2e_workdir}/interp_chars_app ${e2e_interpch_program})
+set_tests_properties(e2e_interp_chars_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_chars_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify chars reached stdout: the character list (chars: h,e,l,l,o), a string
+# reversed via chars+reverse+join (reversed: cba), and a vowel filter (vowels: euaio).
+add_test(
+    NAME    e2e_interp_chars_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_chars_app ${e2e_interpch_program} | grep -qx 'chars: h,e,l,l,o' && ${e2e_workdir}/interp_chars_app ${e2e_interpch_program} | grep -qx 'reversed: cba' && ${e2e_workdir}/interp_chars_app ${e2e_interpch_program} | grep -qx 'vowels: euaio'")
+set_tests_properties(e2e_interp_chars_demo_verify PROPERTIES DEPENDS e2e_interp_chars_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

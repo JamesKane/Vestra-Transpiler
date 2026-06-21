@@ -1,0 +1,11 @@
+fn isVowel(c) = c == "a" or c == "e" or c == "i" or c == "o" or c == "u";
+fn isA(c) = c == "a";
+print "chars:", join(chars("hello"), ",");
+print "count:", len(chars("hello"));
+print "reversed:", join(reverse(chars("abc")), "");
+print "rebuilt:", join(chars("test"), "");
+print "vowels:", join(filterList(chars("education"), "isVowel"), "");
+print "vowel count:", len(filterList(chars("education"), "isVowel"));
+print "a count:", len(filterList(chars("banana"), "isA"));
+print "empty:", len(chars(""));
+print "done"

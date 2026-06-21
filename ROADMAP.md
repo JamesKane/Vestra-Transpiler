@@ -1605,6 +1605,25 @@ mini-language's boolean logic is now complete (`and` / `or` / `not` plus the six
 comparisons). Natural next steps: a `count(xs, fn)` tally, a `zipMap`-based
 CSV-to-records demo, or string case builtins (`upper` / `lower`).
 
+**`chars(s)` shipped, exploding a string to characters.**
+`examples/interp_chars_demo.vst` adds the bridge from the string type into the list
+type at character granularity, which was previously unreachable (`split` cuts on a
+separator; there was no way to get the individual characters). `chars(s)` returns a
+list with one one-character string per byte, built over `Str.slice(i, i + 1)` (each
+character copied into an owned `String`). It joins the string and list surfaces: a
+string becomes a list, the whole higher-order machinery applies per character, and
+`join(..., "")` rebuilds a string, so `join(chars(s), "")` is `s` and
+`join(reverse(chars(s)), "")` reverses a string. Byte-oriented like the rest of the
+string surface. No compiler change. The e2e runs the built tool on a committed
+program (`tests/e2e/interp_chars_program.calc`) listing the characters of `"hello"`
+(`h,e,l,l,o`, length 5), reversing a string via chars + reverse + join (`cba`),
+rebuilding via `join(chars("test"), "")` (`test`), and filtering / counting vowels
+with a user predicate built from the new `or` (`filterList(chars("education"),
+"isVowel")` = `euaio`, count 5; the `a`s in `banana` = 3), plus the empty-string
+case. Characters are now first-class list elements. Natural next steps: string case
+builtins (`upper` / `lower`), a `count(xs, fn)` tally, or a `zipMap`-based
+CSV-to-records demo.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
