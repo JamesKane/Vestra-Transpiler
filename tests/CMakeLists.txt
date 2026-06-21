@@ -4591,6 +4591,40 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_count_app ${e2e_interpct_program} | grep -qx 'big count: 2' && ${e2e_workdir}/interp_count_app ${e2e_interpct_program} | grep -qx 'vowels: 2' && ${e2e_workdir}/interp_count_app ${e2e_interpct_program} | grep -qx 'evens: 5'")
 set_tests_properties(e2e_interp_count_demo_verify PROPERTIES DEPENDS e2e_interp_count_demo_compile)
 
+# product(xs): the multiplicative fold, the companion of sum. It multiplies the list
+# elements starting from 1 (so the empty list yields the identity 1). The committed
+# program sums and multiplies a small list and computes 5! as product(1..5).
+set(e2e_interppr_input   ${CMAKE_SOURCE_DIR}/examples/interp_product_demo.vst)
+set(e2e_interppr_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_product_program.calc)
+
+add_test(
+    NAME    e2e_interp_product_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interppr_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_product_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_product_demo.cpp
+            -o ${e2e_workdir}/interp_product_app)
+set_tests_properties(e2e_interp_product_demo_compile PROPERTIES DEPENDS e2e_interp_product_demo_transpile)
+
+# Run the product interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_product_demo_run
+    COMMAND ${e2e_workdir}/interp_product_app ${e2e_interppr_program})
+set_tests_properties(e2e_interp_product_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_product_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify product reached stdout: the multiplied list (product: 24), the factorial
+# (factorial5: 120), and the empty-list identity (empty: 1).
+add_test(
+    NAME    e2e_interp_product_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_product_app ${e2e_interppr_program} | grep -qx 'product: 24' && ${e2e_workdir}/interp_product_app ${e2e_interppr_program} | grep -qx 'factorial5: 120' && ${e2e_workdir}/interp_product_app ${e2e_interppr_program} | grep -qx 'empty: 1'")
+set_tests_properties(e2e_interp_product_demo_verify PROPERTIES DEPENDS e2e_interp_product_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

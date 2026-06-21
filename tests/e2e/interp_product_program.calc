@@ -1,0 +1,15 @@
+nums = listNew();
+nums = push(nums, 2);
+nums = push(nums, 3);
+nums = push(nums, 4);
+print "sum:", sum(nums);
+print "product:", product(nums);
+fact = listNew();
+fact = push(fact, 1);
+fact = push(fact, 2);
+fact = push(fact, 3);
+fact = push(fact, 4);
+fact = push(fact, 5);
+print "factorial5:", product(fact);
+print "empty:", product(listNew());
+print "done"

@@ -1701,9 +1701,20 @@ program can ask whether, which, and how many in the same vocabulary. No compiler
 The e2e runs the built tool on a committed program (`tests/e2e/interp_count_program.calc`)
 counting the big numbers (`count(nums, "isBig")` = 2), the vowels in a char list
 (`count(chars("xyzebra"), "isVowel")` = 2), the even values over a range
-(`count(range(10), "even")` = 5), and the empty-list case. Natural next steps: an
-`indexOf`-style position search, a `sum(xs)` / `product(xs)` numeric fold, or string
-case builtins if a byte-to-string primitive lands.
+(`count(range(10), "even")` = 5), and the empty-list case.
+
+**`product(xs)` shipped, the multiplicative fold.**
+`examples/interp_product_demo.vst` adds the companion of `sum`: where `sum` adds the
+elements starting from 0, `product` multiplies them starting from 1. Each element is
+coerced with `toIntVal` the same way `sum` coerces, and the empty list returns the
+multiplicative identity 1 (mirroring sum's additive 0), which keeps it composable. The
+list now has both numeric folds, enough to express a factorial as the product of a
+built 1..n list or a running total as a sum. No compiler change. The e2e runs the built
+tool on a committed program (`tests/e2e/interp_product_program.calc`) summing and
+multiplying a small list (`sum` = 9, `product` = 24), computing 5! as the product of a
+1..5 list (`factorial5` = 120), and checking the empty-list identity (`empty` = 1).
+Natural next steps: an `indexOf`-style position search, an `avg(xs)` mean over `sum` and
+`len`, or string case builtins if a byte-to-string primitive lands.
 
 ### 1. Generics phase 2 (multi-session)
 
