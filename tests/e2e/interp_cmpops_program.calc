@@ -1,0 +1,16 @@
+print "le t:", 3 <= 5;
+print "le eq:", 5 <= 5;
+print "le f:", 6 <= 5;
+print "ge t:", 7 >= 2;
+print "ge eq:", 4 >= 4;
+print "ne t:", 3 != 4;
+print "ne f:", 3 != 3;
+print "ne str:", "a" != "b";
+print "ne crosstype:", 1 != "1";
+fn atLeast5(x) = x >= 5;
+print "filtered:", join(filterList(range(8), "atLeast5"), ",");
+fn longest(a, b) = if len(a) >= len(b) then a else b;
+print "longest:", reduceList(split("a,bb,ccc,dd", ","), "longest", "");
+print "still lt:", 2 < 3;
+print "still eq:", 2 == 2;
+print "done"

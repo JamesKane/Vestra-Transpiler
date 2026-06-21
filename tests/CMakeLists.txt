@@ -4269,6 +4269,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_report_app ${e2e_interprep_program} | grep -qx 'total words: 10' && ${e2e_workdir}/interp_report_app ${e2e_interprep_program} | grep -qx 'longest word: quick' && ${e2e_workdir}/interp_report_app ${e2e_interprep_program} | grep -qx 'normalized: brown_dog_fox_lazy_quick_the'")
 set_tests_properties(e2e_interp_report_verify PROPERTIES DEPENDS e2e_interp_report_compile)
 
+# Comparison operators <= / >= / !=: close the gap the capstone found (the language
+# had only < / > / ==). Three new tokens lexed before the single-char fallback, plus
+# pCmp arms for <= / >= (asInt compare) and a pEq arm for != (!valEq). The committed
+# program tests each operator including cross-type !=, uses them in user predicates
+# for filterList / reduceList, and checks the existing < / == still work.
+set(e2e_interpco_input   ${CMAKE_SOURCE_DIR}/examples/interp_cmpops_demo.vst)
+set(e2e_interpco_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_cmpops_program.calc)
+
+add_test(
+    NAME    e2e_interp_cmpops_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpco_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_cmpops_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_cmpops_demo.cpp
+            -o ${e2e_workdir}/interp_cmpops_app)
+set_tests_properties(e2e_interp_cmpops_demo_compile PROPERTIES DEPENDS e2e_interp_cmpops_demo_transpile)
+
+# Run the cmpops interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_cmpops_demo_run
+    COMMAND ${e2e_workdir}/interp_cmpops_app ${e2e_interpco_program})
+set_tests_properties(e2e_interp_cmpops_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_cmpops_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify the operators reached stdout: an equal <= (le eq: true), a cross-type !=
+# (ne crosstype: true), and a >= predicate filter (filtered: 5,6,7).
+add_test(
+    NAME    e2e_interp_cmpops_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_cmpops_app ${e2e_interpco_program} | grep -qx 'le eq: true' && ${e2e_workdir}/interp_cmpops_app ${e2e_interpco_program} | grep -qx 'ne crosstype: true' && ${e2e_workdir}/interp_cmpops_app ${e2e_interpco_program} | grep -qx 'filtered: 5,6,7'")
+set_tests_properties(e2e_interp_cmpops_demo_verify PROPERTIES DEPENDS e2e_interp_cmpops_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

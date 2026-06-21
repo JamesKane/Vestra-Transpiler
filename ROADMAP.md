@@ -1550,6 +1550,24 @@ genuinely capable dynamic language. Natural next steps: a `count(xs, fn)` tally,
 `zipMap`-based CSV-to-records demo, or `>=` / `<=` / `!=` comparison operators in the
 parser (closing the gap this capstone found).
 
+**`<=` / `>=` / `!=` comparison operators shipped, closing the capstone gap.**
+`examples/interp_cmpops_demo.vst` adds the three comparison operators the
+mini-language lacked (it had only `<` / `>` / `==`, so the capstone's length-tiebreak
+had to use `>`). Three new tokens (`le` / `ge` / `ne`) are lexed before the
+single-character fallback, mirroring how `==` is already special-cased; `pCmp` gains
+`<=` / `>=` arms (comparing with `asInt` like `<` / `>`), and `pEq` gains a `!=` arm
+(`!valEq(a, b)`, the negation of the `==` rule, so it inherits the cross-type
+behavior). A lexer + parser change in the interpreter, no Vestra compiler change. The
+e2e runs the built tool on a committed program
+(`tests/e2e/interp_cmpops_program.calc`) checking each operator including the equal
+boundary (`5 <= 5` = true, `4 >= 4` = true), a cross-type inequality
+(`1 != "1"` = true), the operators inside user predicates
+(`filterList(range(8), "atLeast5")` with `fn atLeast5(x) = x >= 5` = `5,6,7`, and a
+`longest` fold that can now use `>=`), and that the existing `<` / `==` still work.
+The mini-language's relational surface is now complete. Natural next steps: a
+`count(xs, fn)` tally, logical `and` / `or` operators (today only `if` chains
+combine conditions), or a `zipMap`-based CSV-to-records demo.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
