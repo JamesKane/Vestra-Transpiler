@@ -1,0 +1,15 @@
+fn boom(n) = boom(n);
+fn isEven(x) = mod(x, 2) == 0;
+fn small(x) = x < 5;
+fn both(x) = isEven(x) and small(x);
+print "and tt:", 1 < 2 and 3 < 4;
+print "and tf:", 1 < 2 and 5 < 4;
+print "or ft:", 5 < 2 or 3 < 4;
+print "or ff:", 5 < 2 or 9 < 4;
+print "precedence:", 2 < 3 and 4 > 1;
+print "mixed:", 5 < 2 or 1 < 2 and 3 < 4;
+print "short or:", 1 < 2 or boom(1);
+print "short and:", 5 < 2 and boom(1);
+print "filtered:", join(filterList(range(10), "both"), ",");
+print "guard:", 3 < 5 and 10 > 9;
+print "done"

@@ -4305,6 +4305,44 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_cmpops_app ${e2e_interpco_program} | grep -qx 'le eq: true' && ${e2e_workdir}/interp_cmpops_app ${e2e_interpco_program} | grep -qx 'ne crosstype: true' && ${e2e_workdir}/interp_cmpops_app ${e2e_interpco_program} | grep -qx 'filtered: 5,6,7'")
 set_tests_properties(e2e_interp_cmpops_demo_verify PROPERTIES DEPENDS e2e_interp_cmpops_demo_compile)
 
+# Logical and / or with short-circuit: two new precedence levels (pOr over pAnd over
+# pEq) below the comparisons. They short-circuit via the live flag (the right operand
+# is parsed to advance the cursor but only evaluated when the left does not decide
+# the result), so `true or boom()` never calls boom. The committed program checks the
+# truth tables, precedence (and binds tighter than or), short-circuit (an
+# infinitely-recursive fn on the skipped side), and use in a user predicate.
+set(e2e_interplc_input   ${CMAKE_SOURCE_DIR}/examples/interp_logic_demo.vst)
+set(e2e_interplc_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_logic_program.calc)
+
+add_test(
+    NAME    e2e_interp_logic_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interplc_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_logic_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_logic_demo.cpp
+            -o ${e2e_workdir}/interp_logic_app)
+set_tests_properties(e2e_interp_logic_demo_compile PROPERTIES DEPENDS e2e_interp_logic_demo_transpile)
+
+# Run the logic interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_logic_demo_run
+    COMMAND ${e2e_workdir}/interp_logic_app ${e2e_interplc_program})
+set_tests_properties(e2e_interp_logic_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_logic_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify and / or reached stdout: a false conjunction (and tf: false), the
+# short-circuit (short or: true, boom never called), and a compound user predicate
+# filter (filtered: 0,2,4).
+add_test(
+    NAME    e2e_interp_logic_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_logic_app ${e2e_interplc_program} | grep -qx 'and tf: false' && ${e2e_workdir}/interp_logic_app ${e2e_interplc_program} | grep -qx 'short or: true' && ${e2e_workdir}/interp_logic_app ${e2e_interplc_program} | grep -qx 'filtered: 0,2,4'")
+set_tests_properties(e2e_interp_logic_demo_verify PROPERTIES DEPENDS e2e_interp_logic_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

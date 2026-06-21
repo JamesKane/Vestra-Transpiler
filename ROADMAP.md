@@ -1568,6 +1568,26 @@ The mini-language's relational surface is now complete. Natural next steps: a
 `count(xs, fn)` tally, logical `and` / `or` operators (today only `if` chains
 combine conditions), or a `zipMap`-based CSV-to-records demo.
 
+**Logical `and` / `or` with short-circuit shipped.**
+`examples/interp_logic_demo.vst` adds the two logical connectives, which until now
+could be expressed only by nesting `if`s. They are keywords (added to `wordKind`) and
+introduce two new precedence levels below the comparisons: the grammar gains `pOr`
+(lowest) over `pAnd` over `pEq`, and `pExpr` enters at `pOr` (for both the `if`
+condition and a bare expression), so `a < b and c < d` parses as
+`(a < b) and (c < d)` and `and` binds tighter than `or`. Crucially they
+*short-circuit*, reusing the `live` flag: the right operand is always parsed (the
+token cursor must advance) but only evaluated when the left does not already decide
+the result, so `true or boom()` never calls `boom`, the behavior a guard recursion
+needs. No Vestra compiler change. The e2e runs the built tool on a committed program
+(`tests/e2e/interp_logic_program.calc`) checking the truth tables (`and tt` true,
+`and tf` false, `or ft` true, `or ff` false), precedence
+(`5 < 2 or 1 < 2 and 3 < 4` = true), the short-circuit with an infinitely-recursive
+`fn boom(n) = boom(n)` on the skipped side (`1 < 2 or boom(1)` = true and
+`5 < 2 and boom(1)` = false, both terminating), and a compound user predicate
+(`both(x) = isEven(x) and small(x)` filtering `range(10)` to `0,2,4`). The
+mini-language can now combine conditions directly. Natural next steps: a logical
+`not` (unary), a `count(xs, fn)` tally, or a `zipMap`-based CSV-to-records demo.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
