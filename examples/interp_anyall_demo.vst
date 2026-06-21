@@ -1,0 +1,1497 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// `any(xs, fn)` / `all(xs, fn)`: higher-order boolean quantifiers over a list. They
+// ask whether a predicate holds for some, or for every, element:
+//
+//   any(xs, "pred")  -> Bool   true if pred(x) is truthy for at least one x
+//   all(xs, "pred")  -> Bool   true if pred(x) is truthy for every x
+//
+// The predicate is resolved by name through `callFunc` (a user `fn` or a builtin)
+// and judged by the same `truthy` rule as `if` / `while`. They short-circuit (`any`
+// stops at the first true, `all` at the first false) and take the conventional
+// empty-list values: `any` of nothing is false, `all` of nothing is true. They are
+// the boolean summaries of `filterList`, distinct from counting or collecting.
+//
+//   all(nums, "isEven")   -> true if every element is even
+//   any(nums, "isBig")    -> true if some element is big
+
+enum Tok {
+    case num
+    case strlit
+    case ident
+    case kwFn
+    case kwIf
+    case kwThen
+    case kwElse
+    case kwWhile
+    case kwDo
+    case kwPrint
+    case kwTrue
+    case kwFalse
+    case plus
+    case minus
+    case star
+    case slash
+    case lt
+    case gt
+    case eq
+    case lparen
+    case rparen
+    case lbrace
+    case rbrace
+    case comma
+    case assign
+    case semicolon
+    case end
+    case bad
+}
+
+struct Token {
+    let kind: Tok
+    let value: Int
+    let name: Str
+}
+
+enum Value {
+    case int(Int)
+    case boolean(Bool)
+    case str(String)
+    case map(HashMap[String, Value])
+    case list(Vec[Value])
+}
+
+// ---- value helpers ---------------------------------------------------------
+
+func strOf(_ s: Str) using Alloc -> String {
+    var out: String = ""
+    out.append(s)
+    return out
+}
+
+func boolStr(_ b: Bool) using Alloc -> String {
+    if b {
+        var t: String = "true"
+        return t
+    }
+    var f: String = "false"
+    return f
+}
+
+// Render a value by its tag (also the rendering used when concatenating). A map
+// renders as a fixed placeholder: its entry order is unspecified, so printing the
+// contents would not be deterministic — programs read individual keys instead.
+func format(_ v: Value) using Alloc -> String {
+    return match v {
+        case .int(let n): n.toString()
+        case .boolean(let b): boolStr(b)
+        case .str(let s): strOf(s)
+        case .map(let m): strOf("<map>")
+        case .list(let xs): strOf("<list>")
+    }
+}
+
+// Coerce to an integer for arithmetic (a bool is 1/0, a string / map / list is 0).
+func asInt(_ v: Value) -> Int {
+    return match v {
+        case .int(let n): n
+        case .boolean(let b): if b { 1 } else { 0 }
+        case .str(let s): 0
+        case .map(let m): 0
+        case .list(let xs): 0
+    }
+}
+
+// Truthiness for `if` / `while`: a nonzero int, a true bool, any string / map / list.
+func truthy(_ v: Value) -> Bool {
+    return match v {
+        case .int(let n): n != 0
+        case .boolean(let b): b
+        case .str(let s): true
+        case .map(let m): true
+        case .list(let xs): true
+    }
+}
+
+// Does this value carry a string payload? (selects `+` concatenation vs add).
+func isStr(_ v: Value) -> Bool {
+    return match v {
+        case .int(let n): false
+        case .boolean(let b): false
+        case .str(let s): true
+        case .map(let m): false
+        case .list(let xs): false
+    }
+}
+
+// Length of a string (bytes) or a list (elements); 0 otherwise — the `len`
+// builtin, now spanning both the string and the list compound type.
+func strLen(_ v: Value) -> Int {
+    return match v {
+        case .str(let s): s.len()
+        case .list(let xs): xs.len()
+        default: 0
+    }
+}
+
+// The [from, to) sub-string of a string value as a fresh owned String (clamped
+// into range by `slice`; an empty string for non-strings) — the `substr` builtin.
+func substrVal(_ v: Value, _ from: Int, _ to: Int) using Alloc -> Value {
+    return match v {
+        case .str(let s): Value.str(strOf(s.slice(from, to)))
+        default: Value.str(strOf(""))
+    }
+}
+
+// Index of the first occurrence of `needle` in `hay`, or -1 (when absent, or
+// when either operand is not a string) — the `find` builtin.
+func findVal(_ hay: Value, _ needle: Value) -> Int {
+    return match hay {
+        case .str(let h): match needle {
+            case .str(let n): h.find(n) ?? -1
+            default: -1
+        }
+        default: -1
+    }
+}
+
+// Whether `needle` occurs anywhere in `hay` (false unless both are strings) —
+// the `contains` builtin.
+func containsVal(_ hay: Value, _ needle: Value) -> Bool {
+    return match hay {
+        case .str(let h): match needle {
+            case .str(let n): h.contains(n)
+            default: false
+        }
+        default: false
+    }
+}
+
+// Structural equality: same tag and equal payload; cross-type is never equal. A
+// map compares unequal to everything (deep map equality is out of scope here).
+func valEq(_ a: Value, _ b: Value) -> Bool {
+    return match a {
+        case .int(let x): match b {
+            case .int(let y): x == y
+            default: false
+        }
+        case .boolean(let x): match b {
+            case .boolean(let y): x == y
+            default: false
+        }
+        case .str(let x): match b {
+            case .str(let y): x == y
+            default: false
+        }
+        case .map(let x): false
+        case .list(let x): false
+    }
+}
+
+// member(xs, v): whether some element of a list value equals v (by valEq); the
+// `member` builtin (false for a non-list).
+func memberVal(_ lv: Value, _ target: Value) -> Bool {
+    return match lv {
+        case .list(let xs): listHas(xs, target)
+        default: false
+    }
+}
+
+func listHas(_ xs: Vec[Value], _ target: Value) -> Bool {
+    var i: Int = 0
+    while i < xs.len() {
+        if valEq(xs.get(i) ?? Value.int(0), target) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// hasValue(m, v): whether some value in a map equals v (by valEq); the `hasValue`
+// builtin (false for a non-map).
+func hasValueVal(_ mv: Value, _ target: Value) using Alloc -> Bool {
+    return match mv {
+        case .map(let m): mapHasValue(m, target)
+        default: false
+    }
+}
+
+func mapHasValue(_ m: HashMap[String, Value], _ target: Value) using Alloc -> Bool {
+    for v in m.values() {
+        if valEq(v, target) {
+            return true
+        }
+    }
+    return false
+}
+
+// ---- map value: the first compound data type -------------------------------
+
+// A fresh empty map value.
+func mapNew() using Alloc -> Value {
+    var m: HashMap[String, Value] = HashMap.new()
+    return Value.map(m)
+}
+
+// Functional insert: copy the backing map, bind an owned-String key to `val`, and
+// return the new map value. The key is copied (`strOf`) so the map owns its bytes.
+func putInto(_ m: HashMap[String, Value], _ k: Str, _ val: Value) using Alloc -> Value {
+    var dup: HashMap[String, Value] = m
+    dup.set(strOf(k), val)
+    return Value.map(dup)
+}
+
+// put(m, k, v): a new map = m with key k (a string value) bound to v.
+func putVal(_ mv: Value, _ kv: Value, _ val: Value) using Alloc -> Value {
+    return match mv {
+        case .map(let m): match kv {
+            case .str(let k): putInto(m, k, val)
+            default: mv
+        }
+        default: mv
+    }
+}
+
+// get(m, k): the value bound to k, or `int(0)` when the map / key is absent.
+func getVal(_ mv: Value, _ kv: Value) using Alloc -> Value {
+    return match mv {
+        case .map(let m): match kv {
+            case .str(let k): m.get(k) ?? Value.int(0)
+            default: Value.int(0)
+        }
+        default: Value.int(0)
+    }
+}
+
+// has(m, k): whether k is bound in the map.
+func hasVal(_ mv: Value, _ kv: Value) -> Bool {
+    return match mv {
+        case .map(let m): match kv {
+            case .str(let k): hasKey(m, k)
+            default: false
+        }
+        default: false
+    }
+}
+
+func hasKey(_ m: HashMap[String, Value], _ k: Str) -> Bool {
+    if let found = m.get(k) {
+        return true
+    }
+    return false
+}
+
+// ---- list value: the second compound data type -----------------------------
+
+// keys(m): the map's keys as a list of string values (unspecified order).
+func keysVal(_ mv: Value) using Alloc -> Value {
+    return match mv {
+        case .map(let m): keysOf(m)
+        default: emptyList()
+    }
+}
+
+func keysOf(_ m: HashMap[String, Value]) using Alloc -> Value {
+    var xs: Vec[Value] = Vec.new()
+    for k in m.keys() {
+        xs.push(Value.str(strOf(k)))
+    }
+    return Value.list(xs)
+}
+
+// values(m): the map's values as a list (unspecified order).
+func valuesVal(_ mv: Value) using Alloc -> Value {
+    return match mv {
+        case .map(let m): valuesOf(m)
+        default: emptyList()
+    }
+}
+
+func valuesOf(_ m: HashMap[String, Value]) using Alloc -> Value {
+    var xs: Vec[Value] = Vec.new()
+    for v in m.values() {
+        xs.push(v)
+    }
+    return Value.list(xs)
+}
+
+// entries(m): one [key, value] two-element list per binding (unspecified order).
+func entriesVal(_ mv: Value) using Alloc -> Value {
+    return match mv {
+        case .map(let m): entriesOf(m)
+        default: emptyList()
+    }
+}
+
+func entriesOf(_ m: HashMap[String, Value]) using Alloc -> Value {
+    var xs: Vec[Value] = Vec.new()
+    for (k, v) in m.entries() {
+        var pair: Vec[Value] = Vec.new()
+        pair.push(Value.str(strOf(k)))
+        pair.push(v)
+        xs.push(Value.list(pair))
+    }
+    return Value.list(xs)
+}
+
+func emptyList() using Alloc -> Value {
+    var xs: Vec[Value] = Vec.new()
+    return Value.list(xs)
+}
+
+// range(n): the list [0, 1, ..., n - 1] (empty when n <= 0); the `range` builtin.
+func rangeVal(_ n: Int) using Alloc -> Value {
+    var xs: Vec[Value] = Vec.new()
+    var i: Int = 0
+    while i < n {
+        xs.push(Value.int(i))
+        i = i + 1
+    }
+    return Value.list(xs)
+}
+
+// zipMap(keys, values): a map binding each key element (rendered to a string) to
+// the value element at the same index, up to the shorter list; the `zipMap`
+// builtin. An empty map unless both operands are lists.
+func zipMapVal(_ kv: Value, _ vv: Value) using Alloc -> Value {
+    return match kv {
+        case .list(let ks): match vv {
+            case .list(let vs): zipMapInto(ks, vs)
+            default: mapNew()
+        }
+        default: mapNew()
+    }
+}
+
+func zipMapInto(_ ks: Vec[Value], _ vs: Vec[Value]) using Alloc -> Value {
+    var m: HashMap[String, Value] = HashMap.new()
+    var i: Int = 0
+    while i < ks.len() && i < vs.len() {
+        m.set(format(ks.get(i) ?? Value.int(0)), vs.get(i) ?? Value.int(0))
+        i = i + 1
+    }
+    return Value.map(m)
+}
+
+// zip(xs, ys): pair two list values element-wise into a list of two-element lists,
+// up to the shorter; the `zip` builtin. An empty list unless both are lists.
+func zipVal(_ av: Value, _ bv: Value) using Alloc -> Value {
+    return match av {
+        case .list(let a): match bv {
+            case .list(let b): zipInto(a, b)
+            default: emptyList()
+        }
+        default: emptyList()
+    }
+}
+
+func zipInto(_ a: Vec[Value], _ b: Vec[Value]) using Alloc -> Value {
+    var out: Vec[Value] = Vec.new()
+    var i: Int = 0
+    while i < a.len() && i < b.len() {
+        var pair: Vec[Value] = Vec.new()
+        pair.push(a.get(i) ?? Value.int(0))
+        pair.push(b.get(i) ?? Value.int(0))
+        out.push(Value.list(pair))
+        i = i + 1
+    }
+    return Value.list(out)
+}
+
+// at(xs, i): the i-th element of a list value, or int(0) when out of range / not
+// a list.
+func atVal(_ lv: Value, _ i: Int) using Alloc -> Value {
+    return match lv {
+        case .list(let xs): xs.get(i) ?? Value.int(0)
+        default: Value.int(0)
+    }
+}
+
+// take(xs, n): the first n elements of a list value (fewer if shorter, none if
+// n <= 0); the `take` builtin.
+func takeVal(_ lv: Value, _ n: Int) using Alloc -> Value {
+    return match lv {
+        case .list(let xs): takeInto(xs, n)
+        default: lv
+    }
+}
+
+func takeInto(_ xs: Vec[Value], _ n: Int) using Alloc -> Value {
+    var out: Vec[Value] = Vec.new()
+    var i: Int = 0
+    while i < xs.len() && i < n {
+        out.push(xs.get(i) ?? Value.int(0))
+        i = i + 1
+    }
+    return Value.list(out)
+}
+
+// drop(xs, n): everything after the first n elements of a list value (the whole
+// list if n <= 0, empty if n exceeds the length); the `drop` builtin.
+func dropVal(_ lv: Value, _ n: Int) using Alloc -> Value {
+    return match lv {
+        case .list(let xs): dropInto(xs, n)
+        default: lv
+    }
+}
+
+func dropInto(_ xs: Vec[Value], _ n: Int) using Alloc -> Value {
+    var out: Vec[Value] = Vec.new()
+    var i: Int = n
+    if i < 0 {
+        i = 0
+    }
+    while i < xs.len() {
+        out.push(xs.get(i) ?? Value.int(0))
+        i = i + 1
+    }
+    return Value.list(out)
+}
+
+// reverse(xs): the elements of a list value in reverse order; the `reverse`
+// builtin. An involution: reverse(reverse(xs)) is xs.
+func reverseVal(_ lv: Value) using Alloc -> Value {
+    return match lv {
+        case .list(let xs): reverseInto(xs)
+        default: lv
+    }
+}
+
+func reverseInto(_ xs: Vec[Value]) using Alloc -> Value {
+    var out: Vec[Value] = Vec.new()
+    var i: Int = xs.len() - 1
+    while i >= 0 {
+        out.push(xs.get(i) ?? Value.int(0))
+        i = i - 1
+    }
+    return Value.list(out)
+}
+
+// indexOf(xs, v): the index of the first list element equal to v (by valEq), or
+// -1; the `indexOf` builtin, the position counterpart to member.
+func indexOfVal(_ lv: Value, _ target: Value) -> Int {
+    return match lv {
+        case .list(let xs): listIndexOf(xs, target)
+        default: -1
+    }
+}
+
+func listIndexOf(_ xs: Vec[Value], _ target: Value) -> Int {
+    var i: Int = 0
+    while i < xs.len() {
+        if valEq(xs.get(i) ?? Value.int(0), target) {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// set(xs, i, v): a copy of a list value with element i replaced (unchanged if i is
+// out of range); functional, the original list is untouched.
+func setVal(_ lv: Value, _ i: Int, _ v: Value) using Alloc -> Value {
+    return match lv {
+        case .list(let xs): setInto(xs, i, v)
+        default: lv
+    }
+}
+
+func setInto(_ xs: Vec[Value], _ i: Int, _ v: Value) using Alloc -> Value {
+    var dup: Vec[Value] = xs
+    if i >= 0 && i < dup.len() {
+        dup.set(i, v)
+    }
+    return Value.list(dup)
+}
+
+// remove(m, k): a copy of a map value without key k (a missing key is a no-op);
+// functional. The backing HashMap has no in-place delete, so this rebuilds by
+// copying every binding whose key differs from k.
+func removeVal(_ mv: Value, _ kv: Value) using Alloc -> Value {
+    return match mv {
+        case .map(let m): match kv {
+            case .str(let k): removeInto(m, k)
+            default: mv
+        }
+        default: mv
+    }
+}
+
+func removeInto(_ m: HashMap[String, Value], _ k: Str) using Alloc -> Value {
+    var target: String = strOf(k)
+    var out: HashMap[String, Value] = HashMap.new()
+    for (kk, vv) in m.entries() {
+        if !(kk == target) {
+            out.set(strOf(kk), vv)
+        }
+    }
+    return Value.map(out)
+}
+
+// split(s, sep): the pieces of a string value around a separator, as a list of
+// string values (an empty list unless both operands are strings).
+func splitVal(_ sv: Value, _ sepv: Value) using Alloc -> Value {
+    return match sv {
+        case .str(let s): match sepv {
+            case .str(let sep): splitInto(s, sep)
+            default: emptyList()
+        }
+        default: emptyList()
+    }
+}
+
+func splitInto(_ s: Str, _ sep: Str) using Alloc -> Value {
+    var xs: Vec[Value] = Vec.new()
+    for part in s.split(sep) {
+        xs.push(Value.str(strOf(part)))
+    }
+    return Value.list(xs)
+}
+
+// join(xs, sep): the elements of a list value rendered into one string, `sep`
+// between each (an empty string unless the first operand is a list).
+func joinVal(_ lv: Value, _ sepv: Value) using Alloc -> Value {
+    return match lv {
+        case .list(let xs): match sepv {
+            case .str(let sep): joinInto(xs, sep)
+            default: Value.str(strOf(""))
+        }
+        default: Value.str(strOf(""))
+    }
+}
+
+func joinInto(_ xs: Vec[Value], _ sep: Str) using Alloc -> Value {
+    var out: String = ""
+    var i: Int = 0
+    while i < xs.len() {
+        if i > 0 {
+            out.append(sep)
+        }
+        out.append(format(xs.get(i) ?? Value.int(0)))
+        i = i + 1
+    }
+    return Value.str(out)
+}
+
+// push(xs, v): a new list = xs with v appended. Functional: copy the backing Vec,
+// append, return the new list (an empty list unless the first operand is a list).
+func pushVal(_ lv: Value, _ v: Value) using Alloc -> Value {
+    return match lv {
+        case .list(let xs): pushInto(xs, v)
+        default: emptyList()
+    }
+}
+
+func pushInto(_ xs: Vec[Value], _ v: Value) using Alloc -> Value {
+    var dup: Vec[Value] = xs
+    dup.push(v)
+    return Value.list(dup)
+}
+
+// concat(xs, ys): a new list = the elements of xs followed by those of ys
+// (an empty list unless both operands are lists).
+func concatVal(_ av: Value, _ bv: Value) using Alloc -> Value {
+    return match av {
+        case .list(let a): match bv {
+            case .list(let b): concatInto(a, b)
+            default: av
+        }
+        default: emptyList()
+    }
+}
+
+func concatInto(_ a: Vec[Value], _ b: Vec[Value]) using Alloc -> Value {
+    var dup: Vec[Value] = a
+    var i: Int = 0
+    while i < b.len() {
+        dup.push(b.get(i) ?? Value.int(0))
+        i = i + 1
+    }
+    return Value.list(dup)
+}
+
+// Ordering for sort: two ints compare numerically, two strings lexicographically;
+// any other mix falls back to the integer coercion.
+func lessVal(_ a: Value, _ b: Value) -> Bool {
+    return match a {
+        case .int(let x): match b {
+            case .int(let y): x < y
+            default: asInt(a) < asInt(b)
+        }
+        case .str(let x): match b {
+            case .str(let y): x < y
+            default: asInt(a) < asInt(b)
+        }
+        default: asInt(a) < asInt(b)
+    }
+}
+
+// sort(xs): the elements of a list value in ascending order. Functional: copy the
+// backing Vec, selection-sort in place, return the new list.
+func sortVal(_ lv: Value) using Alloc -> Value {
+    return match lv {
+        case .list(let xs): sortInto(xs)
+        default: lv
+    }
+}
+
+func sortInto(_ xs: Vec[Value]) using Alloc -> Value {
+    var dup: Vec[Value] = xs
+    let n = dup.len()
+    var i: Int = 0
+    while i < n {
+        var lo: Int = i
+        var j: Int = i + 1
+        while j < n {
+            if lessVal(dup.get(j) ?? Value.int(0), dup.get(lo) ?? Value.int(0)) {
+                lo = j
+            }
+            j = j + 1
+        }
+        let a = dup.get(i) ?? Value.int(0)
+        let b = dup.get(lo) ?? Value.int(0)
+        dup.set(i, b)
+        dup.set(lo, a)
+        i = i + 1
+    }
+    return Value.list(dup)
+}
+
+// sum(xs): the total of a list value's elements, each coerced with toInt (so a
+// list of numeric strings sums too); 0 for a non-list.
+func sumVal(_ lv: Value) -> Int {
+    return match lv {
+        case .list(let xs): sumInto(xs)
+        default: 0
+    }
+}
+
+func sumInto(_ xs: Vec[Value]) -> Int {
+    var acc: Int = 0
+    var i: Int = 0
+    while i < xs.len() {
+        acc = acc + toIntVal(xs.get(i) ?? Value.int(0))
+        i = i + 1
+    }
+    return acc
+}
+
+// min(xs) / max(xs): the extreme element by the `lessVal` ordering (int(0) for an
+// empty list or a non-list).
+func minVal(_ lv: Value) using Alloc -> Value {
+    return match lv {
+        case .list(let xs): reduceExtreme(xs, true)
+        default: Value.int(0)
+    }
+}
+
+func maxVal(_ lv: Value) using Alloc -> Value {
+    return match lv {
+        case .list(let xs): reduceExtreme(xs, false)
+        default: Value.int(0)
+    }
+}
+
+func reduceExtreme(_ xs: Vec[Value], _ wantMin: Bool) using Alloc -> Value {
+    if xs.len() == 0 {
+        return Value.int(0)
+    }
+    var best: Value = xs.get(0) ?? Value.int(0)
+    var i: Int = 1
+    while i < xs.len() {
+        let cur = xs.get(i) ?? Value.int(0)
+        let take = if wantMin { lessVal(cur, best) } else { lessVal(best, cur) }
+        if take {
+            best = cur
+        }
+        i = i + 1
+    }
+    return best
+}
+
+// toInt(v): parse a string value's digits into an integer (0 if malformed),
+// passing ints / bools through; the `toInt` builtin. Distinct from `asInt`, which
+// treats every string as 0 — this one actually parses via `Str.toInt()`.
+func toIntVal(_ v: Value) -> Int {
+    return match v {
+        case .int(let n): n
+        case .boolean(let b): if b { 1 } else { 0 }
+        case .str(let s): s.toInt() ?? 0
+        case .map(let m): 0
+        case .list(let xs): 0
+    }
+}
+
+// toStr(v): render any value to a string value; the `toStr` builtin. Just wraps
+// `format`, so it spans every tag (a number / bool becomes its text, a string is
+// returned verbatim, a map / list as its placeholder).
+func toStrVal(_ v: Value) using Alloc -> Value {
+    return Value.str(format(v))
+}
+
+// abs(x): the absolute value of an integer value; the `abs` builtin.
+func absVal(_ v: Value) -> Int {
+    let n = asInt(v)
+    if n < 0 {
+        return 0 - n
+    }
+    return n
+}
+
+// mod(a, b): the remainder a - (a / b) * b (0 when b is 0); the `mod` builtin, the
+// modulo the operators (+ - * /) don't provide.
+func modVal(_ a: Value, _ b: Value) -> Int {
+    let x = asInt(a)
+    let y = asInt(b)
+    if y == 0 {
+        return 0
+    }
+    return x - (x / y) * y
+}
+
+// ---- lexer -----------------------------------------------------------------
+
+func punct(_ c: Char) -> Tok {
+    if c == '+' { return .plus }
+    if c == '-' { return .minus }
+    if c == '*' { return .star }
+    if c == '/' { return .slash }
+    if c == '<' { return .lt }
+    if c == '>' { return .gt }
+    if c == '(' { return .lparen }
+    if c == ')' { return .rparen }
+    if c == '{' { return .lbrace }
+    if c == '}' { return .rbrace }
+    if c == ',' { return .comma }
+    if c == '=' { return .assign }
+    if c == ';' { return .semicolon }
+    return .bad
+}
+
+func wordKind(_ nm: Str) -> Tok {
+    return match nm {
+        case "fn": .kwFn
+        case "if": .kwIf
+        case "then": .kwThen
+        case "else": .kwElse
+        case "while": .kwWhile
+        case "do": .kwDo
+        case "print": .kwPrint
+        case "true": .kwTrue
+        case "false": .kwFalse
+        default: .ident
+    }
+}
+
+func lex(_ s: Str) using Alloc -> Vec[Token] {
+    var toks: Vec[Token] = Vec.new()
+    var i: Int = 0
+    while i < s.len() {
+        let c = s.charAt(i) ?? ' '
+        if c.isSpace() {
+            i = i + 1
+        } else if c.isDigit() {
+            let start = i
+            while i < s.len() && (s.charAt(i) ?? ' ').isDigit() {
+                i = i + 1
+            }
+            let v = s.slice(start, i).toInt() ?? 0
+            toks.push(Token(kind: .num, value: v, name: ""))
+        } else if c == '"' {
+            i = i + 1  // skip opening quote
+            let start = i
+            while i < s.len() && (s.charAt(i) ?? '"') != '"' {
+                i = i + 1
+            }
+            let lit = s.slice(start, i)
+            i = i + 1  // skip closing quote
+            toks.push(Token(kind: .strlit, value: 0, name: lit))
+        } else if c.isAlpha() {
+            let start = i
+            while i < s.len() && (s.charAt(i) ?? ' ').isAlnum() {
+                i = i + 1
+            }
+            let nm = s.slice(start, i)
+            toks.push(Token(kind: wordKind(nm), value: 0, name: nm))
+        } else if c == '=' && (s.charAt(i + 1) ?? ' ') == '=' {
+            toks.push(Token(kind: .eq, value: 0, name: ""))
+            i = i + 2
+        } else {
+            toks.push(Token(kind: punct(c), value: 0, name: ""))
+            i = i + 1
+        }
+    }
+    toks.push(Token(kind: .end, value: 0, name: ""))
+    return toks
+}
+
+func peekKind(_ ts: Vec[Token], _ i: Int) -> Tok {
+    if let t = ts.get(i) {
+        return t.kind
+    }
+    return Tok.end
+}
+
+func peekVal(_ ts: Vec[Token], _ i: Int) -> Int {
+    if let t = ts.get(i) {
+        return t.value
+    }
+    return 0
+}
+
+func peekName(_ ts: Vec[Token], _ i: Int) -> Str {
+    if let t = ts.get(i) {
+        return t.name
+    }
+    return ""
+}
+
+// ---- expression layer (reads the environment, produces a Value) ------------
+
+func callFunc(_ ts: Vec[Token], _ name: Str, _ args: Vec[Value],
+              _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int]) using Alloc -> Value {
+    if let start = fbody.get(name) {
+        if let params = fparams.get(name) {
+            var callEnv: HashMap[Str, Value] = HashMap.new()
+            var j: Int = 0
+            while j < params.len() && j < args.len() {
+                callEnv.set(params.get(j) ?? "", args.get(j) ?? Value.int(0))
+                j = j + 1
+            }
+            var bi: Int = start
+            return pExpr(ts, &bi, callEnv, fparams, fbody, true)
+        }
+    }
+    // String builtins, a fallback for names a program did not define as `fn`s.
+    return match name {
+        case "len": Value.int(strLen(args.get(0) ?? Value.int(0)))
+        case "substr": substrVal(args.get(0) ?? Value.int(0),
+                                 asInt(args.get(1) ?? Value.int(0)),
+                                 asInt(args.get(2) ?? Value.int(0)))
+        case "find": Value.int(findVal(args.get(0) ?? Value.int(0),
+                                       args.get(1) ?? Value.int(0)))
+        case "contains": Value.boolean(containsVal(args.get(0) ?? Value.int(0),
+                                                   args.get(1) ?? Value.int(0)))
+        case "mapNew": mapNew()
+        case "put": putVal(args.get(0) ?? Value.int(0),
+                           args.get(1) ?? Value.int(0),
+                           args.get(2) ?? Value.int(0))
+        case "get": getVal(args.get(0) ?? Value.int(0),
+                           args.get(1) ?? Value.int(0))
+        case "has": Value.boolean(hasVal(args.get(0) ?? Value.int(0),
+                                         args.get(1) ?? Value.int(0)))
+        case "keys": keysVal(args.get(0) ?? Value.int(0))
+        case "values": valuesVal(args.get(0) ?? Value.int(0))
+        case "entries": entriesVal(args.get(0) ?? Value.int(0))
+        case "set": setVal(args.get(0) ?? Value.int(0),
+                           asInt(args.get(1) ?? Value.int(0)),
+                           args.get(2) ?? Value.int(0))
+        case "remove": removeVal(args.get(0) ?? Value.int(0),
+                                 args.get(1) ?? Value.int(0))
+        case "reverse": reverseVal(args.get(0) ?? Value.int(0))
+        case "indexOf": Value.int(indexOfVal(args.get(0) ?? Value.int(0),
+                                             args.get(1) ?? Value.int(0)))
+        case "take": takeVal(args.get(0) ?? Value.int(0),
+                             asInt(args.get(1) ?? Value.int(0)))
+        case "drop": dropVal(args.get(0) ?? Value.int(0),
+                             asInt(args.get(1) ?? Value.int(0)))
+        case "member": Value.boolean(memberVal(args.get(0) ?? Value.int(0),
+                                               args.get(1) ?? Value.int(0)))
+        case "hasValue": Value.boolean(hasValueVal(args.get(0) ?? Value.int(0),
+                                                   args.get(1) ?? Value.int(0)))
+        case "abs": Value.int(absVal(args.get(0) ?? Value.int(0)))
+        case "mod": Value.int(modVal(args.get(0) ?? Value.int(0),
+                                     args.get(1) ?? Value.int(0)))
+        case "at": atVal(args.get(0) ?? Value.int(0),
+                         asInt(args.get(1) ?? Value.int(0)))
+        case "split": splitVal(args.get(0) ?? Value.int(0),
+                               args.get(1) ?? Value.int(0))
+        case "join": joinVal(args.get(0) ?? Value.int(0),
+                             args.get(1) ?? Value.int(0))
+        case "toInt": Value.int(toIntVal(args.get(0) ?? Value.int(0)))
+        case "toStr": toStrVal(args.get(0) ?? Value.int(0))
+        case "listNew": emptyList()
+        case "push": pushVal(args.get(0) ?? Value.int(0),
+                             args.get(1) ?? Value.int(0))
+        case "concat": concatVal(args.get(0) ?? Value.int(0),
+                                 args.get(1) ?? Value.int(0))
+        case "sort": sortVal(args.get(0) ?? Value.int(0))
+        case "sum": Value.int(sumVal(args.get(0) ?? Value.int(0)))
+        case "min": minVal(args.get(0) ?? Value.int(0))
+        case "max": maxVal(args.get(0) ?? Value.int(0))
+        case "mapList": mapListVal(ts, args.get(0) ?? Value.int(0),
+                                   args.get(1) ?? Value.int(0), fparams, fbody)
+        case "filterList": filterListVal(ts, args.get(0) ?? Value.int(0),
+                                         args.get(1) ?? Value.int(0), fparams, fbody)
+        case "groupBy": groupByVal(ts, args.get(0) ?? Value.int(0),
+                                   args.get(1) ?? Value.int(0), fparams, fbody)
+        case "any": Value.boolean(anyVal(ts, args.get(0) ?? Value.int(0),
+                                         args.get(1) ?? Value.int(0), fparams, fbody))
+        case "all": Value.boolean(allVal(ts, args.get(0) ?? Value.int(0),
+                                         args.get(1) ?? Value.int(0), fparams, fbody))
+        case "update": updateVal(ts, args.get(0) ?? Value.int(0),
+                                 args.get(1) ?? Value.int(0),
+                                 args.get(2) ?? Value.int(0), fparams, fbody)
+        case "merge": mergeVal(args.get(0) ?? Value.int(0),
+                               args.get(1) ?? Value.int(0))
+        case "reduceList": reduceListVal(ts, args.get(0) ?? Value.int(0),
+                                         args.get(1) ?? Value.int(0),
+                                         args.get(2) ?? Value.int(0), fparams, fbody)
+        case "range": rangeVal(asInt(args.get(0) ?? Value.int(0)))
+        case "zipMap": zipMapVal(args.get(0) ?? Value.int(0),
+                                 args.get(1) ?? Value.int(0))
+        case "zip": zipVal(args.get(0) ?? Value.int(0),
+                           args.get(1) ?? Value.int(0))
+        default: Value.int(0)
+    }
+}
+
+// mapList(xs, "fn"): apply the named function to each element of a list value,
+// collecting the results into a new list. The name is resolved through callFunc,
+// so a user `fn` or any builtin works.
+func mapListVal(_ ts: Vec[Token], _ lv: Value, _ fnv: Value,
+                _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int]) using Alloc -> Value {
+    return match lv {
+        case .list(let xs): match fnv {
+            case .str(let fname): mapListInto(ts, xs, fname, fparams, fbody)
+            default: lv
+        }
+        default: lv
+    }
+}
+
+func mapListInto(_ ts: Vec[Token], _ xs: Vec[Value], _ fname: Str,
+                 _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int]) using Alloc -> Value {
+    var out: Vec[Value] = Vec.new()
+    var i: Int = 0
+    while i < xs.len() {
+        var callArgs: Vec[Value] = Vec.new()
+        callArgs.push(xs.get(i) ?? Value.int(0))
+        out.push(callFunc(ts, fname, callArgs, fparams, fbody))
+        i = i + 1
+    }
+    return Value.list(out)
+}
+
+// groupBy(xs, "fn"): bucket a list value into a map keyed by fn(element). Each
+// element's key is computed by callFunc and stringified with format; the element is
+// appended (functionally, via pushVal) to that key's bucket list, which preserves
+// input order.
+func groupByVal(_ ts: Vec[Token], _ lv: Value, _ fnv: Value,
+                _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int]) using Alloc -> Value {
+    return match lv {
+        case .list(let xs): match fnv {
+            case .str(let fname): groupByInto(ts, xs, fname, fparams, fbody)
+            default: mapNew()
+        }
+        default: mapNew()
+    }
+}
+
+func groupByInto(_ ts: Vec[Token], _ xs: Vec[Value], _ fname: Str,
+                 _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int]) using Alloc -> Value {
+    var m: HashMap[String, Value] = HashMap.new()
+    var i: Int = 0
+    while i < xs.len() {
+        var keyArgs: Vec[Value] = Vec.new()
+        keyArgs.push(xs.get(i) ?? Value.int(0))
+        let key: String = format(callFunc(ts, fname, keyArgs, fparams, fbody))
+        let bucket: Value = m.get(key) ?? emptyList()
+        let updated: Value = pushVal(bucket, xs.get(i) ?? Value.int(0))
+        m.set(key, updated)
+        i = i + 1
+    }
+    return Value.map(m)
+}
+
+// update(m, k, "fn"): apply fn to the current value at key k (int(0) if absent) and
+// bind the result back, returning a new map. fn is resolved through callFunc.
+func updateVal(_ ts: Vec[Token], _ mv: Value, _ kv: Value, _ fnv: Value,
+               _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int]) using Alloc -> Value {
+    return match mv {
+        case .map(let m): match kv {
+            case .str(let k): match fnv {
+                case .str(let fname): updateInto(ts, m, k, fname, fparams, fbody)
+                default: mv
+            }
+            default: mv
+        }
+        default: mv
+    }
+}
+
+func updateInto(_ ts: Vec[Token], _ m: HashMap[String, Value], _ k: Str, _ fname: Str,
+                _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int]) using Alloc -> Value {
+    var dup: HashMap[String, Value] = m
+    var callArgs: Vec[Value] = Vec.new()
+    callArgs.push(dup.get(k) ?? Value.int(0))
+    let updated: Value = callFunc(ts, fname, callArgs, fparams, fbody)
+    dup.set(strOf(k), updated)
+    return Value.map(dup)
+}
+
+// merge(m1, m2): m1's bindings overlaid with m2's (m2 wins on a shared key); the
+// `merge` builtin. Functional: a copy of m1 with m2's entries set on top.
+func mergeVal(_ av: Value, _ bv: Value) using Alloc -> Value {
+    return match av {
+        case .map(let a): match bv {
+            case .map(let b): mergeInto(a, b)
+            default: av
+        }
+        default: bv
+    }
+}
+
+func mergeInto(_ a: HashMap[String, Value], _ b: HashMap[String, Value]) using Alloc -> Value {
+    var dup: HashMap[String, Value] = a
+    for (k, v) in b.entries() {
+        dup.set(strOf(k), v)
+    }
+    return Value.map(dup)
+}
+
+// filterList(xs, "pred"): keep each element for which the named predicate is
+// truthy, resolved through callFunc like mapList.
+func filterListVal(_ ts: Vec[Token], _ lv: Value, _ fnv: Value,
+                   _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int]) using Alloc -> Value {
+    return match lv {
+        case .list(let xs): match fnv {
+            case .str(let fname): filterListInto(ts, xs, fname, fparams, fbody)
+            default: lv
+        }
+        default: lv
+    }
+}
+
+func filterListInto(_ ts: Vec[Token], _ xs: Vec[Value], _ fname: Str,
+                    _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int]) using Alloc -> Value {
+    var out: Vec[Value] = Vec.new()
+    var i: Int = 0
+    while i < xs.len() {
+        var callArgs: Vec[Value] = Vec.new()
+        callArgs.push(xs.get(i) ?? Value.int(0))
+        if truthy(callFunc(ts, fname, callArgs, fparams, fbody)) {
+            out.push(xs.get(i) ?? Value.int(0))
+        }
+        i = i + 1
+    }
+    return Value.list(out)
+}
+
+// any(xs, "pred") / all(xs, "pred"): does the predicate hold for some / every
+// element? Resolved through callFunc, judged by truthy, short-circuiting. quantify
+// shares the loop; wantAny selects the any vs all behavior.
+func anyVal(_ ts: Vec[Token], _ lv: Value, _ fnv: Value,
+            _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int]) using Alloc -> Bool {
+    return match lv {
+        case .list(let xs): match fnv {
+            case .str(let fname): quantify(ts, xs, fname, fparams, fbody, true)
+            default: false
+        }
+        default: false
+    }
+}
+
+func allVal(_ ts: Vec[Token], _ lv: Value, _ fnv: Value,
+            _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int]) using Alloc -> Bool {
+    return match lv {
+        case .list(let xs): match fnv {
+            case .str(let fname): quantify(ts, xs, fname, fparams, fbody, false)
+            default: true
+        }
+        default: true
+    }
+}
+
+func quantify(_ ts: Vec[Token], _ xs: Vec[Value], _ fname: Str,
+              _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ wantAny: Bool) using Alloc -> Bool {
+    var i: Int = 0
+    while i < xs.len() {
+        var callArgs: Vec[Value] = Vec.new()
+        callArgs.push(xs.get(i) ?? Value.int(0))
+        let hit = truthy(callFunc(ts, fname, callArgs, fparams, fbody))
+        if wantAny && hit {
+            return true
+        }
+        if !wantAny && !hit {
+            return false
+        }
+        i = i + 1
+    }
+    // any of nothing is false; all of nothing is true.
+    return !wantAny
+}
+
+// reduceList(xs, "fn", init): left fold. Thread an accumulator (starting at init)
+// through the list, replacing it with the binary function's result each step. The
+// function is resolved by name through callFunc and called with two arguments.
+func reduceListVal(_ ts: Vec[Token], _ lv: Value, _ fnv: Value, _ init: Value,
+                   _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int]) using Alloc -> Value {
+    return match lv {
+        case .list(let xs): match fnv {
+            case .str(let fname): reduceListInto(ts, xs, fname, init, fparams, fbody)
+            default: init
+        }
+        default: init
+    }
+}
+
+func reduceListInto(_ ts: Vec[Token], _ xs: Vec[Value], _ fname: Str, _ init: Value,
+                    _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int]) using Alloc -> Value {
+    var acc: Value = init
+    var i: Int = 0
+    while i < xs.len() {
+        var callArgs: Vec[Value] = Vec.new()
+        callArgs.push(acc)
+        callArgs.push(xs.get(i) ?? Value.int(0))
+        acc = callFunc(ts, fname, callArgs, fparams, fbody)
+        i = i + 1
+    }
+    return acc
+}
+
+func pFactor(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Value],
+             _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc -> Value {
+    let k = peekKind(ts, i)
+    // Unary minus: a `-` in factor position negates the factor that follows. It
+    // binds tighter than the binary operators, so `-3 * 4` is `(-3) * 4`.
+    if k == Tok.minus {
+        i = i + 1
+        let f = pFactor(ts, &i, env, fparams, fbody, live)
+        return Value.int(0 - asInt(f))
+    }
+    if k == Tok.num {
+        let v = peekVal(ts, i)
+        i = i + 1
+        return Value.int(v)
+    }
+    if k == Tok.strlit {
+        let s = peekName(ts, i)
+        i = i + 1
+        return Value.str(strOf(s))
+    }
+    if k == Tok.kwTrue {
+        i = i + 1
+        return Value.boolean(true)
+    }
+    if k == Tok.kwFalse {
+        i = i + 1
+        return Value.boolean(false)
+    }
+    if k == Tok.ident {
+        let name = peekName(ts, i)
+        if peekKind(ts, i + 1) == Tok.lparen {
+            i = i + 2
+            var args: Vec[Value] = Vec.new()
+            if peekKind(ts, i) != Tok.rparen {
+                args.push(pExpr(ts, &i, env, fparams, fbody, live))
+                while peekKind(ts, i) == Tok.comma {
+                    i = i + 1
+                    args.push(pExpr(ts, &i, env, fparams, fbody, live))
+                }
+            }
+            i = i + 1
+            if live {
+                return callFunc(ts, name, args, fparams, fbody)
+            }
+            return Value.int(0)
+        }
+        i = i + 1
+        if live {
+            return env.get(name) ?? Value.int(0)
+        }
+        return Value.int(0)
+    }
+    if k == Tok.lparen {
+        i = i + 1
+        let v = pExpr(ts, &i, env, fparams, fbody, live)
+        i = i + 1
+        return v
+    }
+    i = i + 1
+    return Value.int(0)
+}
+
+func pTerm(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Value],
+           _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc -> Value {
+    let first = pFactor(ts, &i, env, fparams, fbody, live)
+    let k0 = peekKind(ts, i)
+    // Only when a `*` / `/` follows does this collapse to an integer; otherwise
+    // the factor's value (and its type) is preserved.
+    if k0 == Tok.star || k0 == Tok.slash {
+        var acc: Int = asInt(first)
+        var more: Bool = true
+        while more {
+            let k = peekKind(ts, i)
+            if k == Tok.star {
+                i = i + 1
+                acc = acc * asInt(pFactor(ts, &i, env, fparams, fbody, live))
+            } else if k == Tok.slash {
+                i = i + 1
+                let d = asInt(pFactor(ts, &i, env, fparams, fbody, live))
+                if d != 0 {
+                    acc = acc / d
+                } else {
+                    acc = 0
+                }
+            } else {
+                more = false
+            }
+        }
+        return Value.int(acc)
+    }
+    return first
+}
+
+func pSum(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Value],
+          _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc -> Value {
+    let first = pTerm(ts, &i, env, fparams, fbody, live)
+    let k0 = peekKind(ts, i)
+    // String-led `+`: if the left operand is a string, the whole run of `+`s
+    // concatenates, each operand rendered by its tag. This builds a fresh,
+    // *owned* String — the first heap-owned value the interpreter produces.
+    if k0 == Tok.plus && isStr(first) {
+        var acc: String = format(first)
+        var more: Bool = true
+        while more {
+            let k = peekKind(ts, i)
+            if k == Tok.plus {
+                i = i + 1
+                let r = pTerm(ts, &i, env, fparams, fbody, live)
+                acc.append(format(r))
+            } else {
+                more = false
+            }
+        }
+        return Value.str(acc)
+    }
+    if k0 == Tok.plus || k0 == Tok.minus {
+        var acc: Int = asInt(first)
+        var more: Bool = true
+        while more {
+            let k = peekKind(ts, i)
+            if k == Tok.plus {
+                i = i + 1
+                acc = acc + asInt(pTerm(ts, &i, env, fparams, fbody, live))
+            } else if k == Tok.minus {
+                i = i + 1
+                acc = acc - asInt(pTerm(ts, &i, env, fparams, fbody, live))
+            } else {
+                more = false
+            }
+        }
+        return Value.int(acc)
+    }
+    return first
+}
+
+// cmp = sum (('<' | '>') sum)?  -> a boolean Value
+func pCmp(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Value],
+          _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc -> Value {
+    let a = pSum(ts, &i, env, fparams, fbody, live)
+    let k = peekKind(ts, i)
+    if k == Tok.lt {
+        i = i + 1
+        let b = pSum(ts, &i, env, fparams, fbody, live)
+        return Value.boolean(asInt(a) < asInt(b))
+    }
+    if k == Tok.gt {
+        i = i + 1
+        let b = pSum(ts, &i, env, fparams, fbody, live)
+        return Value.boolean(asInt(a) > asInt(b))
+    }
+    return a
+}
+
+// eq = cmp ('==' cmp)?  -> a boolean Value (structural, across types)
+func pEq(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Value],
+         _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc -> Value {
+    let a = pCmp(ts, &i, env, fparams, fbody, live)
+    if peekKind(ts, i) == Tok.eq {
+        i = i + 1
+        let b = pCmp(ts, &i, env, fparams, fbody, live)
+        return Value.boolean(valEq(a, b))
+    }
+    return a
+}
+
+// expr = 'if' expr 'then' expr 'else' expr | eq. The branches may have different
+// value types; the taken one is returned.
+func pExpr(_ ts: Vec[Token], _ i: inout Int, _ env: HashMap[Str, Value],
+          _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc -> Value {
+    if peekKind(ts, i) == Tok.kwIf {
+        i = i + 1
+        let c = pEq(ts, &i, env, fparams, fbody, live)
+        let taken = truthy(c)
+        if peekKind(ts, i) == Tok.kwThen {
+            i = i + 1
+        }
+        let t = pExpr(ts, &i, env, fparams, fbody, live && taken)
+        if peekKind(ts, i) == Tok.kwElse {
+            i = i + 1
+        }
+        let e = pExpr(ts, &i, env, fparams, fbody, live && !taken)
+        if taken {
+            return t
+        }
+        return e
+    }
+    return pEq(ts, &i, env, fparams, fbody, live)
+}
+
+// ---- statement layer (mutates the environment, may print) ------------------
+
+func pBlock(_ ts: Vec[Token], _ i: inout Int, _ env: inout HashMap[Str, Value],
+            _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc, Log -> Value {
+    i = i + 1  // consume '{'
+    var last: Value = Value.int(0)
+    var more: Bool = true
+    while more {
+        let k = peekKind(ts, i)
+        if k == Tok.rbrace || k == Tok.end {
+            more = false
+        } else {
+            last = pStmt(ts, &i, &env, fparams, fbody, live)
+            if peekKind(ts, i) == Tok.semicolon {
+                i = i + 1
+            }
+        }
+    }
+    if peekKind(ts, i) == Tok.rbrace {
+        i = i + 1  // consume '}'
+    }
+    return last
+}
+
+// stmt = 'while' expr 'do' stmt | 'print' expr | block | ident '=' expr | expr
+func pStmt(_ ts: Vec[Token], _ i: inout Int, _ env: inout HashMap[Str, Value],
+          _ fparams: HashMap[Str, Vec[Str]], _ fbody: HashMap[Str, Int], _ live: Bool) using Alloc, Log -> Value {
+    let k = peekKind(ts, i)
+    if k == Tok.kwWhile {
+        i = i + 1
+        let condStart = i
+        let cskip = pExpr(ts, &i, env, fparams, fbody, false)
+        if peekKind(ts, i) == Tok.kwDo {
+            i = i + 1
+        }
+        let bodyStart = i
+        let bskip = pStmt(ts, &i, &env, fparams, fbody, false)
+        let afterBody = i
+        if live {
+            var ci: Int = condStart
+            var c: Value = pExpr(ts, &ci, env, fparams, fbody, true)
+            var guard: Int = 0
+            while truthy(c) && guard < 1000000 {
+                var bi: Int = bodyStart
+                let rb = pStmt(ts, &bi, &env, fparams, fbody, true)
+                ci = condStart
+                c = pExpr(ts, &ci, env, fparams, fbody, true)
+                guard = guard + 1
+            }
+        }
+        i = afterBody
+        return Value.int(0)
+    }
+    if k == Tok.kwPrint {
+        i = i + 1  // consume 'print'
+        var last: Value = pExpr(ts, &i, env, fparams, fbody, live)
+        // Render the comma-separated list into one space-separated line; print it
+        // once. Building the line is harmless when skipping (live == false); only
+        // the `println` is gated, so re-parsing a body advances `i` identically.
+        var line: String = format(last)
+        while peekKind(ts, i) == Tok.comma {
+            i = i + 1
+            let v = pExpr(ts, &i, env, fparams, fbody, live)
+            line.append(" ")
+            line.append(format(v))
+            last = v
+        }
+        if live {
+            println(line)
+        }
+        return last
+    }
+    if k == Tok.lbrace {
+        return pBlock(ts, &i, &env, fparams, fbody, live)
+    }
+    if k == Tok.ident && peekKind(ts, i + 1) == Tok.assign {
+        let name = peekName(ts, i)
+        i = i + 2
+        let v = pExpr(ts, &i, env, fparams, fbody, live)
+        if live {
+            env.set(name, v)
+        }
+        return Value.int(0)
+    }
+    return pExpr(ts, &i, env, fparams, fbody, live)
+}
+
+// ---- the program driver ----------------------------------------------------
+
+func runProgram(_ s: Str) using Alloc, Log -> Value {
+    let toks = lex(s)
+    var env: HashMap[Str, Value] = HashMap.new()
+    var fparams: HashMap[Str, Vec[Str]] = HashMap.new()
+    var fbody: HashMap[Str, Int] = HashMap.new()
+    var i: Int = 0
+    var last: Value = Value.int(0)
+    var more: Bool = true
+    while more {
+        let k = peekKind(toks, i)
+        if k == Tok.end {
+            more = false
+        } else if k == Tok.kwFn {
+            i = i + 1
+            let name = peekName(toks, i)
+            i = i + 2
+            var params: Vec[Str] = Vec.new()
+            if peekKind(toks, i) != Tok.rparen {
+                params.push(peekName(toks, i))
+                i = i + 1
+                while peekKind(toks, i) == Tok.comma {
+                    i = i + 1
+                    params.push(peekName(toks, i))
+                    i = i + 1
+                }
+            }
+            i = i + 1
+            i = i + 1
+            let bodyStart = i
+            let skip = pExpr(toks, &i, env, fparams, fbody, false)
+            fparams.set(name, params)
+            fbody.set(name, bodyStart)
+        } else {
+            last = pStmt(toks, &i, &env, fparams, fbody, true)
+        }
+        if peekKind(toks, i) == Tok.semicolon {
+            i = i + 1
+        }
+    }
+    return last
+}
+
+// ---- the executable: read a program file and run it ------------------------
+
+func main() -> Int32 {
+    with Alloc {
+        with Fs {
+            with Log {
+                let argv = args()
+                if argv.len() < 2 {
+                    eprintln("usage: interp_anyall <program-file>")
+                    return 1
+                }
+                let path = argv.get(1) ?? ""
+                if let src = readFile(path) {
+                    let result = runProgram(src)
+                    print("result: ")
+                    println(format(result))
+                    return 0
+                }
+                eprintln("cannot read program file")
+                return 1
+            }
+        }
+    }
+}

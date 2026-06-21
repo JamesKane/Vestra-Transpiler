@@ -1,0 +1,22 @@
+fn isEven(x) = mod(x, 2) == 0;
+fn isPos(x) = x > 0;
+fn isBig(x) = x > 100;
+nums = listNew();
+nums = push(nums, 2);
+nums = push(nums, 4);
+nums = push(nums, 6);
+print "all even:", all(nums, "isEven");
+print "any even:", any(nums, "isEven");
+print "all big:", all(nums, "isBig");
+print "any big:", any(nums, "isBig");
+mixed = listNew();
+mixed = push(mixed, 1);
+mixed = push(mixed, 2);
+mixed = push(mixed, 3);
+print "all even mixed:", all(mixed, "isEven");
+print "any even mixed:", any(mixed, "isEven");
+print "all pos:", all(mixed, "isPos");
+print "any empty:", any(listNew(), "isEven");
+print "all empty:", all(listNew(), "isEven");
+print "range pos:", all(range(5), "isPos");
+print "done"

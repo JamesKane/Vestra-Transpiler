@@ -1493,6 +1493,23 @@ builtin set into one committed standalone `interp` tool with a real program (a
 capstone), or a `count(xs, fn)` that tallies how many list elements satisfy a
 predicate.
 
+**`any(xs, fn)` / `all(xs, fn)` shipped, boolean quantifiers.**
+`examples/interp_anyall_demo.vst` adds the two higher-order quantifiers: `any` is
+true when the predicate holds for at least one element, `all` when it holds for
+every one. The predicate is resolved by name through `callFunc` (a user `fn` or a
+builtin) and judged by the same `truthy` rule as `if` / `while`; a shared `quantify`
+loop short-circuits (`any` stops at the first true, `all` at the first false) and
+returns the conventional empty-list values (`any` of nothing false, `all` of nothing
+true). They are the boolean summaries of `filterList`, distinct from counting or
+collecting. No compiler change. The e2e runs the built tool on a committed program
+(`tests/e2e/interp_anyall_program.calc`) over an all-even list (`all(nums, "isEven")`
+= true, `any(nums, "isBig")` = false), a mixed list (`all(mixed, "isEven")` = false,
+`any(mixed, "isEven")` = true, `all(mixed, "isPos")` = true), the empty-list vacuous
+cases (`any` = false, `all` = true), and `all(range(5), "isPos")` = false (0 fails).
+The list now answers existential and universal questions, not just collects. Natural
+next steps: a `count(xs, fn)` tally, or consolidating the whole builtin set into a
+standalone `interp` capstone tool with a real program.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
