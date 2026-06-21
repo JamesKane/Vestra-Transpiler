@@ -3986,6 +3986,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_takedrop_app ${e2e_interptd_program} | grep -qx 'take 2: a,b' && ${e2e_workdir}/interp_takedrop_app ${e2e_interptd_program} | grep -qx 'page2: 3,4,5' && ${e2e_workdir}/interp_takedrop_app ${e2e_interptd_program} | grep -qx 'partition: a,b,c,d,e'")
 set_tests_properties(e2e_interp_takedrop_demo_verify PROPERTIES DEPENDS e2e_interp_takedrop_demo_compile)
 
+# reverse(xs) / indexOf(xs, v): reverse is an involution built by walking the Vec
+# from the end; indexOf is the position counterpart to member, using the structural
+# valEq (type-aware), returning the first matching index or -1. The committed
+# program reverses lists (including range), checks the double-reverse identity, and
+# finds / fails to find values by index.
+set(e2e_interpri_input   ${CMAKE_SOURCE_DIR}/examples/interp_revidx_demo.vst)
+set(e2e_interpri_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_revidx_program.calc)
+
+add_test(
+    NAME    e2e_interp_revidx_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interpri_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_revidx_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_revidx_demo.cpp
+            -o ${e2e_workdir}/interp_revidx_app)
+set_tests_properties(e2e_interp_revidx_demo_compile PROPERTIES DEPENDS e2e_interp_revidx_demo_transpile)
+
+# Run the reverse/indexOf interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_revidx_demo_run
+    COMMAND ${e2e_workdir}/interp_revidx_app ${e2e_interpri_program})
+set_tests_properties(e2e_interp_revidx_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_revidx_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify reverse / indexOf reached stdout: a reversed list (reversed: d,c,b,a) and
+# a found index (idx c: 2).
+add_test(
+    NAME    e2e_interp_revidx_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_revidx_app ${e2e_interpri_program} | grep -qx 'reversed: d,c,b,a' && ${e2e_workdir}/interp_revidx_app ${e2e_interpri_program} | grep -qx 'idx c: 2' && ${e2e_workdir}/interp_revidx_app ${e2e_interpri_program} | grep -qx 'rev range: 4,3,2,1,0'")
+set_tests_properties(e2e_interp_revidx_demo_verify PROPERTIES DEPENDS e2e_interp_revidx_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.

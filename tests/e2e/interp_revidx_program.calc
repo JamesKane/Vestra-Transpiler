@@ -1,0 +1,15 @@
+xs = split("a,b,c,d", ",");
+print "reversed:", join(reverse(xs), ",");
+print "rev rev:", join(reverse(reverse(xs)), ",");
+print "idx c:", indexOf(xs, "c");
+print "idx a:", indexOf(xs, "a");
+print "idx z:", indexOf(xs, "z");
+nums = listNew();
+nums = push(nums, 10);
+nums = push(nums, 20);
+nums = push(nums, 30);
+print "rev nums:", join(reverse(nums), ",");
+print "idx 20:", indexOf(nums, 20);
+print "rev range:", join(reverse(range(5)), ",");
+print "empty rev:", len(reverse(listNew()));
+print "done"

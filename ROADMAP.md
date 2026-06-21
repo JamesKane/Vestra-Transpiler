@@ -1400,6 +1400,25 @@ slicing as well as building, reading, transforming, and searching. Natural next
 steps: a `reverse(xs)` list builtin, or a `find`-style `indexOf(xs, v)` returning
 the position of a value.
 
+**`reverse(xs)` / `indexOf(xs, v)` shipped, rounding out the list surface.**
+`examples/interp_revidx_demo.vst` adds two list operations: `reverse(xs)` returns
+the elements in reverse order (built by walking the backing `Vec` from the end, an
+involution so `reverse(reverse(xs))` is `xs`), and `indexOf(xs, v)` returns the
+index of the first element equal to `v` or -1. `indexOf` is the position
+counterpart to the boolean `member` and uses the same structural `valEq`, so it is
+type-aware. No compiler change. The e2e runs the built tool on a committed program
+(`tests/e2e/interp_revidx_program.calc`) asserting a reversed list
+(`reverse(split("a,b,c,d", ","))` = `d,c,b,a`), the double-reverse identity
+(`a,b,c,d`), `indexOf` hits and a miss (`indexOf(xs, "c")` = 2, `"a"` = 0,
+`"z"` = -1), reversing an int list and a `range` (`30,20,10` and `4,3,2,1,0`),
+`indexOf(nums, 20)` = 1, and the empty-list case. The list surface is now broad:
+build (`listNew` / `push` / `concat` / `range` / `split` / `keys`), read (`len` /
+`at` / `member` / `indexOf`), transform (`mapList` / `filterList` / `reduceList` /
+`sort` / `reverse` / `take` / `drop`), and aggregate (`sum` / `min` / `max` /
+`join`). Natural next steps: a `zip(xs, ys)` producing a list of `[x, y]` pairs, or
+moving the interpreter capstone into a single committed `interp_*` standalone tool
+that wires the whole builtin set.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam
