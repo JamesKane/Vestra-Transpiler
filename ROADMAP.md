@@ -1381,6 +1381,25 @@ The compound types can now be searched by key, by string content, and by value.
 Natural next steps: a `reverse(xs)` list builtin, or `take(xs, n)` / `drop(xs, n)`
 list slicing.
 
+**`take(xs, n)` / `drop(xs, n)` shipped, list slicing.**
+`examples/interp_takedrop_demo.vst` adds the sublist pair: `take(xs, n)` is the
+first `n` elements and `drop(xs, n)` is everything after them. Both are functional
+and clamp the count, so `take(xs, 0)` is empty, `take(xs, huge)` is the whole list,
+and `drop` past the end is empty. They partition a list:
+`concat(take(xs, n), drop(xs, n))` reconstructs `xs` for any `n`. Composing them
+gives pagination, `take(drop(xs, k), n)` being the `n` elements starting at index
+`k`, and with `range` / `mapList` a bounded prefix of a computed list. No compiler
+change. The e2e runs the built tool on a committed program
+(`tests/e2e/interp_takedrop_program.calc`) asserting a prefix
+(`take(xs, 2)` = `a,b`) and suffix (`drop(xs, 2)` = `c,d,e`), the clamps
+(`take(xs, 0)` empty, `take(xs, 99)` the whole list, `drop(xs, 99)` empty), the
+partition identity (`concat(take(xs, 2), drop(xs, 2))` = `a,b,c,d,e`), a pagination
+slice (`take(drop(range(10), 3), 3)` = `3,4,5`), and a bounded prefix of a computed
+list (`take(mapList(range(100), "square"), 3)` = `0,1,4`). The list now supports
+slicing as well as building, reading, transforming, and searching. Natural next
+steps: a `reverse(xs)` list builtin, or a `find`-style `indexOf(xs, v)` returning
+the position of a value.
+
 ### 1. Generics phase 2 (multi-session)
 
 `7e93b0e`'s phase 1 covers function generics (opaque GenericParam

@@ -1,0 +1,11 @@
+fn square(x) = x * x;
+xs = split("a,b,c,d,e", ",");
+print "take 2:", join(take(xs, 2), ",");
+print "drop 2:", join(drop(xs, 2), ",");
+print "take 0:", len(take(xs, 0));
+print "take big:", join(take(xs, 99), ",");
+print "drop big:", len(drop(xs, 99));
+print "partition:", join(concat(take(xs, 2), drop(xs, 2)), ",");
+print "page2:", join(take(drop(range(10), 3), 3), ",");
+print "first3 sq:", join(take(mapList(range(100), "square"), 3), ",");
+print "done"

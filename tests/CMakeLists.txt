@@ -3950,6 +3950,42 @@ add_test(
     COMMAND sh -c "${e2e_workdir}/interp_member_app ${e2e_interpmember_program} | grep -qx 'has banana: true' && ${e2e_workdir}/interp_member_app ${e2e_interpmember_program} | grep -qx 'hasval 2: true' && ${e2e_workdir}/interp_member_app ${e2e_interpmember_program} | grep -qx 'cross type: false'")
 set_tests_properties(e2e_interp_member_demo_verify PROPERTIES DEPENDS e2e_interp_member_demo_compile)
 
+# List slicing take / drop: take(xs, n) is the first n elements, drop(xs, n) the
+# rest; both functional and count-clamped. They partition a list (concat(take,
+# drop) == xs) and compose into pagination (take(drop(xs, k), n)). The committed
+# program covers prefix / suffix, the clamps, the partition identity, a pagination
+# slice, and a bounded prefix of a computed list.
+set(e2e_interptd_input   ${CMAKE_SOURCE_DIR}/examples/interp_takedrop_demo.vst)
+set(e2e_interptd_program ${CMAKE_SOURCE_DIR}/tests/e2e/interp_takedrop_program.calc)
+
+add_test(
+    NAME    e2e_interp_takedrop_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_interptd_input} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_interp_takedrop_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/interp_takedrop_demo.cpp
+            -o ${e2e_workdir}/interp_takedrop_app)
+set_tests_properties(e2e_interp_takedrop_demo_compile PROPERTIES DEPENDS e2e_interp_takedrop_demo_transpile)
+
+# Run the take/drop interpreter on the committed program; final `result: done`.
+add_test(
+    NAME    e2e_interp_takedrop_demo_run
+    COMMAND ${e2e_workdir}/interp_takedrop_app ${e2e_interptd_program})
+set_tests_properties(e2e_interp_takedrop_demo_run PROPERTIES
+    DEPENDS                 e2e_interp_takedrop_demo_compile
+    PASS_REGULAR_EXPRESSION "result: done")
+
+# Verify slicing reached stdout: a prefix (take 2: a,b), a pagination slice
+# (page2: 3,4,5), and the partition identity (partition: a,b,c,d,e).
+add_test(
+    NAME    e2e_interp_takedrop_demo_verify
+    COMMAND sh -c "${e2e_workdir}/interp_takedrop_app ${e2e_interptd_program} | grep -qx 'take 2: a,b' && ${e2e_workdir}/interp_takedrop_app ${e2e_interptd_program} | grep -qx 'page2: 3,4,5' && ${e2e_workdir}/interp_takedrop_app ${e2e_interptd_program} | grep -qx 'partition: a,b,c,d,e'")
+set_tests_properties(e2e_interp_takedrop_demo_verify PROPERTIES DEPENDS e2e_interp_takedrop_demo_compile)
+
 # A richer value type: a tagged Value enum (int / bool / str). Literals carry a
 # type, arithmetic stays int, comparison / == produce bool, and `if` may pick
 # between branches of different types; `format` renders by tag.
