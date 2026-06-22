@@ -101,6 +101,47 @@ add_test(
     COMMAND sh -c "mkdir -p ${lex_dumpdir} && $<TARGET_FILE:vestra> build ${selfhost_lexer} --dump-tokens -o ${lex_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${lex_dumpdir}/self_c.txt && ${e2e_workdir}/vlex ${selfhost_lexer} > ${lex_dumpdir}/self_v.txt && diff ${lex_dumpdir}/self_c.txt ${lex_dumpdir}/self_v.txt")
 set_tests_properties(e2e_selfhost_lexer_diff_self PROPERTIES DEPENDS e2e_selfhost_lexer_compile)
 
+# ---------------------------------------------------------------------------
+# Dog-food compiler, phase 2: the Vestra parser written in Vestra (selfhost/
+# parser.vst). It reuses the self-hosted lexer, parses the token stream into an
+# AST, and re-prints it in the C++ parser's canonical `--dump-ast` form. Slice 1
+# covers func decls, let/var/return/assign/while statements, the full §17.7
+# expression precedence ladder, and named/optional types; validation is
+# DIFFERENTIAL against the C++ `--dump-ast` on a sample and on a real in-tree
+# example file that falls within the slice-1 grammar.
+# ---------------------------------------------------------------------------
+set(selfhost_parser ${CMAKE_SOURCE_DIR}/selfhost/parser.vst)
+set(parse_sample    ${CMAKE_SOURCE_DIR}/tests/e2e/parse_sample.vst)
+set(parse_example   ${CMAKE_SOURCE_DIR}/examples/string_demo.vst)
+set(ast_dumpdir     ${e2e_workdir}/_astdump)
+
+add_test(
+    NAME    e2e_selfhost_parser_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${selfhost_parser} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_selfhost_parser_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/parser.cpp
+            -o ${e2e_workdir}/vparse)
+set_tests_properties(e2e_selfhost_parser_compile PROPERTIES DEPENDS e2e_selfhost_parser_transpile)
+
+# Differential: the self-hosted parser's canonical AST matches the C++ parser on
+# the slice-1 torture sample.
+add_test(
+    NAME    e2e_selfhost_parser_diff_sample
+    COMMAND sh -c "mkdir -p ${ast_dumpdir} && $<TARGET_FILE:vestra> build ${parse_sample} --dump-ast -o ${ast_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${ast_dumpdir}/sample_c.txt && ${e2e_workdir}/vparse ${parse_sample} > ${ast_dumpdir}/sample_v.txt && diff ${ast_dumpdir}/sample_c.txt ${ast_dumpdir}/sample_v.txt")
+set_tests_properties(e2e_selfhost_parser_diff_sample PROPERTIES DEPENDS e2e_selfhost_parser_compile)
+
+# Differential: the self-hosted parser matches the C++ parser on a real in-tree
+# example that lies within the slice-1 grammar.
+add_test(
+    NAME    e2e_selfhost_parser_diff_example
+    COMMAND sh -c "mkdir -p ${ast_dumpdir} && $<TARGET_FILE:vestra> build ${parse_example} --dump-ast -o ${ast_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${ast_dumpdir}/ex_c.txt && ${e2e_workdir}/vparse ${parse_example} > ${ast_dumpdir}/ex_v.txt && diff ${ast_dumpdir}/ex_c.txt ${ast_dumpdir}/ex_v.txt")
+set_tests_properties(e2e_selfhost_parser_diff_example PROPERTIES DEPENDS e2e_selfhost_parser_compile)
+
 # Shapes: exercises structs + member access + bare enum + match.
 set(e2e_shapes_input  ${CMAKE_SOURCE_DIR}/examples/shapes.vst)
 set(e2e_shapes_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_shapes.cpp)

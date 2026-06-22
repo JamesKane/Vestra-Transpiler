@@ -68,9 +68,35 @@ splice-opening `LParen` carries the two-char `\(` lexeme and `InterpStringBegin`
 `End` each carry the `"`, matching the C++ dump. Slice 1 notes that still hold:
 Vestra enums are move-only (compute `isBinOp(k)` before the struct that consumes
 `k`); `inout` struct field mutation works cleanly; compare `Str` byte-wise (the
-`==` operator rejects `Str` vs `StrConst`). Natural next step: begin the parser
-phase (recursive descent over the token stream, differentially tested against the
-C++ parser's `--dump-ast`).
+`==` operator rejects `Str` vs `StrConst`).
+
+**Parser slice 1 shipped — a Pratt parser + canonical AST printer, differentially
+verified.** `selfhost/parser.vst` reuses the self-hosted lexer, parses the token
+stream into an AST, and re-prints it in the C++ parser's canonical `--dump-ast`
+form (a normalized re-print of the tree: precedence encoded in shape, explicit
+parens preserved). Because the dump is a printed tree, the differential compares
+the printed AST: the Vestra parser must build the same tree the C++ parser does.
+Slice 1 covers top-level `func` declarations with block bodies; let / var / return
+/ expr / assign / while statements; the full §17.7 expression precedence ladder
+(literals, ident, self, leading-dot, paren, unary, binary with the exact
+binding-power table, call with labels and `&inout` args, member / `?.`, index, `if`
+/ `if let` / else-if, `as` / `as?`); named and optional types (with generic args);
+and wildcard / ident / bind patterns. Validation is **differential**: the e2e
+transpiles and compiles the Vestra parser, then diffs its canonical AST against the
+C++ `--dump-ast` on a torture sample (`tests/e2e/parse_sample.vst`) and on a real
+in-tree example (`examples/string_demo.vst`); it matches byte-for-byte on 6 example
+files that lie within the slice-1 grammar. Key implementation notes: the AST is one
+self-recursive enum `Nd` (expressions, statements, types, patterns, params, and
+decls all folded in) because the transpiler cannot forward-declare *mutually*
+recursive enums, while self-recursion through `Vec[Nd]` lowers cleanly (a
+one-element `Vec` is a "box", a many-element `Vec` a child list); `Expr` / `Decl` /
+`Type` / `Unit` are reserved type names; `nonescaping` is a reserved word (cannot be
+a field name); operator and visibility tags are stored as their already-printable
+strings; token-kind equality is decided by comparing `spelling()` strings (which are
+injective). Deferred to later slices (the sample inputs avoid them): struct / enum /
+protocol / extension / const / static / derive declarations, generics, match / for,
+tuple & vector & function types, and the exotic expressions. Natural next step: the
+struct / enum / match / pattern slice, then generics, growing corpus coverage.
 
 ### 0. Multi-file modules (§5) (multi-session) — slices 1-11 shipped (complete)
 

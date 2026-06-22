@@ -1,0 +1,38 @@
+// A parser sample for the self-hosted parser differential test. It stays inside
+// the slice-1 grammar (functions; let / var / return / assign / while; the full
+// expression precedence ladder; named / optional types) so the self-hosted
+// parser's canonical AST print matches `vestra build --dump-ast` byte-for-byte.
+
+module demo
+
+import a.b.c
+
+func compute(_ a: Int, _ b: Int, scale s: Int) using Alloc -> Int {
+    let x = a + b * 2 - 1
+    var y: Int = a << 2 | b & 3
+    let z = (a + b) * scaleOf(s, 10)
+    let cmp = a < b && b != 0 || a == 1
+    let chained = obj.field.method(a, label: b, &y)[0]
+    let opt = maybe ?? fallback
+    let cast = value as Int
+    let cast2 = value as? Str
+    while y > 0 {
+        y = y - 1
+        log(y)
+    }
+    if a > b {
+        return a
+    } else if a == b {
+        return 0
+    } else {
+        return b
+    }
+}
+
+func greet(_ name: Str) -> Str {
+    let s = "hi"
+    let c = 'x'
+    let big = 0xFF
+    let f = 3.14
+    return s
+}
