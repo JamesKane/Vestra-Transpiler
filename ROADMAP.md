@@ -85,7 +85,24 @@ and wildcard / ident / bind patterns. Validation is **differential**: the e2e
 transpiles and compiles the Vestra parser, then diffs its canonical AST against the
 C++ `--dump-ast` on a torture sample (`tests/e2e/parse_sample.vst`) and on a real
 in-tree example (`examples/string_demo.vst`); it matches byte-for-byte on 6 example
-files that lie within the slice-1 grammar. Key implementation notes: the AST is one
+files that lie within the slice-1 grammar.
+
+**Parser slice 2 shipped — struct / enum / match / for / patterns.** Adds the
+declaration and control-flow surface: `struct` declarations (let / var / embed
+fields, methods with `async` / `inout` / `sink` receiver modes, `deinit`), `enum`
+declarations (cases with labeled and positional payloads, methods), `match`
+expressions (parsed precisely so the token stream stays aligned, then printed as
+`/*?expr*/` because the C++ printer has no `MatchExpr` case), `for` / `break` /
+`continue` statements, and the full pattern grammar (wildcard, literal, bind,
+ident, enum `.case(children)`, tuple, range, or). The printer reproduces
+`print_struct` / `print_enum` (fields-then-methods ordering, payload labels) and
+`print_pattern` (literal / bind / ident / enum print fully; tuple / range / or
+print `/*?pat*/`, matching the C++ printer's gaps). Corpus coverage jumped from 6
+to **30 example files** parsing byte-identical. Two new differential e2e inputs:
+`tests/e2e/parse_sample2.vst` and the real `examples/shapes.vst` (struct + enum +
+match). Note: Vestra move analysis is flow-insensitive across `return` (push a
+value into its `Vec` once rather than using it in both a `return` and a later
+`push`). Key implementation notes (slice 1): the AST is one
 self-recursive enum `Nd` (expressions, statements, types, patterns, params, and
 decls all folded in) because the transpiler cannot forward-declare *mutually*
 recursive enums, while self-recursion through `Vec[Nd]` lowers cleanly (a
@@ -93,10 +110,13 @@ one-element `Vec` is a "box", a many-element `Vec` a child list); `Expr` / `Decl
 `Type` / `Unit` are reserved type names; `nonescaping` is a reserved word (cannot be
 a field name); operator and visibility tags are stored as their already-printable
 strings; token-kind equality is decided by comparing `spelling()` strings (which are
-injective). Deferred to later slices (the sample inputs avoid them): struct / enum /
-protocol / extension / const / static / derive declarations, generics, match / for,
-tuple & vector & function types, and the exotic expressions. Natural next step: the
-struct / enum / match / pattern slice, then generics, growing corpus coverage.
+injective). Still deferred after slice 2 (the sample inputs avoid them): protocol /
+extension / const / static / derive / opaque declarations, generics (`[T]` on funcs
+/ structs / enums), tuple & vector & function types, and the exotic expressions
+(copy / await / spawn / throw / try / do-catch / quote / closure / interpolated
+strings). Natural next step: generics + the remaining type forms (tuple / vector /
+function), then const / static / protocol declarations, growing corpus coverage
+toward the parser tokenizing and parsing its own source.
 
 ### 0. Multi-file modules (§5) (multi-session) — slices 1-11 shipped (complete)
 

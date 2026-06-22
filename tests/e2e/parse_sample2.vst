@@ -1,0 +1,43 @@
+// A second parser sample exercising the struct / enum / match / for / pattern
+// slice: enum cases with labeled and positional payloads, a struct with fields and
+// a method, a match used as a return value (the C++ printer dumps match as
+// /*?expr*/, which the self-hosted parser reproduces), for / break / continue, and
+// or-patterns. The self-hosted parser's canonical AST print stays byte-identical to
+// `vestra build --dump-ast`.
+
+enum Shape {
+    case circle(radius: Float64)
+    case rect(width: Float64, height: Float64)
+    case point
+}
+
+struct Point {
+    let x: Int
+    var y: Int
+    func dist(_ other: Point) -> Int {
+        return self.x + other.y
+    }
+}
+
+func area(_ s: Shape) -> Float64 {
+    return match s {
+        case .circle(let r): 3.14 * r * r
+        case .rect(let w, let h): w * h
+        case .point: 0.0
+    }
+}
+
+func classify(_ n: Int) -> Int {
+    for i in items {
+        if i > 0 {
+            break
+        }
+        continue
+    }
+    let r = match n {
+        case 0: 1
+        case 1 | 2 | 3: 2
+        default: 3
+    }
+    return r
+}
