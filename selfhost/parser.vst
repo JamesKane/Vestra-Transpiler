@@ -880,6 +880,8 @@ enum Nd {
     case exoticE                            // vector / tuple literal, throw, comptime, closure, etc — /*?expr*/
     case prefixE(String, Vec[Nd])           // copy / await / spawn / try (kw string), operand — printed fully
     case doCatchE(Vec[Nd], String, Vec[Nd], Vec[Nd]) // doBody, errName, errType?, catchBody
+    case quoteE(Vec[Nd])                     // quote { EXPR } — printed fully
+    case spliceE(Bool, Vec[Nd])              // isBareIdent, inner — $ident or $(expr)
     // statements
     case letS(Vec[Nd], Vec[Nd], Vec[Nd])    // pattern, type?, value
     case varS(Vec[Nd], Vec[Nd], Vec[Nd])
@@ -1212,6 +1214,7 @@ func parseStruct(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
     var methods: Vec[Nd] = Vec.new()
     var deinitB: Vec[Nd] = Vec.new()
     while !isKind(p, TokKind.rbrace) && !atEndP(p) {
+        skipAttributes(&p)  // field / method attributes (e.g. @bits(4)) — printer drops them
         if isKind(p, TokKind.kwFunc) || isKind(p, TokKind.kwAsync)
             || isKind(p, TokKind.kwInout) || isKind(p, TokKind.kwSink) {
             var mods: String = ""
@@ -1261,6 +1264,8 @@ func parseEnum(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
                 eat(p, TokKind.rparen)
             }
             cases.push(Nd.enumCase(cname, payload))
+        } else if isKind(p, TokKind.at) {
+            skipAttributes(&p)  // member attributes — printer drops them
         } else if isKind(p, TokKind.kwFunc) {
             methods.push(parseFunc(&p, "", ""))
         } else {
@@ -1395,7 +1400,12 @@ func parseParam(_ p: inout Ps) using Alloc -> Nd {
     var labelOmitted: Bool = false
     var label: String = ""
     var name: String = ""
-    if isKind(p, TokKind.underscore) {
+    if isKind(p, TokKind.lparen) {
+        // §6 tuple-destructuring parameter `(a, b): T` — the C++ printer renders it
+        // as `_ : T` (label omitted, no name, pattern dropped). Consume the pattern.
+        skipBalancedParens(&p)
+        labelOmitted = true
+    } else if isKind(p, TokKind.underscore) {
         advP(&p)
         labelOmitted = true
         // `_ name:` binds a name; bare `_:` is an anonymous parameter (no name).
@@ -1809,6 +1819,8 @@ func parsePrimary(_ p: inout Ps) using Alloc -> Nd {
         skipBalancedBraces(&p)
         return Nd.exoticE
     }
+    if isKind(p, TokKind.kwQuote) { return parseQuote(&p) }
+    if isKind(p, TokKind.dollar) { return parseSplice(&p) }
     if isKind(p, TokKind.kwDo) { return parseDoCatch(&p) }
     if isKind(p, TokKind.kwComptime) {
         advP(&p)
@@ -1852,6 +1864,76 @@ func parseDoCatch(_ p: inout Ps) using Alloc -> Nd {
     if eat(p, TokKind.kwWhere) { let guard = parseExpr(&p) }
     let catchBody = bE(parseBlock(&p))
     return Nd.doCatchE(doBody, errName, errType, catchBody)
+}
+
+// §12.4 `quote { EXPR }` (expression form, printed fully) vs `quote { <decls> }` (a
+// declaration-macro template, printed /*?expr*/). Disambiguated by a declaration
+// keyword at brace depth 1.
+func parseQuote(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // 'quote'  (now at '{')
+    if isDeclQuoteAhead(p) {
+        skipBalancedBraces(&p)
+        return Nd.exoticE
+    }
+    eatV(p, TokKind.lbrace)
+    skipNL(&p)
+    let inner = parseExpr(&p)
+    skipNL(&p)
+    eatV(p, TokKind.rbrace)
+    return Nd.quoteE(bE(inner))
+}
+
+func isDeclQuoteAhead(_ p: inout Ps) -> Bool {
+    var i: Int = p.pos + 1
+    var depth: Int = 1
+    var found: Bool = false
+    var go: Bool = true
+    while go {
+        let k = kindAtAbs(p, i)
+        if isKind2(k, TokKind.eof) { go = false }
+        else if isKind2(k, TokKind.lbrace) || isKind2(k, TokKind.lparen) || isKind2(k, TokKind.lbracket) {
+            depth = depth + 1
+        } else if isKind2(k, TokKind.rbrace) || isKind2(k, TokKind.rparen) || isKind2(k, TokKind.rbracket) {
+            depth = depth - 1
+            if depth == 0 { go = false }
+        } else if depth == 1 && isDeclKw(k) {
+            found = true
+            go = false
+        }
+        i = i + 1
+    }
+    return found
+}
+
+func isDeclKw(_ k: TokKind) -> Bool {
+    return isKind2(k, TokKind.kwFunc) || isKind2(k, TokKind.kwStruct) || isKind2(k, TokKind.kwEnum)
+        || isKind2(k, TokKind.kwProtocol) || isKind2(k, TokKind.kwExtension)
+        || isKind2(k, TokKind.kwConst) || isKind2(k, TokKind.kwStatic)
+}
+
+// §12.4 splice `$ident` / `$(expr)`. The C++ printer renders it bare when the inner
+// is an identifier (so `$(x)` also prints `$x`), otherwise with parens.
+func parseSplice(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // '$'
+    if eat(p, TokKind.lparen) {
+        let inner = parseExpr(&p)
+        eatV(p, TokKind.rparen)
+        let bare = isIdentNode(inner)
+        return Nd.spliceE(bare, bE(inner))
+    }
+    if isKind(p, TokKind.identifier) {
+        let n = curText(p)
+        advP(&p)
+        return Nd.spliceE(true, bE(Nd.ident(n)))
+    }
+    return Nd.exoticE
+}
+
+func isIdentNode(_ e: Nd) -> Bool {
+    return match e {
+        case .ident(let n): true
+        default: false
+    }
 }
 
 func skipBalancedParens(_ p: inout Ps) {
@@ -2584,7 +2666,26 @@ func printExpr(_ e: Nd) using Alloc, Log {
         case .addrOf(let inner): print("/*?expr*/")
         case .prefixE(let kw, let inner): printPrefixExpr(kw, inner)
         case .doCatchE(let db, let en, let et, let cb): printDoCatch(db, en, et, cb)
+        case .quoteE(let inner): printQuote(inner)
+        case .spliceE(let bare, let inner): printSplice(bare, inner)
         default: print("/*?expr*/")
+    }
+}
+
+func printQuote(_ inner: Vec[Nd]) using Alloc, Log {
+    print("quote { ")
+    printExpr(inner.get(0) ?? errE())
+    print(" }")
+}
+
+func printSplice(_ bare: Bool, _ inner: Vec[Nd]) using Alloc, Log {
+    print("$")
+    if bare {
+        printExpr(inner.get(0) ?? errE())
+    } else {
+        print("(")
+        printExpr(inner.get(0) ?? errE())
+        print(")")
     }
 }
 

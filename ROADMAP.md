@@ -134,10 +134,24 @@ inputs: `parse_sample4.vst` and the real `examples/result.vst` (try / do-catch) 
 the parser suite is now 10 differential tests. New note: Vestra requires `if` /
 `else if` branches to have a consistent value type even in statement position, so a
 trailing `eat()` (returns `Bool`) clashes with a branch ending in a void call — use
-the void `eatV` helper for trailing token discards. The remaining 4 holdouts are a
-genuine long tail: bitfield struct fields, `quote { }` expressions (need splice
-printing), and an interrupt-vector-table edge. Key implementation notes (slice 1):
-the AST is one
+the void `eatV` helper for trailing token discards.
+
+**Parser slice 5 shipped — the long-tail mop-up.** Coverage is now **142 of 143
+example files** parsing byte-identical; the single holdout (`quote_demo.vst`) defines
+and uses *declaration macros*, and the C++ `--dump-ast` runs after
+`expand_declaration_macros`, so its dump is the macro-EXPANDED program — a semantic
+transformation a pure parser cannot reproduce, so it is not a valid parser
+differential target (like the 7 files that segfault the dump). Added: `@bits(...)`
+and other field / member attributes inside struct & enum bodies (skipped, as the
+printer drops them); `quote { EXPR }` expressions and `$ident` / `$(expr)` splices
+(printed fully, with the C++ rule that a splice whose inner is an identifier prints
+bare); declaration-macro `quote { <decls> }` templates (consumed, printed
+`/*?expr*/`); and tuple-destructuring parameters `(a, b): T` (printed `_ : T`, the
+pattern dropped, matching the C++ printer). A real `examples/layout.vst` (bitfield
+attributes + tuple-pattern params) joins the e2e (11 parser differential tests, 19
+self-host tests total). The self-hosted parser now covers essentially the entire
+real corpus; the only unreachable cases require sema-level macro / extension
+expansion. Key implementation notes (slice 1): the AST is one
 self-recursive enum `Nd` (expressions, statements, types, patterns, params, and
 decls all folded in) because the transpiler cannot forward-declare *mutually*
 recursive enums, while self-recursion through `Vec[Nd]` lowers cleanly (a

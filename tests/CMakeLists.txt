@@ -119,6 +119,7 @@ set(parse_example   ${CMAKE_SOURCE_DIR}/examples/string_demo.vst)
 set(parse_example2  ${CMAKE_SOURCE_DIR}/examples/shapes.vst)
 set(parse_example3  ${CMAKE_SOURCE_DIR}/examples/simd_demo.vst)
 set(parse_example4  ${CMAKE_SOURCE_DIR}/examples/result.vst)
+set(parse_example5  ${CMAKE_SOURCE_DIR}/examples/layout.vst)
 set(ast_dumpdir     ${e2e_workdir}/_astdump)
 
 add_test(
@@ -182,6 +183,13 @@ add_test(
     NAME    e2e_selfhost_parser_diff_example4
     COMMAND sh -c "mkdir -p ${ast_dumpdir} && $<TARGET_FILE:vestra> build ${parse_example4} --dump-ast -o ${ast_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${ast_dumpdir}/ex4_c.txt && ${e2e_workdir}/vparse ${parse_example4} > ${ast_dumpdir}/ex4_v.txt && diff ${ast_dumpdir}/ex4_c.txt ${ast_dumpdir}/ex4_v.txt")
 set_tests_properties(e2e_selfhost_parser_diff_example4 PROPERTIES DEPENDS e2e_selfhost_parser_compile)
+
+# Differential: a real file with @bits(...) field attributes (dropped by the printer)
+# and tuple-pattern parameters (printed `_ : T`).
+add_test(
+    NAME    e2e_selfhost_parser_diff_example5
+    COMMAND sh -c "mkdir -p ${ast_dumpdir} && $<TARGET_FILE:vestra> build ${parse_example5} --dump-ast -o ${ast_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${ast_dumpdir}/ex5_c.txt && ${e2e_workdir}/vparse ${parse_example5} > ${ast_dumpdir}/ex5_v.txt && diff ${ast_dumpdir}/ex5_c.txt ${ast_dumpdir}/ex5_v.txt")
+set_tests_properties(e2e_selfhost_parser_diff_example5 PROPERTIES DEPENDS e2e_selfhost_parser_compile)
 
 # Shapes: exercises structs + member access + bare enum + match.
 set(e2e_shapes_input  ${CMAKE_SOURCE_DIR}/examples/shapes.vst)
