@@ -102,7 +102,26 @@ to **30 example files** parsing byte-identical. Two new differential e2e inputs:
 `tests/e2e/parse_sample2.vst` and the real `examples/shapes.vst` (struct + enum +
 match). Note: Vestra move analysis is flow-insensitive across `return` (push a
 value into its `Vec` once rather than using it in both a `return` and a later
-`push`). Key implementation notes (slice 1): the AST is one
+`push`).
+
+**Parser slice 3 shipped — `with` statements, generics, the remaining type forms,
+and declaration completeness.** Coverage rose from 30 to **115 example files**
+parsing byte-identical (of the non-crashing corpus; a few files segfault the C++
+`--dump-ast` under `--skip-check` and are not valid differential targets). Added:
+`with` capability blocks (parsed precisely, printed `/*?stmt*/` like the C++
+printer's WithStmt gap — the single biggest win at +57 files); generic parameters
+`[T, U: A & B, const N: Int]` (printed on funcs, parsed-and-dropped on structs /
+enums, matching the C++ printer); the remaining type forms (tuple `(T, U)`, vector
+`[N]T`, function `(P) using.. throws.. -> R`, `some` / `dyn`); declaration
+attributes `@name(...)` (parsed and skipped, as the printer omits them); top-level
+`comptime` / `async` / receiver modifiers; `const` / `static` / `opaque` / `derive`
+declarations; and vector / tuple literals (parsed, printed `/*?expr*/`). Three new
+e2e inputs: `parse_sample3.vst` and the real `examples/simd_demo.vst` join the
+suite (8 parser differential tests). Remaining gap (next slice): the exotic
+expression forms — `await` / `spawn` / `copy` / `try` / `throw` / `do-catch` (which
+the C++ printer renders fully) and `comptime` / `quote` / closures / macros /
+interpolated-string expressions (rendered `/*?expr*/`). Key implementation notes
+(slice 1): the AST is one
 self-recursive enum `Nd` (expressions, statements, types, patterns, params, and
 decls all folded in) because the transpiler cannot forward-declare *mutually*
 recursive enums, while self-recursion through `Vec[Nd]` lowers cleanly (a

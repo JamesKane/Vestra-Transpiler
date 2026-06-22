@@ -1,0 +1,44 @@
+// A third parser sample exercising the generics + remaining-types + declaration
+// slice: generic functions (with bounds and const generics), tuple / vector /
+// function / some / dyn types, const / static / opaque / derive declarations, and
+// declaration attributes (parsed but not printed by the C++ printer). The
+// self-hosted parser's canonical AST print stays byte-identical to --dump-ast.
+
+const Limit: Int32 = 100
+static Counter: Int32 = 0
+opaque type UserId = UInt32
+
+derive(Eq, Hash) for Point
+
+func identity[T](_ x: T) -> T {
+    return x
+}
+
+func areEqual[T: Eq](_ a: T, _ b: T) -> Bool {
+    return a == b
+}
+
+func atIndex[const N: Int32](_ xs: Vec[Int32]) -> Int32 {
+    return xs.get(0) ?? 0
+}
+
+func divmod(_ a: Int32, _ b: Int32) -> (Int32, Int32) {
+    return pair(a, b)
+}
+
+func scaleRow(_ row: [4]Int32, _ k: Int32) -> [4]Int32 {
+    return row
+}
+
+func apply(_ f: (Int32) -> Int32, _ x: Int32) using Alloc -> Int32 {
+    return call(f, x)
+}
+
+func describe(_ v: some Display, _ d: dyn Shape) -> Str {
+    return "x"
+}
+
+@inline
+func fast(_ a: Int32) -> Int32 {
+    return a + 1
+}
