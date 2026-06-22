@@ -1,6 +1,6 @@
 // A lexer torture sample for the self-hosted lexer differential test. It exercises
-// the corners that make the token stream interesting, while avoiding string
-// interpolation (deferred to a later self-hosting slice).
+// the corners that make the token stream interesting, including string
+// interpolation and its nesting.
 //
 // Nested /* block /* comment */ still going */ then code.
 
@@ -44,6 +44,11 @@ func mix(_ a: Int, _ b: Int) -> Int {
     let bs = b"\x00raw bytes"
     let ch = 'q'
     let esc = '\n'
+
+    // string interpolation, including a nested splice and an expression splice
+    let g = "x=\(a) y=\(b)"
+    let nested = "outer \("inner \(total)") done"
+    let computed = "sum=\(a + b * 2)"
 
     // try / as suffix folding and optional chaining punctuation
     let maybe = total ?? 0

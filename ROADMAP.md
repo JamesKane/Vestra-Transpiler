@@ -46,26 +46,31 @@ eventually, replace it.
 12.6K-line giant) -> codegen. Each phase grows slice-by-slice, validated against
 the existing C++ phase.
 
-**Slice 1 shipped — the lexer, real tokens, differentially verified.**
+**Lexer shipped (complete) — real tokens, differentially verified.**
 `selfhost/lexer.vst` is the C++ lexer rewritten in Vestra. It targets the real
 `TokenKind` set (108 kinds) and all 54 keywords, and reproduces the C++ lexer's
-`--dump-tokens` output (`  <spelling>  '<lexeme>'` per token) byte-for-byte. It
-covers identifiers + keywords (with `try?` / `try!` / `as?` folding and the bare
-`_` wildcard), int / float / hex / oct / bin numbers with `_` separators and
-exponents, plain and byte strings, char literals, every operator and punctuation
-mark, line and nested block comments, and the exact §3 newline-continuation rules
-(suppress a newline inside brackets, after a binary operator, or before one) via a
-`Lex` struct threaded by `inout`. Validation is **differential**: the e2e
-transpiles and compiles the Vestra lexer, then diffs its token stream against the
-C++ lexer on a torture sample (`tests/e2e/lex_sample.vst`) and on the lexer's own
-source (true self-tokenization, ~5.2K tokens). Beyond the e2e, it matches the C++
-lexer on all 144 non-interpolation example files and the 14K-token interpreter
-demos. The one deferred gap is string interpolation (`"...\(expr)..."`), whose
-splice-tracking the slice omits, so inputs avoid `\(`. Notes for the next slices:
+`--dump-tokens` output (`  <spelling>  '<lexeme>'` per token) byte-for-byte across
+the whole lexical grammar: identifiers + keywords (with `try?` / `try!` / `as?`
+folding and the bare `_` wildcard), int / float / hex / oct / bin numbers with `_`
+separators and exponents, plain and byte strings, char literals, string
+interpolation (`"...\(expr)..."`, including nesting), every operator and
+punctuation mark, line and nested block comments, and the exact §3
+newline-continuation rules (suppress a newline inside brackets, after a binary
+operator, or before one) via a `Lex` struct threaded by `inout`. Validation is
+**differential**: the e2e transpiles and compiles the Vestra lexer, then diffs its
+token stream against the C++ lexer on a torture sample (`tests/e2e/lex_sample.vst`,
+interpolation included) and on the lexer's own source (true self-tokenization,
+~5.2K tokens). Beyond the e2e, it matches the C++ lexer on the entire `.vst` corpus
+(152 files: all examples, the selfhost source, and the e2e samples), interpolation
+and all. Interpolation is tracked with a separate `Vec[Int]` splice-depth stack
+(kept out of the by-value `Lex` so cursor reads stay copy-cheap); the
+splice-opening `LParen` carries the two-char `\(` lexeme and `InterpStringBegin` /
+`End` each carry the `"`, matching the C++ dump. Slice 1 notes that still hold:
 Vestra enums are move-only (compute `isBinOp(k)` before the struct that consumes
 `k`); `inout` struct field mutation works cleanly; compare `Str` byte-wise (the
-`==` operator rejects `Str` vs `StrConst`). Natural next steps: string
-interpolation to close the lexer, then begin the parser phase.
+`==` operator rejects `Str` vs `StrConst`). Natural next step: begin the parser
+phase (recursive descent over the token stream, differentially tested against the
+C++ parser's `--dump-ast`).
 
 ### 0. Multi-file modules (§5) (multi-session) — slices 1-11 shipped (complete)
 

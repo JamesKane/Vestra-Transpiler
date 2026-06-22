@@ -9,11 +9,12 @@
 //   vlex <file.vst>   tokenizes the file and prints "  <spelling>  '<lexeme>'"
 //                     per token, exactly as `vestra build <file> --dump-tokens`.
 //
-// This first slice covers everything except string interpolation (`"...\(e)..."`):
-// identifiers and keywords, int / float / hex / oct / bin numbers, plain strings,
-// byte strings, char literals, every operator and punctuation mark, line and
-// nested block comments, and the §3 newline-continuation rules (suppress a
-// newline inside brackets, after a binary operator, or before one).
+// Coverage is the whole lexical grammar: identifiers and keywords, int / float /
+// hex / oct / bin numbers, plain strings, byte strings, char literals, string
+// interpolation (`"...\(expr)..."`, including nesting), every operator and
+// punctuation mark, line and nested block comments, and the §3
+// newline-continuation rules (suppress a newline inside brackets, after a binary
+// operator, or before one).
 
 // ---------------------------------------------------------------------------
 // The real token kinds (mirrors include/vestra/lex/token.hpp).
@@ -602,8 +603,81 @@ func scanIdentifier(_ toks: inout Vec[Token], _ l: inout Lex, _ start: Int) usin
     emitTok(&toks, &l, kind, start)
 }
 
-// Plain string / byte string (interpolation deferred to a later slice).
-func scanString(_ toks: inout Vec[Token], _ l: inout Lex, _ start: Int, _ isByte: Bool) using Alloc {
+// §4 interpolation: pick up the next literal fragment after the opening `"` of an
+// interpolated string or the `)` that closed a splice. Emit the fragment as an
+// InterpStringPart, then either close on `"` (part + InterpStringEnd) or split on
+// `\(` (part + LParen, push the splice's bracket depth, and return so the main loop
+// runs the splice body). The `)` that closes the splice resumes us via the main
+// loop. The splice-opening LParen carries the two-char lexeme `\(`, matching the
+// C++ lexer; InterpStringBegin / End each carry the `"`.
+func scanInterpContinue(_ toks: inout Vec[Token], _ l: inout Lex, _ splices: inout Vec[Int]) using Alloc {
+    let fragStart = l.pos
+    var go: Bool = true
+    while go && !atEndL(l) {
+        let c = curC(l)
+        if c == '"' {
+            emitTok(&toks, &l, TokKind.interpPart, fragStart)
+            let endStart = l.pos
+            advC(&l)
+            emitTok(&toks, &l, TokKind.interpEnd, endStart)
+            return
+        }
+        if c == '\\' && aheadC(l, 1) == '(' {
+            emitTok(&toks, &l, TokKind.interpPart, fragStart)
+            let markerStart = l.pos
+            advC(&l)
+            advC(&l)
+            l.depth = l.depth + 1
+            splices.push(l.depth)
+            emitTok(&toks, &l, TokKind.lparen, markerStart)
+            return
+        }
+        if c == '\\' {
+            advC(&l)
+            if !atEndL(l) { advC(&l) }
+        } else if c == '\n' {
+            emitTok(&toks, &l, TokKind.error, fragStart)
+            return
+        } else {
+            advC(&l)
+        }
+    }
+    emitTok(&toks, &l, TokKind.error, fragStart)
+}
+
+// String / byte string. Regular strings are pre-scanned for a `\(` splice: if one
+// is present the literal lexes as InterpStringBegin + (Part / splice tokens)* +
+// InterpStringEnd; otherwise it is a single StringLit. Byte strings (§17.1) never
+// interpolate.
+func scanString(_ toks: inout Vec[Token], _ l: inout Lex, _ splices: inout Vec[Int], _ start: Int, _ isByte: Bool) using Alloc {
+    if !isByte {
+        let saved = l.pos
+        var hasSplice: Bool = false
+        var scan: Bool = true
+        while scan && !atEndL(l) {
+            let c = curC(l)
+            if c == '"' || c == '\n' {
+                scan = false
+            } else if c == '\\' {
+                if aheadC(l, 1) == '(' {
+                    hasSplice = true
+                    scan = false
+                } else {
+                    advC(&l)
+                    if !atEndL(l) { advC(&l) }
+                }
+            } else {
+                advC(&l)
+            }
+        }
+        l.pos = saved
+        if hasSplice {
+            emitTok(&toks, &l, TokKind.interpBegin, start)
+            scanInterpContinue(&toks, &l, &splices)
+            return
+        }
+    }
+
     var go: Bool = true
     while go && !atEndL(l) {
         let c = curC(l)
@@ -646,13 +720,23 @@ func scanChar(_ toks: inout Vec[Token], _ l: inout Lex, _ start: Int) using Allo
 func tokenize(_ src: Str) using Alloc -> Vec[Token] {
     var l = Lex(src: src, pos: 0, depth: 0, prevOp: false)
     var toks: Vec[Token] = Vec.new()
+    var splices: Vec[Int] = Vec.new()
     while !atEndL(l) {
         skipTrivia(&toks, &l)
         if atEndL(l) { return finish(&toks, &l) }
         let start = l.pos
         let c = bumpC(&l)
         if c == '(' { l.depth = l.depth + 1; emitTok(&toks, &l, TokKind.lparen, start) }
-        else if c == ')' { l.depth = l.depth - 1; emitTok(&toks, &l, TokKind.rparen, start) }
+        else if c == ')' {
+            l.depth = l.depth - 1
+            emitTok(&toks, &l, TokKind.rparen, start)
+            // §4: a `)` that drops bracket depth below the current splice's level
+            // closes the splice and resumes the surrounding string fragment.
+            if splices.len() > 0 && l.depth < (splices.get(splices.len() - 1) ?? 0) {
+                let _ = splices.pop()
+                scanInterpContinue(&toks, &l, &splices)
+            }
+        }
         else if c == '[' { l.depth = l.depth + 1; emitTok(&toks, &l, TokKind.lbracket, start) }
         else if c == ']' { l.depth = l.depth - 1; emitTok(&toks, &l, TokKind.rbracket, start) }
         else if c == '{' { l.depth = l.depth + 1; emitTok(&toks, &l, TokKind.lbrace, start) }
@@ -734,9 +818,9 @@ func tokenize(_ src: Str) using Alloc -> Vec[Token] {
             } else if eatC(&l, '=') { emitTok(&toks, &l, TokKind.gtEq, start) }
             else { emitTok(&toks, &l, TokKind.gt, start) }
         }
-        else if c == '"' { scanString(&toks, &l, start, false) }
+        else if c == '"' { scanString(&toks, &l, &splices, start, false) }
         else if c == '\'' { scanChar(&toks, &l, start) }
-        else if c == 'b' && curC(l) == '"' { advC(&l); scanString(&toks, &l, start, true) }
+        else if c == 'b' && curC(l) == '"' { advC(&l); scanString(&toks, &l, &splices, start, true) }
         else if isDigitC(c) { scanNumber(&toks, &l, start) }
         else if isIdStartC(c) { scanIdentifier(&toks, &l, start) }
         else { emitTok(&toks, &l, TokKind.error, start) }
