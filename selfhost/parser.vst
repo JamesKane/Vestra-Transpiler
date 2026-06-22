@@ -877,7 +877,9 @@ enum Nd {
     case asE(Vec[Nd], Vec[Nd], Bool)        // value, target type, is_optional
     case addrOf(Vec[Nd])
     case matchE                             // parsed but printed as /*?expr*/ (no printer case in C++)
-    case exoticE                            // vector / tuple literal etc — printed as /*?expr*/
+    case exoticE                            // vector / tuple literal, throw, comptime, closure, etc — /*?expr*/
+    case prefixE(String, Vec[Nd])           // copy / await / spawn / try (kw string), operand — printed fully
+    case doCatchE(Vec[Nd], String, Vec[Nd], Vec[Nd]) // doBody, errName, errType?, catchBody
     // statements
     case letS(Vec[Nd], Vec[Nd], Vec[Nd])    // pattern, type?, value
     case varS(Vec[Nd], Vec[Nd], Vec[Nd])
@@ -964,6 +966,7 @@ func advP(_ p: inout Ps) { p.pos = p.pos + 1 }
 func isKind(_ p: inout Ps, _ k: TokKind) -> Bool { return streq(spelling(curKind(p)), spelling(k)) }
 func isKindAt(_ p: inout Ps, _ n: Int, _ k: TokKind) -> Bool { return streq(spelling(aheadKindP(p, n)), spelling(k)) }
 func eat(_ p: inout Ps, _ k: TokKind) -> Bool { if isKind(p, k) { advP(&p); return true } return false }
+func eatV(_ p: inout Ps, _ k: TokKind) { if isKind(p, k) { advP(&p) } }
 func atEndP(_ p: inout Ps) -> Bool { return isKind(p, TokKind.eof) }
 func skipNL(_ p: inout Ps) { while isKind(p, TokKind.newline) || isKind(p, TokKind.semicolon) { advP(&p) } }
 
@@ -1283,7 +1286,7 @@ func parseFunc(_ p: inout Ps, _ vis: String, _ mods: String) using Alloc -> Nd {
     advP(&p)  // 'func'
     let name = curText(p)
     advP(&p)  // name
-    let generics = parseGenerics(&p)
+    var generics = parseGenerics(&p)
     let params = parseParams(&p)
     var usingCaps: Vec[Nd] = Vec.new()
     if isKind(p, TokKind.kwUsing) {
@@ -1300,9 +1303,81 @@ func parseFunc(_ p: inout Ps, _ vis: String, _ mods: String) using Alloc -> Nd {
     }
     var result: Vec[Nd] = Vec.new()
     if eat(p, TokKind.arrow) { result.push(parseType(&p)) }
+    // A trailing `where T: P & Q` clause folds its bounds back into the generic
+    // params, exactly as the C++ parser does (so they print inline as `[T: P & Q]`).
+    generics = mergeWhere(generics, parseWhereClause(&p))
     var body: Vec[Nd] = Vec.new()
     if isKind(p, TokKind.lbrace) { body.push(parseBlock(&p)) }
     return Nd.funcD(vis, mods, name, generics, params, usingCaps, throwsT, result, body)
+}
+
+func parseWhereClause(_ p: inout Ps) using Alloc -> Vec[Nd] {
+    if !isKind(p, TokKind.kwWhere) { var empty: Vec[Nd] = Vec.new(); return empty }
+    advP(&p)  // 'where'
+    var out: Vec[Nd] = Vec.new()
+    var more: Bool = true
+    while more {
+        let nm = curText(p)
+        advP(&p)
+        eat(p, TokKind.colon)
+        var bounds: Vec[Nd] = Vec.new()
+        bounds.push(parseType(&p))
+        while eat(p, TokKind.amp) { bounds.push(parseType(&p)) }
+        out.push(Nd.genType(nm, bounds))
+        if !eat(p, TokKind.comma) { more = false }
+    }
+    return out
+}
+
+// Merge where-clause bounds (a list of genType entries) into the matching generic
+// params by name, returning a fresh generics list.
+func mergeWhere(_ gens: Vec[Nd], _ wheres: Vec[Nd]) using Alloc -> Vec[Nd] {
+    var out: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < gens.len() {
+        out.push(mergeOne(gens.get(i) ?? errT(), wheres))
+        i = i + 1
+    }
+    return out
+}
+
+func mergeOne(_ g: Nd, _ wheres: Vec[Nd]) using Alloc -> Nd {
+    return match g {
+        case .genType(let name, let bounds): Nd.genType(name, boundsFor(name, bounds, wheres))
+        default: g
+    }
+}
+
+func boundsFor(_ name: String, _ bounds: Vec[Nd], _ wheres: Vec[Nd]) using Alloc -> Vec[Nd] {
+    var nb: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < bounds.len() {
+        nb.push(bounds.get(i) ?? errT())
+        i = i + 1
+    }
+    var w: Int = 0
+    while w < wheres.len() {
+        appendWhereBounds(name, wheres.get(w) ?? errT(), &nb)
+        w = w + 1
+    }
+    return nb
+}
+
+func appendWhereBounds(_ name: String, _ entry: Nd, _ nb: inout Vec[Nd]) using Alloc {
+    match entry {
+        case .genType(let wname, let wbounds): appendIfMatch(name, wname, wbounds, &nb)
+        default: nb.push(entry)
+    }
+}
+
+func appendIfMatch(_ name: String, _ wname: String, _ wbounds: Vec[Nd], _ nb: inout Vec[Nd]) using Alloc {
+    if streq(name, wname) {
+        var i: Int = 0
+        while i < wbounds.len() {
+            nb.push(wbounds.get(i) ?? errT())
+            i = i + 1
+        }
+    }
 }
 
 func parseParams(_ p: inout Ps) using Alloc -> Vec[Nd] {
@@ -1323,8 +1398,8 @@ func parseParam(_ p: inout Ps) using Alloc -> Nd {
     if isKind(p, TokKind.underscore) {
         advP(&p)
         labelOmitted = true
-        name = curText(p)
-        advP(&p)
+        // `_ name:` binds a name; bare `_:` is an anonymous parameter (no name).
+        if !isKind(p, TokKind.colon) { name = curText(p); advP(&p) }
     } else if isKind(p, TokKind.identifier) && isKindAt(p, 1, TokKind.identifier) {
         label = curText(p)
         advP(&p)
@@ -1357,6 +1432,15 @@ func parseType(_ p: inout Ps) using Alloc -> Nd {
 func parseTypeBase(_ p: inout Ps) using Alloc -> Nd {
     if eat(p, TokKind.kwSome) { return Nd.someT(bT(parseType(&p))) }
     if eat(p, TokKind.kwDyn) { return Nd.dynT(bT(parseType(&p))) }
+    if isKind(p, TokKind.at) {
+        // §A8 @interrupt(T) in type position — InterruptType prints /*?type*/.
+        advP(&p)  // '@'
+        advP(&p)  // 'interrupt'
+        eatV(p, TokKind.lparen)
+        let t = parseType(&p)
+        eatV(p, TokKind.rparen)
+        return Nd.exoticE
+    }
     if isKind(p, TokKind.lbracket) { return parseVectorType(&p) }
     if isKind(p, TokKind.lparen) { return parseParenType(&p) }
     // named type: path (identifier or `Self`) with optional generic args
@@ -1640,6 +1724,19 @@ func parseExprBp(_ p: inout Ps, _ minBp: Int) using Alloc -> Nd {
 }
 
 func parsePrefix(_ p: inout Ps) using Alloc -> Nd {
+    // §17.7 prefix expressions. copy / await / spawn / try print fully; throw wraps
+    // its operand but the C++ printer has no ThrowExpr case, so it dumps /*?expr*/.
+    if eat(p, TokKind.kwCopy) { return Nd.prefixE("copy ", bE(parsePrefix(&p))) }
+    if eat(p, TokKind.kwAwait) { return Nd.prefixE("await ", bE(parsePrefix(&p))) }
+    if eat(p, TokKind.kwSpawn) { return Nd.prefixE("spawn ", bE(parsePrefix(&p))) }
+    if eat(p, TokKind.kwThrow) { let inner = parsePrefix(&p); return Nd.exoticE }
+    if isKind(p, TokKind.kwTry) || isKind(p, TokKind.kwTryQuestion) || isKind(p, TokKind.kwTryBang) {
+        var form: String = "try "
+        if isKind(p, TokKind.kwTryQuestion) { form = "try? " }
+        else if isKind(p, TokKind.kwTryBang) { form = "try! " }
+        advP(&p)
+        return Nd.prefixE(form, bE(parsePrefix(&p)))
+    }
     if eat(p, TokKind.minus) { return Nd.unary("-", bE(parsePrefix(&p))) }
     if eat(p, TokKind.bang) { return Nd.unary("!", bE(parsePrefix(&p))) }
     if eat(p, TokKind.tilde) { return Nd.unary("~", bE(parsePrefix(&p))) }
@@ -1705,10 +1802,147 @@ func parsePrimary(_ p: inout Ps) using Alloc -> Nd {
     }
     if isKind(p, TokKind.kwIf) { return parseIf(&p) }
     if isKind(p, TokKind.kwMatch) { return parseMatch(&p) }
-    if isKind(p, TokKind.lbrace) { return parseBlock(&p) }
+    if isKind(p, TokKind.kwSelect) {
+        // §11 select { ... } — SelectExpr has no printer case (/*?expr*/); consume
+        // the balanced body to stay token-aligned.
+        advP(&p)
+        skipBalancedBraces(&p)
+        return Nd.exoticE
+    }
+    if isKind(p, TokKind.kwDo) { return parseDoCatch(&p) }
+    if isKind(p, TokKind.kwComptime) {
+        advP(&p)
+        if isKind(p, TokKind.lbrace) { let b = parseBlock(&p) } else { let e = parseExpr(&p) }
+        return Nd.exoticE
+    }
+    if isKind(p, TokKind.at) {
+        // @embed(...) / @macro(...) — both print /*?expr*/ in the C++ printer.
+        advP(&p)  // '@'
+        advP(&p)  // intrinsic / macro name
+        if isKind(p, TokKind.lparen) { skipBalancedParens(&p) }
+        return Nd.exoticE
+    }
+    if isKind(p, TokKind.interpBegin) { return parseInterpString(&p) }
+    if isKind(p, TokKind.lbrace) {
+        if isClosureAhead(p) { return parseClosure(&p) }
+        return parseBlock(&p)
+    }
     // unsupported construct in this slice; emit a stub and advance.
     advP(&p)
     return Nd.ident("<error>")
+}
+
+// `do { body } catch (NAME: E) { handler }` (or bare `catch NAME`). Prints fully.
+func parseDoCatch(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // 'do'
+    let doBody = bE(parseBlock(&p))
+    eat(p, TokKind.kwCatch)
+    var errName: String = ""
+    var errType: Vec[Nd] = Vec.new()
+    if eat(p, TokKind.lparen) {
+        errName = curText(p)
+        advP(&p)
+        eat(p, TokKind.colon)
+        errType.push(parseType(&p))
+        eatV(p, TokKind.rparen)
+    } else if isKind(p, TokKind.identifier) {
+        errName = curText(p)
+        advP(&p)
+    }
+    if eat(p, TokKind.kwWhere) { let guard = parseExpr(&p) }
+    let catchBody = bE(parseBlock(&p))
+    return Nd.doCatchE(doBody, errName, errType, catchBody)
+}
+
+func skipBalancedParens(_ p: inout Ps) {
+    var depth: Int = 0
+    var go: Bool = true
+    while go && !atEndP(p) {
+        if isKind(p, TokKind.lparen) { depth = depth + 1 }
+        else if isKind(p, TokKind.rparen) {
+            depth = depth - 1
+            if depth == 0 { advP(&p); go = false }
+        }
+        if go { advP(&p) }
+    }
+}
+
+func skipBalancedBraces(_ p: inout Ps) {
+    var depth: Int = 0
+    var go: Bool = true
+    while go && !atEndP(p) {
+        if isKind(p, TokKind.lbrace) { depth = depth + 1 }
+        else if isKind(p, TokKind.rbrace) {
+            depth = depth - 1
+            if depth == 0 { advP(&p); go = false }
+        }
+        if go { advP(&p) }
+    }
+}
+
+// An interpolated string `"...\(e)..."` lexes as InterpStringBegin (Part | LParen
+// expr RParen)* InterpStringEnd; the C++ printer has no InterpStringExpr case, so
+// it dumps /*?expr*/. We consume the sequence to stay token-aligned.
+func parseInterpString(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // InterpStringBegin
+    var go: Bool = true
+    while go && !isKind(p, TokKind.interpEnd) && !atEndP(p) {
+        if isKind(p, TokKind.interpPart) { advP(&p) }
+        else if isKind(p, TokKind.lparen) {
+            advP(&p)
+            let e = parseExpr(&p)
+            eatV(p, TokKind.rparen)
+        } else { advP(&p) }
+    }
+    eatV(p, TokKind.interpEnd)
+    return Nd.exoticE
+}
+
+// A `{ params => body }` closure (vs a block). The C++ printer has no ClosureExpr
+// case, so it dumps /*?expr*/. Detect by scanning for a `=>` at brace depth 1.
+func isClosureAhead(_ p: inout Ps) -> Bool {
+    var i: Int = p.pos + 1
+    var depth: Int = 1
+    var found: Bool = false
+    var go: Bool = true
+    while go {
+        let k = kindAtAbs(p, i)
+        if isKind2(k, TokKind.eof) { go = false }
+        else if isKind2(k, TokKind.lbrace) || isKind2(k, TokKind.lparen) || isKind2(k, TokKind.lbracket) {
+            depth = depth + 1
+        } else if isKind2(k, TokKind.rbrace) || isKind2(k, TokKind.rparen) || isKind2(k, TokKind.rbracket) {
+            depth = depth - 1
+            if depth == 0 { go = false }
+        } else if depth == 1 && isKind2(k, TokKind.fatArrow) {
+            found = true
+            go = false
+        }
+        i = i + 1
+    }
+    return found
+}
+
+func kindAtAbs(_ p: inout Ps, _ i: Int) -> TokKind { let t = p.toks.get(i) ?? eofTok(); return t.kind }
+func isKind2(_ a: TokKind, _ b: TokKind) -> Bool { return streq(spelling(a), spelling(b)) }
+
+func parseClosure(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // '{'
+    if !isKind(p, TokKind.fatArrow) {
+        if isKind(p, TokKind.identifier) {
+            advP(&p)
+            while eat(p, TokKind.comma) {
+                if isKind(p, TokKind.identifier) { advP(&p) }
+            }
+        }
+    }
+    eat(p, TokKind.fatArrow)
+    skipNL(&p)
+    while !isKind(p, TokKind.rbrace) && !atEndP(p) {
+        let s = parseStmt(&p)
+        skipNL(&p)
+    }
+    eat(p, TokKind.rbrace)
+    return Nd.exoticE
 }
 
 // A match expression. The C++ printer has no MatchExpr case, so it dumps as
@@ -2348,8 +2582,26 @@ func printExpr(_ e: Nd) using Alloc, Log {
         case .block(let stmts): printBlock(stmts, 0)
         case .asE(let v, let target, let isOpt): printAs(v, target, isOpt)
         case .addrOf(let inner): print("/*?expr*/")
+        case .prefixE(let kw, let inner): printPrefixExpr(kw, inner)
+        case .doCatchE(let db, let en, let et, let cb): printDoCatch(db, en, et, cb)
         default: print("/*?expr*/")
     }
+}
+
+func printPrefixExpr(_ kw: String, _ inner: Vec[Nd]) using Alloc, Log {
+    print(kw)
+    printExpr(inner.get(0) ?? errE())
+}
+
+func printDoCatch(_ db: Vec[Nd], _ en: String, _ et: Vec[Nd], _ cb: Vec[Nd]) using Alloc, Log {
+    print("do ")
+    printExpr(db.get(0) ?? errE())
+    print(" catch (")
+    print(en)
+    print(": ")
+    if et.len() > 0 { printType(et.get(0) ?? errT()) }
+    print(") ")
+    printExpr(cb.get(0) ?? errE())
 }
 
 func printQuoted(_ open: Str, _ t: String, _ close: Str) using Log {

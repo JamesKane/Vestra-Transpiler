@@ -114,9 +114,11 @@ set(selfhost_parser ${CMAKE_SOURCE_DIR}/selfhost/parser.vst)
 set(parse_sample    ${CMAKE_SOURCE_DIR}/tests/e2e/parse_sample.vst)
 set(parse_sample2   ${CMAKE_SOURCE_DIR}/tests/e2e/parse_sample2.vst)
 set(parse_sample3   ${CMAKE_SOURCE_DIR}/tests/e2e/parse_sample3.vst)
+set(parse_sample4   ${CMAKE_SOURCE_DIR}/tests/e2e/parse_sample4.vst)
 set(parse_example   ${CMAKE_SOURCE_DIR}/examples/string_demo.vst)
 set(parse_example2  ${CMAKE_SOURCE_DIR}/examples/shapes.vst)
 set(parse_example3  ${CMAKE_SOURCE_DIR}/examples/simd_demo.vst)
+set(parse_example4  ${CMAKE_SOURCE_DIR}/examples/result.vst)
 set(ast_dumpdir     ${e2e_workdir}/_astdump)
 
 add_test(
@@ -168,6 +170,18 @@ add_test(
     NAME    e2e_selfhost_parser_diff_example3
     COMMAND sh -c "mkdir -p ${ast_dumpdir} && $<TARGET_FILE:vestra> build ${parse_example3} --dump-ast -o ${ast_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${ast_dumpdir}/ex3_c.txt && ${e2e_workdir}/vparse ${parse_example3} > ${ast_dumpdir}/ex3_v.txt && diff ${ast_dumpdir}/ex3_c.txt ${ast_dumpdir}/ex3_v.txt")
 set_tests_properties(e2e_selfhost_parser_diff_example3 PROPERTIES DEPENDS e2e_selfhost_parser_compile)
+
+# Differential: the exotic-expression sample (copy / await / spawn / try / do-catch /
+# throw / comptime / closure / select / where) and a real try / do-catch example.
+add_test(
+    NAME    e2e_selfhost_parser_diff_sample4
+    COMMAND sh -c "mkdir -p ${ast_dumpdir} && $<TARGET_FILE:vestra> build ${parse_sample4} --dump-ast -o ${ast_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${ast_dumpdir}/sample4_c.txt && ${e2e_workdir}/vparse ${parse_sample4} > ${ast_dumpdir}/sample4_v.txt && diff ${ast_dumpdir}/sample4_c.txt ${ast_dumpdir}/sample4_v.txt")
+set_tests_properties(e2e_selfhost_parser_diff_sample4 PROPERTIES DEPENDS e2e_selfhost_parser_compile)
+
+add_test(
+    NAME    e2e_selfhost_parser_diff_example4
+    COMMAND sh -c "mkdir -p ${ast_dumpdir} && $<TARGET_FILE:vestra> build ${parse_example4} --dump-ast -o ${ast_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${ast_dumpdir}/ex4_c.txt && ${e2e_workdir}/vparse ${parse_example4} > ${ast_dumpdir}/ex4_v.txt && diff ${ast_dumpdir}/ex4_c.txt ${ast_dumpdir}/ex4_v.txt")
+set_tests_properties(e2e_selfhost_parser_diff_example4 PROPERTIES DEPENDS e2e_selfhost_parser_compile)
 
 # Shapes: exercises structs + member access + bare enum + match.
 set(e2e_shapes_input  ${CMAKE_SOURCE_DIR}/examples/shapes.vst)

@@ -1,0 +1,24 @@
+// A fourth parser sample exercising the exotic-expression slice. copy / await /
+// spawn / try (try? / try!) and do-catch print fully in the C++ printer; throw,
+// comptime, closures, select, @macro / @embed, and interpolated-string expressions
+// print /*?expr*/ (the printer has no case for them). A trailing `where` clause
+// folds its bound back into the generic parameter (printed inline as [T: P]). The
+// self-hosted parser's canonical AST print stays byte-identical to --dump-ast.
+
+func bounded[T](_ a: T, _ b: T) -> Bool where T: Comparable {
+    let x = copy a
+    let y = await fetch(b)
+    let z = spawn worker(a)
+    let r = try parse(a)
+    let r2 = try? parse(b)
+    let r3 = try! parse(a)
+    let handled = do { try risky(a) } catch (e: Err) { fallback(b) }
+    let bare = do { try risky(b) } catch e { recover() }
+    let thrown = throw makeError(a)
+    let ct = comptime { sizeOf(a) }
+    let cl = mapList(items, { x => x + 1 })
+    let sel = select { on let v = chan: handle(v) default: idle() }
+    let macroed = expand(a)
+    let s = "value=\(a) and \(b)"
+    return r3
+}

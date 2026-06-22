@@ -117,11 +117,27 @@ attributes `@name(...)` (parsed and skipped, as the printer omits them); top-lev
 `comptime` / `async` / receiver modifiers; `const` / `static` / `opaque` / `derive`
 declarations; and vector / tuple literals (parsed, printed `/*?expr*/`). Three new
 e2e inputs: `parse_sample3.vst` and the real `examples/simd_demo.vst` join the
-suite (8 parser differential tests). Remaining gap (next slice): the exotic
-expression forms — `await` / `spawn` / `copy` / `try` / `throw` / `do-catch` (which
-the C++ printer renders fully) and `comptime` / `quote` / closures / macros /
-interpolated-string expressions (rendered `/*?expr*/`). Key implementation notes
-(slice 1): the AST is one
+suite (8 parser differential tests).
+
+**Parser slice 4 shipped — exotic expressions, `where` clauses, and `select`.**
+Coverage rose from 115 to **139 of 143 example files** parsing byte-identical (the
+other 7 example files segfault the C++ `--dump-ast` under `--skip-check`, so they
+are not valid differential targets). Added: the prefix expressions `copy` / `await`
+/ `spawn` / `try` / `try?` / `try!` (printed fully via a shared `prefixE` node) and
+`do { } catch (e: E) { }` (printed fully); the forms the C++ printer renders
+`/*?expr*/` — `throw`, `comptime`, closures (`{ x => ... }`, detected by scanning
+for `=>` at brace depth 1), `select`, `@macro` / `@embed`, and interpolated-string
+expressions; trailing `where T: P & Q` clauses, folded back into the matching
+generic param so they print inline as `[T: P & Q]` exactly as the C++ parser does;
+anonymous `_:` parameters; and `@interrupt(T)` types (`/*?type*/`). Two new e2e
+inputs: `parse_sample4.vst` and the real `examples/result.vst` (try / do-catch) —
+the parser suite is now 10 differential tests. New note: Vestra requires `if` /
+`else if` branches to have a consistent value type even in statement position, so a
+trailing `eat()` (returns `Bool`) clashes with a branch ending in a void call — use
+the void `eatV` helper for trailing token discards. The remaining 4 holdouts are a
+genuine long tail: bitfield struct fields, `quote { }` expressions (need splice
+printing), and an interrupt-vector-table edge. Key implementation notes (slice 1):
+the AST is one
 self-recursive enum `Nd` (expressions, statements, types, patterns, params, and
 decls all folded in) because the transpiler cannot forward-declare *mutually*
 recursive enums, while self-recursion through `Vec[Nd]` lowers cleanly (a
