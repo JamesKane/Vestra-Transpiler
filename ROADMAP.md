@@ -32,6 +32,41 @@ first slice.
 
 ## Next up (priority 1-9)
 
+### 0d. Dog-food compiler: the Vestra compiler written in Vestra (multi-session) — ACTIVE
+
+The real goal the interpreter arc was rehearsing: reimplement the actual compiler
+(~27K lines of C++ across lex / parse / ast / sema / codegen / driver) in Vestra
+itself, transpile it back to C++ with the bootstrap compiler, and walk toward
+Vestra compiling Vestra. Unlike the mini-language interpreter (a toy language
+*inside* Vestra), this targets the real token / AST / type contracts so each
+self-hosted phase can be differentially tested against its C++ counterpart and,
+eventually, replace it.
+
+**Phase order:** lexer (smallest, cleanest contract) -> parser -> AST + sema (the
+12.6K-line giant) -> codegen. Each phase grows slice-by-slice, validated against
+the existing C++ phase.
+
+**Slice 1 shipped — the lexer, real tokens, differentially verified.**
+`selfhost/lexer.vst` is the C++ lexer rewritten in Vestra. It targets the real
+`TokenKind` set (108 kinds) and all 54 keywords, and reproduces the C++ lexer's
+`--dump-tokens` output (`  <spelling>  '<lexeme>'` per token) byte-for-byte. It
+covers identifiers + keywords (with `try?` / `try!` / `as?` folding and the bare
+`_` wildcard), int / float / hex / oct / bin numbers with `_` separators and
+exponents, plain and byte strings, char literals, every operator and punctuation
+mark, line and nested block comments, and the exact §3 newline-continuation rules
+(suppress a newline inside brackets, after a binary operator, or before one) via a
+`Lex` struct threaded by `inout`. Validation is **differential**: the e2e
+transpiles and compiles the Vestra lexer, then diffs its token stream against the
+C++ lexer on a torture sample (`tests/e2e/lex_sample.vst`) and on the lexer's own
+source (true self-tokenization, ~5.2K tokens). Beyond the e2e, it matches the C++
+lexer on all 144 non-interpolation example files and the 14K-token interpreter
+demos. The one deferred gap is string interpolation (`"...\(expr)..."`), whose
+splice-tracking the slice omits, so inputs avoid `\(`. Notes for the next slices:
+Vestra enums are move-only (compute `isBinOp(k)` before the struct that consumes
+`k`); `inout` struct field mutation works cleanly; compare `Str` byte-wise (the
+`==` operator rejects `Str` vs `StrConst`). Natural next steps: string
+interpolation to close the lexer, then begin the parser phase.
+
 ### 0. Multi-file modules (§5) (multi-session) — slices 1-11 shipped (complete)
 
 The first step toward self-hosting (a compiler is many files). **Slice 1

@@ -1,0 +1,780 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// The dog-food compiler: the Vestra lexer, written in Vestra. This is the front
+// door of the real compiler reimplemented in the language itself, targeting the
+// REAL token set (TokenKind, 54 keywords) and reproducing the C++ lexer's
+// `--dump-tokens` output byte-for-byte so the two can be differentially tested.
+//
+//   vlex <file.vst>   tokenizes the file and prints "  <spelling>  '<lexeme>'"
+//                     per token, exactly as `vestra build <file> --dump-tokens`.
+//
+// This first slice covers everything except string interpolation (`"...\(e)..."`):
+// identifiers and keywords, int / float / hex / oct / bin numbers, plain strings,
+// byte strings, char literals, every operator and punctuation mark, line and
+// nested block comments, and the §3 newline-continuation rules (suppress a
+// newline inside brackets, after a binary operator, or before one).
+
+// ---------------------------------------------------------------------------
+// The real token kinds (mirrors include/vestra/lex/token.hpp).
+// ---------------------------------------------------------------------------
+enum TokKind {
+    // bookkeeping
+    case eof
+    case error
+    case newline
+    // literals
+    case intLit
+    case floatLit
+    case stringLit
+    case byteStringLit
+    case charLit
+    case identifier
+    case interpBegin
+    case interpPart
+    case interpEnd
+    // punctuation
+    case lparen
+    case rparen
+    case lbrace
+    case rbrace
+    case lbracket
+    case rbracket
+    case comma
+    case semicolon
+    case colon
+    case dot
+    case dotDot
+    case dotDotLt
+    case arrow
+    case fatArrow
+    case at
+    case dollar
+    case question
+    case underscore
+    // operators
+    case plus
+    case minus
+    case star
+    case slash
+    case percent
+    case ampPlus
+    case ampMinus
+    case ampStar
+    case amp
+    case pipe
+    case caret
+    case tilde
+    case bang
+    case shiftL
+    case shiftR
+    case assign
+    case plusEq
+    case minusEq
+    case starEq
+    case slashEq
+    case percentEq
+    case ampEq
+    case pipeEq
+    case caretEq
+    case shiftLEq
+    case shiftREq
+    case eqEq
+    case bangEq
+    case lt
+    case gt
+    case ltEq
+    case gtEq
+    case ampAmp
+    case pipePipe
+    case questionQuestion
+    // keywords
+    case kwModule
+    case kwImport
+    case kwFunc
+    case kwStruct
+    case kwEnum
+    case kwProtocol
+    case kwExtension
+    case kwOpaque
+    case kwType
+    case kwEmbed
+    case kwDeinit
+    case kwLet
+    case kwVar
+    case kwConst
+    case kwStatic
+    case kwReturn
+    case kwIf
+    case kwElse
+    case kwMatch
+    case kwCase
+    case kwDefault
+    case kwFor
+    case kwIn
+    case kwWhile
+    case kwBreak
+    case kwContinue
+    case kwWhere
+    case kwDo
+    case kwCatch
+    case kwThrow
+    case kwThrows
+    case kwWith
+    case kwUsing
+    case kwAsync
+    case kwAwait
+    case kwSpawn
+    case kwSelect
+    case kwOn
+    case kwComptime
+    case kwQuote
+    case kwCopy
+    case kwRead
+    case kwInout
+    case kwSink
+    case kwNonescaping
+    case kwSome
+    case kwDyn
+    case kwLinear
+    case kwTry
+    case kwTryQuestion
+    case kwTryBang
+    case kwAs
+    case kwAsQuestion
+    case kwDerive
+    case kwTrue
+    case kwFalse
+    case kwNil
+    case kwSelfLower
+    case kwSelfUpper
+    case kwPrivate
+    case kwInternal
+    case kwPackage
+    case kwPublic
+}
+
+struct Token {
+    let kind: TokKind
+    let text: Str
+}
+
+// The scanner state, threaded by inout through the scan functions.
+struct Lex {
+    var src: Str
+    var pos: Int
+    var depth: Int
+    var prevOp: Bool
+}
+
+// ---------------------------------------------------------------------------
+// Token spelling — the exact strings the C++ `spelling()` returns (token.cpp).
+// ---------------------------------------------------------------------------
+func spelling(_ k: TokKind) -> Str {
+    return match k {
+        case .eof: "<eof>"
+        case .error: "<error>"
+        case .newline: "<newline>"
+        case .intLit: "integer literal"
+        case .floatLit: "float literal"
+        case .stringLit: "string literal"
+        case .byteStringLit: "byte string literal"
+        case .charLit: "character literal"
+        case .identifier: "identifier"
+        case .interpBegin: "<interp string begin>"
+        case .interpPart: "interp string fragment"
+        case .interpEnd: "<interp string end>"
+        case .lparen: "("
+        case .rparen: ")"
+        case .lbrace: "{"
+        case .rbrace: "}"
+        case .lbracket: "["
+        case .rbracket: "]"
+        case .comma: ","
+        case .semicolon: ";"
+        case .colon: ":"
+        case .dot: "."
+        case .dotDot: ".."
+        case .dotDotLt: "..<"
+        case .arrow: "->"
+        case .fatArrow: "=>"
+        case .at: "@"
+        case .dollar: "$"
+        case .question: "?"
+        case .underscore: "_"
+        case .plus: "+"
+        case .minus: "-"
+        case .star: "*"
+        case .slash: "/"
+        case .percent: "%"
+        case .ampPlus: "&+"
+        case .ampMinus: "&-"
+        case .ampStar: "&*"
+        case .amp: "&"
+        case .pipe: "|"
+        case .caret: "^"
+        case .tilde: "~"
+        case .bang: "!"
+        case .shiftL: "<<"
+        case .shiftR: ">>"
+        case .assign: "="
+        case .plusEq: "+="
+        case .minusEq: "-="
+        case .starEq: "*="
+        case .slashEq: "/="
+        case .percentEq: "%="
+        case .ampEq: "&="
+        case .pipeEq: "|="
+        case .caretEq: "^="
+        case .shiftLEq: "<<="
+        case .shiftREq: ">>="
+        case .eqEq: "=="
+        case .bangEq: "!="
+        case .lt: "<"
+        case .gt: ">"
+        case .ltEq: "<="
+        case .gtEq: ">="
+        case .ampAmp: "&&"
+        case .pipePipe: "||"
+        case .questionQuestion: "??"
+        case .kwModule: "module"
+        case .kwImport: "import"
+        case .kwFunc: "func"
+        case .kwStruct: "struct"
+        case .kwEnum: "enum"
+        case .kwProtocol: "protocol"
+        case .kwExtension: "extension"
+        case .kwOpaque: "opaque"
+        case .kwType: "type"
+        case .kwEmbed: "embed"
+        case .kwDeinit: "deinit"
+        case .kwLet: "let"
+        case .kwVar: "var"
+        case .kwConst: "const"
+        case .kwStatic: "static"
+        case .kwReturn: "return"
+        case .kwIf: "if"
+        case .kwElse: "else"
+        case .kwMatch: "match"
+        case .kwCase: "case"
+        case .kwDefault: "default"
+        case .kwFor: "for"
+        case .kwIn: "in"
+        case .kwWhile: "while"
+        case .kwBreak: "break"
+        case .kwContinue: "continue"
+        case .kwWhere: "where"
+        case .kwDo: "do"
+        case .kwCatch: "catch"
+        case .kwThrow: "throw"
+        case .kwThrows: "throws"
+        case .kwWith: "with"
+        case .kwUsing: "using"
+        case .kwAsync: "async"
+        case .kwAwait: "await"
+        case .kwSpawn: "spawn"
+        case .kwSelect: "select"
+        case .kwOn: "on"
+        case .kwComptime: "comptime"
+        case .kwQuote: "quote"
+        case .kwCopy: "copy"
+        case .kwRead: "read"
+        case .kwInout: "inout"
+        case .kwSink: "sink"
+        case .kwNonescaping: "nonescaping"
+        case .kwSome: "some"
+        case .kwDyn: "dyn"
+        case .kwLinear: "linear"
+        case .kwTry: "try"
+        case .kwTryQuestion: "try?"
+        case .kwTryBang: "try!"
+        case .kwAs: "as"
+        case .kwAsQuestion: "as?"
+        case .kwDerive: "derive"
+        case .kwTrue: "true"
+        case .kwFalse: "false"
+        case .kwNil: "nil"
+        case .kwSelfLower: "self"
+        case .kwSelfUpper: "Self"
+        case .kwPrivate: "private"
+        case .kwInternal: "internal"
+        case .kwPackage: "package"
+        case .kwPublic: "public"
+    }
+}
+
+// The §3 binary-operator set: a newline right after one of these is suppressed
+// (mirrors is_binary_operator in lexer.cpp). Unary !, ~, ? are NOT included.
+func isBinOp(_ k: TokKind) -> Bool {
+    return match k {
+        case .plus: true
+        case .minus: true
+        case .star: true
+        case .slash: true
+        case .percent: true
+        case .ampPlus: true
+        case .ampMinus: true
+        case .ampStar: true
+        case .amp: true
+        case .pipe: true
+        case .caret: true
+        case .shiftL: true
+        case .shiftR: true
+        case .eqEq: true
+        case .bangEq: true
+        case .lt: true
+        case .gt: true
+        case .ltEq: true
+        case .gtEq: true
+        case .ampAmp: true
+        case .pipePipe: true
+        case .questionQuestion: true
+        case .assign: true
+        case .plusEq: true
+        case .minusEq: true
+        case .starEq: true
+        case .slashEq: true
+        case .percentEq: true
+        case .ampEq: true
+        case .pipeEq: true
+        case .caretEq: true
+        case .shiftLEq: true
+        case .shiftREq: true
+        case .arrow: true
+        case .fatArrow: true
+        case .comma: true
+        case .colon: true
+        case .dotDot: true
+        case .dotDotLt: true
+        default: false
+    }
+}
+
+// The §17.1 keyword table. `try` / `as` map to their base kind here; the `?` / `!`
+// suffixes are folded in by the identifier scanner.
+func keywordKind(_ s: Str) -> TokKind {
+    return match s {
+        case "module": TokKind.kwModule
+        case "import": TokKind.kwImport
+        case "func": TokKind.kwFunc
+        case "struct": TokKind.kwStruct
+        case "enum": TokKind.kwEnum
+        case "protocol": TokKind.kwProtocol
+        case "extension": TokKind.kwExtension
+        case "opaque": TokKind.kwOpaque
+        case "type": TokKind.kwType
+        case "embed": TokKind.kwEmbed
+        case "deinit": TokKind.kwDeinit
+        case "let": TokKind.kwLet
+        case "var": TokKind.kwVar
+        case "const": TokKind.kwConst
+        case "static": TokKind.kwStatic
+        case "return": TokKind.kwReturn
+        case "if": TokKind.kwIf
+        case "else": TokKind.kwElse
+        case "match": TokKind.kwMatch
+        case "case": TokKind.kwCase
+        case "default": TokKind.kwDefault
+        case "for": TokKind.kwFor
+        case "in": TokKind.kwIn
+        case "while": TokKind.kwWhile
+        case "break": TokKind.kwBreak
+        case "continue": TokKind.kwContinue
+        case "where": TokKind.kwWhere
+        case "do": TokKind.kwDo
+        case "catch": TokKind.kwCatch
+        case "throw": TokKind.kwThrow
+        case "throws": TokKind.kwThrows
+        case "with": TokKind.kwWith
+        case "using": TokKind.kwUsing
+        case "async": TokKind.kwAsync
+        case "await": TokKind.kwAwait
+        case "spawn": TokKind.kwSpawn
+        case "select": TokKind.kwSelect
+        case "on": TokKind.kwOn
+        case "comptime": TokKind.kwComptime
+        case "quote": TokKind.kwQuote
+        case "copy": TokKind.kwCopy
+        case "read": TokKind.kwRead
+        case "inout": TokKind.kwInout
+        case "sink": TokKind.kwSink
+        case "nonescaping": TokKind.kwNonescaping
+        case "some": TokKind.kwSome
+        case "dyn": TokKind.kwDyn
+        case "linear": TokKind.kwLinear
+        case "try": TokKind.kwTry
+        case "as": TokKind.kwAs
+        case "derive": TokKind.kwDerive
+        case "true": TokKind.kwTrue
+        case "false": TokKind.kwFalse
+        case "nil": TokKind.kwNil
+        case "self": TokKind.kwSelfLower
+        case "Self": TokKind.kwSelfUpper
+        case "private": TokKind.kwPrivate
+        case "internal": TokKind.kwInternal
+        case "package": TokKind.kwPackage
+        case "public": TokKind.kwPublic
+        default: TokKind.identifier
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ASCII character classes — written out to match the C++ predicates exactly
+// (rather than relying on Char.isAlpha, which could differ on non-ASCII).
+// ---------------------------------------------------------------------------
+func isDigitC(_ c: Char) -> Bool { return c >= '0' && c <= '9' }
+func isHexC(_ c: Char) -> Bool {
+    return isDigitC(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+func isOctC(_ c: Char) -> Bool { return c >= '0' && c <= '7' }
+func isBinC(_ c: Char) -> Bool { return c == '0' || c == '1' }
+func isIdStartC(_ c: Char) -> Bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+func isIdContC(_ c: Char) -> Bool { return isIdStartC(c) || isDigitC(c) }
+
+// Byte-wise string equality (avoids the Str-vs-StrConst operator mismatch).
+func streq(_ a: Str, _ b: Str) -> Bool {
+    if a.len() != b.len() { return false }
+    var i: Int = 0
+    while i < a.len() {
+        if (a.byteAt(i) ?? 0) != (b.byteAt(i) ?? 0) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// ---------------------------------------------------------------------------
+// Cursor primitives over the Lex state.
+// ---------------------------------------------------------------------------
+func atC(_ src: Str, _ i: Int) -> Char {
+    if i >= src.len() { return '\0' }
+    return src.charAt(i) ?? '\0'
+}
+func curC(_ l: Lex) -> Char { return atC(l.src, l.pos) }
+func aheadC(_ l: Lex, _ n: Int) -> Char { return atC(l.src, l.pos + n) }
+func atEndL(_ l: Lex) -> Bool { return l.pos >= l.src.len() }
+func advC(_ l: inout Lex) { l.pos = l.pos + 1 }
+func bumpC(_ l: inout Lex) -> Char {
+    let c = curC(l)
+    l.pos = l.pos + 1
+    return c
+}
+func eatC(_ l: inout Lex, _ expected: Char) -> Bool {
+    if curC(l) == expected {
+        l.pos = l.pos + 1
+        return true
+    }
+    return false
+}
+
+// Emit a token spanning [start, pos); records whether it was a binary operator
+// so the next newline knows whether to continue the statement.
+func emitTok(_ toks: inout Vec[Token], _ l: inout Lex, _ k: TokKind, _ start: Int) using Alloc {
+    let bin = isBinOp(k)
+    toks.push(Token(kind: k, text: l.src.slice(start, l.pos)))
+    l.prevOp = bin
+}
+
+// Does the next significant char (past horizontal whitespace, blank lines, and
+// line comments) begin a binary operator? Then the pending newline continues.
+func nextStartsWithOperator(_ src: Str, _ scanStart: Int) -> Bool {
+    var scan: Int = scanStart
+    var go: Bool = true
+    while go && scan < src.len() {
+        let d = atC(src, scan)
+        if d == ' ' || d == '\t' || d == '\r' || d == '\n' {
+            scan = scan + 1
+        } else if d == '/' && atC(src, scan + 1) == '/' {
+            while scan < src.len() && atC(src, scan) != '\n' { scan = scan + 1 }
+        } else {
+            go = false
+        }
+    }
+    if scan < src.len() {
+        let d = atC(src, scan)
+        return d == '+' || d == '-' || d == '*' || d == '/' || d == '%'
+            || d == '|' || d == '^' || d == '?' || d == '.'
+    }
+    return false
+}
+
+// /* ... */ with §3 nesting.
+func scanBlockComment(_ l: inout Lex) {
+    var depth: Int = 1
+    while depth > 0 && !atEndL(l) {
+        if curC(l) == '/' && aheadC(l, 1) == '*' {
+            advC(&l)
+            advC(&l)
+            depth = depth + 1
+        } else if curC(l) == '*' && aheadC(l, 1) == '/' {
+            advC(&l)
+            advC(&l)
+            depth = depth - 1
+        } else {
+            advC(&l)
+        }
+    }
+}
+
+// Skip whitespace and comments, emitting Newline tokens where they terminate a
+// statement (§3 continuation rules).
+func skipTrivia(_ toks: inout Vec[Token], _ l: inout Lex) using Alloc {
+    var go: Bool = true
+    while go && !atEndL(l) {
+        let c = curC(l)
+        if c == ' ' || c == '\t' || c == '\r' {
+            advC(&l)
+        } else if c == '\n' {
+            let nlStart = l.pos
+            advC(&l)
+            if l.depth > 0 || l.prevOp {
+                // continuation: newline suppressed
+            } else if !nextStartsWithOperator(l.src, l.pos) {
+                toks.push(Token(kind: TokKind.newline, text: l.src.slice(nlStart, nlStart + 1)))
+            }
+        } else if c == '/' && aheadC(l, 1) == '/' {
+            while !atEndL(l) && curC(l) != '\n' { advC(&l) }
+        } else if c == '/' && aheadC(l, 1) == '*' {
+            advC(&l)
+            advC(&l)
+            scanBlockComment(&l)
+        } else {
+            go = false
+        }
+    }
+}
+
+// Consume a run of digits (and `_` separators) in the given base.
+func eatDigits(_ l: inout Lex, _ base: Int) {
+    var go: Bool = true
+    while go && !atEndL(l) {
+        let c = curC(l)
+        var ok: Bool = false
+        if base == 16 { ok = isHexC(c) }
+        else if base == 8 { ok = isOctC(c) }
+        else if base == 2 { ok = isBinC(c) }
+        else { ok = isDigitC(c) }
+        if ok || c == '_' { advC(&l) } else { go = false }
+    }
+}
+
+func scanNumber(_ toks: inout Vec[Token], _ l: inout Lex, _ start: Int) using Alloc {
+    var isFloat: Bool = false
+    let first = atC(l.src, start)
+    let c1 = curC(l)
+    if first == '0' && (c1 == 'x' || c1 == 'o' || c1 == 'b') {
+        let base = bumpC(&l)
+        if base == 'x' { eatDigits(&l, 16) }
+        else if base == 'o' { eatDigits(&l, 8) }
+        else { eatDigits(&l, 2) }
+    } else {
+        eatDigits(&l, 10)
+        if curC(l) == '.' && isDigitC(aheadC(l, 1)) {
+            isFloat = true
+            advC(&l)
+            eatDigits(&l, 10)
+        }
+        if curC(l) == 'e' || curC(l) == 'E' {
+            isFloat = true
+            advC(&l)
+            if curC(l) == '+' || curC(l) == '-' { advC(&l) }
+            eatDigits(&l, 10)
+        }
+    }
+    var k: TokKind = TokKind.intLit
+    if isFloat { k = TokKind.floatLit }
+    emitTok(&toks, &l, k, start)
+}
+
+func scanIdentifier(_ toks: inout Vec[Token], _ l: inout Lex, _ start: Int) using Alloc {
+    while !atEndL(l) && isIdContC(curC(l)) { advC(&l) }
+    let lex = l.src.slice(start, l.pos)
+    var kind = keywordKind(lex)
+    if streq(lex, "try") {
+        if curC(l) == '?' { advC(&l); kind = TokKind.kwTryQuestion }
+        else if curC(l) == '!' { advC(&l); kind = TokKind.kwTryBang }
+    } else if streq(lex, "as") && curC(l) == '?' {
+        advC(&l)
+        kind = TokKind.kwAsQuestion
+    }
+    if streq(lex, "_") { kind = TokKind.underscore }
+    emitTok(&toks, &l, kind, start)
+}
+
+// Plain string / byte string (interpolation deferred to a later slice).
+func scanString(_ toks: inout Vec[Token], _ l: inout Lex, _ start: Int, _ isByte: Bool) using Alloc {
+    var go: Bool = true
+    while go && !atEndL(l) {
+        let c = curC(l)
+        if c == '"' {
+            advC(&l)
+            var k: TokKind = TokKind.stringLit
+            if isByte { k = TokKind.byteStringLit }
+            emitTok(&toks, &l, k, start)
+            return
+        }
+        if c == '\\' {
+            advC(&l)
+            if !atEndL(l) { advC(&l) }
+        } else if c == '\n' {
+            emitTok(&toks, &l, TokKind.error, start)
+            return
+        } else {
+            advC(&l)
+        }
+    }
+    emitTok(&toks, &l, TokKind.error, start)
+}
+
+func scanChar(_ toks: inout Vec[Token], _ l: inout Lex, _ start: Int) using Alloc {
+    if curC(l) == '\\' {
+        advC(&l)
+        if !atEndL(l) { advC(&l) }
+    } else if !atEndL(l) && curC(l) != '\'' {
+        advC(&l)
+    }
+    if curC(l) != '\'' {
+        emitTok(&toks, &l, TokKind.error, start)
+        return
+    }
+    advC(&l)
+    emitTok(&toks, &l, TokKind.charLit, start)
+}
+
+// The main scan loop: skip trivia, dispatch on the first char, append Eof.
+func tokenize(_ src: Str) using Alloc -> Vec[Token] {
+    var l = Lex(src: src, pos: 0, depth: 0, prevOp: false)
+    var toks: Vec[Token] = Vec.new()
+    while !atEndL(l) {
+        skipTrivia(&toks, &l)
+        if atEndL(l) { return finish(&toks, &l) }
+        let start = l.pos
+        let c = bumpC(&l)
+        if c == '(' { l.depth = l.depth + 1; emitTok(&toks, &l, TokKind.lparen, start) }
+        else if c == ')' { l.depth = l.depth - 1; emitTok(&toks, &l, TokKind.rparen, start) }
+        else if c == '[' { l.depth = l.depth + 1; emitTok(&toks, &l, TokKind.lbracket, start) }
+        else if c == ']' { l.depth = l.depth - 1; emitTok(&toks, &l, TokKind.rbracket, start) }
+        else if c == '{' { l.depth = l.depth + 1; emitTok(&toks, &l, TokKind.lbrace, start) }
+        else if c == '}' { l.depth = l.depth - 1; emitTok(&toks, &l, TokKind.rbrace, start) }
+        else if c == ',' { emitTok(&toks, &l, TokKind.comma, start) }
+        else if c == ';' { emitTok(&toks, &l, TokKind.semicolon, start) }
+        else if c == '@' { emitTok(&toks, &l, TokKind.at, start) }
+        else if c == '$' { emitTok(&toks, &l, TokKind.dollar, start) }
+        else if c == '~' { emitTok(&toks, &l, TokKind.tilde, start) }
+        else if c == ':' { emitTok(&toks, &l, TokKind.colon, start) }
+        else if c == '.' {
+            if eatC(&l, '.') {
+                if eatC(&l, '<') { emitTok(&toks, &l, TokKind.dotDotLt, start) }
+                else { emitTok(&toks, &l, TokKind.dotDot, start) }
+            } else { emitTok(&toks, &l, TokKind.dot, start) }
+        }
+        else if c == '?' {
+            if eatC(&l, '?') { emitTok(&toks, &l, TokKind.questionQuestion, start) }
+            else { emitTok(&toks, &l, TokKind.question, start) }
+        }
+        else if c == '+' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.plusEq, start) }
+            else { emitTok(&toks, &l, TokKind.plus, start) }
+        }
+        else if c == '-' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.minusEq, start) }
+            else if eatC(&l, '>') { emitTok(&toks, &l, TokKind.arrow, start) }
+            else { emitTok(&toks, &l, TokKind.minus, start) }
+        }
+        else if c == '*' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.starEq, start) }
+            else { emitTok(&toks, &l, TokKind.star, start) }
+        }
+        else if c == '/' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.slashEq, start) }
+            else { emitTok(&toks, &l, TokKind.slash, start) }
+        }
+        else if c == '%' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.percentEq, start) }
+            else { emitTok(&toks, &l, TokKind.percent, start) }
+        }
+        else if c == '^' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.caretEq, start) }
+            else { emitTok(&toks, &l, TokKind.caret, start) }
+        }
+        else if c == '&' {
+            if eatC(&l, '&') { emitTok(&toks, &l, TokKind.ampAmp, start) }
+            else if eatC(&l, '=') { emitTok(&toks, &l, TokKind.ampEq, start) }
+            else if eatC(&l, '+') { emitTok(&toks, &l, TokKind.ampPlus, start) }
+            else if eatC(&l, '-') { emitTok(&toks, &l, TokKind.ampMinus, start) }
+            else if eatC(&l, '*') { emitTok(&toks, &l, TokKind.ampStar, start) }
+            else { emitTok(&toks, &l, TokKind.amp, start) }
+        }
+        else if c == '|' {
+            if eatC(&l, '|') { emitTok(&toks, &l, TokKind.pipePipe, start) }
+            else if eatC(&l, '=') { emitTok(&toks, &l, TokKind.pipeEq, start) }
+            else { emitTok(&toks, &l, TokKind.pipe, start) }
+        }
+        else if c == '=' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.eqEq, start) }
+            else if eatC(&l, '>') { emitTok(&toks, &l, TokKind.fatArrow, start) }
+            else { emitTok(&toks, &l, TokKind.assign, start) }
+        }
+        else if c == '!' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.bangEq, start) }
+            else { emitTok(&toks, &l, TokKind.bang, start) }
+        }
+        else if c == '<' {
+            if eatC(&l, '<') {
+                if eatC(&l, '=') { emitTok(&toks, &l, TokKind.shiftLEq, start) }
+                else { emitTok(&toks, &l, TokKind.shiftL, start) }
+            } else if eatC(&l, '=') { emitTok(&toks, &l, TokKind.ltEq, start) }
+            else { emitTok(&toks, &l, TokKind.lt, start) }
+        }
+        else if c == '>' {
+            if eatC(&l, '>') {
+                if eatC(&l, '=') { emitTok(&toks, &l, TokKind.shiftREq, start) }
+                else { emitTok(&toks, &l, TokKind.shiftR, start) }
+            } else if eatC(&l, '=') { emitTok(&toks, &l, TokKind.gtEq, start) }
+            else { emitTok(&toks, &l, TokKind.gt, start) }
+        }
+        else if c == '"' { scanString(&toks, &l, start, false) }
+        else if c == '\'' { scanChar(&toks, &l, start) }
+        else if c == 'b' && curC(l) == '"' { advC(&l); scanString(&toks, &l, start, true) }
+        else if isDigitC(c) { scanNumber(&toks, &l, start) }
+        else if isIdStartC(c) { scanIdentifier(&toks, &l, start) }
+        else { emitTok(&toks, &l, TokKind.error, start) }
+    }
+    return finish(&toks, &l)
+}
+
+// Append the final Eof token (empty lexeme) and hand back the stream.
+func finish(_ toks: inout Vec[Token], _ l: inout Lex) using Alloc -> Vec[Token] {
+    let n = l.src.len()
+    toks.push(Token(kind: TokKind.eof, text: l.src.slice(n, n)))
+    return toks
+}
+
+func main() -> Int32 {
+    with Alloc {
+        with Fs {
+            with Log {
+                let argv = args()
+                if argv.len() < 2 {
+                    eprintln("usage: vlex <file.vst>")
+                    return 1
+                }
+                let path = argv.get(1) ?? ""
+                if let src = readFile(path) {
+                    let toks = tokenize(src)
+                    for t in toks {
+                        print("  ")
+                        print(spelling(t.kind))
+                        print("  '")
+                        print(t.text)
+                        println("'")
+                    }
+                    return 0
+                }
+                eprintln("read failed")
+                return 1
+            }
+        }
+    }
+}

@@ -63,6 +63,44 @@ set_tests_properties(e2e_hello_run PROPERTIES
     DEPENDS                e2e_hello_compile
     PASS_REGULAR_EXPRESSION "compute\\(\\) = 1774")
 
+# ---------------------------------------------------------------------------
+# Dog-food compiler, phase 1: the Vestra lexer written in Vestra (selfhost/
+# lexer.vst). It targets the real TokenKind set and 54 keywords, and must
+# reproduce the C++ lexer's `--dump-tokens` output byte-for-byte. Validation is
+# DIFFERENTIAL: transpile the Vestra lexer, compile it, then diff its token
+# stream against the C++ lexer (its dump minus the trailing "wrote ..." lines)
+# on a torture sample and on the lexer's own source (true self-tokenization).
+# String interpolation is the one deferred gap, so the inputs avoid `\(`.
+# ---------------------------------------------------------------------------
+set(selfhost_lexer ${CMAKE_SOURCE_DIR}/selfhost/lexer.vst)
+set(lex_sample     ${CMAKE_SOURCE_DIR}/tests/e2e/lex_sample.vst)
+set(lex_dumpdir    ${e2e_workdir}/_lexdump)
+
+add_test(
+    NAME    e2e_selfhost_lexer_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${selfhost_lexer} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_selfhost_lexer_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/lexer.cpp
+            -o ${e2e_workdir}/vlex)
+set_tests_properties(e2e_selfhost_lexer_compile PROPERTIES DEPENDS e2e_selfhost_lexer_transpile)
+
+# Differential: the self-hosted lexer matches the C++ lexer on the torture sample.
+add_test(
+    NAME    e2e_selfhost_lexer_diff_sample
+    COMMAND sh -c "mkdir -p ${lex_dumpdir} && $<TARGET_FILE:vestra> build ${lex_sample} --dump-tokens -o ${lex_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${lex_dumpdir}/sample_c.txt && ${e2e_workdir}/vlex ${lex_sample} > ${lex_dumpdir}/sample_v.txt && diff ${lex_dumpdir}/sample_c.txt ${lex_dumpdir}/sample_v.txt")
+set_tests_properties(e2e_selfhost_lexer_diff_sample PROPERTIES DEPENDS e2e_selfhost_lexer_compile)
+
+# Differential: the lexer tokenizes its own source identically (dog-food proof).
+add_test(
+    NAME    e2e_selfhost_lexer_diff_self
+    COMMAND sh -c "mkdir -p ${lex_dumpdir} && $<TARGET_FILE:vestra> build ${selfhost_lexer} --dump-tokens -o ${lex_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${lex_dumpdir}/self_c.txt && ${e2e_workdir}/vlex ${selfhost_lexer} > ${lex_dumpdir}/self_v.txt && diff ${lex_dumpdir}/self_c.txt ${lex_dumpdir}/self_v.txt")
+set_tests_properties(e2e_selfhost_lexer_diff_self PROPERTIES DEPENDS e2e_selfhost_lexer_compile)
+
 # Shapes: exercises structs + member access + bare enum + match.
 set(e2e_shapes_input  ${CMAKE_SOURCE_DIR}/examples/shapes.vst)
 set(e2e_shapes_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_shapes.cpp)

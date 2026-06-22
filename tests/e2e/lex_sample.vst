@@ -1,0 +1,52 @@
+// A lexer torture sample for the self-hosted lexer differential test. It exercises
+// the corners that make the token stream interesting, while avoiding string
+// interpolation (deferred to a later self-hosting slice).
+//
+// Nested /* block /* comment */ still going */ then code.
+
+module sample
+
+enum Color { case red; case green; case blue }
+
+struct Point {
+    let x: Int
+    var y: Int
+}
+
+func mix(_ a: Int, _ b: Int) -> Int {
+    // every numeric base, with digit separators
+    let dec = 1_000
+    let hex = 0xFF_FF
+    let oct = 0o755
+    let bin = 0b1010_0101
+    let flt = 3.14159
+    let exp = 6.022e23
+    let neg = 1.6e-19
+
+    // multi-char operators and a continuation across the newline
+    var total = a + b
+        - dec * 2
+        + hex / 3
+    total = total % 7
+    total <<= 1
+    total >>= 2
+    total &= 0xF0
+    total |= 0x0F
+    total ^= 0xAA
+
+    // comparisons and booleans
+    let ok = (a <= b) && (b >= dec) || (a != b)
+    let rng = a..<b
+    let inc = a..b
+
+    // strings, byte strings, chars, escapes
+    let s = "hello\tworld\n"
+    let bs = b"\x00raw bytes"
+    let ch = 'q'
+    let esc = '\n'
+
+    // try / as suffix folding and optional chaining punctuation
+    let maybe = total ?? 0
+    let coerced = total as? Int
+    return total
+}
