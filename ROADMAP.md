@@ -151,7 +151,32 @@ pattern dropped, matching the C++ printer). A real `examples/layout.vst` (bitfie
 attributes + tuple-pattern params) joins the e2e (11 parser differential tests, 19
 self-host tests total). The self-hosted parser now covers essentially the entire
 real corpus; the only unreachable cases require sema-level macro / extension
-expansion. Key implementation notes (slice 1): the AST is one
+expansion.
+
+**Sema slice 1 shipped — name resolution (undefined-name).** `selfhost/sema.vst`
+reuses the self-hosted lexer + parser, then runs a two-pass resolver: pass 1
+collects top-level value names (func / struct / enum / const / static) plus a fixed
+builtin set; pass 2 walks each function (and method) body with a scope stack
+(params, then nested let / var / for-pattern / if-let / catch locals pushed and
+popped per block) and flags every bare `IdentExpr` resolving to nothing. The sema
+observable is `vestra check` (exit 0 + `checked OK`, or exit 1 + diagnostics), so
+the differential contract is the **verdict plus the offending name**: the e2e
+extracts the `undefined name '...'` messages from `vestra check` and from `vsema`
+and diffs them. Because sema is deeply cross-referential, validation is on a
+**curated corpus** (`tests/e2e/sema/`: a valid scope-exercising program, an
+undefined-names-in-many-positions program, and a scope-discipline program where
+block / loop locals correctly go out of scope), not the whole example corpus.
+Source positions and the `^~~~` caret rendering are deferred (the lexer / parser
+discard byte offsets), as are the parser-opaque constructs (`match` arms, closures,
+`with` bodies), so the curated programs keep undefined-name tests in plain
+free-function bodies. New Vestra gotchas: a `?? <string-literal>` default on a
+`Vec[String].get()` fails to lower (the literal is a `string_view`, not a `String`)
+— unwrap with `if let` instead; and returning a payload binding directly from a
+`match` arm (`case .funcD(..., let name, ...): name`) silently yields the wrong
+value — perform the side effect inside the arm instead. Next sema slices: capability
+checking (call-graph fixpoint over the `using` / `with` effect rows), then full
+positional diagnostics once source spans are threaded through the lexer / parser.
+Key implementation notes (parser slice 1): the AST is one
 self-recursive enum `Nd` (expressions, statements, types, patterns, params, and
 decls all folded in) because the transpiler cannot forward-declare *mutually*
 recursive enums, while self-recursion through `Vec[Nd]` lowers cleanly (a

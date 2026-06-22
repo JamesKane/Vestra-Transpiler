@@ -1,0 +1,42 @@
+// Valid: forward references between funcs, params, nested let/var locals, for /
+// while / if-let scopes, member-access bases, struct & enum names, and builtins.
+struct Point {
+    let x: Int32
+    var y: Int32
+}
+
+enum Color {
+    case red
+    case green
+}
+
+func helper(_ n: Int32) -> Int32 {
+    return n + 1
+}
+
+func compute(_ a: Int32, _ b: Int32) -> Int32 {
+    let base = a + b
+    var total = helper(base)
+    let p = Point(x: a, y: b)
+    let here = p.x + p.y
+    if let got = lookup(a) {
+        total = total + got
+    }
+    while total < 100 {
+        total = total + 1
+    }
+    let xs = makeList()
+    for item in xs {
+        total = total + item
+    }
+    let c = Color.red
+    return total + here
+}
+
+func lookup(_ k: Int32) -> Int32 {
+    return k
+}
+
+func makeList() -> Int32 {
+    return 0
+}

@@ -1,0 +1,12 @@
+func uses_undefined(_ a: Int32) -> Int32 {
+    let x = a + alpha
+    let y = beta(a)
+    let z = gamma.field
+    if delta > 0 {
+        epsilon = a
+    }
+    for q in zeta {
+        let w = q + eta
+    }
+    return x + y + z + theta
+}

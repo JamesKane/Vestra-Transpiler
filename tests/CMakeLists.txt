@@ -191,6 +191,42 @@ add_test(
     COMMAND sh -c "mkdir -p ${ast_dumpdir} && $<TARGET_FILE:vestra> build ${parse_example5} --dump-ast -o ${ast_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${ast_dumpdir}/ex5_c.txt && ${e2e_workdir}/vparse ${parse_example5} > ${ast_dumpdir}/ex5_v.txt && diff ${ast_dumpdir}/ex5_c.txt ${ast_dumpdir}/ex5_v.txt")
 set_tests_properties(e2e_selfhost_parser_diff_example5 PROPERTIES DEPENDS e2e_selfhost_parser_compile)
 
+# ---------------------------------------------------------------------------
+# Dog-food compiler, phase 3: the Vestra semantic analyzer written in Vestra
+# (selfhost/sema.vst). Slice 1 is name resolution: a two-pass resolver (collect
+# top-level value names + builtins, then walk each function body with a scope
+# stack) that reports undefined identifiers. Validation is DIFFERENTIAL against
+# `vestra check`: each diff test extracts the `undefined name '...'` messages from
+# both and compares them. Sema is cross-referential, so this runs on a CURATED
+# corpus (valid + single-undefined-name variants) with a controlled vocabulary,
+# not the whole example corpus.
+# ---------------------------------------------------------------------------
+set(selfhost_sema  ${CMAKE_SOURCE_DIR}/selfhost/sema.vst)
+set(sema_dir       ${CMAKE_SOURCE_DIR}/tests/e2e/sema)
+set(sema_workdir   ${e2e_workdir}/_sema)
+
+add_test(
+    NAME    e2e_selfhost_sema_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${selfhost_sema} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_selfhost_sema_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/sema.cpp
+            -o ${e2e_workdir}/vsema)
+set_tests_properties(e2e_selfhost_sema_compile PROPERTIES DEPENDS e2e_selfhost_sema_transpile)
+
+# One differential test per curated program: the self-hosted resolver's
+# undefined-name verdict must match `vestra check`.
+foreach(prog resolve_ok resolve_bad resolve_scope)
+    add_test(
+        NAME    e2e_selfhost_sema_diff_${prog}
+        COMMAND sh -c "mkdir -p ${sema_workdir} && $<TARGET_FILE:vestra> check ${sema_dir}/${prog}.vst 2>&1 | grep -oE \"undefined name '[^']*'\" > ${sema_workdir}/${prog}_c.txt; ${e2e_workdir}/vsema ${sema_dir}/${prog}.vst > ${sema_workdir}/${prog}_v.txt; diff ${sema_workdir}/${prog}_c.txt ${sema_workdir}/${prog}_v.txt")
+    set_tests_properties(e2e_selfhost_sema_diff_${prog} PROPERTIES DEPENDS e2e_selfhost_sema_compile)
+endforeach()
+
 # Shapes: exercises structs + member access + bare enum + match.
 set(e2e_shapes_input  ${CMAKE_SOURCE_DIR}/examples/shapes.vst)
 set(e2e_shapes_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_shapes.cpp)

@@ -1,0 +1,19 @@
+// Scope discipline: a binding introduced in a nested block is not visible after the
+// block closes, and a for-loop variable is not visible after the loop.
+func scoping(_ a: Int32) -> Int32 {
+    if a > 0 {
+        let inner = a + 1
+        let used = inner + 1
+    }
+    while a > 0 {
+        let loopLocal = a
+    }
+    for item in makeRange() {
+        let doubled = item + item
+    }
+    return inner + loopLocal + item + doubled
+}
+
+func makeRange() -> Int32 {
+    return 0
+}
