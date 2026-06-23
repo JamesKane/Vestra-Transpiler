@@ -19,6 +19,13 @@ struct Point {
     }
 }
 
+// §5 `linear struct` — the modifier is captured on the node but, like the C++
+// printer, the `--dump-ast` form drops it, so the canonical print is unchanged.
+linear struct Handle {
+    let fd: Int
+    var open: Bool
+}
+
 func area(_ s: Shape) -> Float64 {
     return match s {
         case .circle(let r): 3.14 * r * r

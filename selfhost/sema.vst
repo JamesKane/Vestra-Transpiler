@@ -921,7 +921,7 @@ enum Nd {
     case importD(Bool, String)               // is_c_header, payload (joined path or header)
     case funcD(String, String, String, Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd])
     // visibilityPrefix, modifiers (async/recv), name, generics, params, usingCaps, throwsType?, result?, body?
-    case structD(String, String, Vec[Nd], Vec[Nd], Vec[Nd]) // vis, name, fields, methods, deinit?
+    case structD(String, String, Vec[Nd], Vec[Nd], Vec[Nd], Bool) // vis, name, fields, methods, deinit?, isLinear
     case enumD(String, String, Vec[Nd], Vec[Nd])            // vis, name, cases, methods
     case constD(String, String, Vec[Nd], Vec[Nd])           // vis, name, type?, value
     case staticD(String, String, Vec[Nd], Vec[Nd])          // vis, name, type, value?
@@ -1144,7 +1144,10 @@ func skipAttributes(_ p: inout Ps) {
 func parseDecl(_ p: inout Ps) using Alloc -> Nd {
     skipAttributes(&p)
     let vis = own(parseVisibility(&p))
-    if isKind(p, TokKind.kwStruct) { return parseStruct(&p, vis) }
+    if isKind(p, TokKind.kwStruct) { return parseStruct(&p, vis, false) }
+    // §5 `linear struct Foo { … }` — the modifier (admitted on structs in v0.5)
+    // is captured on the node; the printer drops it, matching the C++ dump.
+    if eat(p, TokKind.kwLinear) { return parseStruct(&p, vis, true) }
     if isKind(p, TokKind.kwEnum) { return parseEnum(&p, vis) }
     if isKind(p, TokKind.kwConst) { return parseConst(&p, vis) }
     if isKind(p, TokKind.kwStatic) { return parseStatic(&p, vis) }
@@ -1201,7 +1204,7 @@ func parseDerive(_ p: inout Ps) using Alloc -> Nd {
     return Nd.deriveD(protocols, bT(parseType(&p)))
 }
 
-func parseStruct(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
+func parseStruct(_ p: inout Ps, _ vis: String, _ isLinear: Bool) using Alloc -> Nd {
     advP(&p)  // 'struct'
     let name = curText(p)
     advP(&p)  // name
@@ -1237,7 +1240,7 @@ func parseStruct(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
         skipNL(&p)
     }
     eat(p, TokKind.rbrace)
-    return Nd.structD(vis, name, fields, methods, deinitB)
+    return Nd.structD(vis, name, fields, methods, deinitB, isLinear)
 }
 
 func parseEnum(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
@@ -2175,7 +2178,7 @@ func printDecl(_ d: Nd, _ indent: Int) using Alloc, Log {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
             printFunc(vis, mods, name, gens, params, caps, thr, res, body, indent)
-        case .structD(let vis, let name, let fields, let methods, let deinitB):
+        case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear):
             printStruct(vis, name, fields, methods, deinitB, indent)
         case .enumD(let vis, let name, let cases, let methods):
             printEnum(vis, name, cases, methods, indent)
@@ -2872,7 +2875,7 @@ func addBuiltins(_ env: inout Env) using Alloc {
 func collectGlobal(_ env: inout Env, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let pp, let c, let t, let r, let b): addName(env, name)
-        case .structD(let vis, let name, let fl, let m, let dn): addName(env, name)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear): addName(env, name)
         case .enumD(let vis, let name, let cs, let m): addName(env, name)
         case .constD(let vis, let name, let ty, let v): addName(env, name)
         case .staticD(let vis, let name, let ty, let v): addName(env, name)
@@ -2899,7 +2902,7 @@ func resolveDecl(_ env: inout Env, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
             resolveFuncBody(env, params, body)
-        case .structD(let vis, let name, let fields, let methods, let deinitB):
+        case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear):
             resolveMethods(env, methods)
         case .enumD(let vis, let name, let cases, let methods):
             resolveMethods(env, methods)
@@ -3173,7 +3176,7 @@ func collectFuncCaps(_ env: inout CapEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let pp, let caps, let t, let r, let b):
             recordFunc(env, name, mods, caps)
-        case .structD(let vis, let name, let fl, let m, let dn): collectMethodCaps(env, m)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear): collectMethodCaps(env, m)
         case .enumD(let vis, let name, let cs, let m): collectMethodCaps(env, m)
         default: noop()
     }
@@ -3217,7 +3220,7 @@ func checkDeclCaps(_ env: inout CapEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let pp, let caps, let t, let r, let b):
             checkFuncBody(env, mods, caps, b)
-        case .structD(let vis, let name, let fl, let m, let dn): checkMethodsCaps(env, m)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear): checkMethodsCaps(env, m)
         case .enumD(let vis, let name, let cs, let m): checkMethodsCaps(env, m)
         default: noop()
     }
@@ -3485,7 +3488,7 @@ func exCheckDecl(_ env: inout ExEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             exCheckFunc(env, mods, name, params, b)
-        case .structD(let vis, let name, let fl, let m, let dn): exCheckMethods(env, m)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear): exCheckMethods(env, m)
         case .enumD(let vis, let name, let cs, let m): exCheckMethods(env, m)
         default: noop()
     }
@@ -3806,7 +3809,7 @@ func ownCollectDecl(_ env: inout OwnEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             ownRecordSig(env, name, params)
-        case .structD(let vis, let name, let fl, let m, let dn): env.ctors.push(name)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear): env.ctors.push(name)
         case .enumD(let vis, let name, let cs, let m): env.ctors.push(name)
         default: noop()
     }
@@ -3860,7 +3863,7 @@ func ownCheckDecl(_ env: inout OwnEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             ownCheckFunc(env, params, b)
-        case .structD(let vis, let name, let fl, let m, let dn): ownCheckMethods(env, m)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear): ownCheckMethods(env, m)
         case .enumD(let vis, let name, let cs, let m): ownCheckMethods(env, m)
         default: noop()
     }
@@ -4185,7 +4188,7 @@ func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             tyRecordFunc(env, name, params, r)
-        case .structD(let vis, let name, let fl, let m, let dn): tyRecordStructDecl(env, name, fl, m)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear): tyRecordStructDecl(env, name, fl, m)
         case .enumD(let vis, let name, let cs, let m): tyRecordMethods(env, name, m)
         default: noop()
     }
@@ -4350,7 +4353,7 @@ func tyCheckDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             tyCheckFunc(env, name, params, r, b)
-        case .structD(let vis, let name, let fl, let m, let dn): tyCheckMethods(env, m)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear): tyCheckMethods(env, m)
         case .enumD(let vis, let name, let cs, let m): tyCheckMethods(env, m)
         case .constD(let vis, let name, let ty, let v): tyCheckConst(env, ty, v)
         default: noop()

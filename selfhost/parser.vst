@@ -923,7 +923,7 @@ enum Nd {
     case importD(Bool, String)               // is_c_header, payload (joined path or header)
     case funcD(String, String, String, Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd])
     // visibilityPrefix, modifiers (async/recv), name, generics, params, usingCaps, throwsType?, result?, body?
-    case structD(String, String, Vec[Nd], Vec[Nd], Vec[Nd]) // vis, name, fields, methods, deinit?
+    case structD(String, String, Vec[Nd], Vec[Nd], Vec[Nd], Bool) // vis, name, fields, methods, deinit?, isLinear
     case enumD(String, String, Vec[Nd], Vec[Nd])            // vis, name, cases, methods
     case constD(String, String, Vec[Nd], Vec[Nd])           // vis, name, type?, value
     case staticD(String, String, Vec[Nd], Vec[Nd])          // vis, name, type, value?
@@ -1146,7 +1146,10 @@ func skipAttributes(_ p: inout Ps) {
 func parseDecl(_ p: inout Ps) using Alloc -> Nd {
     skipAttributes(&p)
     let vis = own(parseVisibility(&p))
-    if isKind(p, TokKind.kwStruct) { return parseStruct(&p, vis) }
+    if isKind(p, TokKind.kwStruct) { return parseStruct(&p, vis, false) }
+    // §5 `linear struct Foo { … }` — the modifier (admitted on structs in v0.5)
+    // is captured on the node; the printer drops it, matching the C++ dump.
+    if eat(p, TokKind.kwLinear) { return parseStruct(&p, vis, true) }
     if isKind(p, TokKind.kwEnum) { return parseEnum(&p, vis) }
     if isKind(p, TokKind.kwConst) { return parseConst(&p, vis) }
     if isKind(p, TokKind.kwStatic) { return parseStatic(&p, vis) }
@@ -1203,7 +1206,7 @@ func parseDerive(_ p: inout Ps) using Alloc -> Nd {
     return Nd.deriveD(protocols, bT(parseType(&p)))
 }
 
-func parseStruct(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
+func parseStruct(_ p: inout Ps, _ vis: String, _ isLinear: Bool) using Alloc -> Nd {
     advP(&p)  // 'struct'
     let name = curText(p)
     advP(&p)  // name
@@ -1239,7 +1242,7 @@ func parseStruct(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
         skipNL(&p)
     }
     eat(p, TokKind.rbrace)
-    return Nd.structD(vis, name, fields, methods, deinitB)
+    return Nd.structD(vis, name, fields, methods, deinitB, isLinear)
 }
 
 func parseEnum(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
@@ -2175,7 +2178,7 @@ func printDecl(_ d: Nd, _ indent: Int) using Alloc, Log {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
             printFunc(vis, mods, name, gens, params, caps, thr, res, body, indent)
-        case .structD(let vis, let name, let fields, let methods, let deinitB):
+        case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear):
             printStruct(vis, name, fields, methods, deinitB, indent)
         case .enumD(let vis, let name, let cases, let methods):
             printEnum(vis, name, cases, methods, indent)
