@@ -4158,6 +4158,9 @@ struct TyEnv {
     var sFldStruct: Vec[String] // global: per-field rows — owning struct ...
     var sFldName: Vec[String]   // ... field name ...
     var sFldType: Vec[String]   // ... -> field type spelling (embeds excluded)
+    var mStruct: Vec[String]    // global: per-method rows — owning struct/enum ...
+    var mName: Vec[String]      // ... method name ...
+    var mRet: Vec[String]       // ... -> result-type spelling ("Unit" if none, "Self"->owner)
     var symName: Vec[String]    // per-function: binding name ...
     var symType: Vec[String]    // ... -> type spelling
     var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
@@ -4182,9 +4185,41 @@ func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             tyRecordFunc(env, name, params, r)
-        case .structD(let vis, let name, let fl, let m, let dn): tyRecordStruct(env, name, fl)
+        case .structD(let vis, let name, let fl, let m, let dn): tyRecordStructDecl(env, name, fl, m)
+        case .enumD(let vis, let name, let cs, let m): tyRecordMethods(env, name, m)
         default: noop()
     }
+}
+
+func tyRecordStructDecl(_ env: inout TyEnv, _ name: String, _ fields: Vec[Nd], _ methods: Vec[Nd]) using Alloc {
+    tyRecordStruct(env, name, fields)
+    tyRecordMethods(env, name, methods)
+}
+
+// Record each user-declared method's result spelling under its owning type. A
+// method with its OWN generic parameters is skipped (its result may name a type
+// variable we can't resolve) so it stays unknown and tolerated, like a builtin.
+func tyRecordMethods(_ env: inout TyEnv, _ owner: String, _ methods: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < methods.len() {
+        tyRecordMethod(env, owner, methods.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyRecordMethod(_ env: inout TyEnv, _ owner: String, _ m: Nd) using Alloc {
+    match m {
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
+            tyPushMethod(env, owner, name, g, r)
+        default: noop()
+    }
+}
+
+func tyPushMethod(_ env: inout TyEnv, _ owner: String, _ name: String, _ gens: Vec[Nd], _ result: Vec[Nd]) using Alloc {
+    if gens.len() > 0 { return }
+    env.mStruct.push(owner)
+    env.mName.push(name)
+    env.mRet.push(tyRetSpelling(result))
 }
 
 func tyRecordStruct(_ env: inout TyEnv, _ name: String, _ fields: Vec[Nd]) using Alloc {
@@ -4959,10 +4994,47 @@ func tyCtorLabelMsg(_ n: Int) using Alloc -> String {
 }
 
 func tyInferCall(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
+    return match (callee.get(0) ?? Nd.wildcard) {
+        case .member(let base, let name, let chain): tyInferMethodCall(env, base, name, chain)
+        default: tyInferPlainCall(env, callee)
+    }
+}
+
+func tyInferPlainCall(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
     let nm = exCalleeNameBoxed(callee)
     let r = tyFuncRet(env, nm)
     if !streq(r, "") { return r }
     if tyIsStruct(env, nm) { return nm }
+    return own("")
+}
+
+// `recv.method(...)` types as the method's declared result, found by the
+// receiver's (struct/enum) type. A `?.` chain, an unknown receiver, or a builtin
+// / generic method (none recorded) stays unknown and is tolerated. A `Self`
+// result resolves to the receiver type so a chained / stored result types right.
+func tyInferMethodCall(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain: Bool) using Alloc -> String {
+    if chain { return own("") }
+    let bt = tyInferBoxed(env, base)
+    if streq(bt, "") { return own("") }
+    return tyMethodRet(env, bt, name)
+}
+
+func tyMethodRet(_ env: inout TyEnv, _ owner: String, _ name: String) using Alloc -> String {
+    var i: Int = 0
+    while i < env.mStruct.len() {
+        if let s = env.mStruct.get(i) {
+            if streq(s, owner) {
+                if let mn = env.mName.get(i) {
+                    if streq(mn, name) {
+                        let r = env.mRet.get(i) ?? own("")
+                        if streq(r, "Self") { return owner }
+                        return r
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
     return own("")
 }
 
@@ -5162,7 +5234,8 @@ func main() -> Int32 {
                     var tenv = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(),
                                      pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(),
                                      structs: Vec.new(), sFldStruct: Vec.new(), sFldName: Vec.new(),
-                                     sFldType: Vec.new(), symName: Vec.new(), symType: Vec.new(),
+                                     sFldType: Vec.new(), mStruct: Vec.new(), mName: Vec.new(),
+                                     mRet: Vec.new(), symName: Vec.new(), symType: Vec.new(),
                                      curRet: own(""), bad: Vec.new())
                     tyCheck(&tenv, u)
                     var ti: Int = 0

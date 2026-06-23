@@ -1,0 +1,12 @@
+// Ill-typed method calls: a method's declared result type (Int32) flows into a
+// mismatched annotation and a mismatched function result.
+struct Counter {
+    var n: Int32
+
+    func get() -> Int32 { return self.n }
+}
+
+func use(_ c: Counter) -> Bool {
+    let a: Bool = c.get()   // method result Int32 vs Bool annotation
+    return c.get()          // method result Int32 vs Bool function result
+}

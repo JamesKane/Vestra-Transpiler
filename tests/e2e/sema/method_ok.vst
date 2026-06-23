@@ -1,0 +1,14 @@
+// Well-typed method calls: a method's declared result type flows correctly
+// through the surrounding initializer / return checks.
+struct Counter {
+    var n: Int32
+
+    func get() -> Int32 { return self.n }
+    func isZero() -> Bool { return self.n == 0 }
+}
+
+func use(_ c: Counter) -> Int32 {
+    let a: Int32 = c.get()      // method result Int32 -> Int32 init
+    let b: Bool = c.isZero()    // method result Bool -> Bool init
+    return c.get()              // method result in return position
+}
