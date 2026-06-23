@@ -213,11 +213,14 @@ set_tests_properties(e2e_selfhost_parser_diff_example5 PROPERTIES DEPENDS e2e_se
 # not match parameter type Y`); slice 7 adds return checking — a `return EXPR` must
 # be assignable to the declared result (`return value of type X does not match
 # function result type Y`) and a body's trailing expression must match it
-# (`function '...' returns X but body produces Y`). Validation is DIFFERENTIAL
+# (`function '...' returns X but body produces Y`); slice 8 adds condition typing —
+# an `if`/`while` condition must be Bool (`if/while condition must be Bool, got X`),
+# which brings binary/unary inference (comparisons and logical ops type as Bool,
+# arithmetic as the sized operand, `!` as Bool). Validation is DIFFERENTIAL
 # against `vestra check`: each diff test extracts the `undefined name '...'`,
 # `missing capability '...'`, borrow-conflict, async-inout, move-tracking,
-# type-mismatch, call/argument, and return-type messages from both and compares
-# them. `vsema` mirrors `check`'s pass ORDER (type
+# type-mismatch, call/argument, return-type, and condition messages from both and
+# compares them. `vsema` mirrors `check`'s pass ORDER (type
 # checking is part of resolution, so it gates like undefined names; then ownership,
 # exclusivity, capability). Sema is cross-referential, so this runs on a CURATED
 # corpus (otherwise-valid programs isolating one rule), not the whole example corpus.
@@ -244,8 +247,8 @@ set_tests_properties(e2e_selfhost_sema_compile PROPERTIES DEPENDS e2e_selfhost_s
 # verdict must match `vestra check`. The async-inout pattern uses ERE bracket
 # classes ([(] [)]) and `.` for the backticks so the regex survives the sh -c /
 # CMake quoting unescaped.
-set(sema_grep "undefined name '[^']*'|missing capability '[^']*'|'[^']*' is borrowed twice with incompatible modes|'[^']*' and '[^']*' overlap with incompatible borrow modes|async function '[^']*' cannot take an .inout. parameter [(]'[^']*'[)]|use of '[^']*' after it was moved|'[^']*' was already moved and cannot be moved again|initializer of type [^ ]+ does not match annotation [^ ]+|const value of type [^ ]+ does not match annotation [^ ]+|argument [0-9]+ of type [^ ]+ does not match parameter type [^ ]+|call expects [0-9]+ argument[(]s[)], got [0-9]+|return value of type [^ ]+ does not match function result type [^ ]+|function '[^']*' returns [^ ]+ but body produces [^ ]+")
-foreach(prog resolve_ok resolve_bad resolve_scope cap_ok cap_missing excl_ok excl_bad own_ok own_bad ty_ok ty_bad call_ok call_bad ret_ok ret_bad)
+set(sema_grep "undefined name '[^']*'|missing capability '[^']*'|'[^']*' is borrowed twice with incompatible modes|'[^']*' and '[^']*' overlap with incompatible borrow modes|async function '[^']*' cannot take an .inout. parameter [(]'[^']*'[)]|use of '[^']*' after it was moved|'[^']*' was already moved and cannot be moved again|initializer of type [^ ]+ does not match annotation [^ ]+|const value of type [^ ]+ does not match annotation [^ ]+|argument [0-9]+ of type [^ ]+ does not match parameter type [^ ]+|call expects [0-9]+ argument[(]s[)], got [0-9]+|return value of type [^ ]+ does not match function result type [^ ]+|function '[^']*' returns [^ ]+ but body produces [^ ]+|if condition must be Bool, got [^ ]+|while condition must be Bool, got [^ ]+")
+foreach(prog resolve_ok resolve_bad resolve_scope cap_ok cap_missing excl_ok excl_bad own_ok own_bad ty_ok ty_bad call_ok call_bad ret_ok ret_bad cond_ok cond_bad)
     add_test(
         NAME    e2e_selfhost_sema_diff_${prog}
         COMMAND sh -c "mkdir -p ${sema_workdir} && $<TARGET_FILE:vestra> check ${sema_dir}/${prog}.vst 2>&1 | grep -oE \"${sema_grep}\" > ${sema_workdir}/${prog}_c.txt; ${e2e_workdir}/vsema ${sema_dir}/${prog}.vst | grep -oE \"${sema_grep}\" > ${sema_workdir}/${prog}_v.txt; diff ${sema_workdir}/${prog}_c.txt ${sema_workdir}/${prog}_v.txt")

@@ -1,0 +1,11 @@
+// Conditions that are not Bool: a bare integer, an arithmetic expression (which
+// types as the sized operand), an Int-returning call, and a non-Bool `while`.
+func count() -> Int32 { return 0 }
+
+func bad(_ n: Int32) -> Int32 {
+    if n { return 1 }            // Int32, not Bool
+    if n + 1 { return 2 }        // arithmetic -> Int32
+    if count() { return 3 }      // call -> Int32
+    while n { return 4 }         // Int32, not Bool
+    return 0
+}

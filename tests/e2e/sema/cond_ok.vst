@@ -1,0 +1,16 @@
+// Valid conditions: a Bool variable, a comparison, a logical connective, a
+// negation, and a Bool-returning call all type as Bool. `if let` has no plain
+// condition to check.
+func ready() -> Bool { return true }
+
+func ok(_ flag: Bool, _ n: Int32, _ opt: Bool?) -> Int32 {
+    if flag { return 1 }
+    if n > 0 { return 2 }
+    if flag && (n < 5) { return 3 }
+    if !flag { return 4 }
+    if ready() { return 5 }
+    while flag { return 6 }
+    while n < 10 { return 7 }
+    if let v = opt { return 8 }
+    return 0
+}
