@@ -1,0 +1,7 @@
+// Ill-typed optional handling: the unwrapped element type flows into a mismatched
+// annotation in both the force-unwrap and the nil-coalescing case.
+func bad(_ o: Int32?) -> Int32 {
+    let a: Bool = o!        // unwrapped Int32 vs Bool annotation
+    let b: Bool = o ?? 0    // coalesced Int32 vs Bool annotation
+    return 0
+}

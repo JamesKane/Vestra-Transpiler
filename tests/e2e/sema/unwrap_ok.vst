@@ -1,0 +1,11 @@
+// Well-typed optional handling: a force-unwrap `o!` yields the wrapped T, and a
+// nil-coalescing `o ?? d` yields T as well, both flowing correctly through the
+// surrounding initializer / argument / return checks.
+func takesInt32(_ a: Int32) -> Int32 { return a }
+
+func ok(_ o: Int32?, _ d: Int32) -> Int32 {
+    let a: Int32 = o!               // force-unwrap Int32? -> Int32
+    let b: Int32 = o ?? d           // coalesce Int32? ?? Int32 -> Int32
+    let c: Int32 = takesInt32(o!)   // unwrapped element as argument
+    return o ?? 0                   // coalesce in return position
+}

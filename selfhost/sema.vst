@@ -4797,6 +4797,16 @@ func tyInferBinary(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd])
     if isLogOp(op) { return tyLogResult(lt, rt) }
     if isArithOp(op) { return tyNumResult(lt, rt, false) }
     if isBitOp(op) { return tyNumResult(lt, rt, true) }
+    if streq(op, "??") { return tyUnwrapOpt(lt) }
+    return own("")
+}
+
+// §9 `lhs ?? rhs` yields the wrapped element T when lhs is a known Optional
+// `T?`; an lhs of any other (or unknown) type stays unknown, mirroring the
+// resolver's error type when the left operand is not an Optional.
+func tyUnwrapOpt(_ s: String) using Alloc -> String {
+    let n = s.len()
+    if n > 0 && (s.byteAt(n - 1) ?? 0) == 63 { return own(s.slice(0, n - 1)) }   // '?' == 63
     return own("")
 }
 
@@ -4822,8 +4832,16 @@ func tyNumResult(_ lt: String, _ rt: String, _ needInt: Bool) using Alloc -> Str
     return lt
 }
 
+// The self-host AST spells both prefix logical-not `!x` and postfix force-unwrap
+// `x!` as `unary("!", _)`, so they are told apart by the operand: an Optional
+// `T?` operand is a force-unwrap yielding T (§9), anything else is logical-not
+// yielding Bool. `-` / `~` carry the operand type through.
 func tyInferUnary(_ env: inout TyEnv, _ op: String, _ x: Vec[Nd]) using Alloc -> String {
-    if streq(op, "!") { return own("Bool") }
+    if streq(op, "!") {
+        let xt = tyInferBoxed(env, x)
+        if (xt.byteAt(xt.len() - 1) ?? 0) == 63 { return tyUnwrapOpt(xt) }   // T? -> T
+        return own("Bool")
+    }
     return tyInferBoxed(env, x)
 }
 
