@@ -1,0 +1,21 @@
+// Valid under the Law of Exclusivity (§5.4): overlapping accesses to the same
+// storage are all `read` (shared), and the one inout borrow is to a field that
+// is disjoint from the other argument. (`vestra check` runs ownership before
+// exclusivity; this stays free of moves so only the borrow rule is in play.)
+struct Point { var x: Int32; var y: Int32 }
+
+func readTwo(_ a: Int32, _ b: Int32) {
+}
+
+func mutField(_ a: inout Int32, _ b: Int32) {
+}
+
+func sharedReads(_ p: Point) -> Int32 {
+    readTwo(p.x, p.x)    // two reads of the same place: shared access is allowed
+    return 0
+}
+
+func disjointFields(_ p: inout Point) -> Int32 {
+    mutField(&p.x, p.y)  // inout one field while reading another: no overlap
+    return 0
+}

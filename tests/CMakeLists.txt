@@ -196,10 +196,14 @@ set_tests_properties(e2e_selfhost_parser_diff_example5 PROPERTIES DEPENDS e2e_se
 # (selfhost/sema.vst). Slice 1 is name resolution (undefined identifiers); slice 2
 # is capability checking (each capability use — print*/readFile/Vec.new/await/a
 # called function's `using` row — must be satisfied by the function's `using` row
-# or an enclosing `with` block). Validation is DIFFERENTIAL against `vestra check`:
-# each diff test extracts the `undefined name '...'` and `missing capability '...'`
-# messages from both and compares them. `vsema` mirrors `check`'s ordering (stop at
-# resolution errors before the capability pass). Sema is cross-referential, so this
+# or an enclosing `with` block); slice 3 is exclusivity (§5.4): within a call's
+# argument list no two arguments may produce overlapping accesses that conflict
+# (a place borrowed inout twice, or inout-and-read), plus the §11 rule that an
+# `async func` may not take an `inout` parameter. Validation is DIFFERENTIAL
+# against `vestra check`: each diff test extracts the `undefined name '...'`,
+# `missing capability '...'`, borrow-conflict, and async-inout messages from both
+# and compares them. `vsema` mirrors `check`'s ordering (stop at resolution errors;
+# then exclusivity before the capability pass). Sema is cross-referential, so this
 # runs on a CURATED corpus (otherwise-valid programs isolating one rule), not the
 # whole example corpus.
 # ---------------------------------------------------------------------------
@@ -221,11 +225,14 @@ add_test(
 set_tests_properties(e2e_selfhost_sema_compile PROPERTIES DEPENDS e2e_selfhost_sema_transpile)
 
 # One differential test per curated program: the self-hosted analyzer's
-# undefined-name + missing-capability verdict must match `vestra check`.
-foreach(prog resolve_ok resolve_bad resolve_scope cap_ok cap_missing)
+# undefined-name + missing-capability + exclusivity verdict must match `vestra
+# check`. The async-inout pattern uses ERE bracket classes ([(] [)]) and `.` for
+# the backticks so the regex survives the sh -c / CMake quoting unescaped.
+set(sema_grep "undefined name '[^']*'|missing capability '[^']*'|'[^']*' is borrowed twice with incompatible modes|'[^']*' and '[^']*' overlap with incompatible borrow modes|async function '[^']*' cannot take an .inout. parameter [(]'[^']*'[)]")
+foreach(prog resolve_ok resolve_bad resolve_scope cap_ok cap_missing excl_ok excl_bad)
     add_test(
         NAME    e2e_selfhost_sema_diff_${prog}
-        COMMAND sh -c "mkdir -p ${sema_workdir} && $<TARGET_FILE:vestra> check ${sema_dir}/${prog}.vst 2>&1 | grep -oE \"undefined name '[^']*'|missing capability '[^']*'\" > ${sema_workdir}/${prog}_c.txt; ${e2e_workdir}/vsema ${sema_dir}/${prog}.vst | grep -oE \"undefined name '[^']*'|missing capability '[^']*'\" > ${sema_workdir}/${prog}_v.txt; diff ${sema_workdir}/${prog}_c.txt ${sema_workdir}/${prog}_v.txt")
+        COMMAND sh -c "mkdir -p ${sema_workdir} && $<TARGET_FILE:vestra> check ${sema_dir}/${prog}.vst 2>&1 | grep -oE \"${sema_grep}\" > ${sema_workdir}/${prog}_c.txt; ${e2e_workdir}/vsema ${sema_dir}/${prog}.vst | grep -oE \"${sema_grep}\" > ${sema_workdir}/${prog}_v.txt; diff ${sema_workdir}/${prog}_c.txt ${sema_workdir}/${prog}_v.txt")
     set_tests_properties(e2e_selfhost_sema_diff_${prog} PROPERTIES DEPENDS e2e_selfhost_sema_compile)
 endforeach()
 

@@ -1,0 +1,35 @@
+// Each call violates the Law of Exclusivity (§5.4): the same place borrowed
+// inout twice, the same place borrowed inout and read, and an inout borrow of a
+// field overlapping a read of the enclosing value. Plus the §11 signature rule:
+// an `async func` may not take an `inout` parameter (a mutable borrow cannot
+// survive a suspension). The inout on the first argument is inferred from the
+// callee's parameter mode even where the call site omits `&`.
+struct Inner { var n: Int32 }
+struct Outer { var inner: Inner; var k: Int32 }
+
+func swapTwo(_ x: inout Int32, _ y: inout Int32) {
+}
+
+func mutRead(_ x: inout Int32, _ y: Int32) {
+}
+
+func mutInner(_ a: inout Inner, _ b: Outer) {
+}
+
+func doubleInout(_ n: inout Int32) -> Int32 {
+    swapTwo(&n, &n)       // 'n' borrowed twice (inout, inout)
+    return 0
+}
+
+func inoutAndRead(_ n: inout Int32) -> Int32 {
+    mutRead(&n, n)        // 'n' borrowed twice (inout, read)
+    return 0
+}
+
+func fieldOverlap(_ o: inout Outer) -> Int32 {
+    mutInner(&o.inner, o) // 'o.inner' and 'o' overlap with incompatible modes
+    return 0
+}
+
+async func asyncInout(_ n: inout Int32) {
+}

@@ -3384,6 +3384,381 @@ func requireAllocCtor(_ env: inout CapEnv, _ b: String) using Alloc {
     }
 }
 
+// ===========================================================================
+// Exclusivity (§5.4 / §19.3, phase 1). At any program point the live accesses
+// to a storage location must be all-read or a single inout. Phase 1 enforces
+// this PER CALL: within one call's argument list no two arguments may produce
+// overlapping accesses that conflict. A Place is a root variable name plus a
+// path string of `.field` selectors ("" for a bare local); two places overlap
+// iff they share a root and one path is a prefix of the other at a segment
+// boundary. An argument is inout when the callee declares that parameter
+// `inout` (recovered from sigName/sigIdx/sigMode, one row per (func, param))
+// or the call site writes `&` (arg's is_inout flag); `sink` params consume, so
+// they generate no borrow. Plus the signature-level §11 rule: an `async func`
+// may not take an `inout` parameter (a mutable borrow cannot survive a
+// suspension). Diagnostics are collected in walk order, matching `vestra check`.
+//
+// Deliberately not yet modeled (the C++ checker documents the same gaps, and
+// vsema additionally lacks types and discards match/vector-literal payloads):
+// builtin mutating-method receivers, partition sub-views, cross-statement
+// liveness, index subviews, closures.
+// ===========================================================================
+struct Place {
+    var ok: Bool
+    var root: String
+    var path: String
+}
+
+struct Borrows {
+    var roots: Vec[String]
+    var paths: Vec[String]
+    var inouts: Vec[Bool]
+}
+
+struct ExEnv {
+    var sigName: Vec[String]   // parallel rows: function name ...
+    var sigIdx: Vec[Int]       // ... parameter index ...
+    var sigMode: Vec[String]   // ... and that parameter's mode ("", "inout ", "sink ")
+    var bad: Vec[String]
+}
+
+func exCheck(_ env: inout ExEnv, _ u: NUnit) using Alloc {
+    var i: Int = 0
+    while i < u.decls.len() {
+        exCollectDecl(env, u.decls.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    var j: Int = 0
+    while j < u.decls.len() {
+        exCheckDecl(env, u.decls.get(j) ?? Nd.wildcard)
+        j = j + 1
+    }
+}
+
+// ----- pass 1: record each top-level function's parameter-mode row ----------
+// Methods are not recorded: callees are looked up by bare-ident name only, and
+// recording method names could shadow a free function of the same name.
+func exCollectDecl(_ env: inout ExEnv, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
+            exRecordSig(env, name, params)
+        default: noop()
+    }
+}
+
+func exRecordSig(_ env: inout ExEnv, _ name: String, _ params: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < params.len() {
+        exAddSigRow(env, name, i, params.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func exAddSigRow(_ env: inout ExEnv, _ name: String, _ idx: Int, _ p: Nd) using Alloc {
+    match p {
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): exPushSig(env, name, idx, md)
+        default: noop()
+    }
+}
+
+func exPushSig(_ env: inout ExEnv, _ name: String, _ idx: Int, _ md: String) using Alloc {
+    env.sigName.push(name)
+    env.sigIdx.push(idx)
+    env.sigMode.push(md)
+}
+
+func exModeOf(_ env: inout ExEnv, _ name: String, _ idx: Int) using Alloc -> String {
+    var i: Int = 0
+    while i < env.sigName.len() {
+        if let n = env.sigName.get(i) {
+            if streq(n, name) && (env.sigIdx.get(i) ?? -1) == idx {
+                return env.sigMode.get(i) ?? own("")
+            }
+        }
+        i = i + 1
+    }
+    return own("")
+}
+
+// ----- pass 2: walk bodies, gathering per-call borrows ----------------------
+func exCheckDecl(_ env: inout ExEnv, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
+            exCheckFunc(env, mods, name, params, b)
+        case .structD(let vis, let name, let fl, let m, let dn): exCheckMethods(env, m)
+        case .enumD(let vis, let name, let cs, let m): exCheckMethods(env, m)
+        default: noop()
+    }
+}
+
+func exCheckMethods(_ env: inout ExEnv, _ methods: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < methods.len() {
+        exCheckDecl(env, methods.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func exCheckFunc(_ env: inout ExEnv, _ mods: String, _ name: String, _ params: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    exAsyncInout(env, mods, name, params)
+    exBoxed(env, body)
+}
+
+func exAsyncInout(_ env: inout ExEnv, _ mods: String, _ name: String, _ params: Vec[Nd]) using Alloc {
+    if !containsSub(mods, "async") { return }
+    var i: Int = 0
+    while i < params.len() {
+        exCheckAsyncParam(env, name, params.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func exCheckAsyncParam(_ env: inout ExEnv, _ name: String, _ p: Nd) using Alloc {
+    match p {
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): exAsyncParamRow(env, name, nm, lbl, md)
+        default: noop()
+    }
+}
+
+func exAsyncParamRow(_ env: inout ExEnv, _ name: String, _ nm: String, _ lbl: String, _ md: String) using Alloc {
+    if containsSub(md, "inout") { env.bad.push(exAsyncMsg(name, exParamName(nm, lbl))) }
+}
+
+func exParamName(_ nm: String, _ lbl: String) -> String {
+    if streq(nm, "") { return lbl }
+    return nm
+}
+
+func exAsyncMsg(_ fn: String, _ pn: String) using Alloc -> String {
+    var s: String = "async function '"
+    s.append(fn)
+    s.append("' cannot take an `inout` parameter ('")
+    s.append(pn)
+    s.append("') — a mutable borrow cannot survive a suspension (no borrow across await)")
+    return s
+}
+
+func exBoxed(_ env: inout ExEnv, _ v: Vec[Nd]) using Alloc {
+    if v.len() > 0 { exExpr(env, v.get(0) ?? Nd.wildcard) }
+}
+
+func exPair(_ env: inout ExEnv, _ a: Vec[Nd], _ b: Vec[Nd]) using Alloc {
+    exBoxed(env, a)
+    exBoxed(env, b)
+}
+
+func exExpr(_ env: inout ExEnv, _ e: Nd) using Alloc {
+    match e {
+        case .call(let callee, let args): exCall(env, callee, args)
+        case .prefixE(let kw, let inner): exBoxed(env, inner)
+        case .paren(let x): exBoxed(env, x)
+        case .unary(let op, let x): exBoxed(env, x)
+        case .binary(let op, let l, let r): exPair(env, l, r)
+        case .member(let base, let n, let c): exBoxed(env, base)
+        case .index(let base, let idxs): exIndex(env, base, idxs)
+        case .ifE(let ln, let li, let cond, let thenB, let els): exIf(env, li, cond, thenB, els)
+        case .block(let stmts): exBlock(env, stmts)
+        case .asE(let v, let t, let o): exBoxed(env, v)
+        case .addrOf(let x): exBoxed(env, x)
+        case .arg(let l, let io, let v): exBoxed(env, v)
+        case .doCatchE(let db, let en, let et, let cb): exPair(env, db, cb)
+        default: noop()
+    }
+}
+
+func exIndex(_ env: inout ExEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc {
+    exBoxed(env, base)
+    var i: Int = 0
+    while i < idxs.len() {
+        exExpr(env, idxs.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func exIf(_ env: inout ExEnv, _ li: Vec[Nd], _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc {
+    exBoxed(env, cond)
+    exBoxed(env, li)
+    exBoxed(env, thenB)
+    exBoxed(env, els)
+}
+
+func exBlock(_ env: inout ExEnv, _ stmts: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < stmts.len() {
+        exStmt(env, stmts.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func exStmt(_ env: inout ExEnv, _ s: Nd) using Alloc {
+    match s {
+        case .letS(let p, let ty, let v): exBoxed(env, v)
+        case .varS(let p, let ty, let v): exBoxed(env, v)
+        case .exprS(let e): exBoxed(env, e)
+        case .retS(let v): exBoxed(env, v)
+        case .assignS(let op, let t, let v): exPair(env, t, v)
+        case .whileS(let c, let b): exPair(env, c, b)
+        case .forS(let pp, let it, let b): exPair(env, it, b)
+        case .withS(let caps, let vals, let body): exWith(env, vals, body)
+        default: noop()
+    }
+}
+
+func exWith(_ env: inout ExEnv, _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < vals.len() {
+        exExpr(env, vals.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    exBoxed(env, body)
+}
+
+// ----- the per-call borrow gather + pairwise conflict scan ------------------
+func exCall(_ env: inout ExEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    // Recurse into callee + every argument first: nested calls' borrows have
+    // ended by the time this call evaluates.
+    exBoxed(env, callee)
+    var r: Int = 0
+    while r < args.len() {
+        exExpr(env, args.get(r) ?? Nd.wildcard)
+        r = r + 1
+    }
+    // Recover the callee's name for parameter-mode lookup (bare ident only;
+    // member-expr callees default every parameter to read).
+    let fname = exCalleeNameBoxed(callee)
+    var bs = Borrows(roots: Vec.new(), paths: Vec.new(), inouts: Vec.new())
+    var i: Int = 0
+    while i < args.len() {
+        exGatherArg(env, fname, i, args.get(i) ?? Nd.wildcard, &bs)
+        i = i + 1
+    }
+    exConflictScan(env, &bs)
+}
+
+func exCalleeNameBoxed(_ callee: Vec[Nd]) using Alloc -> String {
+    if callee.len() > 0 { return exCalleeName(callee.get(0) ?? Nd.wildcard) }
+    return own("")
+}
+
+func exCalleeName(_ callee: Nd) using Alloc -> String {
+    return match callee {
+        case .ident(let nm): nm
+        default: own("")
+    }
+}
+
+func exGatherArg(_ env: inout ExEnv, _ fname: String, _ idx: Int, _ a: Nd, _ bs: inout Borrows) using Alloc {
+    match a {
+        case .arg(let label, let isInout, let val): exGatherArgVal(env, fname, idx, isInout, val, bs)
+        default: noop()
+    }
+}
+
+func exGatherArgVal(_ env: inout ExEnv, _ fname: String, _ idx: Int, _ isInout: Bool, _ val: Vec[Nd], _ bs: inout Borrows) using Alloc {
+    var mode: String = exModeOf(env, fname, idx)
+    if isInout { mode = "inout " }
+    if streq(mode, "sink ") { return }
+    let pl = exAsPlaceBoxed(val)
+    if pl.ok { exPushBorrow(bs, pl.root, pl.path, streq(mode, "inout ")) }
+}
+
+func exPushBorrow(_ bs: inout Borrows, _ root: String, _ path: String, _ isInout: Bool) using Alloc {
+    bs.roots.push(root)
+    bs.paths.push(path)
+    bs.inouts.push(isInout)
+}
+
+func exConflictScan(_ env: inout ExEnv, _ bs: inout Borrows) using Alloc {
+    let n = bs.roots.len()
+    var i: Int = 0
+    while i < n {
+        var j: Int = i + 1
+        while j < n {
+            exMaybeConflict(env, bs, i, j)
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+func exMaybeConflict(_ env: inout ExEnv, _ bs: inout Borrows, _ i: Int, _ j: Int) using Alloc {
+    let rA = bs.roots.get(i) ?? own("")
+    let rB = bs.roots.get(j) ?? own("")
+    let pA = bs.paths.get(i) ?? own("")
+    let pB = bs.paths.get(j) ?? own("")
+    let inA = bs.inouts.get(i) ?? false
+    let inB = bs.inouts.get(j) ?? false
+    if exOverlap(rA, pA, rB, pB) && (inA || inB) {
+        if streq(pA, pB) { env.bad.push(exBorrowTwice(rA, pA)) }
+        else { env.bad.push(exOverlapMsg(rA, pA, rB, pB)) }
+    }
+}
+
+func exOverlap(_ rA: String, _ pA: String, _ rB: String, _ pB: String) -> Bool {
+    if !streq(rA, rB) { return false }
+    return exPathPrefix(pA, pB) || exPathPrefix(pB, pA)
+}
+
+// Is `a` a path-prefix of `b`? The empty path is a prefix of everything; a
+// non-empty prefix must end at a `.field` segment boundary so that `.x` is not
+// treated as a prefix of `.xy`.
+func exPathPrefix(_ a: String, _ b: String) -> Bool {
+    if a.len() == 0 { return true }
+    if a.len() > b.len() { return false }
+    var i: Int = 0
+    while i < a.len() {
+        if (a.byteAt(i) ?? 0) != (b.byteAt(i) ?? 1) { return false }
+        i = i + 1
+    }
+    if a.len() == b.len() { return true }
+    return (b.byteAt(a.len()) ?? 0) == 46   // '.' starts the next segment
+}
+
+func exRenderPlace(_ root: String, _ path: String) using Alloc -> String {
+    var s: String = "'"
+    s.append(root)
+    s.append(path)
+    s.append("'")
+    return s
+}
+
+func exBorrowTwice(_ root: String, _ path: String) using Alloc -> String {
+    var s: String = exRenderPlace(root, path)
+    s.append(" is borrowed twice with incompatible modes")
+    return s
+}
+
+func exOverlapMsg(_ rA: String, _ pA: String, _ rB: String, _ pB: String) using Alloc -> String {
+    var s: String = exRenderPlace(rA, pA)
+    s.append(" and ")
+    s.append(exRenderPlace(rB, pB))
+    s.append(" overlap with incompatible borrow modes")
+    return s
+}
+
+func exAsPlaceBoxed(_ v: Vec[Nd]) using Alloc -> Place {
+    if v.len() > 0 { return exAsPlace(v.get(0) ?? Nd.wildcard) }
+    return Place(ok: false, root: "", path: "")
+}
+
+func exAsPlace(_ e: Nd) using Alloc -> Place {
+    return match e {
+        case .paren(let inner): exAsPlaceBoxed(inner)
+        case .ident(let name): Place(ok: true, root: name, path: "")
+        case .member(let base, let m, let chain): exMemberPlace(base, m)
+        default: Place(ok: false, root: "", path: "")
+    }
+}
+
+func exMemberPlace(_ base: Vec[Nd], _ m: String) using Alloc -> Place {
+    let b = exAsPlaceBoxed(base)
+    if !b.ok { return Place(ok: false, root: "", path: "") }
+    var pth: String = b.path
+    pth.append(".")
+    pth.append(m)
+    return Place(ok: true, root: b.root, path: pth)
+}
+
 func main() -> Int32 {
     with Alloc {
         with Fs {
@@ -3411,8 +3786,17 @@ func main() -> Int32 {
                         i = i + 1
                     }
                     // Match `vestra check`: stop at resolution errors before the
-                    // capability pass.
+                    // later passes; otherwise run them all and accumulate. Order
+                    // mirrors the driver: exclusivity before capability.
                     if env.bad.len() > 0 { return 1 }
+                    var xenv = ExEnv(sigName: Vec.new(), sigIdx: Vec.new(),
+                                     sigMode: Vec.new(), bad: Vec.new())
+                    exCheck(&xenv, u)
+                    var x: Int = 0
+                    while x < xenv.bad.len() {
+                        if let msg = xenv.bad.get(x) { println(msg) }
+                        x = x + 1
+                    }
                     var cenv = CapEnv(active: Vec.new(), fcNames: Vec.new(), fcCaps: Vec.new(),
                                       userFuncs: Vec.new(), bad: Vec.new())
                     checkCapabilities(&cenv, u)
@@ -3421,7 +3805,7 @@ func main() -> Int32 {
                         if let msg = cenv.bad.get(k) { println(msg) }
                         k = k + 1
                     }
-                    if cenv.bad.len() > 0 { return 1 }
+                    if xenv.bad.len() > 0 || cenv.bad.len() > 0 { return 1 }
                     return 0
                 }
                 eprintln("read failed")
