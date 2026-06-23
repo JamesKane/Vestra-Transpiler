@@ -218,11 +218,13 @@ set_tests_properties(e2e_selfhost_parser_diff_example5 PROPERTIES DEPENDS e2e_se
 # which brings binary/unary inference (comparisons and logical ops type as Bool,
 # arithmetic as the sized operand, `!` as Bool); slice 9 emits binary-operator
 # errors — arithmetic needs numeric operands, bitwise needs integers, comparisons/
-# arithmetic/bitwise need matching operand types, and `&&`/`||` need Bool operands.
-# Validation is DIFFERENTIAL against `vestra check`: each diff test extracts the
-# `undefined name '...'`, `missing capability '...'`, borrow-conflict, async-inout,
-# move-tracking, type-mismatch, call/argument, return-type, condition, and
-# binary-operator messages from both and compares them. `vsema` mirrors `check`'s
+# arithmetic/bitwise need matching operand types, and `&&`/`||` need Bool operands;
+# slice 10 checks assignment — the value must be assignable to the target slot
+# (`cannot assign value of type X to target of type Y`). Validation is DIFFERENTIAL
+# against `vestra check`: each diff test extracts the `undefined name '...'`,
+# `missing capability '...'`, borrow-conflict, async-inout, move-tracking,
+# type-mismatch, call/argument, return-type, condition, binary-operator, and
+# assignment messages from both and compares them. `vsema` mirrors `check`'s
 # pass ORDER (type
 # checking is part of resolution, so it gates like undefined names; then ownership,
 # exclusivity, capability). Sema is cross-referential, so this runs on a CURATED
@@ -250,8 +252,8 @@ set_tests_properties(e2e_selfhost_sema_compile PROPERTIES DEPENDS e2e_selfhost_s
 # verdict must match `vestra check`. The async-inout pattern uses ERE bracket
 # classes ([(] [)]) and `.` for the backticks so the regex survives the sh -c /
 # CMake quoting unescaped.
-set(sema_grep "undefined name '[^']*'|missing capability '[^']*'|'[^']*' is borrowed twice with incompatible modes|'[^']*' and '[^']*' overlap with incompatible borrow modes|async function '[^']*' cannot take an .inout. parameter [(]'[^']*'[)]|use of '[^']*' after it was moved|'[^']*' was already moved and cannot be moved again|initializer of type [^ ]+ does not match annotation [^ ]+|const value of type [^ ]+ does not match annotation [^ ]+|argument [0-9]+ of type [^ ]+ does not match parameter type [^ ]+|call expects [0-9]+ argument[(]s[)], got [0-9]+|return value of type [^ ]+ does not match function result type [^ ]+|function '[^']*' returns [^ ]+ but body produces [^ ]+|if condition must be Bool, got [^ ]+|while condition must be Bool, got [^ ]+|binary operator operands of different types: [^ ]+ vs [^ ]+|arithmetic operator requires numeric operands, got [^ ]+|bitwise operator requires integer operands, got [^ ]+|logical && / [|][|] require Bool operands")
-foreach(prog resolve_ok resolve_bad resolve_scope cap_ok cap_missing excl_ok excl_bad own_ok own_bad ty_ok ty_bad call_ok call_bad ret_ok ret_bad cond_ok cond_bad op_ok op_bad)
+set(sema_grep "undefined name '[^']*'|missing capability '[^']*'|'[^']*' is borrowed twice with incompatible modes|'[^']*' and '[^']*' overlap with incompatible borrow modes|async function '[^']*' cannot take an .inout. parameter [(]'[^']*'[)]|use of '[^']*' after it was moved|'[^']*' was already moved and cannot be moved again|initializer of type [^ ]+ does not match annotation [^ ]+|const value of type [^ ]+ does not match annotation [^ ]+|argument [0-9]+ of type [^ ]+ does not match parameter type [^ ]+|call expects [0-9]+ argument[(]s[)], got [0-9]+|return value of type [^ ]+ does not match function result type [^ ]+|function '[^']*' returns [^ ]+ but body produces [^ ]+|if condition must be Bool, got [^ ]+|while condition must be Bool, got [^ ]+|binary operator operands of different types: [^ ]+ vs [^ ]+|arithmetic operator requires numeric operands, got [^ ]+|bitwise operator requires integer operands, got [^ ]+|logical && / [|][|] require Bool operands|cannot assign value of type [^ ]+ to target of type [^ ]+")
+foreach(prog resolve_ok resolve_bad resolve_scope cap_ok cap_missing excl_ok excl_bad own_ok own_bad ty_ok ty_bad call_ok call_bad ret_ok ret_bad cond_ok cond_bad op_ok op_bad asg_ok asg_bad)
     add_test(
         NAME    e2e_selfhost_sema_diff_${prog}
         COMMAND sh -c "mkdir -p ${sema_workdir} && $<TARGET_FILE:vestra> check ${sema_dir}/${prog}.vst 2>&1 | grep -oE \"${sema_grep}\" > ${sema_workdir}/${prog}_c.txt; ${e2e_workdir}/vsema ${sema_dir}/${prog}.vst | grep -oE \"${sema_grep}\" > ${sema_workdir}/${prog}_v.txt; diff ${sema_workdir}/${prog}_c.txt ${sema_workdir}/${prog}_v.txt")

@@ -4490,7 +4490,7 @@ func tyStmt(_ env: inout TyEnv, _ s: Nd) using Alloc {
         case .varS(let p, let ty, let v): tyLet(env, p, ty, v)
         case .exprS(let e): tyBoxed(env, e)
         case .retS(let v): tyRet(env, v)
-        case .assignS(let op, let t, let v): tyPair(env, t, v)
+        case .assignS(let op, let t, let v): tyAssign(env, t, v)
         case .whileS(let c, let b): tyWhile(env, c, b)
         case .forS(let pp, let it, let b): tyPair(env, it, b)
         case .withS(let caps, let vals, let body): tyWith(env, vals, body)
@@ -4508,6 +4508,26 @@ func tyLet(_ env: inout TyEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) usin
     }
     tyBoxed(env, v)
     tyRegisterPat(env, pat, ty)
+}
+
+// Assignment (incl. compound ops, which the resolver checks identically): the
+// value must be assignable to the target. Only ident targets type to a known
+// slot here; member/index targets are unknown and tolerated.
+func tyAssign(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    tyBoxed(env, t)
+    tyBoxed(env, v)
+    let lt = tyInferBoxed(env, t)
+    let rt = tyInferBoxed(env, v)
+    if streq(lt, "") || streq(rt, "") { return }
+    if !tyAssignable(rt, lt) { env.bad.push(tyAssignMsg(rt, lt)) }
+}
+
+func tyAssignMsg(_ from: String, _ to: String) using Alloc -> String {
+    var s: String = "cannot assign value of type "
+    s.append(from)
+    s.append(" to target of type ")
+    s.append(to)
+    return s
 }
 
 // `return EXPR`: walk the value (nested checks), then its type must be assignable

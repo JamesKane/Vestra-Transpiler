@@ -1,0 +1,13 @@
+// Well-typed assignments: the value is assignable to the target slot — identity,
+// an Int literal adapting to the sized slot, a string literal widening to String,
+// and a compound assignment with matching numeric operands.
+func ok(_ p: Int32) -> Int32 {
+    var n: Int32 = 0
+    var s: String = "a"
+    n = 5            // Int -> Int32
+    n = p            // Int32 -> Int32
+    n = n + 1        // arithmetic result Int32
+    n += p           // compound, Int32
+    s = "hello"      // StrConst -> String
+    return n
+}

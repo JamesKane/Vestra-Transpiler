@@ -1,0 +1,14 @@
+// Ill-typed assignments: the value is not assignable to the target slot — from a
+// literal, a parameter, a call's return type, and a compound assignment whose
+// operand type does not match the target.
+func makeStr() -> Str { return "x" }
+
+func bad(_ p: Int32, _ flag: Bool) -> Int32 {
+    var n: Int32 = 0
+    var s: Str = "a"
+    n = flag           // Bool to Int32
+    s = p              // Int32 to Str
+    n = makeStr()      // Str to Int32
+    n += flag          // compound: Bool to Int32
+    return n
+}
