@@ -1,0 +1,12 @@
+// Each statement uses a capability the function neither declares nor opens: Log
+// (println), Alloc (Vec.new), Fs (readFile), and Log again via a propagated call.
+func needsLog() using Log {
+}
+
+func violations(_ path: Str) -> Int32 {
+    println("a")
+    var v: Vec[Int32] = Vec.new()
+    let s = readFile(path)
+    needsLog()
+    return 0
+}

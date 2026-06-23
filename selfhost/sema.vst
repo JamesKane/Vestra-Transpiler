@@ -890,7 +890,7 @@ enum Nd {
     case forS(Vec[Nd], Vec[Nd], Vec[Nd])     // pattern, iter, body (block)
     case breakS(String)                      // label ("" if none)
     case continueS(String)
-    case withS                               // parsed but printed as /*?stmt*/ (no printer case in C++)
+    case withS(Vec[Nd], Vec[Nd], Vec[Nd])    // granted cap types, binding values, body (printed /*?stmt*/)
     // patterns
     case wildcard
     case identP(String)
@@ -1627,23 +1627,25 @@ func firstCharLower(_ s: Str) -> Bool {
 // identifier is lowercase and followed by `=` or `:`, otherwise `cap_type (= expr)?`.
 func parseWith(_ p: inout Ps) using Alloc -> Nd {
     advP(&p)  // 'with'
+    var caps: Vec[Nd] = Vec.new()
+    var vals: Vec[Nd] = Vec.new()
     var more: Bool = true
     while more {
         if isKind(p, TokKind.identifier)
             && (isKindAt(p, 1, TokKind.assign) || isKindAt(p, 1, TokKind.colon))
             && firstCharLower(curRaw(p)) {
-            advP(&p)  // name
+            advP(&p)  // name (value binding, grants no capability)
             if eat(p, TokKind.colon) { let t = parseType(&p) }
             eat(p, TokKind.assign)
-            let v = parseExpr(&p)
+            vals.push(parseExpr(&p))
         } else {
-            let cap = parseType(&p)
-            if eat(p, TokKind.assign) { let v = parseExpr(&p) }
+            caps.push(parseType(&p))  // capability-typed binding
+            if eat(p, TokKind.assign) { vals.push(parseExpr(&p)) }
         }
         if !eat(p, TokKind.comma) { more = false }
     }
     let body = parseBlock(&p)
-    return Nd.withS
+    return Nd.withS(caps, vals, bE(body))
 }
 
 func parsePattern(_ p: inout Ps) using Alloc -> Nd {
@@ -2806,7 +2808,7 @@ struct Env {
 
 func noop() {}
 
-func bind(_ env: inout Env, _ n: String) using Alloc { env.names.push(n) }
+func addName(_ env: inout Env, _ n: String) using Alloc { env.names.push(n) }
 
 func inScope(_ env: inout Env, _ n: String) -> Bool {
     var i: Int = 0
@@ -2828,52 +2830,52 @@ func reportUndef(_ env: inout Env, _ n: String) using Alloc {
 }
 
 func addBuiltins(_ env: inout Env) using Alloc {
-    bind(env, "print")
-    bind(env, "println")
-    bind(env, "eprint")
-    bind(env, "eprintln")
-    bind(env, "args")
-    bind(env, "readFile")
-    bind(env, "writeFile")
-    bind(env, "panic")
-    bind(env, "assert")
-    bind(env, "sin")
-    bind(env, "cos")
-    bind(env, "tan")
-    bind(env, "sqrt")
-    bind(env, "pi")
-    bind(env, "tau")
-    bind(env, "Vec")
-    bind(env, "HashMap")
-    bind(env, "String")
-    bind(env, "Str")
-    bind(env, "Box")
-    bind(env, "Span")
-    bind(env, "Atomic")
-    bind(env, "Option")
-    bind(env, "Result")
-    bind(env, "Char")
-    bind(env, "Int")
-    bind(env, "Int8")
-    bind(env, "Int16")
-    bind(env, "Int32")
-    bind(env, "Int64")
-    bind(env, "UInt8")
-    bind(env, "UInt16")
-    bind(env, "UInt32")
-    bind(env, "UInt64")
-    bind(env, "Float32")
-    bind(env, "Float64")
-    bind(env, "Bool")
+    addName(env, "print")
+    addName(env, "println")
+    addName(env, "eprint")
+    addName(env, "eprintln")
+    addName(env, "args")
+    addName(env, "readFile")
+    addName(env, "writeFile")
+    addName(env, "panic")
+    addName(env, "assert")
+    addName(env, "sin")
+    addName(env, "cos")
+    addName(env, "tan")
+    addName(env, "sqrt")
+    addName(env, "pi")
+    addName(env, "tau")
+    addName(env, "Vec")
+    addName(env, "HashMap")
+    addName(env, "String")
+    addName(env, "Str")
+    addName(env, "Box")
+    addName(env, "Span")
+    addName(env, "Atomic")
+    addName(env, "Option")
+    addName(env, "Result")
+    addName(env, "Char")
+    addName(env, "Int")
+    addName(env, "Int8")
+    addName(env, "Int16")
+    addName(env, "Int32")
+    addName(env, "Int64")
+    addName(env, "UInt8")
+    addName(env, "UInt16")
+    addName(env, "UInt32")
+    addName(env, "UInt64")
+    addName(env, "Float32")
+    addName(env, "Float64")
+    addName(env, "Bool")
 }
 
 func collectGlobal(_ env: inout Env, _ d: Nd) using Alloc {
     match d {
-        case .funcD(let vis, let mods, let name, let g, let pp, let c, let t, let r, let b): bind(env, name)
-        case .structD(let vis, let name, let fl, let m, let dn): bind(env, name)
-        case .enumD(let vis, let name, let cs, let m): bind(env, name)
-        case .constD(let vis, let name, let ty, let v): bind(env, name)
-        case .staticD(let vis, let name, let ty, let v): bind(env, name)
+        case .funcD(let vis, let mods, let name, let g, let pp, let c, let t, let r, let b): addName(env, name)
+        case .structD(let vis, let name, let fl, let m, let dn): addName(env, name)
+        case .enumD(let vis, let name, let cs, let m): addName(env, name)
+        case .constD(let vis, let name, let ty, let v): addName(env, name)
+        case .staticD(let vis, let name, let ty, let v): addName(env, name)
         default: noop()
     }
 }
@@ -2936,7 +2938,7 @@ func bindParam(_ env: inout Env, _ p: Nd) using Alloc {
 }
 
 func bindIfName(_ env: inout Env, _ nm: String) using Alloc {
-    if !streq(nm, "") { bind(env, nm) }
+    if !streq(nm, "") { addName(env, nm) }
 }
 
 func resolveBoxed(_ env: inout Env, _ v: Vec[Nd]) using Alloc {
@@ -2990,7 +2992,7 @@ func resolveIf(_ env: inout Env, _ ln: String, _ li: Vec[Nd], _ cond: Vec[Nd], _
     if !streq(ln, "") {
         resolveBoxed(env, li)
         let save = env.names.len()
-        bind(env, ln)
+        addName(env, ln)
         resolveBoxed(env, thenB)
         popTo(env, save)
     } else {
@@ -3003,7 +3005,7 @@ func resolveIf(_ env: inout Env, _ ln: String, _ li: Vec[Nd], _ cond: Vec[Nd], _
 func resolveDoCatch(_ env: inout Env, _ db: Vec[Nd], _ en: String, _ cb: Vec[Nd]) using Alloc {
     resolveBoxed(env, db)
     let save = env.names.len()
-    if !streq(en, "") { bind(env, en) }
+    if !streq(en, "") { addName(env, en) }
     resolveBoxed(env, cb)
     popTo(env, save)
 }
@@ -3050,8 +3052,8 @@ func bindPatBoxed(_ env: inout Env, _ pat: Vec[Nd]) using Alloc {
 
 func bindPattern(_ env: inout Env, _ p: Nd) using Alloc {
     match p {
-        case .identP(let n): bind(env, n)
-        case .bindP(let n): bind(env, n)
+        case .identP(let n): addName(env, n)
+        case .bindP(let n): addName(env, n)
         case .tupleP(let elems): bindPatList(env, elems)
         case .enumP(let cname, let children): bindPatList(env, children)
         default: noop()
@@ -3063,6 +3065,322 @@ func bindPatList(_ env: inout Env, _ ps: Vec[Nd]) using Alloc {
     while i < ps.len() {
         bindPattern(env, ps.get(i) ?? Nd.wildcard)
         i = i + 1
+    }
+}
+
+// ===========================================================================
+// Capability checking (§ effects). A scope stack of capability-name sets:
+// `active` holds the names currently granted (the function's `using` row, plus
+// any enclosing `with` grants). The (fcNames, fcCaps) parallel arrays map each
+// user function to its declared capabilities (one row per (func, cap) pair);
+// `userFuncs` distinguishes a user call from a builtin; `bad` collects the
+// "missing capability '<Cap>'" diagnostics in walk order.
+// ===========================================================================
+struct CapEnv {
+    var active: Vec[String]
+    var fcNames: Vec[String]
+    var fcCaps: Vec[String]
+    var userFuncs: Vec[String]
+    var bad: Vec[String]
+}
+
+func containsSub(_ s: String, _ sub: Str) -> Bool {
+    let n = s.len()
+    let m = sub.len()
+    if m == 0 { return true }
+    if m > n { return false }
+    var i: Int = 0
+    while i + m <= n {
+        var j: Int = 0
+        var ok: Bool = true
+        while ok && j < m {
+            if (s.byteAt(i + j) ?? 0) != (sub.byteAt(j) ?? 1) { ok = false }
+            j = j + 1
+        }
+        if ok { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func capInScope(_ env: inout CapEnv, _ cap: String) -> Bool {
+    var i: Int = 0
+    while i < env.active.len() {
+        if let c = env.active.get(i) {
+            if streq(c, cap) { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func userFuncContains(_ env: inout CapEnv, _ name: String) -> Bool {
+    var i: Int = 0
+    while i < env.userFuncs.len() {
+        if let c = env.userFuncs.get(i) {
+            if streq(c, name) { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func capMsg(_ cap: String) using Alloc -> String {
+    var s: String = "missing capability '"
+    s.append(cap)
+    s.append("'")
+    return s
+}
+
+func require(_ env: inout CapEnv, _ cap: String) using Alloc {
+    if !capInScope(env, cap) { env.bad.push(capMsg(cap)) }
+}
+
+func popCapTo(_ env: inout CapEnv, _ target: Int) {
+    while env.active.len() > target { let _ = env.active.pop() }
+}
+
+func pushCapName(_ env: inout CapEnv, _ t: Nd) using Alloc {
+    match t {
+        case .named(let path, let g, let a): env.active.push(path)
+        default: noop()
+    }
+}
+
+func pushCaps(_ env: inout CapEnv, _ caps: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < caps.len() {
+        pushCapName(env, caps.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+// ----- pass 1: record each user function's declared capability row ----------
+func checkCapabilities(_ env: inout CapEnv, _ u: NUnit) using Alloc {
+    var i: Int = 0
+    while i < u.decls.len() {
+        collectFuncCaps(env, u.decls.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    var j: Int = 0
+    while j < u.decls.len() {
+        checkDeclCaps(env, u.decls.get(j) ?? Nd.wildcard)
+        j = j + 1
+    }
+}
+
+func collectFuncCaps(_ env: inout CapEnv, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let pp, let caps, let t, let r, let b):
+            recordFunc(env, name, mods, caps)
+        case .structD(let vis, let name, let fl, let m, let dn): collectMethodCaps(env, m)
+        case .enumD(let vis, let name, let cs, let m): collectMethodCaps(env, m)
+        default: noop()
+    }
+}
+
+func collectMethodCaps(_ env: inout CapEnv, _ methods: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < methods.len() {
+        collectFuncCaps(env, methods.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func recordFunc(_ env: inout CapEnv, _ name: String, _ mods: String, _ caps: Vec[Nd]) using Alloc {
+    env.userFuncs.push(name)
+    var i: Int = 0
+    while i < caps.len() {
+        capRowFor(env, name, caps.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    if containsSub(mods, "async") {
+        env.fcNames.push(name)
+        env.fcCaps.push("Async")
+    }
+}
+
+func capRowFor(_ env: inout CapEnv, _ name: String, _ t: Nd) using Alloc {
+    match t {
+        case .named(let path, let g, let a): addRow(env, name, path)
+        default: noop()
+    }
+}
+
+func addRow(_ env: inout CapEnv, _ name: String, _ path: String) using Alloc {
+    env.fcNames.push(name)
+    env.fcCaps.push(path)
+}
+
+// ----- pass 2: walk bodies, discharging capability uses ---------------------
+func checkDeclCaps(_ env: inout CapEnv, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let pp, let caps, let t, let r, let b):
+            checkFuncBody(env, mods, caps, b)
+        case .structD(let vis, let name, let fl, let m, let dn): checkMethodsCaps(env, m)
+        case .enumD(let vis, let name, let cs, let m): checkMethodsCaps(env, m)
+        default: noop()
+    }
+}
+
+func checkMethodsCaps(_ env: inout CapEnv, _ methods: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < methods.len() {
+        checkDeclCaps(env, methods.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func checkFuncBody(_ env: inout CapEnv, _ mods: String, _ caps: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    let save = env.active.len()
+    pushCaps(env, caps)
+    if containsSub(mods, "async") { env.active.push("Async") }
+    checkCapBoxed(env, body)
+    popCapTo(env, save)
+}
+
+func checkCapBoxed(_ env: inout CapEnv, _ v: Vec[Nd]) using Alloc {
+    if v.len() > 0 { checkCapExpr(env, v.get(0) ?? Nd.wildcard) }
+}
+
+func checkCapPair(_ env: inout CapEnv, _ a: Vec[Nd], _ b: Vec[Nd]) using Alloc {
+    checkCapBoxed(env, a)
+    checkCapBoxed(env, b)
+}
+
+func checkCapExpr(_ env: inout CapEnv, _ e: Nd) using Alloc {
+    match e {
+        case .call(let callee, let args): checkCall(env, callee, args)
+        case .prefixE(let kw, let inner): checkPrefixCaps(env, kw, inner)
+        case .paren(let x): checkCapBoxed(env, x)
+        case .unary(let op, let x): checkCapBoxed(env, x)
+        case .binary(let op, let l, let r): checkCapPair(env, l, r)
+        case .member(let base, let n, let c): checkCapBoxed(env, base)
+        case .index(let base, let idxs): checkCapIndex(env, base, idxs)
+        case .ifE(let ln, let li, let cond, let thenB, let els): checkCapIf(env, li, cond, thenB, els)
+        case .block(let stmts): checkCapBlock(env, stmts)
+        case .asE(let v, let t, let o): checkCapBoxed(env, v)
+        case .addrOf(let x): checkCapBoxed(env, x)
+        case .arg(let l, let io, let v): checkCapBoxed(env, v)
+        case .doCatchE(let db, let en, let et, let cb): checkCapPair(env, db, cb)
+        default: noop()
+    }
+}
+
+func checkCapIndex(_ env: inout CapEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc {
+    checkCapBoxed(env, base)
+    var i: Int = 0
+    while i < idxs.len() {
+        checkCapExpr(env, idxs.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func checkCapIf(_ env: inout CapEnv, _ li: Vec[Nd], _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc {
+    checkCapBoxed(env, cond)
+    checkCapBoxed(env, li)
+    checkCapBoxed(env, thenB)
+    checkCapBoxed(env, els)
+}
+
+func checkCapBlock(_ env: inout CapEnv, _ stmts: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < stmts.len() {
+        checkCapStmt(env, stmts.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func checkCapStmt(_ env: inout CapEnv, _ s: Nd) using Alloc {
+    match s {
+        case .letS(let p, let ty, let v): checkCapBoxed(env, v)
+        case .varS(let p, let ty, let v): checkCapBoxed(env, v)
+        case .exprS(let e): checkCapBoxed(env, e)
+        case .retS(let v): checkCapBoxed(env, v)
+        case .assignS(let op, let t, let v): checkCapPair(env, t, v)
+        case .whileS(let c, let b): checkCapPair(env, c, b)
+        case .forS(let pp, let it, let b): checkCapPair(env, it, b)
+        case .withS(let caps, let vals, let body): checkWith(env, caps, vals, body)
+        default: noop()
+    }
+}
+
+func checkWith(_ env: inout CapEnv, _ caps: Vec[Nd], _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    // §17.4: binding values are evaluated in the OUTER scope (before the grant).
+    var i: Int = 0
+    while i < vals.len() {
+        checkCapExpr(env, vals.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    let save = env.active.len()
+    pushCaps(env, caps)
+    checkCapBoxed(env, body)
+    popCapTo(env, save)
+}
+
+func checkPrefixCaps(_ env: inout CapEnv, _ kw: String, _ inner: Vec[Nd]) using Alloc {
+    if streq(kw, "await ") || streq(kw, "spawn ") { require(env, "Async") }
+    checkCapBoxed(env, inner)
+}
+
+func checkCall(_ env: inout CapEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    checkCalleeCaps(env, callee.get(0) ?? Nd.wildcard, args)
+    checkCapBoxed(env, callee)
+    var i: Int = 0
+    while i < args.len() {
+        checkCapExpr(env, args.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func checkCalleeCaps(_ env: inout CapEnv, _ callee: Nd, _ args: Vec[Nd]) using Alloc {
+    match callee {
+        case .ident(let name): checkIdentCallee(env, name)
+        case .member(let base, let m, let c): checkMemberCallee(env, base, m)
+        default: noop()
+    }
+}
+
+func checkIdentCallee(_ env: inout CapEnv, _ name: String) using Alloc {
+    if userFuncContains(env, name) { requireFuncCaps(env, name) }
+    else { requireBuiltinCap(env, name) }
+}
+
+func requireFuncCaps(_ env: inout CapEnv, _ name: String) using Alloc {
+    var i: Int = 0
+    while i < env.fcNames.len() {
+        if let fn = env.fcNames.get(i) {
+            if streq(fn, name) {
+                if let cap = env.fcCaps.get(i) { require(env, cap) }
+            }
+        }
+        i = i + 1
+    }
+}
+
+func requireBuiltinCap(_ env: inout CapEnv, _ name: String) using Alloc {
+    if streq(name, "print") || streq(name, "println") || streq(name, "eprint") || streq(name, "eprintln") {
+        require(env, "Log")
+    } else if streq(name, "readFile") || streq(name, "writeFile") {
+        require(env, "Fs")
+    } else if streq(name, "args") {
+        require(env, "Alloc")
+    }
+}
+
+func checkMemberCallee(_ env: inout CapEnv, _ base: Vec[Nd], _ member: String) using Alloc {
+    if streq(member, "new") {
+        match base.get(0) ?? Nd.wildcard {
+            case .ident(let b): requireAllocCtor(env, b)
+            default: noop()
+        }
+    }
+}
+
+func requireAllocCtor(_ env: inout CapEnv, _ b: String) using Alloc {
+    if streq(b, "Box") || streq(b, "Vec") || streq(b, "String") || streq(b, "HashMap")
+        || streq(b, "Soa") || streq(b, "PerCpu") {
+        require(env, "Alloc")
     }
 }
 
@@ -3092,7 +3410,18 @@ func main() -> Int32 {
                         }
                         i = i + 1
                     }
+                    // Match `vestra check`: stop at resolution errors before the
+                    // capability pass.
                     if env.bad.len() > 0 { return 1 }
+                    var cenv = CapEnv(active: Vec.new(), fcNames: Vec.new(), fcCaps: Vec.new(),
+                                      userFuncs: Vec.new(), bad: Vec.new())
+                    checkCapabilities(&cenv, u)
+                    var k: Int = 0
+                    while k < cenv.bad.len() {
+                        if let msg = cenv.bad.get(k) { println(msg) }
+                        k = k + 1
+                    }
+                    if cenv.bad.len() > 0 { return 1 }
                     return 0
                 }
                 eprintln("read failed")

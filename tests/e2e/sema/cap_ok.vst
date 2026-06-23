@@ -1,0 +1,22 @@
+// Valid: capabilities are satisfied by the function's `using` row, by enclosing
+// `with` blocks, or propagated from a called function whose row is in scope.
+func logIt() using Log {
+}
+
+func equipped(_ path: Str) using Alloc, Fs, Log -> Int32 {
+    println("hello")
+    var v: Vec[Int32] = Vec.new()
+    let s = readFile(path)
+    logIt()
+    return 0
+}
+
+func viaWith() -> Int32 {
+    with Alloc {
+        with Log {
+            var v: Vec[Int32] = Vec.new()
+            println("nested")
+        }
+    }
+    return 0
+}

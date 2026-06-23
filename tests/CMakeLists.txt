@@ -193,13 +193,15 @@ set_tests_properties(e2e_selfhost_parser_diff_example5 PROPERTIES DEPENDS e2e_se
 
 # ---------------------------------------------------------------------------
 # Dog-food compiler, phase 3: the Vestra semantic analyzer written in Vestra
-# (selfhost/sema.vst). Slice 1 is name resolution: a two-pass resolver (collect
-# top-level value names + builtins, then walk each function body with a scope
-# stack) that reports undefined identifiers. Validation is DIFFERENTIAL against
-# `vestra check`: each diff test extracts the `undefined name '...'` messages from
-# both and compares them. Sema is cross-referential, so this runs on a CURATED
-# corpus (valid + single-undefined-name variants) with a controlled vocabulary,
-# not the whole example corpus.
+# (selfhost/sema.vst). Slice 1 is name resolution (undefined identifiers); slice 2
+# is capability checking (each capability use — print*/readFile/Vec.new/await/a
+# called function's `using` row — must be satisfied by the function's `using` row
+# or an enclosing `with` block). Validation is DIFFERENTIAL against `vestra check`:
+# each diff test extracts the `undefined name '...'` and `missing capability '...'`
+# messages from both and compares them. `vsema` mirrors `check`'s ordering (stop at
+# resolution errors before the capability pass). Sema is cross-referential, so this
+# runs on a CURATED corpus (otherwise-valid programs isolating one rule), not the
+# whole example corpus.
 # ---------------------------------------------------------------------------
 set(selfhost_sema  ${CMAKE_SOURCE_DIR}/selfhost/sema.vst)
 set(sema_dir       ${CMAKE_SOURCE_DIR}/tests/e2e/sema)
@@ -218,12 +220,12 @@ add_test(
             -o ${e2e_workdir}/vsema)
 set_tests_properties(e2e_selfhost_sema_compile PROPERTIES DEPENDS e2e_selfhost_sema_transpile)
 
-# One differential test per curated program: the self-hosted resolver's
-# undefined-name verdict must match `vestra check`.
-foreach(prog resolve_ok resolve_bad resolve_scope)
+# One differential test per curated program: the self-hosted analyzer's
+# undefined-name + missing-capability verdict must match `vestra check`.
+foreach(prog resolve_ok resolve_bad resolve_scope cap_ok cap_missing)
     add_test(
         NAME    e2e_selfhost_sema_diff_${prog}
-        COMMAND sh -c "mkdir -p ${sema_workdir} && $<TARGET_FILE:vestra> check ${sema_dir}/${prog}.vst 2>&1 | grep -oE \"undefined name '[^']*'\" > ${sema_workdir}/${prog}_c.txt; ${e2e_workdir}/vsema ${sema_dir}/${prog}.vst > ${sema_workdir}/${prog}_v.txt; diff ${sema_workdir}/${prog}_c.txt ${sema_workdir}/${prog}_v.txt")
+        COMMAND sh -c "mkdir -p ${sema_workdir} && $<TARGET_FILE:vestra> check ${sema_dir}/${prog}.vst 2>&1 | grep -oE \"undefined name '[^']*'|missing capability '[^']*'\" > ${sema_workdir}/${prog}_c.txt; ${e2e_workdir}/vsema ${sema_dir}/${prog}.vst | grep -oE \"undefined name '[^']*'|missing capability '[^']*'\" > ${sema_workdir}/${prog}_v.txt; diff ${sema_workdir}/${prog}_c.txt ${sema_workdir}/${prog}_v.txt")
     set_tests_properties(e2e_selfhost_sema_diff_${prog} PROPERTIES DEPENDS e2e_selfhost_sema_compile)
 endforeach()
 
