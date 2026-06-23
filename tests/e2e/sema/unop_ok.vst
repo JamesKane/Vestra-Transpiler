@@ -1,0 +1,9 @@
+// Well-typed unary operators: negation on a numeric type, bitwise-not on an
+// integer type, and logical-not on Bool.
+func ok(_ a: Int32, _ f: Float64, _ b: Bool) -> Int32 {
+    let n: Int32 = -a       // negate Int32
+    let g: Float64 = -f     // negate Float64
+    let m: Int32 = ~a       // bitwise-not Int32
+    let c: Bool = !b        // logical-not Bool
+    return n
+}

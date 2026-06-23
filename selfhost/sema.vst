@@ -4478,7 +4478,7 @@ func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
         case .call(let callee, let args): tyExprCall(env, callee, args)
         case .prefixE(let kw, let inner): tyBoxed(env, inner)
         case .paren(let x): tyBoxed(env, x)
-        case .unary(let op, let x): tyBoxed(env, x)
+        case .unary(let op, let x): tyUnary(env, op, x)
         case .binary(let op, let l, let r): tyBinary(env, op, l, r)
         case .member(let base, let n, let c): tyBoxed(env, base)
         case .index(let base, let idxs): tyIndex(env, base, idxs)
@@ -4873,14 +4873,18 @@ func tyNumResult(_ lt: String, _ rt: String, _ needInt: Bool) using Alloc -> Str
 // The self-host AST spells both prefix logical-not `!x` and postfix force-unwrap
 // `x!` as `unary("!", _)`, so they are told apart by the operand: an Optional
 // `T?` operand is a force-unwrap yielding T (§9), anything else is logical-not
-// yielding Bool. `-` / `~` carry the operand type through.
+// yielding Bool. `-x` carries a numeric operand through, `~x` an integer one;
+// a constraint violation yields the error type ("") so it doesn't cascade.
 func tyInferUnary(_ env: inout TyEnv, _ op: String, _ x: Vec[Nd]) using Alloc -> String {
+    let xt = tyInferBoxed(env, x)
     if streq(op, "!") {
-        let xt = tyInferBoxed(env, x)
         if (xt.byteAt(xt.len() - 1) ?? 0) == 63 { return tyUnwrapOpt(xt) }   // T? -> T
         return own("Bool")
     }
-    return tyInferBoxed(env, x)
+    if streq(xt, "") { return own("") }                   // unknown operand: stay permissive
+    if streq(op, "-") { if tyIsNumeric(xt) { return own(xt) }; return own("") }
+    if streq(op, "~") { if tyIsInt(xt) { return own(xt) }; return own("") }
+    return own(xt)
 }
 
 func isCmpOp(_ op: String) -> Bool {
@@ -4959,6 +4963,37 @@ func tyDiffMsg(_ lt: String, _ rt: String) using Alloc -> String {
 
 func tyLogMsg() using Alloc -> String {
     return own("logical && / || require Bool operands")
+}
+
+// ----- unary operator constraints -------------------------------------------
+func tyUnary(_ env: inout TyEnv, _ op: String, _ x: Vec[Nd]) using Alloc {
+    tyBoxed(env, x)
+    tyCheckUnOp(env, op, x)
+}
+
+// `-x` needs a numeric operand, `~x` an integer one. `!` is skipped: the AST
+// merges prefix logical-not and postfix force-unwrap into one node, so the right
+// diagnostic ("requires Bool" vs "requires an Optional") can't be chosen.
+func tyCheckUnOp(_ env: inout TyEnv, _ op: String, _ x: Vec[Nd]) using Alloc {
+    let xt = tyInferBoxed(env, x)
+    if streq(xt, "") { return }
+    if streq(op, "-") {
+        if !tyIsNumeric(xt) { env.bad.push(tyNegMsg(xt)) }
+    } else if streq(op, "~") {
+        if !tyIsInt(xt) { env.bad.push(tyBitNotMsg(xt)) }
+    }
+}
+
+func tyNegMsg(_ got: String) using Alloc -> String {
+    var s: String = "unary '-' requires a numeric type, got "
+    s.append(got)
+    return s
+}
+
+func tyBitNotMsg(_ got: String) using Alloc -> String {
+    var s: String = "unary '~' requires an integer type, got "
+    s.append(got)
+    return s
 }
 
 func tyFieldMsg(_ label: String, _ fieldType: String, _ argType: String) using Alloc -> String {

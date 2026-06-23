@@ -1,0 +1,9 @@
+// Ill-typed unary operators: negation of a non-numeric (struct) value and
+// bitwise-not of a non-integer (Float64) value.
+struct P { var x: Int32 }
+
+func bad(_ p: P, _ f: Float64) -> Int32 {
+    let a: P = -p         // negate a struct (non-numeric)
+    let b: Float64 = ~f   // bitwise-not a Float64 (non-integer)
+    return 0
+}
