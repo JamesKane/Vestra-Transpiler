@@ -1,0 +1,12 @@
+// Ill-typed binary operators: mismatched operand types (specific widths differ),
+// arithmetic on a non-numeric operand, a bitwise operator on a non-integer, a
+// logical connective on a non-Bool, and a comparison of mismatched types.
+func bad(_ n: Int32, _ m: Int64, _ flag: Bool, _ s: Str) -> Int32 {
+    let a: Int32 = n + m       // operands of different types: Int32 vs Int64
+    let b: Str = s + s         // arithmetic on non-numeric Str
+    let c: Int32 = n << flag   // operands of different types: Int32 vs Bool
+    let d: Int32 = flag & n    // bitwise requires integer operands, got Bool
+    let e: Bool = flag && n    // logical requires Bool operands
+    let g: Bool = n < m        // comparison operands of different types
+    return 0
+}

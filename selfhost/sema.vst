@@ -4384,7 +4384,7 @@ func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
         case .prefixE(let kw, let inner): tyBoxed(env, inner)
         case .paren(let x): tyBoxed(env, x)
         case .unary(let op, let x): tyBoxed(env, x)
-        case .binary(let op, let l, let r): tyPair(env, l, r)
+        case .binary(let op, let l, let r): tyBinary(env, op, l, r)
         case .member(let base, let n, let c): tyBoxed(env, base)
         case .index(let base, let idxs): tyIndex(env, base, idxs)
         case .ifE(let ln, let li, let cond, let thenB, let els): tyIf(env, li, cond, thenB, els)
@@ -4563,14 +4563,41 @@ func tyInfer(_ env: inout TyEnv, _ e: Nd) using Alloc -> String {
     }
 }
 
-// Comparisons and logical connectives yield Bool; arithmetic / bitwise yield the
-// operand type, with the §17 sized operand winning when the other is natural-
-// width (`Int32 + Int` -> Int32). Other operators (??, ranges) stay unknown.
+// A binary expression's type, mirroring the resolver's result types (and its
+// "error type on failure" so a mis-typed operator suppresses downstream checks):
+// comparisons -> Bool when the operands match (else unknown); logical -> Bool
+// when both Bool; arithmetic/bitwise -> the operand type with the §17 sized
+// operand winning (`Int32 + Int` -> Int32), or unknown when the operand rule is
+// violated. Unknown operands stay permissive so a partly-inferred condition is
+// tolerated. Other operators (??, ranges) are unknown.
 func tyInferBinary(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc -> String {
-    if isBoolBinOp(op) { return own("Bool") }
-    if !isArithBinOp(op) { return own("") }
     let lt = tyInferBoxed(env, l)
     let rt = tyInferBoxed(env, r)
+    if isCmpOp(op) { return tyCmpResult(lt, rt) }
+    if isLogOp(op) { return tyLogResult(lt, rt) }
+    if isArithOp(op) { return tyNumResult(lt, rt, false) }
+    if isBitOp(op) { return tyNumResult(lt, rt, true) }
+    return own("")
+}
+
+func tyCmpResult(_ lt: String, _ rt: String) using Alloc -> String {
+    if streq(lt, "") || streq(rt, "") { return own("Bool") }
+    if tyReqMatch(lt, rt) { return own("Bool") }
+    return own("")
+}
+
+func tyLogResult(_ lt: String, _ rt: String) using Alloc -> String {
+    if streq(lt, "") || streq(rt, "") { return own("Bool") }
+    if streq(lt, "Bool") && streq(rt, "Bool") { return own("Bool") }
+    return own("")
+}
+
+func tyNumResult(_ lt: String, _ rt: String, _ needInt: Bool) using Alloc -> String {
+    if streq(lt, "") || streq(rt, "") { return own("") }
+    var lok: Bool = tyIsNumeric(lt)
+    if needInt { lok = tyIsInt(lt) }
+    if !lok { return own("") }
+    if !tyReqMatch(lt, rt) { return own("") }
     if streq(lt, "Int") || streq(lt, "UInt") { return rt }
     return lt
 }
@@ -4580,15 +4607,82 @@ func tyInferUnary(_ env: inout TyEnv, _ op: String, _ x: Vec[Nd]) using Alloc ->
     return tyInferBoxed(env, x)
 }
 
-func isBoolBinOp(_ op: String) -> Bool {
+func isCmpOp(_ op: String) -> Bool {
     return streq(op, "==") || streq(op, "!=") || streq(op, "<") || streq(op, "<=")
-        || streq(op, ">") || streq(op, ">=") || streq(op, "&&") || streq(op, "||")
+        || streq(op, ">") || streq(op, ">=")
 }
 
-func isArithBinOp(_ op: String) -> Bool {
+func isLogOp(_ op: String) -> Bool {
+    return streq(op, "&&") || streq(op, "||")
+}
+
+func isArithOp(_ op: String) -> Bool {
     return streq(op, "+") || streq(op, "-") || streq(op, "*") || streq(op, "/")
         || streq(op, "%") || streq(op, "&*") || streq(op, "&+") || streq(op, "&-")
-        || streq(op, "<<") || streq(op, ">>") || streq(op, "&") || streq(op, "^") || streq(op, "|")
+}
+
+func isBitOp(_ op: String) -> Bool {
+    return streq(op, "<<") || streq(op, ">>") || streq(op, "&") || streq(op, "^") || streq(op, "|")
+}
+
+func tyIsNumeric(_ s: String) -> Bool {
+    return tyIsInt(s) || streq(s, "Float32") || streq(s, "Float64")
+}
+
+// The resolver's require_match: operands match when they are equal, or both
+// integers where one assigns to the other (the §17 natural-width rule).
+func tyReqMatch(_ lt: String, _ rt: String) using Alloc -> Bool {
+    if streq(lt, rt) { return true }
+    if tyIsInt(lt) && tyIsInt(rt) && (tyAssignable(lt, rt) || tyAssignable(rt, lt)) { return true }
+    return false
+}
+
+// ----- binary operator constraints ------------------------------------------
+func tyBinary(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc {
+    tyBoxed(env, l)
+    tyBoxed(env, r)
+    tyCheckBinOp(env, op, l, r)
+}
+
+func tyCheckBinOp(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc {
+    let lt = tyInferBoxed(env, l)
+    let rt = tyInferBoxed(env, r)
+    if streq(lt, "") || streq(rt, "") { return }
+    if isLogOp(op) {
+        if !streq(lt, "Bool") || !streq(rt, "Bool") { env.bad.push(tyLogMsg()) }
+    } else if isArithOp(op) {
+        if !tyIsNumeric(lt) { env.bad.push(tyArithMsg(lt)) }
+        else if !tyReqMatch(lt, rt) { env.bad.push(tyDiffMsg(lt, rt)) }
+    } else if isBitOp(op) {
+        if !tyIsInt(lt) { env.bad.push(tyBitMsg(lt)) }
+        else if !tyReqMatch(lt, rt) { env.bad.push(tyDiffMsg(lt, rt)) }
+    } else if isCmpOp(op) {
+        if !tyReqMatch(lt, rt) { env.bad.push(tyDiffMsg(lt, rt)) }
+    }
+}
+
+func tyArithMsg(_ got: String) using Alloc -> String {
+    var s: String = "arithmetic operator requires numeric operands, got "
+    s.append(got)
+    return s
+}
+
+func tyBitMsg(_ got: String) using Alloc -> String {
+    var s: String = "bitwise operator requires integer operands, got "
+    s.append(got)
+    return s
+}
+
+func tyDiffMsg(_ lt: String, _ rt: String) using Alloc -> String {
+    var s: String = "binary operator operands of different types: "
+    s.append(lt)
+    s.append(" vs ")
+    s.append(rt)
+    return s
+}
+
+func tyLogMsg() using Alloc -> String {
+    return own("logical && / || require Bool operands")
 }
 
 func tyInferCall(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {

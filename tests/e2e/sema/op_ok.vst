@@ -1,0 +1,14 @@
+// Well-typed binary operators: arithmetic and bitwise on matching numeric /
+// integer operands (with an Int literal adapting to the sized side), comparisons
+// and logical connectives producing Bool.
+func ok(_ n: Int32, _ f: Float64, _ flag: Bool, _ other: Bool) -> Int32 {
+    let a: Int32 = n + 1          // Int32 + Int -> Int32
+    let b: Int32 = n * n          // Int32 * Int32
+    let c: Int32 = n << 2         // bitwise, Int32 << Int
+    let d: Int32 = n & n          // bitwise, integers
+    let e: Float64 = f / f        // float arithmetic
+    let g: Bool = n < 5           // comparison -> Bool
+    let h: Bool = flag && other   // logical, both Bool
+    let i: Bool = flag || (n > 0) // logical, both Bool
+    return a
+}
