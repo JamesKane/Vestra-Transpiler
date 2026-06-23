@@ -1,0 +1,16 @@
+// Member access types as the field's type and flows correctly through the other
+// checks: a matching initializer, a nested field access, a matching argument, a
+// matching assignment target, and a matching return.
+struct Inner { var n: Int32 }
+struct Outer { var inner: Inner; var tag: String }
+
+func takesInt32(_ a: Int32) -> Int32 { return a }
+
+func ok(_ o: Outer) -> Int32 {
+    let a: String = o.tag         // String field
+    let b: Int32 = o.inner.n      // nested Int32 field
+    let c: Int32 = takesInt32(o.inner.n)  // member as argument
+    var n: Int32 = 0
+    n = o.inner.n                 // member as assignment value
+    return o.inner.n              // member as return value
+}

@@ -1,0 +1,16 @@
+// Member access feeds its field type into each check and surfaces a mismatch: a
+// field initializer, a nested field initializer, a member argument, a member
+// assignment value, and a member return value.
+struct Inner { var n: Int32 }
+struct Outer { var inner: Inner; var tag: Str }
+
+func takesBool(_ b: Bool) -> Int32 { return 0 }
+
+func bad(_ o: Outer) -> Bool {
+    let a: Bool = o.tag           // Str field vs Bool
+    let b: Bool = o.inner.n       // nested Int32 vs Bool
+    let c: Int32 = takesBool(o.tag)  // arg: Str vs Bool
+    var n: Int32 = 0
+    n = o.tag                     // assign Str to Int32
+    return o.inner.n              // return Int32 vs Bool result
+}

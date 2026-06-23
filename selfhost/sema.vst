@@ -4697,8 +4697,19 @@ func tyInfer(_ env: inout TyEnv, _ e: Nd) using Alloc -> String {
         case .call(let callee, let args): tyInferCall(env, callee)
         case .binary(let op, let l, let r): tyInferBinary(env, op, l, r)
         case .unary(let op, let x): tyInferUnary(env, op, x)
+        case .member(let base, let name, let chain): tyInferMember(env, base, name, chain)
         default: own("")
     }
+}
+
+// `base.field` types as the field's declared type when `base` is a known struct
+// and `field` is one of its fields; a `?.` chain (optional result) and anything
+// else stay unknown. Nested access (`a.b.c`) falls out of the recursion.
+func tyInferMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain: Bool) using Alloc -> String {
+    if chain { return own("") }
+    let bt = tyInferBoxed(env, base)
+    if tyHasField(env, bt, name) { return tyFieldType(env, bt, name) }
+    return own("")
 }
 
 // A binary expression's type, mirroring the resolver's result types (and its
