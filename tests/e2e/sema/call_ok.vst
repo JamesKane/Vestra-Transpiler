@@ -1,0 +1,15 @@
+// Valid calls: correct arity, and every argument assignable to its parameter
+// under the slice rules — identity, the §17 Int/UInt natural-width conversion
+// (Int literal -> Int32), and the §4 string lattice (StrConst -> Str / String).
+func takesInt32(_ a: Int32) -> Int32 { return a }
+func takesStr(_ s: Str) -> Int32 { return 0 }
+func two(_ a: Int32, _ b: String) -> Int32 { return 0 }
+
+func ok(_ p: Int32) -> Int32 {
+    let a: Int32 = takesInt32(7)        // Int literal -> Int32
+    let b: Int32 = takesInt32(p)        // Int32 -> Int32
+    let c: Int32 = takesStr("hi")       // StrConst -> Str
+    let d: Int32 = two(p, "owned")      // Int32, StrConst -> String
+    let e: Int32 = two(takesInt32(1), "x")  // nested call result -> Int32
+    return a
+}

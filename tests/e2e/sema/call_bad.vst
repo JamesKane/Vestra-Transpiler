@@ -1,0 +1,16 @@
+// Each call is ill-typed: an argument not assignable to its parameter (from a
+// literal, a parameter, and a call's return type), and calls with the wrong
+// number of arguments. Argument and arity diagnostics are reported in walk order.
+func takesInt32(_ a: Int32) -> Int32 { return a }
+func takesStr(_ s: Str) -> Int32 { return 0 }
+func two(_ a: Int32, _ b: Str) -> Int32 { return 0 }
+
+func bad(_ p: Int32, _ flag: Bool) -> Int32 {
+    let a: Int32 = takesInt32(flag)     // arg 1: Bool vs Int32
+    let b: Int32 = takesStr(9)          // arg 1: Int vs Str
+    let c: Int32 = two(p, flag)         // arg 2: Bool vs Str
+    let d: Int32 = takesStr(takesInt32(0))  // arg 1: Int32 vs Str
+    let e: Int32 = two(p)               // arity: expects 2, got 1
+    let f: Int32 = takesInt32(1, 2)     // arity: expects 1, got 2
+    return 0
+}

@@ -4149,7 +4149,11 @@ func ownRegisterPatE(_ env: inout OwnEnv, _ p: Nd, _ ty: Vec[Nd]) using Alloc {
 // ===========================================================================
 struct TyEnv {
     var funcName: Vec[String]   // global: function name ...
-    var funcRet: Vec[String]    // ... -> return-type spelling ("Unit" if none)
+    var funcRet: Vec[String]    // ... -> return-type spelling ("Unit" if none) ...
+    var funcArity: Vec[Int]     // ... -> declared parameter count
+    var pFn: Vec[String]        // global: per-parameter rows — function name ...
+    var pIdx: Vec[Int]          // ... parameter index ...
+    var pType: Vec[String]      // ... -> parameter type spelling
     var structs: Vec[String]    // global: struct names (construction yields that type)
     var symName: Vec[String]    // per-function: binding name ...
     var symType: Vec[String]    // ... -> type spelling
@@ -4173,16 +4177,57 @@ func tyCheck(_ env: inout TyEnv, _ u: NUnit) using Alloc {
 func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
-            tyRecordFunc(env, name, r)
+            tyRecordFunc(env, name, params, r)
         case .structD(let vis, let name, let fl, let m, let dn): env.structs.push(name)
         default: noop()
     }
 }
 
-func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ result: Vec[Nd]) using Alloc {
+func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ result: Vec[Nd]) using Alloc {
     env.funcName.push(name)
     if result.len() == 0 { env.funcRet.push("Unit") }
     else { env.funcRet.push(typeSpelling(result.get(0) ?? Nd.wildcard)) }
+    env.funcArity.push(params.len())
+    var i: Int = 0
+    while i < params.len() {
+        tyRecordParam(env, name, i, params.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyRecordParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ p: Nd) using Alloc {
+    match p {
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyPushParam(env, name, idx, tyAnnSpelling(ty))
+        default: noop()
+    }
+}
+
+func tyPushParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ sp: String) using Alloc {
+    env.pFn.push(name)
+    env.pIdx.push(idx)
+    env.pType.push(sp)
+}
+
+func tyArity(_ env: inout TyEnv, _ name: String) -> Int {
+    var i: Int = 0
+    while i < env.funcName.len() {
+        if let n = env.funcName.get(i) {
+            if streq(n, name) { return env.funcArity.get(i) ?? -1 }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+func tyParamType(_ env: inout TyEnv, _ name: String, _ idx: Int) using Alloc -> String {
+    var i: Int = 0
+    while i < env.pFn.len() {
+        if let n = env.pFn.get(i) {
+            if streq(n, name) && (env.pIdx.get(i) ?? -1) == idx { return env.pType.get(i) ?? own("") }
+        }
+        i = i + 1
+    }
+    return own("")
 }
 
 func tyFuncRet(_ env: inout TyEnv, _ name: String) using Alloc -> String {
@@ -4316,6 +4361,38 @@ func tyExprCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Al
         tyExpr(env, args.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    tyCheckCallArgs(env, callee, args)
+}
+
+// A call to a known user function must supply the right arity, and each argument
+// must be assignable to its parameter. Calls to builtins / methods / struct
+// constructors (no entry in funcName) are left to later slices.
+func tyCheckCallArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    let fname = exCalleeNameBoxed(callee)
+    let arity = tyArity(env, fname)
+    if arity < 0 { return }
+    if arity != args.len() {
+        env.bad.push(tyArityMsg(arity, args.len()))
+        return
+    }
+    var i: Int = 0
+    while i < args.len() {
+        tyCheckArg(env, fname, i, args.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyCheckArg(_ env: inout TyEnv, _ fname: String, _ idx: Int, _ a: Nd) using Alloc {
+    match a {
+        case .arg(let label, let isInout, let val): tyCheckArgVal(env, fname, idx, val)
+        default: noop()
+    }
+}
+
+func tyCheckArgVal(_ env: inout TyEnv, _ fname: String, _ idx: Int, _ val: Vec[Nd]) using Alloc {
+    let at = tyInferBoxed(env, val)
+    let pt = tyParamType(env, fname, idx)
+    if !tyAssignable(at, pt) { env.bad.push(tyArgMsg(idx + 1, at, pt)) }
 }
 
 func tyIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc {
@@ -4522,6 +4599,45 @@ func tyConstMsg(_ from: String, _ to: String) using Alloc -> String {
     return s
 }
 
+func digitChar(_ d: Int) -> Str {
+    return "0123456789".slice(d, d + 1)
+}
+
+func intToStr(_ n: Int) using Alloc -> String {
+    if n == 0 { return own("0") }
+    var rev: Vec[Int] = Vec.new()
+    var x: Int = n
+    while x > 0 {
+        rev.push(x % 10)
+        x = x / 10
+    }
+    var s: String = ""
+    var i: Int = rev.len() - 1
+    while i >= 0 {
+        s.append(digitChar(rev.get(i) ?? 0))
+        i = i - 1
+    }
+    return s
+}
+
+func tyArityMsg(_ expected: Int, _ got: Int) using Alloc -> String {
+    var s: String = "call expects "
+    s.append(intToStr(expected))
+    s.append(" argument(s), got ")
+    s.append(intToStr(got))
+    return s
+}
+
+func tyArgMsg(_ idx1: Int, _ from: String, _ to: String) using Alloc -> String {
+    var s: String = "argument "
+    s.append(intToStr(idx1))
+    s.append(" of type ")
+    s.append(from)
+    s.append(" does not match parameter type ")
+    s.append(to)
+    return s
+}
+
 func main() -> Int32 {
     with Alloc {
         with Fs {
@@ -4553,8 +4669,10 @@ func main() -> Int32 {
                     // mirrors the driver: type checking is part of resolution (so
                     // its errors gate too), then ownership, exclusivity, capability.
                     if env.bad.len() > 0 { return 1 }
-                    var tenv = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), structs: Vec.new(),
-                                     symName: Vec.new(), symType: Vec.new(), bad: Vec.new())
+                    var tenv = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(),
+                                     pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(),
+                                     structs: Vec.new(), symName: Vec.new(), symType: Vec.new(),
+                                     bad: Vec.new())
                     tyCheck(&tenv, u)
                     var ti: Int = 0
                     while ti < tenv.bad.len() {
