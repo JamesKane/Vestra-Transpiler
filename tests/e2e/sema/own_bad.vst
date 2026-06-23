@@ -1,0 +1,29 @@
+// Each function moves a non-trivial binding and then touches it again: a use
+// after a `let`-move, a second move (use-after-move plus already-moved), a use
+// after a `sink` argument consumes it, and a use after a struct constructor
+// moves it in. A linear value's destination must own it, so all four are moves.
+struct Wrap { var s: String }
+
+func readLen(_ x: String) -> Int32 { return 0 }
+func consume(_ x: sink String) -> Int32 { return 0 }
+
+func useAfterMove(_ s: String) -> Int32 {
+    let c: String = s    // moves s
+    return readLen(s)    // use of s after move
+}
+
+func doubleMove(_ s: String) -> Int32 {
+    let a: String = s    // moves s
+    let b: String = s    // use after move, then already moved
+    return 0
+}
+
+func viaSink(_ s: String) -> Int32 {
+    let n: Int32 = consume(s)  // sink parameter consumes s
+    return readLen(s)          // use after move
+}
+
+func viaConstructor(_ s: String) -> Int32 {
+    let w: Wrap = Wrap(s: s)   // construction moves s in
+    return readLen(s)          // use after move
+}

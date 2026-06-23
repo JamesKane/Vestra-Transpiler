@@ -1,0 +1,31 @@
+// Valid under move tracking (§5): `copy` reads without moving, trivial values
+// are freely duplicated, moving distinct bindings never conflicts, and a `var`
+// reassignment revives a binding that was moved out. (Types are annotated so the
+// self-hosted checker, which has no inference, can see which bindings are
+// non-trivial.)
+func readLen(_ x: String) -> Int32 { return 0 }
+func makeStr() -> String { return "" }
+
+func okCopy(_ s: String) -> Int32 {
+    let c: String = copy s   // copy duplicates: s stays live
+    return readLen(s)
+}
+
+func okTrivial(_ n: Int32) -> Int32 {
+    let c: Int32 = n         // Int32 is trivial: no move
+    return n
+}
+
+func okDistinct(_ a: String, _ b: String) -> Int32 {
+    let x: String = a        // moves a
+    let y: String = b        // moves b: independent of a
+    return 0
+}
+
+func okRevive() -> Int32 {
+    var v: String = makeStr()  // v live
+    let a: String = v          // moves v out
+    v = makeStr()              // reassignment revives v
+    let b: String = v          // fine: v is live again
+    return 0
+}

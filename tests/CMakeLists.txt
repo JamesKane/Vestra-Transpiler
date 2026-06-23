@@ -199,13 +199,16 @@ set_tests_properties(e2e_selfhost_parser_diff_example5 PROPERTIES DEPENDS e2e_se
 # or an enclosing `with` block); slice 3 is exclusivity (§5.4): within a call's
 # argument list no two arguments may produce overlapping accesses that conflict
 # (a place borrowed inout twice, or inout-and-read), plus the §11 rule that an
-# `async func` may not take an `inout` parameter. Validation is DIFFERENTIAL
+# `async func` may not take an `inout` parameter; slice 4 is ownership / move
+# tracking (§5, §19.2): a non-trivial binding moved by a let/var-bind, a return,
+# or a sink/constructor argument may not then be used (`use of '...' after it was
+# moved`) or moved again (`'...' was already moved...`). Validation is DIFFERENTIAL
 # against `vestra check`: each diff test extracts the `undefined name '...'`,
-# `missing capability '...'`, borrow-conflict, and async-inout messages from both
-# and compares them. `vsema` mirrors `check`'s ordering (stop at resolution errors;
-# then exclusivity before the capability pass). Sema is cross-referential, so this
-# runs on a CURATED corpus (otherwise-valid programs isolating one rule), not the
-# whole example corpus.
+# `missing capability '...'`, borrow-conflict, async-inout, and move-tracking
+# messages from both and compares them. `vsema` mirrors `check`'s pass ORDER (stop
+# at resolution errors; then ownership, exclusivity, capability). Sema is cross-
+# referential, so this runs on a CURATED corpus (otherwise-valid programs isolating
+# one rule), not the whole example corpus.
 # ---------------------------------------------------------------------------
 set(selfhost_sema  ${CMAKE_SOURCE_DIR}/selfhost/sema.vst)
 set(sema_dir       ${CMAKE_SOURCE_DIR}/tests/e2e/sema)
@@ -225,11 +228,11 @@ add_test(
 set_tests_properties(e2e_selfhost_sema_compile PROPERTIES DEPENDS e2e_selfhost_sema_transpile)
 
 # One differential test per curated program: the self-hosted analyzer's
-# undefined-name + missing-capability + exclusivity verdict must match `vestra
-# check`. The async-inout pattern uses ERE bracket classes ([(] [)]) and `.` for
-# the backticks so the regex survives the sh -c / CMake quoting unescaped.
-set(sema_grep "undefined name '[^']*'|missing capability '[^']*'|'[^']*' is borrowed twice with incompatible modes|'[^']*' and '[^']*' overlap with incompatible borrow modes|async function '[^']*' cannot take an .inout. parameter [(]'[^']*'[)]")
-foreach(prog resolve_ok resolve_bad resolve_scope cap_ok cap_missing excl_ok excl_bad)
+# undefined-name + missing-capability + exclusivity + ownership verdict must match
+# `vestra check`. The async-inout pattern uses ERE bracket classes ([(] [)]) and
+# `.` for the backticks so the regex survives the sh -c / CMake quoting unescaped.
+set(sema_grep "undefined name '[^']*'|missing capability '[^']*'|'[^']*' is borrowed twice with incompatible modes|'[^']*' and '[^']*' overlap with incompatible borrow modes|async function '[^']*' cannot take an .inout. parameter [(]'[^']*'[)]|use of '[^']*' after it was moved|'[^']*' was already moved and cannot be moved again")
+foreach(prog resolve_ok resolve_bad resolve_scope cap_ok cap_missing excl_ok excl_bad own_ok own_bad)
     add_test(
         NAME    e2e_selfhost_sema_diff_${prog}
         COMMAND sh -c "mkdir -p ${sema_workdir} && $<TARGET_FILE:vestra> check ${sema_dir}/${prog}.vst 2>&1 | grep -oE \"${sema_grep}\" > ${sema_workdir}/${prog}_c.txt; ${e2e_workdir}/vsema ${sema_dir}/${prog}.vst | grep -oE \"${sema_grep}\" > ${sema_workdir}/${prog}_v.txt; diff ${sema_workdir}/${prog}_c.txt ${sema_workdir}/${prog}_v.txt")

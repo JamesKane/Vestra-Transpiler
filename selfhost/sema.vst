@@ -3759,6 +3759,372 @@ func exMemberPlace(_ base: Vec[Nd], _ m: String) using Alloc -> Place {
     return Place(ok: true, root: b.root, path: pth)
 }
 
+// ===========================================================================
+// Ownership / move tracking (§5 / §19.2). Each non-trivial binding (a local or
+// parameter whose declared type is not a fixed-width numeric / Bool / Char /
+// Unit) carries a Live/Consumed state, held in the parallel (names, consumed)
+// arrays and reset per function. A binding is consumed (moved) by `let`/`var`-
+// binding it, `return`ing it, or passing it to a `sink` parameter or a struct/
+// enum constructor argument. Using a consumed binding is `use of '<x>' after it
+// was moved`; consuming it again is `'<x>' was already moved and cannot be moved
+// again`. `copy x` is a read, not a move (the place lives in a non-ident node).
+// A `var` reassignment revives its target. Diagnostics are collected in walk
+// order, matching `vestra check`.
+//
+// Deliberately not yet modeled (vsema lacks types so triviality is read off the
+// type ANNOTATION — an unannotated/inferred binding is treated as untracked, so
+// curated tests annotate any binding they move): branch-aware flow merge across
+// `if`/`match` (analysis is straight-line; `match` payloads are dropped anyway),
+// field-level moves, and the linear `linear`-struct must-consume / leak check
+// (the parser discards the `linear` modifier).
+// ===========================================================================
+struct OwnEnv {
+    var names: Vec[String]      // tracked non-trivial binding names (per function)
+    var consumed: Vec[Bool]     // parallel: has each name been moved?
+    var sigName: Vec[String]    // global: function param-mode rows ...
+    var sigIdx: Vec[Int]        // ... parameter index ...
+    var sigMode: Vec[String]    // ... and that parameter's mode (for `sink`)
+    var ctors: Vec[String]      // global: struct / enum names (constructor args are sinks)
+    var bad: Vec[String]
+}
+
+func ownCheck(_ env: inout OwnEnv, _ u: NUnit) using Alloc {
+    var i: Int = 0
+    while i < u.decls.len() {
+        ownCollectDecl(env, u.decls.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    var j: Int = 0
+    while j < u.decls.len() {
+        ownCheckDecl(env, u.decls.get(j) ?? Nd.wildcard)
+        j = j + 1
+    }
+}
+
+// ----- pass 1: param-mode rows (for `sink`) and constructor names -----------
+func ownCollectDecl(_ env: inout OwnEnv, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
+            ownRecordSig(env, name, params)
+        case .structD(let vis, let name, let fl, let m, let dn): env.ctors.push(name)
+        case .enumD(let vis, let name, let cs, let m): env.ctors.push(name)
+        default: noop()
+    }
+}
+
+func ownRecordSig(_ env: inout OwnEnv, _ name: String, _ params: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < params.len() {
+        ownAddSigRow(env, name, i, params.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func ownAddSigRow(_ env: inout OwnEnv, _ name: String, _ idx: Int, _ p: Nd) using Alloc {
+    match p {
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): ownPushSig(env, name, idx, md)
+        default: noop()
+    }
+}
+
+func ownPushSig(_ env: inout OwnEnv, _ name: String, _ idx: Int, _ md: String) using Alloc {
+    env.sigName.push(name)
+    env.sigIdx.push(idx)
+    env.sigMode.push(md)
+}
+
+func ownModeOf(_ env: inout OwnEnv, _ name: String, _ idx: Int) using Alloc -> String {
+    var i: Int = 0
+    while i < env.sigName.len() {
+        if let n = env.sigName.get(i) {
+            if streq(n, name) && (env.sigIdx.get(i) ?? -1) == idx { return env.sigMode.get(i) ?? own("") }
+        }
+        i = i + 1
+    }
+    return own("")
+}
+
+func ownIsCtor(_ env: inout OwnEnv, _ name: String) -> Bool {
+    var i: Int = 0
+    while i < env.ctors.len() {
+        if let c = env.ctors.get(i) {
+            if streq(c, name) { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// ----- pass 2: per-function flow walk ---------------------------------------
+func ownCheckDecl(_ env: inout OwnEnv, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
+            ownCheckFunc(env, params, b)
+        case .structD(let vis, let name, let fl, let m, let dn): ownCheckMethods(env, m)
+        case .enumD(let vis, let name, let cs, let m): ownCheckMethods(env, m)
+        default: noop()
+    }
+}
+
+func ownCheckMethods(_ env: inout OwnEnv, _ methods: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < methods.len() {
+        ownCheckDecl(env, methods.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func ownCheckFunc(_ env: inout OwnEnv, _ params: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    ownResetBindings(env)
+    ownRegisterParams(env, params)
+    ownBoxed(env, body)
+}
+
+func ownResetBindings(_ env: inout OwnEnv) using Alloc {
+    while env.names.len() > 0 { let _ = env.names.pop() }
+    while env.consumed.len() > 0 { let _ = env.consumed.pop() }
+}
+
+func ownRegisterParams(_ env: inout OwnEnv, _ params: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < params.len() {
+        ownRegisterParam(env, params.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func ownRegisterParam(_ env: inout OwnEnv, _ p: Nd) using Alloc {
+    match p {
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): ownRegister(env, nm, ty)
+        default: noop()
+    }
+}
+
+func ownRegister(_ env: inout OwnEnv, _ name: String, _ ty: Vec[Nd]) using Alloc {
+    if ownNonTrivialBoxed(ty) {
+        env.names.push(name)
+        env.consumed.push(false)
+    }
+}
+
+func ownFind(_ env: inout OwnEnv, _ name: String) -> Int {
+    var i: Int = 0
+    while i < env.names.len() {
+        if let n = env.names.get(i) {
+            if streq(n, name) { return i }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+func ownConsume(_ env: inout OwnEnv, _ name: String) using Alloc {
+    let idx = ownFind(env, name)
+    if idx < 0 { return }
+    if env.consumed.get(idx) ?? false { env.bad.push(ownAlreadyMoved(name)) }
+    else { env.consumed.set(idx, true) }
+}
+
+func ownUse(_ env: inout OwnEnv, _ name: String) using Alloc {
+    let idx = ownFind(env, name)
+    if idx >= 0 && (env.consumed.get(idx) ?? false) { env.bad.push(ownUseAfter(name)) }
+}
+
+func ownRevive(_ env: inout OwnEnv, _ name: String) {
+    let idx = ownFind(env, name)
+    if idx >= 0 { env.consumed.set(idx, false) }
+}
+
+func ownUseAfter(_ name: String) using Alloc -> String {
+    var s: String = "use of '"
+    s.append(name)
+    s.append("' after it was moved")
+    return s
+}
+
+func ownAlreadyMoved(_ name: String) using Alloc -> String {
+    var s: String = "'"
+    s.append(name)
+    s.append("' was already moved and cannot be moved again")
+    return s
+}
+
+func ownNonTrivialBoxed(_ ty: Vec[Nd]) -> Bool {
+    if ty.len() == 0 { return false }   // inferred / unknown type: treated as untracked
+    return ownNonTrivial(ty.get(0) ?? Nd.wildcard)
+}
+
+func ownNonTrivial(_ t: Nd) -> Bool {
+    return match t {
+        case .named(let path, let g, let a): !ownTrivialName(path)
+        default: true
+    }
+}
+
+func ownTrivialName(_ p: String) -> Bool {
+    return streq(p, "Int") || streq(p, "Int8") || streq(p, "Int16") || streq(p, "Int32")
+        || streq(p, "Int64") || streq(p, "Int128") || streq(p, "UInt") || streq(p, "UInt8")
+        || streq(p, "UInt16") || streq(p, "UInt32") || streq(p, "UInt64") || streq(p, "UInt128")
+        || streq(p, "Float32") || streq(p, "Float64") || streq(p, "Bool") || streq(p, "Char")
+        || streq(p, "Unit")
+}
+
+func ownBoxed(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc {
+    if v.len() > 0 { ownExpr(env, v.get(0) ?? Nd.wildcard) }
+}
+
+func ownPair(_ env: inout OwnEnv, _ a: Vec[Nd], _ b: Vec[Nd]) using Alloc {
+    ownBoxed(env, a)
+    ownBoxed(env, b)
+}
+
+func ownExpr(_ env: inout OwnEnv, _ e: Nd) using Alloc {
+    match e {
+        case .ident(let n): ownUse(env, n)
+        case .call(let callee, let args): ownCall(env, callee, args)
+        case .prefixE(let kw, let inner): ownBoxed(env, inner)
+        case .paren(let x): ownBoxed(env, x)
+        case .unary(let op, let x): ownBoxed(env, x)
+        case .binary(let op, let l, let r): ownPair(env, l, r)
+        case .member(let base, let n, let c): ownBoxed(env, base)
+        case .index(let base, let idxs): ownIndex(env, base, idxs)
+        case .ifE(let ln, let li, let cond, let thenB, let els): ownIf(env, li, cond, thenB, els)
+        case .block(let stmts): ownBlock(env, stmts)
+        case .asE(let v, let t, let o): ownBoxed(env, v)
+        case .addrOf(let x): ownBoxed(env, x)
+        case .arg(let l, let io, let v): ownBoxed(env, v)
+        case .doCatchE(let db, let en, let et, let cb): ownPair(env, db, cb)
+        default: noop()
+    }
+}
+
+func ownIndex(_ env: inout OwnEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc {
+    ownBoxed(env, base)
+    var i: Int = 0
+    while i < idxs.len() {
+        ownExpr(env, idxs.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func ownIf(_ env: inout OwnEnv, _ li: Vec[Nd], _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc {
+    ownBoxed(env, cond)
+    ownBoxed(env, li)
+    ownBoxed(env, thenB)
+    ownBoxed(env, els)
+}
+
+func ownBlock(_ env: inout OwnEnv, _ stmts: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < stmts.len() {
+        ownStmt(env, stmts.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func ownStmt(_ env: inout OwnEnv, _ s: Nd) using Alloc {
+    match s {
+        case .letS(let p, let ty, let v): ownLet(env, p, ty, v)
+        case .varS(let p, let ty, let v): ownLet(env, p, ty, v)
+        case .exprS(let e): ownBoxed(env, e)
+        case .retS(let v): ownRet(env, v)
+        case .assignS(let op, let t, let v): ownAssign(env, t, v)
+        case .whileS(let c, let b): ownPair(env, c, b)
+        case .forS(let pp, let it, let b): ownPair(env, it, b)
+        case .withS(let caps, let vals, let body): ownWith(env, vals, body)
+        default: noop()
+    }
+}
+
+// `let`/`var`: evaluate the value (a use-check on any place it reads), then the
+// value place is moved into the new binding, then register the binding itself.
+func ownLet(_ env: inout OwnEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    ownBoxed(env, v)
+    ownConsumeBoxed(env, v)
+    ownRegisterPat(env, pat, ty)
+}
+
+func ownRet(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc {
+    ownBoxed(env, v)
+    ownConsumeBoxed(env, v)
+}
+
+func ownAssign(_ env: inout OwnEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    ownBoxed(env, v)
+    ownAssignTarget(env, t)
+}
+
+func ownAssignTarget(_ env: inout OwnEnv, _ t: Vec[Nd]) using Alloc {
+    if t.len() > 0 { ownAssignTargetE(env, t.get(0) ?? Nd.wildcard) }
+}
+
+// A bare-ident target is a write that revives the binding (§19.2); anything else
+// (member / index) is walked as an ordinary use.
+func ownAssignTargetE(_ env: inout OwnEnv, _ e: Nd) using Alloc {
+    match e {
+        case .ident(let n): ownRevive(env, n)
+        default: ownExpr(env, e)
+    }
+}
+
+func ownWith(_ env: inout OwnEnv, _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < vals.len() {
+        ownExpr(env, vals.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    ownBoxed(env, body)
+}
+
+func ownCall(_ env: inout OwnEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    ownBoxed(env, callee)
+    let fname = exCalleeNameBoxed(callee)
+    let isCtor = ownIsCtor(env, fname)
+    var i: Int = 0
+    while i < args.len() {
+        ownCallArg(env, fname, isCtor, i, args.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func ownCallArg(_ env: inout OwnEnv, _ fname: String, _ isCtor: Bool, _ idx: Int, _ a: Nd) using Alloc {
+    match a {
+        case .arg(let label, let isInout, let val): ownArgVal(env, fname, isCtor, idx, val)
+        default: noop()
+    }
+}
+
+func ownArgVal(_ env: inout OwnEnv, _ fname: String, _ isCtor: Bool, _ idx: Int, _ val: Vec[Nd]) using Alloc {
+    ownBoxed(env, val)
+    var isSink: Bool = isCtor
+    if !isSink && streq(ownModeOf(env, fname, idx), "sink ") { isSink = true }
+    if isSink { ownConsumeBoxed(env, val) }
+}
+
+func ownConsumeBoxed(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc {
+    if v.len() > 0 { ownConsumeExpr(env, v.get(0) ?? Nd.wildcard) }
+}
+
+func ownConsumeExpr(_ env: inout OwnEnv, _ e: Nd) using Alloc {
+    match e {
+        case .ident(let n): ownConsume(env, n)
+        case .paren(let inner): ownConsumeBoxed(env, inner)
+        default: noop()
+    }
+}
+
+func ownRegisterPat(_ env: inout OwnEnv, _ pat: Vec[Nd], _ ty: Vec[Nd]) using Alloc {
+    if pat.len() > 0 { ownRegisterPatE(env, pat.get(0) ?? Nd.wildcard, ty) }
+}
+
+func ownRegisterPatE(_ env: inout OwnEnv, _ p: Nd, _ ty: Vec[Nd]) using Alloc {
+    match p {
+        case .identP(let n): ownRegister(env, n, ty)
+        case .bindP(let n): ownRegister(env, n, ty)
+        default: noop()
+    }
+}
+
 func main() -> Int32 {
     with Alloc {
         with Fs {
@@ -3787,8 +4153,17 @@ func main() -> Int32 {
                     }
                     // Match `vestra check`: stop at resolution errors before the
                     // later passes; otherwise run them all and accumulate. Order
-                    // mirrors the driver: exclusivity before capability.
+                    // mirrors the driver: ownership, exclusivity, capability.
                     if env.bad.len() > 0 { return 1 }
+                    var oenv = OwnEnv(names: Vec.new(), consumed: Vec.new(),
+                                      sigName: Vec.new(), sigIdx: Vec.new(), sigMode: Vec.new(),
+                                      ctors: Vec.new(), bad: Vec.new())
+                    ownCheck(&oenv, u)
+                    var o: Int = 0
+                    while o < oenv.bad.len() {
+                        if let msg = oenv.bad.get(o) { println(msg) }
+                        o = o + 1
+                    }
                     var xenv = ExEnv(sigName: Vec.new(), sigIdx: Vec.new(),
                                      sigMode: Vec.new(), bad: Vec.new())
                     exCheck(&xenv, u)
@@ -3805,7 +4180,7 @@ func main() -> Int32 {
                         if let msg = cenv.bad.get(k) { println(msg) }
                         k = k + 1
                     }
-                    if xenv.bad.len() > 0 || cenv.bad.len() > 0 { return 1 }
+                    if oenv.bad.len() > 0 || xenv.bad.len() > 0 || cenv.bad.len() > 0 { return 1 }
                     return 0
                 }
                 eprintln("read failed")
