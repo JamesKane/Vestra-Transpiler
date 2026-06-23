@@ -4157,6 +4157,7 @@ struct TyEnv {
     var structs: Vec[String]    // global: struct names (construction yields that type)
     var symName: Vec[String]    // per-function: binding name ...
     var symType: Vec[String]    // ... -> type spelling
+    var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
     var bad: Vec[String]
 }
 
@@ -4256,7 +4257,7 @@ func tyIsStruct(_ env: inout TyEnv, _ name: String) -> Bool {
 func tyCheckDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
-            tyCheckFunc(env, params, b)
+            tyCheckFunc(env, name, params, r, b)
         case .structD(let vis, let name, let fl, let m, let dn): tyCheckMethods(env, m)
         case .enumD(let vis, let name, let cs, let m): tyCheckMethods(env, m)
         case .constD(let vis, let name, let ty, let v): tyCheckConst(env, ty, v)
@@ -4272,10 +4273,52 @@ func tyCheckMethods(_ env: inout TyEnv, _ methods: Vec[Nd]) using Alloc {
     }
 }
 
-func tyCheckFunc(_ env: inout TyEnv, _ params: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+func tyCheckFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ result: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    env.curRet = tyRetSpelling(result)
     tyResetSyms(env)
     tyRegisterParams(env, params)
     tyBoxed(env, body)
+    tyCheckBodyProduces(env, name, body)
+}
+
+func tyRetSpelling(_ result: Vec[Nd]) using Alloc -> String {
+    if result.len() == 0 { return own("Unit") }
+    return typeSpelling(result.get(0) ?? Nd.wildcard)
+}
+
+// §10/§17 — when the body's trailing expression is present and its type is not
+// assignable to the declared (non-Unit) result, the implicit return is wrong.
+// A body ending in a non-expression statement (let / return / ...) produces Unit
+// and is tolerated (an explicit return we don't flow-check).
+func tyCheckBodyProduces(_ env: inout TyEnv, _ name: String, _ body: Vec[Nd]) using Alloc {
+    if streq(env.curRet, "") || streq(env.curRet, "Unit") { return }
+    let bt = tyBodyType(env, body)
+    if streq(bt, "") || streq(bt, "Unit") { return }
+    if !tyAssignable(bt, env.curRet) { env.bad.push(tyBodyMsg(name, env.curRet, bt)) }
+}
+
+func tyBodyType(_ env: inout TyEnv, _ body: Vec[Nd]) using Alloc -> String {
+    if body.len() == 0 { return own("Unit") }
+    return tyBlockLastType(env, body.get(0) ?? Nd.wildcard)
+}
+
+func tyBlockLastType(_ env: inout TyEnv, _ blk: Nd) using Alloc -> String {
+    return match blk {
+        case .block(let stmts): tyLastStmtType(env, stmts)
+        default: own("Unit")
+    }
+}
+
+func tyLastStmtType(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc -> String {
+    if stmts.len() == 0 { return own("Unit") }
+    return tyStmtType(env, stmts.get(stmts.len() - 1) ?? Nd.wildcard)
+}
+
+func tyStmtType(_ env: inout TyEnv, _ s: Nd) using Alloc -> String {
+    return match s {
+        case .exprS(let e): tyInferBoxed(env, e)
+        default: own("Unit")
+    }
 }
 
 func tyResetSyms(_ env: inout TyEnv) using Alloc {
@@ -4424,7 +4467,7 @@ func tyStmt(_ env: inout TyEnv, _ s: Nd) using Alloc {
         case .letS(let p, let ty, let v): tyLet(env, p, ty, v)
         case .varS(let p, let ty, let v): tyLet(env, p, ty, v)
         case .exprS(let e): tyBoxed(env, e)
-        case .retS(let v): tyBoxed(env, v)
+        case .retS(let v): tyRet(env, v)
         case .assignS(let op, let t, let v): tyPair(env, t, v)
         case .whileS(let c, let b): tyPair(env, c, b)
         case .forS(let pp, let it, let b): tyPair(env, it, b)
@@ -4443,6 +4486,16 @@ func tyLet(_ env: inout TyEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) usin
     }
     tyBoxed(env, v)
     tyRegisterPat(env, pat, ty)
+}
+
+// `return EXPR`: walk the value (nested checks), then its type must be assignable
+// to the enclosing function's declared result. A bare `return` produces Unit.
+func tyRet(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc {
+    tyBoxed(env, v)
+    if streq(env.curRet, "") { return }
+    var rt: String = own("Unit")
+    if v.len() > 0 { rt = tyInferBoxed(env, v) }
+    if !tyAssignable(rt, env.curRet) { env.bad.push(tyReturnMsg(rt, env.curRet)) }
 }
 
 func tyWith(_ env: inout TyEnv, _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc {
@@ -4638,6 +4691,24 @@ func tyArgMsg(_ idx1: Int, _ from: String, _ to: String) using Alloc -> String {
     return s
 }
 
+func tyReturnMsg(_ from: String, _ to: String) using Alloc -> String {
+    var s: String = "return value of type "
+    s.append(from)
+    s.append(" does not match function result type ")
+    s.append(to)
+    return s
+}
+
+func tyBodyMsg(_ name: String, _ ret: String, _ body: String) using Alloc -> String {
+    var s: String = "function '"
+    s.append(name)
+    s.append("' returns ")
+    s.append(ret)
+    s.append(" but body produces ")
+    s.append(body)
+    return s
+}
+
 func main() -> Int32 {
     with Alloc {
         with Fs {
@@ -4672,7 +4743,7 @@ func main() -> Int32 {
                     var tenv = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(),
                                      pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(),
                                      structs: Vec.new(), symName: Vec.new(), symType: Vec.new(),
-                                     bad: Vec.new())
+                                     curRet: own(""), bad: Vec.new())
                     tyCheck(&tenv, u)
                     var ti: Int = 0
                     while ti < tenv.bad.len() {

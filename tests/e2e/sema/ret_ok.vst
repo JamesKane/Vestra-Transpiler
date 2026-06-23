@@ -1,0 +1,13 @@
+// Valid returns: `return EXPR` whose value is assignable to the declared result
+// (identity, Int literal -> Int32, StrConst -> String), an implicit trailing
+// expression of the right type, and a value function whose last statement is not
+// an expression (it relies on an explicit return, which is tolerated).
+func explicit() -> Int32 { return 7 }            // Int -> Int32
+func passthru(_ p: Int32) -> Int32 { return p }  // Int32 -> Int32
+func owned() -> String { return "hi" }           // StrConst -> String
+func implicit() -> Int32 { 9 }                    // trailing expr: Int -> Int32
+
+func branchy(_ flag: Bool) -> Int32 {
+    let x: Int32 = 3
+    return x
+}

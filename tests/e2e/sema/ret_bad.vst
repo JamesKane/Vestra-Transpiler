@@ -1,0 +1,12 @@
+// Ill-typed returns: a `return EXPR` whose value is not assignable to the
+// declared result (from a literal, a parameter, and a call), specific-width
+// integers being mutually incompatible (Int32 vs Int64), a `return` value in a
+// Unit function, and an implicit trailing expression of the wrong type.
+func makeStr() -> Str { return "x" }
+
+func r1() -> Int32 { return true }            // Bool vs Int32
+func r2(_ p: Bool) -> Str { return p }        // Bool vs Str
+func r3() -> Bool { return makeStr() }        // Str vs Bool
+func r4(_ p: Int32) -> Int64 { return p }     // Int32 vs Int64
+func u1() { return 5 }                         // Int vs Unit
+func implicit() -> Int32 { "oops" }            // body produces StrConst vs Int32
