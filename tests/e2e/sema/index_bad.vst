@@ -1,0 +1,8 @@
+// Ill-typed indexing: an element flowing into a mismatched slot, a non-integer
+// index, and indexing a value that is not a Vec/Span/MutSpan.
+func bad(_ v: Vec[Int32], _ flag: Bool, _ n: Int32) -> Int32 {
+    let a: Bool = v[0]       // element Int32 vs Bool
+    let b: Int32 = v[flag]   // index not integer (Bool)
+    let c: Int32 = n[0]      // Int32 is not indexable
+    return 0
+}

@@ -4563,6 +4563,38 @@ func tyIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc {
         tyExpr(env, idxs.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    tyCheckIndex(env, base, idxs)
+}
+
+// §18.5 — every index must be integer-typed, then a known base that is not a
+// Vec/Span/MutSpan is not indexable. (Mirrors the resolver: indices first, then
+// the base shape; an unknown base is tolerated.)
+func tyCheckIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < idxs.len() {
+        tyCheckIndexExpr(env, idxs.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    let bt = tyInferBoxed(env, base)
+    if !streq(bt, "") && !tyIsIndexable(bt) { env.bad.push(tyNotIndexableMsg(bt)) }
+}
+
+func tyCheckIndexExpr(_ env: inout TyEnv, _ idx: Nd) using Alloc {
+    let it = tyInfer(env, idx)
+    if !streq(it, "") && !tyIsInt(it) { env.bad.push(tyIndexIntMsg(it)) }
+}
+
+func tyIndexIntMsg(_ got: String) using Alloc -> String {
+    var s: String = "index must be integer-typed, got "
+    s.append(got)
+    return s
+}
+
+func tyNotIndexableMsg(_ bt: String) using Alloc -> String {
+    var s: String = "type "
+    s.append(bt)
+    s.append(" is not indexable")
+    return s
 }
 
 func tyIf(_ env: inout TyEnv, _ li: Vec[Nd], _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc {
@@ -4698,8 +4730,47 @@ func tyInfer(_ env: inout TyEnv, _ e: Nd) using Alloc -> String {
         case .binary(let op, let l, let r): tyInferBinary(env, op, l, r)
         case .unary(let op, let x): tyInferUnary(env, op, x)
         case .member(let base, let name, let chain): tyInferMember(env, base, name, chain)
+        case .index(let base, let idxs): tyInferIndex(env, base, idxs)
         default: own("")
     }
+}
+
+// Indexing a Vec[T] / Span[T] / MutSpan[T] yields its element T; other bases stay
+// unknown (arrays spell empty here, and non-indexables type as unknown anyway).
+func tyInferIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc -> String {
+    let bt = tyInferBoxed(env, base)
+    if tyIsIndexable(bt) { return tyBracketInner(bt) }
+    return own("")
+}
+
+func tyIsIndexable(_ s: String) -> Bool {
+    return tyStartsWith(s, "Vec[") || tyStartsWith(s, "Span[") || tyStartsWith(s, "MutSpan[")
+}
+
+func tyStartsWith(_ s: String, _ prefix: Str) -> Bool {
+    let pn = prefix.len()
+    if pn > s.len() { return false }
+    var i: Int = 0
+    while i < pn {
+        if (s.byteAt(i) ?? 0) != (prefix.byteAt(i) ?? 1) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// "Vec[Int32]" -> "Int32" (the text between the first '[' and the trailing ']',
+// so a nested element like "HashMap[Int32, Str]" comes back whole).
+func tyBracketInner(_ s: String) using Alloc -> String {
+    let n = s.len()
+    if n < 2 || (s.byteAt(n - 1) ?? 0) != 93 { return own("") }   // ']' == 93
+    var open: Int = -1
+    var i: Int = 0
+    while i < n {
+        if (s.byteAt(i) ?? 0) == 91 { open = i; i = n }           // first '[' == 91
+        else { i = i + 1 }
+    }
+    if open < 0 { return own("") }
+    return own(s.slice(open + 1, n - 1))
 }
 
 // `base.field` types as the field's declared type when `base` is a known struct

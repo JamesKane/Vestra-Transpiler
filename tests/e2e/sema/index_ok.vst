@@ -1,0 +1,11 @@
+// Well-typed indexing: a Vec[T] indexed by an integer yields T, which then flows
+// correctly through the surrounding checks (initializer, argument, return), and
+// the index expression itself may be any integer-typed value.
+func takesInt32(_ a: Int32) -> Int32 { return a }
+
+func ok(_ v: Vec[Int32], _ i: Int32) -> Int32 {
+    let a: Int32 = v[0]          // element Int32
+    let b: Int32 = v[i]          // integer index
+    let c: Int32 = takesInt32(v[i])  // element as argument
+    return v[i + 1]              // integer index expression
+}
