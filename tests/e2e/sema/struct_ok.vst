@@ -1,0 +1,15 @@
+// Well-formed struct construction: every field supplied with an assignable
+// value (identity, Int literal -> sized field, StrConst -> String field), in any
+// label order, including a nested call result.
+struct Point { var x: Int32; var y: Int32 }
+struct Named { var id: Int64; var label: String }
+
+func makeId() -> Int64 { return 0 }
+
+func ok(_ p: Int32) -> Int32 {
+    let a: Point = Point(x: 1, y: 2)            // Int literals -> Int32
+    let b: Point = Point(y: p, x: p)            // any order, Int32
+    let c: Named = Named(id: 5, label: "hi")    // Int -> Int64, StrConst -> String
+    let d: Named = Named(label: "z", id: makeId())  // call result Int64
+    return a.x
+}

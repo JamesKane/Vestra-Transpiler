@@ -1,0 +1,13 @@
+// Ill-formed struct construction: a field given an unassignable value, an
+// unknown field label (which also leaves a real field unsupplied), a missing
+// field, and a positional argument with no label (which leaves its field unset).
+struct Point { var x: Int32; var y: Str }
+
+func bad(_ flag: Bool) -> Int32 {
+    let a: Point = Point(x: flag, y: "h")   // field x: Int32 rejects Bool
+    let b: Point = Point(x: 1, y: 9)        // field y: Str rejects Int
+    let c: Point = Point(x: 1, z: "h")      // no field z, and y missing
+    let d: Point = Point(x: 1)              // missing field y
+    let e: Point = Point(1, y: "h")         // positional arg, and x missing
+    return 0
+}

@@ -4155,6 +4155,9 @@ struct TyEnv {
     var pIdx: Vec[Int]          // ... parameter index ...
     var pType: Vec[String]      // ... -> parameter type spelling
     var structs: Vec[String]    // global: struct names (construction yields that type)
+    var sFldStruct: Vec[String] // global: per-field rows — owning struct ...
+    var sFldName: Vec[String]   // ... field name ...
+    var sFldType: Vec[String]   // ... -> field type spelling (embeds excluded)
     var symName: Vec[String]    // per-function: binding name ...
     var symType: Vec[String]    // ... -> type spelling
     var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
@@ -4179,9 +4182,63 @@ func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             tyRecordFunc(env, name, params, r)
-        case .structD(let vis, let name, let fl, let m, let dn): env.structs.push(name)
+        case .structD(let vis, let name, let fl, let m, let dn): tyRecordStruct(env, name, fl)
         default: noop()
     }
+}
+
+func tyRecordStruct(_ env: inout TyEnv, _ name: String, _ fields: Vec[Nd]) using Alloc {
+    env.structs.push(name)
+    var i: Int = 0
+    while i < fields.len() {
+        tyRecordField(env, name, fields.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyRecordField(_ env: inout TyEnv, _ structName: String, _ f: Nd) using Alloc {
+    match f {
+        case .field(let kind, let fname, let fty): tyPushField(env, structName, kind, fname, fty)
+        default: noop()
+    }
+}
+
+// Record a constructible field (`let`/`var`); embeds aren't set by label.
+func tyPushField(_ env: inout TyEnv, _ structName: String, _ kind: String, _ fname: String, _ fty: Vec[Nd]) using Alloc {
+    if containsSub(kind, "embed") { return }
+    env.sFldStruct.push(structName)
+    env.sFldName.push(fname)
+    env.sFldType.push(tyAnnSpelling(fty))
+}
+
+func tyHasField(_ env: inout TyEnv, _ structName: String, _ label: String) -> Bool {
+    var i: Int = 0
+    while i < env.sFldStruct.len() {
+        if let s = env.sFldStruct.get(i) {
+            if streq(s, structName) {
+                if let fn = env.sFldName.get(i) {
+                    if streq(fn, label) { return true }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func tyFieldType(_ env: inout TyEnv, _ structName: String, _ label: String) using Alloc -> String {
+    var i: Int = 0
+    while i < env.sFldStruct.len() {
+        if let s = env.sFldStruct.get(i) {
+            if streq(s, structName) {
+                if let fn = env.sFldName.get(i) {
+                    if streq(fn, label) { return env.sFldType.get(i) ?? own("") }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return own("")
 }
 
 func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ result: Vec[Nd]) using Alloc {
@@ -4413,16 +4470,77 @@ func tyExprCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Al
 func tyCheckCallArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
     let fname = exCalleeNameBoxed(callee)
     let arity = tyArity(env, fname)
-    if arity < 0 { return }
-    if arity != args.len() {
-        env.bad.push(tyArityMsg(arity, args.len()))
+    if arity >= 0 {
+        if arity != args.len() {
+            env.bad.push(tyArityMsg(arity, args.len()))
+            return
+        }
+        var i: Int = 0
+        while i < args.len() {
+            tyCheckArg(env, fname, i, args.get(i) ?? Nd.wildcard)
+            i = i + 1
+        }
         return
     }
+    if tyIsStruct(env, fname) { tyCheckCtor(env, fname, args) }
+}
+
+// §6 struct construction: each labeled argument must name a field whose type
+// accepts the value, and every (non-embed) field must be supplied. (Non-generic,
+// non-union structs only; generics are dropped from the AST and unions are rare.)
+func tyCheckCtor(_ env: inout TyEnv, _ structName: String, _ args: Vec[Nd]) using Alloc {
+    var seen: Vec[String] = Vec.new()
     var i: Int = 0
     while i < args.len() {
-        tyCheckArg(env, fname, i, args.get(i) ?? Nd.wildcard)
+        tyCtorArg(env, structName, i, args.get(i) ?? Nd.wildcard, seen)
         i = i + 1
     }
+    tyCtorMissing(env, structName, seen)
+}
+
+func tyCtorArg(_ env: inout TyEnv, _ structName: String, _ idx: Int, _ a: Nd, _ seen: inout Vec[String]) using Alloc {
+    match a {
+        case .arg(let label, let isInout, let val): tyCtorArgLabeled(env, structName, idx, label, val, seen)
+        default: noop()
+    }
+}
+
+func tyCtorArgLabeled(_ env: inout TyEnv, _ structName: String, _ idx: Int, _ label: String, _ val: Vec[Nd], _ seen: inout Vec[String]) using Alloc {
+    if streq(label, "") { env.bad.push(tyCtorLabelMsg(idx + 1)); return }
+    if !tyHasField(env, structName, label) { env.bad.push(tyNoFieldMsg(structName, label)); return }
+    let ft = tyFieldType(env, structName, label)
+    let at = tyInferBoxed(env, val)
+    if !tyAssignable(at, ft) { env.bad.push(tyFieldMsg(label, ft, at)) }
+    seen.push(label)
+}
+
+func tyCtorMissing(_ env: inout TyEnv, _ structName: String, _ seen: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < env.sFldStruct.len() {
+        tyCtorMissingField(env, structName, i, seen)
+        i = i + 1
+    }
+}
+
+func tyCtorMissingField(_ env: inout TyEnv, _ structName: String, _ i: Int, _ seen: inout Vec[String]) using Alloc {
+    if let s = env.sFldStruct.get(i) {
+        if streq(s, structName) {
+            if let fn = env.sFldName.get(i) {
+                if !tyContains(seen, fn) { env.bad.push(tyMissingMsg(structName, fn)) }
+            }
+        }
+    }
+}
+
+func tyContains(_ v: inout Vec[String], _ s: String) -> Bool {
+    var i: Int = 0
+    while i < v.len() {
+        if let e = v.get(i) {
+            if streq(e, s) { return true }
+        }
+        i = i + 1
+    }
+    return false
 }
 
 func tyCheckArg(_ env: inout TyEnv, _ fname: String, _ idx: Int, _ a: Nd) using Alloc {
@@ -4705,6 +4823,41 @@ func tyLogMsg() using Alloc -> String {
     return own("logical && / || require Bool operands")
 }
 
+func tyFieldMsg(_ label: String, _ fieldType: String, _ argType: String) using Alloc -> String {
+    var s: String = "field '"
+    s.append(label)
+    s.append("' of type ")
+    s.append(fieldType)
+    s.append(" cannot accept value of type ")
+    s.append(argType)
+    return s
+}
+
+func tyNoFieldMsg(_ structName: String, _ label: String) using Alloc -> String {
+    var s: String = "'"
+    s.append(structName)
+    s.append("' has no field '")
+    s.append(label)
+    s.append("'")
+    return s
+}
+
+func tyMissingMsg(_ structName: String, _ fieldName: String) using Alloc -> String {
+    var s: String = "struct '"
+    s.append(structName)
+    s.append("' constructor is missing field '")
+    s.append(fieldName)
+    s.append("'")
+    return s
+}
+
+func tyCtorLabelMsg(_ n: Int) using Alloc -> String {
+    var s: String = "struct constructor argument "
+    s.append(intToStr(n))
+    s.append(" requires a field label")
+    return s
+}
+
 func tyInferCall(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
     let nm = exCalleeNameBoxed(callee)
     let r = tyFuncRet(env, nm)
@@ -4908,7 +5061,8 @@ func main() -> Int32 {
                     if env.bad.len() > 0 { return 1 }
                     var tenv = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(),
                                      pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(),
-                                     structs: Vec.new(), symName: Vec.new(), symType: Vec.new(),
+                                     structs: Vec.new(), sFldStruct: Vec.new(), sFldName: Vec.new(),
+                                     sFldType: Vec.new(), symName: Vec.new(), symType: Vec.new(),
                                      curRet: own(""), bad: Vec.new())
                     tyCheck(&tenv, u)
                     var ti: Int = 0
