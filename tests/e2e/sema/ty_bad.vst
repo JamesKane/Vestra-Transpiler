@@ -1,0 +1,17 @@
+// Each binding's initializer types as something not assignable to its
+// annotation: a `const` with a literal, and `let`/`var` initializers drawn from
+// a literal, a parameter, and a call's return type. Specific-width integer
+// types are mutually incompatible, so Int32 does not match Int64.
+struct Wrap { var s: String }
+
+func makeWrap() -> Wrap { return Wrap(s: "w") }
+
+const LIMIT: Bool = 5          // const value: Int does not match Bool
+
+func bad(_ p: Int32) -> Int32 {
+    let a: Bool = 9            // literal: Int does not match Bool
+    var b: Str = p            // parameter: Int32 does not match Str
+    let c: Bool = makeWrap()   // call return: Wrap does not match Bool
+    let d: Int64 = p           // Int32 does not match Int64 (specific widths differ)
+    return 0
+}

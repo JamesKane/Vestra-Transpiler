@@ -1,0 +1,22 @@
+// Type-correct initializers under the slice-1 rules: identity, the §17 Int/UInt
+// natural-width conversion (Int -> Int32 / Int64), the §4 string lattice
+// (StrConst -> Str / String), §9 optional wrapping (T -> T?), a struct
+// constructor's own type, and a call's declared return type. (Types are
+// annotated so the self-hosted checker, which has no inference engine, can see
+// each binding's type.)
+struct Wrap { var s: String }
+
+func makeWrap() -> Wrap { return Wrap(s: "w") }
+func count() -> Int32 { return 0 }
+
+func ok(_ p: Int32) -> Int32 {
+    let widen: Int64 = 7          // Int literal -> Int64
+    let same: Int32 = p           // Int32 -> Int32
+    let owned: String = "hi"      // StrConst -> String
+    let view: Str = "lo"          // StrConst -> Str
+    let maybe: Bool? = true       // T -> T?
+    let w: Wrap = Wrap(s: "y")    // constructor yields Wrap
+    let w2: Wrap = makeWrap()     // call returns Wrap
+    let c: Int32 = count()        // call returns Int32
+    return same
+}

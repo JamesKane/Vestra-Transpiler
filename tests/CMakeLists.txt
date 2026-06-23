@@ -202,13 +202,19 @@ set_tests_properties(e2e_selfhost_parser_diff_example5 PROPERTIES DEPENDS e2e_se
 # `async func` may not take an `inout` parameter; slice 4 is ownership / move
 # tracking (§5, §19.2): a non-trivial binding moved by a let/var-bind, a return,
 # or a sink/constructor argument may not then be used (`use of '...' after it was
-# moved`) or moved again (`'...' was already moved...`). Validation is DIFFERENTIAL
+# moved`) or moved again (`'...' was already moved...`); slice 5 begins type
+# checking (§17): a `let`/`var`/`const` whose initializer types as something not
+# assignable to its annotation (`initializer of type X does not match annotation Y`
+# / `const value of type X ...`), over a foundational inference subset (literals,
+# identifiers, parens, direct calls) and assignability (identity, Int/UInt natural
+# width, the StrConst<=Str<=String lattice, T->T?). Validation is DIFFERENTIAL
 # against `vestra check`: each diff test extracts the `undefined name '...'`,
-# `missing capability '...'`, borrow-conflict, async-inout, and move-tracking
-# messages from both and compares them. `vsema` mirrors `check`'s pass ORDER (stop
-# at resolution errors; then ownership, exclusivity, capability). Sema is cross-
-# referential, so this runs on a CURATED corpus (otherwise-valid programs isolating
-# one rule), not the whole example corpus.
+# `missing capability '...'`, borrow-conflict, async-inout, move-tracking, and
+# type-mismatch messages from both and compares them. `vsema` mirrors `check`'s
+# pass ORDER (type checking is part of resolution, so it gates like undefined
+# names; then ownership, exclusivity, capability). Sema is cross-referential, so
+# this runs on a CURATED corpus (otherwise-valid programs isolating one rule), not
+# the whole example corpus.
 # ---------------------------------------------------------------------------
 set(selfhost_sema  ${CMAKE_SOURCE_DIR}/selfhost/sema.vst)
 set(sema_dir       ${CMAKE_SOURCE_DIR}/tests/e2e/sema)
@@ -228,11 +234,12 @@ add_test(
 set_tests_properties(e2e_selfhost_sema_compile PROPERTIES DEPENDS e2e_selfhost_sema_transpile)
 
 # One differential test per curated program: the self-hosted analyzer's
-# undefined-name + missing-capability + exclusivity + ownership verdict must match
-# `vestra check`. The async-inout pattern uses ERE bracket classes ([(] [)]) and
-# `.` for the backticks so the regex survives the sh -c / CMake quoting unescaped.
-set(sema_grep "undefined name '[^']*'|missing capability '[^']*'|'[^']*' is borrowed twice with incompatible modes|'[^']*' and '[^']*' overlap with incompatible borrow modes|async function '[^']*' cannot take an .inout. parameter [(]'[^']*'[)]|use of '[^']*' after it was moved|'[^']*' was already moved and cannot be moved again")
-foreach(prog resolve_ok resolve_bad resolve_scope cap_ok cap_missing excl_ok excl_bad own_ok own_bad)
+# undefined-name + missing-capability + exclusivity + ownership + type-mismatch
+# verdict must match `vestra check`. The async-inout pattern uses ERE bracket
+# classes ([(] [)]) and `.` for the backticks so the regex survives the sh -c /
+# CMake quoting unescaped.
+set(sema_grep "undefined name '[^']*'|missing capability '[^']*'|'[^']*' is borrowed twice with incompatible modes|'[^']*' and '[^']*' overlap with incompatible borrow modes|async function '[^']*' cannot take an .inout. parameter [(]'[^']*'[)]|use of '[^']*' after it was moved|'[^']*' was already moved and cannot be moved again|initializer of type [^ ]+ does not match annotation [^ ]+|const value of type [^ ]+ does not match annotation [^ ]+")
+foreach(prog resolve_ok resolve_bad resolve_scope cap_ok cap_missing excl_ok excl_bad own_ok own_bad ty_ok ty_bad)
     add_test(
         NAME    e2e_selfhost_sema_diff_${prog}
         COMMAND sh -c "mkdir -p ${sema_workdir} && $<TARGET_FILE:vestra> check ${sema_dir}/${prog}.vst 2>&1 | grep -oE \"${sema_grep}\" > ${sema_workdir}/${prog}_c.txt; ${e2e_workdir}/vsema ${sema_dir}/${prog}.vst | grep -oE \"${sema_grep}\" > ${sema_workdir}/${prog}_v.txt; diff ${sema_workdir}/${prog}_c.txt ${sema_workdir}/${prog}_v.txt")
