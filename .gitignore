@@ -12,6 +12,9 @@ cmake_install.cmake
 install_manifest.txt
 compile_commands.json
 
+# CTest artifacts (created when ctest runs from the repo root)
+Testing/
+
 # Editor / IDE
 .vscode/
 .idea/
