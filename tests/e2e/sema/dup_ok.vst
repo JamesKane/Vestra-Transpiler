@@ -1,0 +1,25 @@
+// No duplicate definitions: distinct top-level names, distinct parameters, and
+// shadowing across nested scopes (a local shadowing a param, a for-pattern
+// shadowing an outer local) is allowed.
+const K: Int32 = 1
+
+struct Point { let x: Int32 }
+
+enum Color { case red }
+
+func f(_ a: Int32, _ b: Int32) -> Int32 {
+    let c: Int32 = a + b
+    if c > 0 {
+        let a: Int32 = c        // shadows the param in a nested block — fine
+        return a
+    }
+    return c
+}
+
+func g(_ items: Vec[Int32]) -> Int32 {
+    let x: Int32 = 1
+    for x in items {            // for-pattern shadows the outer local — fine
+        let y: Int32 = x
+    }
+    return x
+}

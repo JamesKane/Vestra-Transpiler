@@ -1,0 +1,10 @@
+// Duplicate top-level definitions: every top-level name shares one namespace, so
+// a repeated func / struct / const name is reported at the second definition.
+func foo() -> Int32 { return 1 }
+func foo() -> Int32 { return 2 }
+
+struct Bar { let x: Int32 }
+struct Bar { let y: Int32 }
+
+const K: Int32 = 1
+const K: Int32 = 2

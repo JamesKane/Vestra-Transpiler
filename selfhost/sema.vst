@@ -2807,11 +2807,50 @@ func printAs(_ v: Vec[Nd], _ target: Vec[Nd], _ isOpt: Bool) using Alloc, Log {
 struct Env {
     var names: Vec[String]
     var bad: Vec[String]
+    var marks: Vec[Int]      // scope-start indices into `names` (one per live scope)
+    var dups: Vec[String]    // "duplicate definition of '<n>'" full messages
 }
 
 func noop() {}
 
 func addName(_ env: inout Env, _ n: String) using Alloc { env.names.push(n) }
+
+// Scope tracking for duplicate-definition detection: each scope records where it
+// began in `names`; a binding clashes only with names introduced at the same
+// level (params shadow nothing of the body block, nested blocks shadow outer).
+func scopeEnter(_ env: inout Env) using Alloc { env.marks.push(env.names.len()) }
+
+func scopeLeave(_ env: inout Env) { if env.marks.len() > 0 { let _ = env.marks.pop() } }
+
+func curScopeStart(_ env: inout Env) -> Int {
+    if env.marks.len() > 0 { return env.marks.get(env.marks.len() - 1) ?? 0 }
+    return 0
+}
+
+func dupInScope(_ env: inout Env, _ n: String) -> Bool {
+    var i: Int = curScopeStart(env)
+    while i < env.names.len() {
+        if let s = env.names.get(i) {
+            if streq(s, n) { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Add a binding, first flagging it as a duplicate if a same-scope name matches.
+func addBinding(_ env: inout Env, _ n: String) using Alloc {
+    if streq(n, "") { return }
+    if dupInScope(env, n) { env.dups.push(dupMsg(n)) }
+    addName(env, n)
+}
+
+func dupMsg(_ n: String) using Alloc -> String {
+    var s: String = "duplicate definition of '"
+    s.append(n)
+    s.append("'")
+    return s
+}
 
 func inScope(_ env: inout Env, _ n: String) -> Bool {
     var i: Int = 0
@@ -2872,13 +2911,17 @@ func addBuiltins(_ env: inout Env) using Alloc {
     addName(env, "Bool")
 }
 
+// All top-level declarations share one namespace, so a repeated name (across any
+// of func / struct / enum / const / static / opaque) is a duplicate. Builtins sit
+// below the top-level mark, so a global never clashes with one.
 func collectGlobal(_ env: inout Env, _ d: Nd) using Alloc {
     match d {
-        case .funcD(let vis, let mods, let name, let g, let pp, let c, let t, let r, let b): addName(env, name)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear): addName(env, name)
-        case .enumD(let vis, let name, let cs, let m): addName(env, name)
-        case .constD(let vis, let name, let ty, let v): addName(env, name)
-        case .staticD(let vis, let name, let ty, let v): addName(env, name)
+        case .funcD(let vis, let mods, let name, let g, let pp, let c, let t, let r, let b): addBinding(env, name)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear): addBinding(env, name)
+        case .enumD(let vis, let name, let cs, let m): addBinding(env, name)
+        case .constD(let vis, let name, let ty, let v): addBinding(env, name)
+        case .staticD(let vis, let name, let ty, let v): addBinding(env, name)
+        case .opaqueD(let vis, let name, let under): addBinding(env, name)
         default: noop()
     }
 }
@@ -2886,6 +2929,7 @@ func collectGlobal(_ env: inout Env, _ d: Nd) using Alloc {
 // Two passes over the compilation unit: collect top-level value names, then resolve
 // every function (and method) body against the scope.
 func resolve(_ env: inout Env, _ u: NUnit) using Alloc {
+    scopeEnter(env)   // top-level scope (above the builtins added before resolve)
     var i: Int = 0
     while i < u.decls.len() {
         collectGlobal(env, u.decls.get(i) ?? Nd.wildcard)
@@ -2920,8 +2964,10 @@ func resolveMethods(_ env: inout Env, _ methods: Vec[Nd]) using Alloc {
 
 func resolveFuncBody(_ env: inout Env, _ params: Vec[Nd], _ body: Vec[Nd]) using Alloc {
     let save = env.names.len()
+    scopeEnter(env)
     bindParams(env, params)
     resolveBoxed(env, body)
+    scopeLeave(env)
     popTo(env, save)
 }
 
@@ -2941,7 +2987,7 @@ func bindParam(_ env: inout Env, _ p: Nd) using Alloc {
 }
 
 func bindIfName(_ env: inout Env, _ nm: String) using Alloc {
-    if !streq(nm, "") { addName(env, nm) }
+    addBinding(env, nm)
 }
 
 func resolveBoxed(_ env: inout Env, _ v: Vec[Nd]) using Alloc {
@@ -2995,8 +3041,10 @@ func resolveIf(_ env: inout Env, _ ln: String, _ li: Vec[Nd], _ cond: Vec[Nd], _
     if !streq(ln, "") {
         resolveBoxed(env, li)
         let save = env.names.len()
-        addName(env, ln)
+        scopeEnter(env)
+        addBinding(env, ln)
         resolveBoxed(env, thenB)
+        scopeLeave(env)
         popTo(env, save)
     } else {
         resolveBoxed(env, cond)
@@ -3008,18 +3056,22 @@ func resolveIf(_ env: inout Env, _ ln: String, _ li: Vec[Nd], _ cond: Vec[Nd], _
 func resolveDoCatch(_ env: inout Env, _ db: Vec[Nd], _ en: String, _ cb: Vec[Nd]) using Alloc {
     resolveBoxed(env, db)
     let save = env.names.len()
-    if !streq(en, "") { addName(env, en) }
+    scopeEnter(env)
+    addBinding(env, en)
     resolveBoxed(env, cb)
+    scopeLeave(env)
     popTo(env, save)
 }
 
 func resolveBlock(_ env: inout Env, _ stmts: Vec[Nd]) using Alloc {
     let save = env.names.len()
+    scopeEnter(env)
     var i: Int = 0
     while i < stmts.len() {
         resolveStmt(env, stmts.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    scopeLeave(env)
     popTo(env, save)
 }
 
@@ -3044,8 +3096,10 @@ func resolveLet(_ env: inout Env, _ pat: Vec[Nd], _ value: Vec[Nd]) using Alloc 
 func resolveFor(_ env: inout Env, _ pat: Vec[Nd], _ iter: Vec[Nd], _ b: Vec[Nd]) using Alloc {
     resolveBoxed(env, iter)
     let save = env.names.len()
+    scopeEnter(env)
     bindPatBoxed(env, pat)
     resolveBoxed(env, b)
+    scopeLeave(env)
     popTo(env, save)
 }
 
@@ -3055,8 +3109,8 @@ func bindPatBoxed(_ env: inout Env, _ pat: Vec[Nd]) using Alloc {
 
 func bindPattern(_ env: inout Env, _ p: Nd) using Alloc {
     match p {
-        case .identP(let n): addName(env, n)
-        case .bindP(let n): addName(env, n)
+        case .identP(let n): addBinding(env, n)
+        case .bindP(let n): addBinding(env, n)
         case .tupleP(let elems): bindPatList(env, elems)
         case .enumP(let cname, let children): bindPatList(env, children)
         default: noop()
@@ -5330,9 +5384,14 @@ func main() -> Int32 {
                     let toks = tokenize(src)
                     var p = Ps(toks: toks, pos: 0)
                     let u = parseUnit(&p)
-                    var env = Env(names: Vec.new(), bad: Vec.new())
+                    var env = Env(names: Vec.new(), bad: Vec.new(), marks: Vec.new(), dups: Vec.new())
                     addBuiltins(&env)
                     resolve(&env, u)
+                    var di: Int = 0
+                    while di < env.dups.len() {
+                        if let msg = env.dups.get(di) { println(msg) }
+                        di = di + 1
+                    }
                     var i: Int = 0
                     while i < env.bad.len() {
                         if let nm = env.bad.get(i) {
@@ -5346,7 +5405,7 @@ func main() -> Int32 {
                     // later passes; otherwise run them all and accumulate. Order
                     // mirrors the driver: type checking is part of resolution (so
                     // its errors gate too), then ownership, exclusivity, capability.
-                    if env.bad.len() > 0 { return 1 }
+                    if env.bad.len() > 0 || env.dups.len() > 0 { return 1 }
                     var tenv = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(),
                                      pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(),
                                      structs: Vec.new(), sFldStruct: Vec.new(), sFldName: Vec.new(),
