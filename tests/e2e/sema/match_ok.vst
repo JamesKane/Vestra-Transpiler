@@ -1,0 +1,14 @@
+// Well-formed match: a Bool `where` guard, a payload binding used in its arm
+// body, and a default arm so the match is exhaustive.
+enum Shape {
+    case dot(Int32)
+    case line
+}
+
+func f(_ flag: Bool, _ s: Shape) -> Int32 {
+    return match s {
+        case .dot(let v) where flag: v
+        case .line: 2
+        default: 0
+    }
+}

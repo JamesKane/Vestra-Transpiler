@@ -1,0 +1,13 @@
+// Ill-formed match: a `where` guard whose type is not Bool.
+enum Shape {
+    case point
+    case line
+}
+
+func f(_ n: Int32, _ s: Shape) -> Int32 {
+    return match s {
+        case .point where n: 1
+        case .line: 2
+        default: 0
+    }
+}

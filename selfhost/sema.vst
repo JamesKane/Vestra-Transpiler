@@ -3024,9 +3024,38 @@ func resolveExpr(_ env: inout Env, _ e: Nd) using Alloc {
         case .addrOf(let inner): resolveBoxed(env, inner)
         case .prefixE(let kw, let inner): resolveBoxed(env, inner)
         case .throwE(let inner): resolveThrow(env, inner)
+        case .matchE(let scrut, let arms): resolveMatch(env, scrut, arms)
         case .doCatchE(let db, let en, let et, let cb): resolveDoCatch(env, db, en, cb)
         default: noop()
     }
+}
+
+// Each match arm is its own scope: the pattern binds its variables, then the
+// guard and body resolve against them (default / unguarded arms bind nothing).
+func resolveMatch(_ env: inout Env, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc {
+    resolveBoxed(env, scrut)
+    var i: Int = 0
+    while i < arms.len() {
+        resolveArm(env, arms.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func resolveArm(_ env: inout Env, _ a: Nd) using Alloc {
+    match a {
+        case .matchArm(let isDefault, let pat, let guard, let body): resolveArmParts(env, pat, guard, body)
+        default: noop()
+    }
+}
+
+func resolveArmParts(_ env: inout Env, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    let save = env.names.len()
+    scopeEnter(env)
+    bindPatBoxed(env, pat)
+    resolveBoxed(env, guard)
+    resolveBoxed(env, body)
+    scopeLeave(env)
+    popTo(env, save)
 }
 
 // §error-handling — `throw` resolves its operand and is legal only when the
@@ -4917,9 +4946,43 @@ func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
         case .addrOf(let x): tyBoxed(env, x)
         case .arg(let l, let io, let v): tyBoxed(env, v)
         case .throwE(let inner): tyBoxed(env, inner)
+        case .matchE(let scrut, let arms): tyMatch(env, scrut, arms)
         case .doCatchE(let db, let en, let et, let cb): tyPair(env, db, cb)
         default: noop()
     }
+}
+
+// Walk a match: descend the scrutinee and every arm body, and require each arm's
+// `where` guard to be Bool. (Pattern-bound variables type as unknown here and are
+// tolerated; arm-result-type unification is a later slice.)
+func tyMatch(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc {
+    tyBoxed(env, scrut)
+    var i: Int = 0
+    while i < arms.len() {
+        tyArm(env, arms.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyArm(_ env: inout TyEnv, _ a: Nd) using Alloc {
+    match a {
+        case .matchArm(let isDefault, let pat, let guard, let body): tyArmParts(env, guard, body)
+        default: noop()
+    }
+}
+
+func tyArmParts(_ env: inout TyEnv, _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    tyBoxed(env, body)
+    if guard.len() > 0 {
+        let gt = tyInferBoxed(env, guard)
+        if !streq(gt, "") && !streq(gt, "Bool") { env.bad.push(tyGuardMsg(gt)) }
+    }
+}
+
+func tyGuardMsg(_ got: String) using Alloc -> String {
+    var s: String = "match guard must be Bool, got "
+    s.append(got)
+    return s
 }
 
 func tyExprCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
