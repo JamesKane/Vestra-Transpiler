@@ -4164,6 +4164,9 @@ struct TyEnv {
     var mStruct: Vec[String]    // global: per-method rows — owning struct/enum ...
     var mName: Vec[String]      // ... method name ...
     var mRet: Vec[String]       // ... -> result-type spelling ("Unit" if none, "Self"->owner)
+    var eName: Vec[String]      // global: enum names (a bare `E.case` is a type ref)
+    var ecEnum: Vec[String]     // global: per-case rows — owning enum ...
+    var ecName: Vec[String]     // ... -> case name
     var symName: Vec[String]    // per-function: binding name ...
     var symType: Vec[String]    // ... -> type spelling
     var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
@@ -4189,9 +4192,57 @@ func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             tyRecordFunc(env, name, params, r)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear): tyRecordStructDecl(env, name, fl, m)
-        case .enumD(let vis, let name, let cs, let m): tyRecordMethods(env, name, m)
+        case .enumD(let vis, let name, let cs, let m): tyRecordEnumDecl(env, name, cs, m)
         default: noop()
     }
+}
+
+func tyRecordEnumDecl(_ env: inout TyEnv, _ name: String, _ cases: Vec[Nd], _ methods: Vec[Nd]) using Alloc {
+    env.eName.push(name)
+    var i: Int = 0
+    while i < cases.len() {
+        tyRecordCase(env, name, cases.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    tyRecordMethods(env, name, methods)
+}
+
+func tyRecordCase(_ env: inout TyEnv, _ enumName: String, _ c: Nd) using Alloc {
+    match c {
+        case .enumCase(let cn, let pay): tyPushCase(env, enumName, cn)
+        default: noop()
+    }
+}
+
+func tyPushCase(_ env: inout TyEnv, _ enumName: String, _ cn: String) using Alloc {
+    env.ecEnum.push(enumName)
+    env.ecName.push(cn)
+}
+
+func tyIsEnum(_ env: inout TyEnv, _ name: String) -> Bool {
+    var i: Int = 0
+    while i < env.eName.len() {
+        if let n = env.eName.get(i) {
+            if streq(n, name) { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func tyEnumHasCase(_ env: inout TyEnv, _ enumName: String, _ caseName: String) -> Bool {
+    var i: Int = 0
+    while i < env.ecEnum.len() {
+        if let e = env.ecEnum.get(i) {
+            if streq(e, enumName) {
+                if let c = env.ecName.get(i) {
+                    if streq(c, caseName) { return true }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return false
 }
 
 func tyRecordStructDecl(_ env: inout TyEnv, _ name: String, _ fields: Vec[Nd], _ methods: Vec[Nd]) using Alloc {
@@ -4480,7 +4531,7 @@ func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
         case .paren(let x): tyBoxed(env, x)
         case .unary(let op, let x): tyUnary(env, op, x)
         case .binary(let op, let l, let r): tyBinary(env, op, l, r)
-        case .member(let base, let n, let c): tyBoxed(env, base)
+        case .member(let base, let n, let c): tyMember(env, base, n, c)
         case .index(let base, let idxs): tyIndex(env, base, idxs)
         case .ifE(let ln, let li, let cond, let thenB, let els): tyIf(env, li, cond, thenB, els)
         case .block(let stmts): tyBlock(env, stmts)
@@ -4632,6 +4683,33 @@ func tyNotIndexableMsg(_ bt: String) using Alloc -> String {
     var s: String = "type "
     s.append(bt)
     s.append(" is not indexable")
+    return s
+}
+
+// Member access: descend into the base, then check enum-case access. `E.case`
+// where `E` names an enum (and is a type ref, not a value binding) must name a
+// real case of `E`. Value member access (`x.field` / `x.method()`) is handled by
+// inference; a `?.` chain is tolerated.
+func tyMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain: Bool) using Alloc {
+    tyBoxed(env, base)
+    if chain { return }
+    tyCheckEnumCase(env, base, name)
+}
+
+func tyCheckEnumCase(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String) using Alloc {
+    let bn = exCalleeNameBoxed(base)               // base ident name, or "" if not a bare ident
+    if streq(bn, "") { return }
+    if !streq(tySymType(env, bn), "") { return }   // a value binding shadows: not a type ref
+    if !tyIsEnum(env, bn) { return }
+    if !tyEnumHasCase(env, bn, name) { env.bad.push(tyNoCaseMsg(bn, name)) }
+}
+
+func tyNoCaseMsg(_ enumName: String, _ caseName: String) using Alloc -> String {
+    var s: String = "enum '"
+    s.append(enumName)
+    s.append("' has no case '")
+    s.append(caseName)
+    s.append("'")
     return s
 }
 
@@ -5273,7 +5351,8 @@ func main() -> Int32 {
                                      pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(),
                                      structs: Vec.new(), sFldStruct: Vec.new(), sFldName: Vec.new(),
                                      sFldType: Vec.new(), mStruct: Vec.new(), mName: Vec.new(),
-                                     mRet: Vec.new(), symName: Vec.new(), symType: Vec.new(),
+                                     mRet: Vec.new(), eName: Vec.new(), ecEnum: Vec.new(),
+                                     ecName: Vec.new(), symName: Vec.new(), symType: Vec.new(),
                                      curRet: own(""), bad: Vec.new())
                     tyCheck(&tenv, u)
                     var ti: Int = 0

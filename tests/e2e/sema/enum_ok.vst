@@ -1,0 +1,20 @@
+// Well-formed enum-case access: every `E.case` names a real case, including a
+// payload case used as a constructor.
+enum Color {
+    case red
+    case green
+    case blue
+}
+
+enum Shape {
+    case circle(radius: Float64)
+    case point
+}
+
+func ok() -> Color {
+    let a = Color.red
+    let b = Color.blue
+    let s = Shape.circle(radius: 1.0)
+    let p = Shape.point
+    return a
+}

@@ -1,0 +1,17 @@
+// Ill-formed enum-case access: a missing simple case and a missing payload-style
+// case, each reported against its owning enum.
+enum Color {
+    case red
+    case green
+}
+
+enum Shape {
+    case circle(radius: Float64)
+    case point
+}
+
+func bad() -> Color {
+    let a = Color.purple             // no such simple case
+    let b = Shape.square(side: 2.0)  // no such payload case
+    return Color.red
+}
