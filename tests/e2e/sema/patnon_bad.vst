@@ -1,0 +1,14 @@
+// An enum-case pattern and a mismatched literal pattern, both against a non-enum
+// (Int32) scrutinee.
+enum Color {
+    case red
+    case green
+}
+
+func f(_ n: Int32) -> Int32 {
+    return match n {
+        case .red: 1
+        case true: 2
+        default: 0
+    }
+}

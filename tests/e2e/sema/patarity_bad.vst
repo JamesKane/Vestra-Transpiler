@@ -1,0 +1,12 @@
+// Enum-case patterns binding the wrong number of payload fields.
+enum Shape {
+    case dot(Int32)
+    case seg(Int32, Int32)
+}
+
+func f(_ s: Shape) -> Int32 {
+    return match s {
+        case .dot(let a, let b): 0
+        case .seg(let x): 1
+    }
+}

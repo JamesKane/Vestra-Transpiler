@@ -1,0 +1,23 @@
+// Valid patterns: enum-case patterns with the right payload arity, and literal
+// patterns whose type matches the scrutinee.
+enum Shape {
+    case dot(Int32)
+    case seg(Int32, Int32)
+    case origin
+}
+
+func useEnum(_ s: Shape) -> Int32 {
+    return match s {
+        case .dot(let a): a
+        case .seg(let x, let y): x
+        case .origin: 0
+    }
+}
+
+func useInt(_ n: Int32) -> Int32 {
+    return match n {
+        case 0: 1
+        case 1: 2
+        default: 0
+    }
+}

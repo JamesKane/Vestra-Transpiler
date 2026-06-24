@@ -4573,7 +4573,8 @@ struct TyEnv {
     var mRet: Vec[String]       // ... -> result-type spelling ("Unit" if none, "Self"->owner)
     var eName: Vec[String]      // global: enum names (a bare `E.case` is a type ref)
     var ecEnum: Vec[String]     // global: per-case rows — owning enum ...
-    var ecName: Vec[String]     // ... -> case name
+    var ecName: Vec[String]     // ... case name ...
+    var ecArity: Vec[Int]       // ... -> payload field count
     var symName: Vec[String]    // per-function: binding name ...
     var symType: Vec[String]    // ... -> type spelling
     var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
@@ -4616,14 +4617,30 @@ func tyRecordEnumDecl(_ env: inout TyEnv, _ name: String, _ cases: Vec[Nd], _ me
 
 func tyRecordCase(_ env: inout TyEnv, _ enumName: String, _ c: Nd) using Alloc {
     match c {
-        case .enumCase(let cn, let pay): tyPushCase(env, enumName, cn)
+        case .enumCase(let cn, let pay): tyPushCase(env, enumName, cn, pay.len())
         default: noop()
     }
 }
 
-func tyPushCase(_ env: inout TyEnv, _ enumName: String, _ cn: String) using Alloc {
+func tyPushCase(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ arity: Int) using Alloc {
     env.ecEnum.push(enumName)
     env.ecName.push(cn)
+    env.ecArity.push(arity)
+}
+
+func tyCaseArity(_ env: inout TyEnv, _ enumName: String, _ cn: String) -> Int {
+    var i: Int = 0
+    while i < env.ecEnum.len() {
+        if let e = env.ecEnum.get(i) {
+            if streq(e, enumName) {
+                if let c = env.ecName.get(i) {
+                    if streq(c, cn) { return env.ecArity.get(i) ?? -1 }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return -1
 }
 
 func tyIsEnum(_ env: inout TyEnv, _ name: String) -> Bool {
@@ -4962,8 +4979,89 @@ func tyMatch(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc 
         tyArm(env, arms.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    tyCheckArmPatterns(env, scrut, arms)
     tyCheckExhaustive(env, scrut, arms)
     tyCheckArmTypes(env, arms)
+}
+
+// Validate each arm pattern against the scrutinee type: an enum-case pattern on a
+// non-enum scrutinee; a payload-binding count that disagrees with the case; and a
+// literal pattern whose type does not match the scrutinee. (An unknown scrutinee
+// type is tolerated; default / catch-all arms carry no pattern.)
+func tyCheckArmPatterns(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc {
+    let st = tyInferBoxed(env, scrut)
+    if streq(st, "") { return }
+    var i: Int = 0
+    while i < arms.len() {
+        tyCheckArmPattern(env, st, arms.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyCheckArmPattern(_ env: inout TyEnv, _ st: String, _ a: Nd) using Alloc {
+    match a {
+        case .matchArm(let isDef, let pat, let guard, let body): tyCheckPatBoxed(env, st, pat)
+        default: noop()
+    }
+}
+
+func tyCheckPatBoxed(_ env: inout TyEnv, _ st: String, _ pat: Vec[Nd]) using Alloc {
+    if pat.len() > 0 { tyCheckPatNode(env, st, pat.get(0) ?? Nd.wildcard) }
+}
+
+func tyCheckPatNode(_ env: inout TyEnv, _ st: String, _ p: Nd) using Alloc {
+    match p {
+        case .enumP(let cn, let children): tyCheckEnumPat(env, st, cn, children)
+        case .litP(let inner): tyCheckLitPat(env, st, inner)
+        case .orP(let alts): tyCheckAltPats(env, st, alts)
+        default: noop()
+    }
+}
+
+func tyCheckAltPats(_ env: inout TyEnv, _ st: String, _ alts: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < alts.len() {
+        tyCheckPatNode(env, st, alts.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyCheckEnumPat(_ env: inout TyEnv, _ st: String, _ cn: String, _ children: Vec[Nd]) using Alloc {
+    if !tyIsEnum(env, st) { env.bad.push(tyEnumPatNonEnumMsg(cn, st)); return }
+    let arity = tyCaseArity(env, st, cn)
+    if arity >= 0 && children.len() != arity { env.bad.push(tyPayloadArityMsg(cn, arity, children.len())) }
+}
+
+func tyCheckLitPat(_ env: inout TyEnv, _ st: String, _ inner: Vec[Nd]) using Alloc {
+    let lt = tyInferBoxed(env, inner)
+    if streq(lt, "") { return }
+    if !tyAssignable(lt, st) && !tyAssignable(st, lt) { env.bad.push(tyLitScrutMsg(lt, st)) }
+}
+
+func tyEnumPatNonEnumMsg(_ cn: String, _ st: String) using Alloc -> String {
+    var s: String = "enum pattern '."
+    s.append(cn)
+    s.append("' used against non-enum type ")
+    s.append(st)
+    return s
+}
+
+func tyPayloadArityMsg(_ cn: String, _ arity: Int, _ binds: Int) using Alloc -> String {
+    var s: String = "case '"
+    s.append(cn)
+    s.append("' has ")
+    s.append(intToStr(arity))
+    s.append(" payload field(s), pattern binds ")
+    s.append(intToStr(binds))
+    return s
+}
+
+func tyLitScrutMsg(_ lt: String, _ st: String) using Alloc -> String {
+    var s: String = "literal of type "
+    s.append(lt)
+    s.append(" does not match scrutinee of type ")
+    s.append(st)
+    return s
 }
 
 // The arm bodies must share one type. The first arm with a known type sets the
@@ -5959,7 +6057,8 @@ func main() -> Int32 {
                                      structs: Vec.new(), sFldStruct: Vec.new(), sFldName: Vec.new(),
                                      sFldType: Vec.new(), mStruct: Vec.new(), mName: Vec.new(),
                                      mRet: Vec.new(), eName: Vec.new(), ecEnum: Vec.new(),
-                                     ecName: Vec.new(), symName: Vec.new(), symType: Vec.new(),
+                                     ecName: Vec.new(), ecArity: Vec.new(),
+                                     symName: Vec.new(), symType: Vec.new(),
                                      curRet: own(""), bad: Vec.new())
                     tyCheck(&tenv, u)
                     var ti: Int = 0
