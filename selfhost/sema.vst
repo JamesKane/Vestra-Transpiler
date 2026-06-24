@@ -4963,6 +4963,54 @@ func tyMatch(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc 
         i = i + 1
     }
     tyCheckExhaustive(env, scrut, arms)
+    tyCheckArmTypes(env, arms)
+}
+
+// The arm bodies must share one type. The first arm with a known type sets the
+// baseline; a later arm whose known type is incompatible reports
+// "match arms have different types: <baseline> vs <arm>", after which the
+// baseline becomes the error type so every following known arm reports
+// "<error> vs <arm>" (mirroring the resolver's cascade). Arms whose body type is
+// unknown are skipped. NB this unifies the arms among themselves (no expected
+// type is threaded in), so it matches the resolver only where the match has no
+// expected type, e.g. an unannotated `let x = match …`.
+func tyCheckArmTypes(_ env: inout TyEnv, _ arms: Vec[Nd]) using Alloc {
+    var unified: String = ""
+    var errored: Bool = false
+    var i: Int = 0
+    while i < arms.len() {
+        let t = tyArmBodyType(env, arms.get(i) ?? Nd.wildcard)
+        if !streq(t, "") {
+            if errored {
+                env.bad.push(tyArmDiffMsg("<error>", t))
+            } else if streq(unified, "") {
+                unified = own(t)
+            } else if !tyArmCompatible(unified, t) {
+                env.bad.push(tyArmDiffMsg(unified, t))
+                errored = true
+            }
+        }
+        i = i + 1
+    }
+}
+
+func tyArmBodyType(_ env: inout TyEnv, _ a: Nd) using Alloc -> String {
+    return match a {
+        case .matchArm(let isDef, let pat, let guard, let body): tyInferBoxed(env, body)
+        default: own("")
+    }
+}
+
+func tyArmCompatible(_ a: String, _ b: String) using Alloc -> Bool {
+    return tyAssignable(a, b) || tyAssignable(b, a)
+}
+
+func tyArmDiffMsg(_ x: Str, _ y: Str) using Alloc -> String {
+    var s: String = "match arms have different types: "
+    s.append(x)
+    s.append(" vs ")
+    s.append(y)
+    return s
 }
 
 // When the scrutinee is a known enum and no arm is a catch-all (a `default` or a

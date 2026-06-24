@@ -1,0 +1,15 @@
+// Match arms that all share one type unify cleanly (used as an unannotated value).
+enum E {
+    case a
+    case b
+    case c
+}
+
+func f(_ e: E) -> Int32 {
+    let x = match e {
+        case .a: 1
+        case .b: 2
+        case .c: 3
+    }
+    return 0
+}

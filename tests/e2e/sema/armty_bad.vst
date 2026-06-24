@@ -1,0 +1,14 @@
+// Match arms with incompatible body types, in an unannotated value position so
+// the first arm sets the baseline type.
+enum E {
+    case a
+    case b
+}
+
+func f(_ e: E) -> Int32 {
+    let x = match e {
+        case .a: 1
+        case .b: true
+    }
+    return 0
+}
