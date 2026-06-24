@@ -1,0 +1,8 @@
+// A `throw` outside a `throws`-declared function is illegal, even when wrapped in
+// a do / catch (only the function signature legalizes it).
+enum E { case bad }
+
+func noThrows() -> Int32 {
+    throw E.bad
+    return 0
+}

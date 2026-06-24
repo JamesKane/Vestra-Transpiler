@@ -1,0 +1,9 @@
+// A `throw` is legal inside a function declared `throws(E)`.
+enum E { case bad }
+
+func canThrow(_ flag: Bool) throws(E) -> Int32 {
+    if flag {
+        throw E.bad
+    }
+    return 0
+}

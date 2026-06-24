@@ -875,7 +875,8 @@ enum Nd {
     case asE(Vec[Nd], Vec[Nd], Bool)        // value, target type, is_optional
     case addrOf(Vec[Nd])
     case matchE                             // parsed but printed as /*?expr*/ (no printer case in C++)
-    case exoticE                            // vector / tuple literal, throw, comptime, closure, etc — /*?expr*/
+    case exoticE                            // vector / tuple literal, comptime, closure, etc — /*?expr*/
+    case throwE(Vec[Nd])                    // throw OPERAND — also prints /*?expr*/ (no C++ printer case), but carries the operand for sema
     case prefixE(String, Vec[Nd])           // copy / await / spawn / try (kw string), operand — printed fully
     case doCatchE(Vec[Nd], String, Vec[Nd], Vec[Nd]) // doBody, errName, errType?, catchBody
     case quoteE(Vec[Nd])                     // quote { EXPR } — printed fully
@@ -1742,7 +1743,7 @@ func parsePrefix(_ p: inout Ps) using Alloc -> Nd {
     if eat(p, TokKind.kwCopy) { return Nd.prefixE("copy ", bE(parsePrefix(&p))) }
     if eat(p, TokKind.kwAwait) { return Nd.prefixE("await ", bE(parsePrefix(&p))) }
     if eat(p, TokKind.kwSpawn) { return Nd.prefixE("spawn ", bE(parsePrefix(&p))) }
-    if eat(p, TokKind.kwThrow) { let inner = parsePrefix(&p); return Nd.exoticE }
+    if eat(p, TokKind.kwThrow) { return Nd.throwE(bE(parsePrefix(&p))) }
     if isKind(p, TokKind.kwTry) || isKind(p, TokKind.kwTryQuestion) || isKind(p, TokKind.kwTryBang) {
         var form: String = "try "
         if isKind(p, TokKind.kwTryQuestion) { form = "try? " }
@@ -2809,6 +2810,8 @@ struct Env {
     var bad: Vec[String]
     var marks: Vec[Int]      // scope-start indices into `names` (one per live scope)
     var dups: Vec[String]    // "duplicate definition of '<n>'" full messages
+    var curThrows: Bool      // does the function whose body we're walking declare `throws`?
+    var throwBad: Vec[String] // "'throw' is only valid ..." full messages
 }
 
 func noop() {}
@@ -2945,7 +2948,7 @@ func resolve(_ env: inout Env, _ u: NUnit) using Alloc {
 func resolveDecl(_ env: inout Env, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
-            resolveFuncBody(env, params, body)
+            resolveFunc(env, thr, params, body)
         case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear):
             resolveMethods(env, methods)
         case .enumD(let vis, let name, let cases, let methods):
@@ -2960,6 +2963,14 @@ func resolveMethods(_ env: inout Env, _ methods: Vec[Nd]) using Alloc {
         resolveDecl(env, methods.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+}
+
+// Set the throws context (a `throw` is valid only inside a `throws(E)` function),
+// then resolve the body. Functions don't nest, so a plain set per function (no
+// save/restore) suffices; methods reach here as their own decls.
+func resolveFunc(_ env: inout Env, _ thr: Vec[Nd], _ params: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    env.curThrows = thr.len() > 0
+    resolveFuncBody(env, params, body)
 }
 
 func resolveFuncBody(_ env: inout Env, _ params: Vec[Nd], _ body: Vec[Nd]) using Alloc {
@@ -3009,9 +3020,22 @@ func resolveExpr(_ env: inout Env, _ e: Nd) using Alloc {
         case .asE(let v, let target, let isOpt): resolveBoxed(env, v)
         case .addrOf(let inner): resolveBoxed(env, inner)
         case .prefixE(let kw, let inner): resolveBoxed(env, inner)
+        case .throwE(let inner): resolveThrow(env, inner)
         case .doCatchE(let db, let en, let et, let cb): resolveDoCatch(env, db, en, cb)
         default: noop()
     }
+}
+
+// §error-handling — `throw` resolves its operand and is legal only when the
+// enclosing function declares `throws`. (A surrounding `do`/`catch` does not make
+// it legal; only the function signature does.)
+func resolveThrow(_ env: inout Env, _ inner: Vec[Nd]) using Alloc {
+    resolveBoxed(env, inner)
+    if !env.curThrows { env.throwBad.push(throwMsg()) }
+}
+
+func throwMsg() using Alloc -> String {
+    return own("'throw' is only valid inside a function declared 'throws(E)'")
 }
 
 func resolvePair(_ env: inout Env, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc {
@@ -4592,6 +4616,7 @@ func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
         case .asE(let v, let t, let o): tyBoxed(env, v)
         case .addrOf(let x): tyBoxed(env, x)
         case .arg(let l, let io, let v): tyBoxed(env, v)
+        case .throwE(let inner): tyBoxed(env, inner)
         case .doCatchE(let db, let en, let et, let cb): tyPair(env, db, cb)
         default: noop()
     }
@@ -5384,13 +5409,19 @@ func main() -> Int32 {
                     let toks = tokenize(src)
                     var p = Ps(toks: toks, pos: 0)
                     let u = parseUnit(&p)
-                    var env = Env(names: Vec.new(), bad: Vec.new(), marks: Vec.new(), dups: Vec.new())
+                    var env = Env(names: Vec.new(), bad: Vec.new(), marks: Vec.new(),
+                                  dups: Vec.new(), curThrows: false, throwBad: Vec.new())
                     addBuiltins(&env)
                     resolve(&env, u)
                     var di: Int = 0
                     while di < env.dups.len() {
                         if let msg = env.dups.get(di) { println(msg) }
                         di = di + 1
+                    }
+                    var thi: Int = 0
+                    while thi < env.throwBad.len() {
+                        if let msg = env.throwBad.get(thi) { println(msg) }
+                        thi = thi + 1
                     }
                     var i: Int = 0
                     while i < env.bad.len() {
@@ -5405,7 +5436,7 @@ func main() -> Int32 {
                     // later passes; otherwise run them all and accumulate. Order
                     // mirrors the driver: type checking is part of resolution (so
                     // its errors gate too), then ownership, exclusivity, capability.
-                    if env.bad.len() > 0 || env.dups.len() > 0 { return 1 }
+                    if env.bad.len() > 0 || env.dups.len() > 0 || env.throwBad.len() > 0 { return 1 }
                     var tenv = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(),
                                      pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(),
                                      structs: Vec.new(), sFldStruct: Vec.new(), sFldName: Vec.new(),

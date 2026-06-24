@@ -877,7 +877,8 @@ enum Nd {
     case asE(Vec[Nd], Vec[Nd], Bool)        // value, target type, is_optional
     case addrOf(Vec[Nd])
     case matchE                             // parsed but printed as /*?expr*/ (no printer case in C++)
-    case exoticE                            // vector / tuple literal, throw, comptime, closure, etc — /*?expr*/
+    case exoticE                            // vector / tuple literal, comptime, closure, etc — /*?expr*/
+    case throwE(Vec[Nd])                    // throw OPERAND — also prints /*?expr*/ (no C++ printer case), but carries the operand
     case prefixE(String, Vec[Nd])           // copy / await / spawn / try (kw string), operand — printed fully
     case doCatchE(Vec[Nd], String, Vec[Nd], Vec[Nd]) // doBody, errName, errType?, catchBody
     case quoteE(Vec[Nd])                     // quote { EXPR } — printed fully
@@ -1742,7 +1743,7 @@ func parsePrefix(_ p: inout Ps) using Alloc -> Nd {
     if eat(p, TokKind.kwCopy) { return Nd.prefixE("copy ", bE(parsePrefix(&p))) }
     if eat(p, TokKind.kwAwait) { return Nd.prefixE("await ", bE(parsePrefix(&p))) }
     if eat(p, TokKind.kwSpawn) { return Nd.prefixE("spawn ", bE(parsePrefix(&p))) }
-    if eat(p, TokKind.kwThrow) { let inner = parsePrefix(&p); return Nd.exoticE }
+    if eat(p, TokKind.kwThrow) { return Nd.throwE(bE(parsePrefix(&p))) }
     if isKind(p, TokKind.kwTry) || isKind(p, TokKind.kwTryQuestion) || isKind(p, TokKind.kwTryBang) {
         var form: String = "try "
         if isKind(p, TokKind.kwTryQuestion) { form = "try? " }
