@@ -40,7 +40,7 @@ enum Either[L, R] {
 
 func area(_ s: Shape) -> Float64 {
     return match s {
-        case .circle(let r): 3.14 * r * r
+        case .circle(let r) where r > 0.0: 3.14 * r * r
         case .rect(let w, let h): w * h
         case .point: 0.0
     }

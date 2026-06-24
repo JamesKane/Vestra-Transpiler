@@ -874,7 +874,8 @@ enum Nd {
     case block(Vec[Nd])                     // statements
     case asE(Vec[Nd], Vec[Nd], Bool)        // value, target type, is_optional
     case addrOf(Vec[Nd])
-    case matchE                             // parsed but printed as /*?expr*/ (no printer case in C++)
+    case matchE(Vec[Nd], Vec[Nd])           // scrutinee (boxed), arms — still prints /*?expr*/ (no C++ printer case), but carries the match for sema
+    case matchArm(Bool, Vec[Nd], Vec[Nd], Vec[Nd]) // isDefault, pattern (empty if default), guard (empty if none), body — all boxed
     case exoticE                            // vector / tuple literal, comptime, closure, etc — /*?expr*/
     case throwE(Vec[Nd])                    // throw OPERAND — also prints /*?expr*/ (no C++ printer case), but carries the operand for sema
     case prefixE(String, Vec[Nd])           // copy / await / spawn / try (kw string), operand — printed fully
@@ -2039,21 +2040,23 @@ func parseMatch(_ p: inout Ps) using Alloc -> Nd {
     let scrut = parseExpr(&p)
     eat(p, TokKind.lbrace)
     skipNL(&p)
+    var arms: Vec[Nd] = Vec.new()
     while !isKind(p, TokKind.rbrace) && !atEndP(p) {
         if eat(p, TokKind.kwDefault) {
             eat(p, TokKind.colon)
-            let body = parseExpr(&p)
+            arms.push(Nd.matchArm(true, Vec.new(), Vec.new(), bE(parseExpr(&p))))
         } else {
             eat(p, TokKind.kwCase)
             let pat = parsePattern(&p)
-            if eat(p, TokKind.kwWhere) { let guard = parseExpr(&p) }
+            var guard: Vec[Nd] = Vec.new()
+            if eat(p, TokKind.kwWhere) { guard.push(parseExpr(&p)) }
             eat(p, TokKind.colon)
-            let body = parseExpr(&p)
+            arms.push(Nd.matchArm(false, bP(pat), guard, bE(parseExpr(&p))))
         }
         skipNL(&p)
     }
     eat(p, TokKind.rbrace)
-    return Nd.matchE
+    return Nd.matchE(bE(scrut), arms)
 }
 
 func parseIf(_ p: inout Ps) using Alloc -> Nd {
