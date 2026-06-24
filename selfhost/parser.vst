@@ -924,8 +924,8 @@ enum Nd {
     case importD(Bool, String)               // is_c_header, payload (joined path or header)
     case funcD(String, String, String, Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd])
     // visibilityPrefix, modifiers (async/recv), name, generics, params, usingCaps, throwsType?, result?, body?
-    case structD(String, String, Vec[Nd], Vec[Nd], Vec[Nd], Bool) // vis, name, fields, methods, deinit?, isLinear
-    case enumD(String, String, Vec[Nd], Vec[Nd])            // vis, name, cases, methods
+    case structD(String, String, Vec[Nd], Vec[Nd], Vec[Nd], Bool, Vec[Nd]) // vis, name, fields, methods, deinit?, isLinear, generics
+    case enumD(String, String, Vec[Nd], Vec[Nd], Vec[Nd])   // vis, name, cases, methods, generics
     case constD(String, String, Vec[Nd], Vec[Nd])           // vis, name, type?, value
     case staticD(String, String, Vec[Nd], Vec[Nd])          // vis, name, type, value?
     case opaqueD(String, String, Vec[Nd])                   // vis, name, underlying type
@@ -1243,7 +1243,7 @@ func parseStruct(_ p: inout Ps, _ vis: String, _ isLinear: Bool) using Alloc -> 
         skipNL(&p)
     }
     eat(p, TokKind.rbrace)
-    return Nd.structD(vis, name, fields, methods, deinitB, isLinear)
+    return Nd.structD(vis, name, fields, methods, deinitB, isLinear, g)
 }
 
 func parseEnum(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
@@ -1278,7 +1278,7 @@ func parseEnum(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
         skipNL(&p)
     }
     eat(p, TokKind.rbrace)
-    return Nd.enumD(vis, name, cases, methods)
+    return Nd.enumD(vis, name, cases, methods, g)
 }
 
 func parsePayElem(_ p: inout Ps) using Alloc -> Nd {
@@ -2179,9 +2179,9 @@ func printDecl(_ d: Nd, _ indent: Int) using Alloc, Log {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
             printFunc(vis, mods, name, gens, params, caps, thr, res, body, indent)
-        case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear):
+        case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics):
             printStruct(vis, name, fields, methods, deinitB, indent)
-        case .enumD(let vis, let name, let cases, let methods):
+        case .enumD(let vis, let name, let cases, let methods, let generics):
             printEnum(vis, name, cases, methods, indent)
         case .constD(let vis, let name, let ty, let val): printConst(vis, name, ty, val, indent)
         case .staticD(let vis, let name, let ty, let val): printStatic(vis, name, ty, val, indent)

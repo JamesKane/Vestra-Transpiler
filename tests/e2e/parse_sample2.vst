@@ -26,6 +26,18 @@ linear struct Handle {
     var open: Bool
 }
 
+// Generic struct / enum — the parser captures the type parameters, but (like the
+// C++ printer) the `--dump-ast` form drops the `[...]`, so the print is unchanged.
+struct Wrapper[T] {
+    let value: T
+    func get() -> T { return self.value }
+}
+
+enum Either[L, R] {
+    case left(L)
+    case right(R)
+}
+
 func area(_ s: Shape) -> Float64 {
     return match s {
         case .circle(let r): 3.14 * r * r
