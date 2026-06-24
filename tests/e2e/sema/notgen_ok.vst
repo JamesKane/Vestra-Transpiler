@@ -1,0 +1,15 @@
+// Type arguments applied only to generic types: generic user struct / enum and
+// generic builtins. A non-generic struct is used without arguments.
+struct Gen[T] { let v: T }
+
+enum Maybe[T] {
+    case just(T)
+    case nothing
+}
+
+struct Plain { let x: Int32 }
+
+func f(_ a: Gen[Int32], _ b: Vec[Int32], _ c: Maybe[Bool], _ p: Plain) -> Int32 {
+    let d: Gen[Int32] = a
+    return 0
+}

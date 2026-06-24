@@ -1,0 +1,12 @@
+// Type arguments applied to non-generic types. A free function's parameter types
+// are reported twice (signature phase + body phase), a method parameter once.
+// (Only parameter positions are used: an annotated value position would also draw
+// a separate type-mismatch diagnostic against the base type.)
+struct Alpha { let x: Int32 }
+struct Beta { let y: Int32 }
+
+func freefn(_ a: Alpha[Int32], _ b: Beta[Int32]) -> Int32 { return 0 }
+
+struct Holder {
+    func m(_ z: Alpha[Int32]) -> Int32 { return 0 }
+}

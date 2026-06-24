@@ -3161,10 +3161,12 @@ func bindPatList(_ env: inout Env, _ ps: Vec[Nd]) using Alloc {
 // pass never treats the error type as concrete and piles on a mismatch).
 // ===========================================================================
 struct TnEnv {
-    var types: Vec[String]    // known type names: builtins + user struct/enum/opaque
-    var tparams: Vec[String]  // generic parameters currently in scope (a stack)
-    var tpMarks: Vec[Int]     // scope-start indices into tparams
-    var bad: Vec[String]      // "unknown type '<n>'" full messages
+    var types: Vec[String]            // known type names: builtins + user struct/enum/opaque
+    var userTypes: Vec[String]        // just the user-declared type names (struct/enum/opaque)
+    var genericUserTypes: Vec[String] // user types that take type parameters
+    var tparams: Vec[String]          // generic parameters currently in scope (a stack)
+    var tpMarks: Vec[Int]             // scope-start indices into tparams
+    var bad: Vec[String]              // "unknown type '<n>'" / "'<n>' is not a generic type"
 }
 
 func tnSeedBuiltins(_ env: inout TnEnv) using Alloc {
@@ -3183,11 +3185,17 @@ func tnSeedBuiltins(_ env: inout TnEnv) using Alloc {
 
 func tnCollectType(_ env: inout TnEnv, _ d: Nd) using Alloc {
     match d {
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): env.types.push(name)
-        case .enumD(let vis, let name, let cs, let m, let generics): env.types.push(name)
-        case .opaqueD(let vis, let name, let under): env.types.push(name)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tnRecordType(env, name, generics)
+        case .enumD(let vis, let name, let cs, let m, let generics): tnRecordType(env, name, generics)
+        case .opaqueD(let vis, let name, let under): tnRecordType(env, name, Vec.new())
         default: noop()
     }
+}
+
+func tnRecordType(_ env: inout TnEnv, _ name: String, _ generics: Vec[Nd]) using Alloc {
+    env.types.push(name)
+    env.userTypes.push(name)
+    if generics.len() > 0 { env.genericUserTypes.push(name) }
 }
 
 func tnCheck(_ env: inout TnEnv, _ u: NUnit) using Alloc {
@@ -3315,9 +3323,34 @@ func tnType(_ env: inout TnEnv, _ t: Nd) using Alloc {
     }
 }
 
+// Resolve a named type head. An unknown head, or a known-but-non-generic user
+// type applied to type arguments, is an error AND stops the walk (the C++ does
+// not descend into the args in either case). Otherwise the args are resolved.
 func tnNamed(_ env: inout TnEnv, _ path: String, _ args: Vec[Nd]) using Alloc {
-    if !tnKnown(env, path) { env.bad.push(unknownTypeMsg(path)) }
+    if !tnKnown(env, path) { env.bad.push(unknownTypeMsg(path)); return }
+    if args.len() > 0 && tnUserNonGeneric(env, path) { env.bad.push(notGenericMsg(path)); return }
     tnTypeList(env, args)
+}
+
+// A user-declared type (struct / enum / opaque) that takes no type parameters.
+func tnUserNonGeneric(_ env: inout TnEnv, _ path: String) -> Bool {
+    return tnContains(env.userTypes, path) && !tnContains(env.genericUserTypes, path)
+}
+
+func tnContains(_ v: Vec[String], _ s: String) -> Bool {
+    var i: Int = 0
+    while i < v.len() {
+        if let e = v.get(i) { if streq(e, s) { return true } }
+        i = i + 1
+    }
+    return false
+}
+
+func notGenericMsg(_ n: String) using Alloc -> String {
+    var s: String = "'"
+    s.append(n)
+    s.append("' is not a generic type")
+    return s
 }
 
 func tnTypeList(_ env: inout TnEnv, _ ts: Vec[Nd]) using Alloc {
@@ -5687,7 +5720,8 @@ func main() -> Int32 {
                         if let msg = env.throwBad.get(thi) { println(msg) }
                         thi = thi + 1
                     }
-                    var tnenv = TnEnv(types: Vec.new(), tparams: Vec.new(),
+                    var tnenv = TnEnv(types: Vec.new(), userTypes: Vec.new(),
+                                      genericUserTypes: Vec.new(), tparams: Vec.new(),
                                       tpMarks: Vec.new(), bad: Vec.new())
                     tnCheck(&tnenv, u)
                     var tni: Int = 0
