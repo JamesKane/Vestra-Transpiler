@@ -1,0 +1,19 @@
+// All type annotations name known types: builtins, a user struct / enum / opaque,
+// and generic parameters in scope (a function's own, and a struct's params inside
+// its methods).
+struct Box[T] {
+    let v: T
+    func get() -> T { return self.v }
+}
+
+opaque type Id = Int32
+
+func usesId(_ h: Id) -> Id { return h }
+
+func f[U](_ x: U, _ v: Vec[Int32]) -> U {
+    let w: Vec[Int32] = v
+    let y: U = x
+    return y
+}
+
+const K: Int32 = 1

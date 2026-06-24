@@ -3150,6 +3150,270 @@ func bindPatList(_ env: inout Env, _ ps: Vec[Nd]) using Alloc {
 }
 
 // ===========================================================================
+// Type-name resolution (`unknown type '<n>'`). A type annotation must name a
+// known type: a builtin, a user struct / enum / opaque, a generic parameter in
+// scope, or `Self`. Mirrors the C++ resolver including its TWO-PHASE structure —
+// a "declare" phase resolves free-function signatures and const / static
+// annotations, then a "body" phase resolves them AGAIN plus locals and method
+// signatures. So a free function's param / return types are reported TWICE, a
+// const annotation once, and a method or local once; struct fields and enum
+// payloads are NOT checked. Unknown types gate the later passes (so a downstream
+// pass never treats the error type as concrete and piles on a mismatch).
+// ===========================================================================
+struct TnEnv {
+    var types: Vec[String]    // known type names: builtins + user struct/enum/opaque
+    var tparams: Vec[String]  // generic parameters currently in scope (a stack)
+    var tpMarks: Vec[Int]     // scope-start indices into tparams
+    var bad: Vec[String]      // "unknown type '<n>'" full messages
+}
+
+func tnSeedBuiltins(_ env: inout TnEnv) using Alloc {
+    env.types.push("Int"); env.types.push("Int8"); env.types.push("Int16")
+    env.types.push("Int32"); env.types.push("Int64"); env.types.push("Int128")
+    env.types.push("UInt"); env.types.push("UInt8"); env.types.push("UInt16")
+    env.types.push("UInt32"); env.types.push("UInt64"); env.types.push("UInt128")
+    env.types.push("Float32"); env.types.push("Float64"); env.types.push("Bool")
+    env.types.push("Char"); env.types.push("Str"); env.types.push("String")
+    env.types.push("Unit"); env.types.push("Vec"); env.types.push("HashMap")
+    env.types.push("Box"); env.types.push("Span"); env.types.push("MutSpan")
+    env.types.push("Option"); env.types.push("Result"); env.types.push("Atomic")
+    env.types.push("Soa"); env.types.push("Channel"); env.types.push("Future")
+    env.types.push("Duration"); env.types.push("Self")
+}
+
+func tnCollectType(_ env: inout TnEnv, _ d: Nd) using Alloc {
+    match d {
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): env.types.push(name)
+        case .enumD(let vis, let name, let cs, let m, let generics): env.types.push(name)
+        case .opaqueD(let vis, let name, let under): env.types.push(name)
+        default: noop()
+    }
+}
+
+func tnCheck(_ env: inout TnEnv, _ u: NUnit) using Alloc {
+    tnSeedBuiltins(env)
+    var c: Int = 0
+    while c < u.decls.len() {
+        tnCollectType(env, u.decls.get(c) ?? Nd.wildcard)
+        c = c + 1
+    }
+    var i: Int = 0
+    while i < u.decls.len() {           // phase 1 (declare)
+        tnDeclare(env, u.decls.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    var j: Int = 0
+    while j < u.decls.len() {           // phase 2 (body)
+        tnBody(env, u.decls.get(j) ?? Nd.wildcard)
+        j = j + 1
+    }
+}
+
+// Phase 1: free-function signatures and const / static annotations.
+func tnDeclare(_ env: inout TnEnv, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
+            tnSig(env, gens, params, res)
+        case .constD(let vis, let name, let ty, let v): tnTypeBoxed(env, ty)
+        case .staticD(let vis, let name, let ty, let v): tnTypeBoxed(env, ty)
+        default: noop()
+    }
+}
+
+// Phase 2: free-function signatures (again) + bodies; methods once, inside the
+// owning struct / enum's generic scope.
+func tnBody(_ env: inout TnEnv, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
+            tnFuncFull(env, gens, params, res, body)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tnTypeMethods(env, generics, m)
+        case .enumD(let vis, let name, let cs, let m, let generics): tnTypeMethods(env, generics, m)
+        default: noop()
+    }
+}
+
+func tnTypeMethods(_ env: inout TnEnv, _ ownerGens: Vec[Nd], _ methods: Vec[Nd]) using Alloc {
+    tnEnterGens(env, ownerGens)
+    var i: Int = 0
+    while i < methods.len() {
+        tnBody(env, methods.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    tnLeaveGens(env)
+}
+
+func tnSig(_ env: inout TnEnv, _ gens: Vec[Nd], _ params: Vec[Nd], _ res: Vec[Nd]) using Alloc {
+    tnEnterGens(env, gens)
+    tnParamTypes(env, params)
+    tnTypeBoxed(env, res)
+    tnLeaveGens(env)
+}
+
+func tnFuncFull(_ env: inout TnEnv, _ gens: Vec[Nd], _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    tnEnterGens(env, gens)
+    tnParamTypes(env, params)
+    tnTypeBoxed(env, res)
+    tnBodyLocals(env, body)
+    tnLeaveGens(env)
+}
+
+func tnParamTypes(_ env: inout TnEnv, _ params: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < params.len() {
+        tnParamType(env, params.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tnParamType(_ env: inout TnEnv, _ p: Nd) using Alloc {
+    match p {
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tnTypeBoxed(env, ty)
+        default: noop()
+    }
+}
+
+// ----- generic-parameter scope ----------------------------------------------
+func tnEnterGens(_ env: inout TnEnv, _ gens: Vec[Nd]) using Alloc {
+    env.tpMarks.push(env.tparams.len())
+    var i: Int = 0
+    while i < gens.len() {
+        let nm = tnGenName(gens.get(i) ?? Nd.wildcard)
+        if !streq(nm, "") { env.tparams.push(nm) }
+        i = i + 1
+    }
+}
+
+func tnLeaveGens(_ env: inout TnEnv) using Alloc {
+    if env.tpMarks.len() > 0 {
+        let target = env.tpMarks.pop() ?? 0
+        while env.tparams.len() > target { let _ = env.tparams.pop() }
+    }
+}
+
+func tnGenName(_ g: Nd) using Alloc -> String {
+    return match g {
+        case .genConst(let n, let ct): n
+        case .genType(let n, let bounds): n
+        default: own("")
+    }
+}
+
+// ----- type-tree walk -------------------------------------------------------
+func tnTypeBoxed(_ env: inout TnEnv, _ v: Vec[Nd]) using Alloc {
+    if v.len() > 0 { tnType(env, v.get(0) ?? errT()) }
+}
+
+func tnType(_ env: inout TnEnv, _ t: Nd) using Alloc {
+    match t {
+        case .named(let path, let hasG, let args): tnNamed(env, path, args)
+        case .opt(let inner): tnTypeBoxed(env, inner)
+        case .someT(let inner): tnTypeBoxed(env, inner)
+        case .dynT(let inner): tnTypeBoxed(env, inner)
+        case .vecT(let len, let elem): tnTypeBoxed(env, elem)
+        case .tupleT(let elems): tnTypeList(env, elems)
+        default: noop()
+    }
+}
+
+func tnNamed(_ env: inout TnEnv, _ path: String, _ args: Vec[Nd]) using Alloc {
+    if !tnKnown(env, path) { env.bad.push(unknownTypeMsg(path)) }
+    tnTypeList(env, args)
+}
+
+func tnTypeList(_ env: inout TnEnv, _ ts: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < ts.len() {
+        tnType(env, ts.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tnKnown(_ env: inout TnEnv, _ path: String) -> Bool {
+    var i: Int = 0
+    while i < env.tparams.len() {
+        if let s = env.tparams.get(i) { if streq(s, path) { return true } }
+        i = i + 1
+    }
+    var j: Int = 0
+    while j < env.types.len() {
+        if let s = env.types.get(j) { if streq(s, path) { return true } }
+        j = j + 1
+    }
+    return false
+}
+
+func unknownTypeMsg(_ n: String) using Alloc -> String {
+    var s: String = "unknown type '"
+    s.append(n)
+    s.append("'")
+    return s
+}
+
+// ----- body walk for local (let / var) annotations --------------------------
+func tnBodyLocals(_ env: inout TnEnv, _ body: Vec[Nd]) using Alloc {
+    if body.len() > 0 { tnBlockNode(env, body.get(0) ?? Nd.wildcard) }
+}
+
+func tnBlockNode(_ env: inout TnEnv, _ n: Nd) using Alloc {
+    match n {
+        case .block(let stmts): tnStmts(env, stmts)
+        default: noop()
+    }
+}
+
+func tnStmts(_ env: inout TnEnv, _ stmts: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < stmts.len() {
+        tnStmt(env, stmts.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tnStmt(_ env: inout TnEnv, _ s: Nd) using Alloc {
+    match s {
+        case .letS(let pat, let ty, let val): tnLetVar(env, ty, val)
+        case .varS(let pat, let ty, let val): tnLetVar(env, ty, val)
+        case .exprS(let e): tnNestedBoxed(env, e)
+        case .retS(let v): tnNestedBoxed(env, v)
+        case .whileS(let c, let b): tnNestedBoxed(env, b)
+        case .forS(let pat, let it, let b): tnNestedBoxed(env, b)
+        case .withS(let caps, let vals, let body): tnNestedBoxed(env, body)
+        default: noop()
+    }
+}
+
+func tnLetVar(_ env: inout TnEnv, _ ty: Vec[Nd], _ val: Vec[Nd]) using Alloc {
+    tnTypeBoxed(env, ty)
+    tnNestedBoxed(env, val)
+}
+
+// Descend into nested blocks (if / while / for bodies, parens, do/catch) so their
+// local annotations are reached; other expressions carry no type annotations.
+func tnNestedBoxed(_ env: inout TnEnv, _ v: Vec[Nd]) using Alloc {
+    if v.len() > 0 { tnNested(env, v.get(0) ?? Nd.wildcard) }
+}
+
+func tnNested(_ env: inout TnEnv, _ e: Nd) using Alloc {
+    match e {
+        case .block(let stmts): tnStmts(env, stmts)
+        case .ifE(let ln, let li, let cond, let thenB, let els): tnIfBlocks(env, thenB, els)
+        case .paren(let inner): tnNestedBoxed(env, inner)
+        case .doCatchE(let db, let en, let et, let cb): tnDoCatchBlocks(env, db, cb)
+        default: noop()
+    }
+}
+
+func tnIfBlocks(_ env: inout TnEnv, _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc {
+    tnNestedBoxed(env, thenB)
+    tnNestedBoxed(env, els)
+}
+
+func tnDoCatchBlocks(_ env: inout TnEnv, _ db: Vec[Nd], _ cb: Vec[Nd]) using Alloc {
+    tnNestedBoxed(env, db)
+    tnNestedBoxed(env, cb)
+}
+
+// ===========================================================================
 // Capability checking (§ effects). A scope stack of capability-name sets:
 // `active` holds the names currently granted (the function's `using` row, plus
 // any enclosing `with` grants). The (fcNames, fcCaps) parallel arrays map each
@@ -5423,6 +5687,14 @@ func main() -> Int32 {
                         if let msg = env.throwBad.get(thi) { println(msg) }
                         thi = thi + 1
                     }
+                    var tnenv = TnEnv(types: Vec.new(), tparams: Vec.new(),
+                                      tpMarks: Vec.new(), bad: Vec.new())
+                    tnCheck(&tnenv, u)
+                    var tni: Int = 0
+                    while tni < tnenv.bad.len() {
+                        if let msg = tnenv.bad.get(tni) { println(msg) }
+                        tni = tni + 1
+                    }
                     var i: Int = 0
                     while i < env.bad.len() {
                         if let nm = env.bad.get(i) {
@@ -5436,7 +5708,8 @@ func main() -> Int32 {
                     // later passes; otherwise run them all and accumulate. Order
                     // mirrors the driver: type checking is part of resolution (so
                     // its errors gate too), then ownership, exclusivity, capability.
-                    if env.bad.len() > 0 || env.dups.len() > 0 || env.throwBad.len() > 0 { return 1 }
+                    if env.bad.len() > 0 || env.dups.len() > 0 || env.throwBad.len() > 0
+                        || tnenv.bad.len() > 0 { return 1 }
                     var tenv = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(),
                                      pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(),
                                      structs: Vec.new(), sFldStruct: Vec.new(), sFldName: Vec.new(),

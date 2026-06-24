@@ -1,0 +1,14 @@
+// Unknown type names in several positions. A free function's parameter and
+// return types are reported twice (signature phase + body phase), a const
+// annotation once, a method parameter once, and a local once; struct fields and
+// enum payloads are not checked at all.
+func freefn(_ x: BadParam) -> BadRet {
+    let y: BadLocal = 0
+    return 0
+}
+
+struct S {
+    func m(_ z: BadMethodParam) -> Int32 { return 0 }
+}
+
+const K: BadConst = 0
