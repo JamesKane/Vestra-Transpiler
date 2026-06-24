@@ -4962,6 +4962,102 @@ func tyMatch(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc 
         tyArm(env, arms.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    tyCheckExhaustive(env, scrut, arms)
+}
+
+// When the scrutinee is a known enum and no arm is a catch-all (a `default` or a
+// `_` wildcard), every case must be covered by some arm's pattern, else
+// "match is not exhaustive: case '<c>' is not covered" — one per uncovered case,
+// in declaration order. Guards do not affect coverage (matching the resolver).
+func tyCheckExhaustive(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc {
+    let st = tyInferBoxed(env, scrut)
+    if !tyIsEnum(env, st) { return }
+    if tyHasCatchAll(arms) { return }
+    var i: Int = 0
+    while i < env.ecEnum.len() {
+        if let e = env.ecEnum.get(i) {
+            if streq(e, st) {
+                if let cn = env.ecName.get(i) {
+                    if !tyArmsCover(arms, cn) { env.bad.push(notExhaustiveMsg(cn)) }
+                }
+            }
+        }
+        i = i + 1
+    }
+}
+
+func tyHasCatchAll(_ arms: Vec[Nd]) -> Bool {
+    var i: Int = 0
+    while i < arms.len() {
+        if tyArmIsCatchAll(arms.get(i) ?? Nd.wildcard) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func tyArmIsCatchAll(_ a: Nd) -> Bool {
+    return match a {
+        case .matchArm(let isDef, let pat, let guard, let body): tyDefaultOrWild(isDef, pat)
+        default: false
+    }
+}
+
+func tyDefaultOrWild(_ isDef: Bool, _ pat: Vec[Nd]) -> Bool {
+    if isDef { return true }
+    if pat.len() == 0 { return false }
+    return tyPatIsWild(pat.get(0) ?? Nd.wildcard)
+}
+
+func tyPatIsWild(_ p: Nd) -> Bool {
+    return match p {
+        case .wildcard: true
+        default: false
+    }
+}
+
+func tyArmsCover(_ arms: Vec[Nd], _ caseName: String) -> Bool {
+    var i: Int = 0
+    while i < arms.len() {
+        if tyArmCovers(arms.get(i) ?? Nd.wildcard, caseName) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func tyArmCovers(_ a: Nd, _ caseName: String) -> Bool {
+    return match a {
+        case .matchArm(let isDef, let pat, let guard, let body): tyPatBoxedCovers(pat, caseName)
+        default: false
+    }
+}
+
+func tyPatBoxedCovers(_ pat: Vec[Nd], _ caseName: String) -> Bool {
+    if pat.len() == 0 { return false }
+    return tyPatCoversCase(pat.get(0) ?? Nd.wildcard, caseName)
+}
+
+func tyPatCoversCase(_ p: Nd, _ caseName: String) -> Bool {
+    return match p {
+        case .enumP(let cn, let ch): streq(cn, caseName)
+        case .orP(let alts): tyAltsCover(alts, caseName)
+        default: false
+    }
+}
+
+func tyAltsCover(_ alts: Vec[Nd], _ caseName: String) -> Bool {
+    var i: Int = 0
+    while i < alts.len() {
+        if tyPatCoversCase(alts.get(i) ?? Nd.wildcard, caseName) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func notExhaustiveMsg(_ caseName: String) using Alloc -> String {
+    var s: String = "match is not exhaustive: case '"
+    s.append(caseName)
+    s.append("' is not covered")
+    return s
 }
 
 func tyArm(_ env: inout TyEnv, _ a: Nd) using Alloc {

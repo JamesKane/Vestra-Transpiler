@@ -1,0 +1,29 @@
+// Exhaustive matches: all cases listed, an or-pattern covering two cases plus the
+// rest, and a default arm.
+enum Color {
+    case red
+    case green
+    case blue
+}
+
+func full(_ c: Color) -> Int32 {
+    return match c {
+        case .red: 1
+        case .green: 2
+        case .blue: 3
+    }
+}
+
+func grouped(_ c: Color) -> Int32 {
+    return match c {
+        case .red | .green: 1
+        case .blue: 2
+    }
+}
+
+func withDefault(_ c: Color) -> Int32 {
+    return match c {
+        case .red: 1
+        default: 0
+    }
+}

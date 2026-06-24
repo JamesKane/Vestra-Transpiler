@@ -1,0 +1,13 @@
+// Non-exhaustive match: two enum cases are left uncovered, each reported in
+// declaration order.
+enum Color {
+    case red
+    case green
+    case blue
+}
+
+func partial(_ c: Color) -> Int32 {
+    return match c {
+        case .red: 1
+    }
+}
