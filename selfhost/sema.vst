@@ -6000,6 +6000,89 @@ func tyBodyMsg(_ name: String, _ ret: String, _ body: String) using Alloc -> Str
     return s
 }
 
+// ===========================================================================
+// §5 module loading (foundation for multi-file resolution). For each
+// `import a.b.c`, the file <entry-dir>/a/b/c.vst must exist; the only search root
+// here is the entry file's directory (the driver also honours `-I`, which vsema
+// is not given). A missing import yields
+// "cannot find imported module '<a.b.c>' (searched: <candidate>)".
+// ===========================================================================
+func checkImports(_ u: NUnit, _ path: Str) using Alloc, Fs -> Vec[String] {
+    let dir = dirName(path)
+    var errs: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < u.imports.len() {
+        checkOneImport(u.imports.get(i) ?? Nd.importD(false, ""), dir, &errs)
+        i = i + 1
+    }
+    return errs
+}
+
+func checkOneImport(_ imp: Nd, _ dir: Str, _ errs: inout Vec[String]) using Alloc, Fs {
+    match imp {
+        case .importD(let isC, let dotted): checkImportPath(isC, dotted, dir, &errs)
+        default: noop()
+    }
+}
+
+func checkImportPath(_ isC: Bool, _ dotted: String, _ dir: Str, _ errs: inout Vec[String]) using Alloc, Fs {
+    if isC { return }
+    if streq(dotted, "") { return }
+    let cand = importCandidate(dir, dotted)
+    if !fileExists(cand) { errs.push(missingImportMsg(dotted, cand)) }
+}
+
+// <dir>/<dotted-with-slashes>.vst
+func importCandidate(_ dir: Str, _ dotted: Str) using Alloc -> String {
+    var rel: String = dotToSlash(dotted)
+    rel.append(".vst")
+    return joinPath(dir, rel)
+}
+
+func dirName(_ path: Str) using Alloc -> String {
+    var last: Int = -1
+    var i: Int = 0
+    while i < path.len() {
+        if (path.byteAt(i) ?? 0) == 47 { last = i }   // '/' == 47
+        i = i + 1
+    }
+    if last < 0 { return own("") }
+    return own(path.slice(0, last))
+}
+
+func dotToSlash(_ s: Str) using Alloc -> String {
+    var r: String = ""
+    var i: Int = 0
+    while i < s.len() {
+        if (s.byteAt(i) ?? 0) == 46 { r.append("/") }   // '.' == 46
+        else { r.append(s.slice(i, i + 1)) }
+        i = i + 1
+    }
+    return r
+}
+
+func joinPath(_ dir: Str, _ rel: Str) using Alloc -> String {
+    if dir.len() == 0 { return own(rel) }
+    var s: String = own(dir)
+    s.append("/")
+    s.append(rel)
+    return s
+}
+
+func fileExists(_ path: Str) using Alloc, Fs -> Bool {
+    if let contents = readFile(path) { return true }
+    return false
+}
+
+func missingImportMsg(_ dotted: Str, _ searched: Str) using Alloc -> String {
+    var s: String = "cannot find imported module '"
+    s.append(dotted)
+    s.append("' (searched: ")
+    s.append(searched)
+    s.append(")")
+    return s
+}
+
 func main() -> Int32 {
     with Alloc {
         with Fs {
@@ -6014,6 +6097,16 @@ func main() -> Int32 {
                     let toks = tokenize(src)
                     var p = Ps(toks: toks, pos: 0)
                     let u = parseUnit(&p)
+                    // §5 module loading: every `import a.b.c` must resolve to a
+                    // file <dir>/a/b/c.vst; a missing one aborts before sema (as
+                    // the driver does), reporting the searched path.
+                    let impErrs = checkImports(u, path)
+                    var ie: Int = 0
+                    while ie < impErrs.len() {
+                        if let m = impErrs.get(ie) { println(m) }
+                        ie = ie + 1
+                    }
+                    if impErrs.len() > 0 { return 1 }
                     var env = Env(names: Vec.new(), bad: Vec.new(), marks: Vec.new(),
                                   dups: Vec.new(), curThrows: false, throwBad: Vec.new())
                     addBuiltins(&env)

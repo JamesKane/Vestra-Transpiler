@@ -1,0 +1,4 @@
+// Imports a module that exists on disk next to this file.
+import helper
+
+func f() -> Int32 { return 0 }

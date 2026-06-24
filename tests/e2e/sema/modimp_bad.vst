@@ -1,0 +1,4 @@
+// Imports a module that does not exist; reported with the searched path.
+import nope.missing
+
+func f() -> Int32 { return 0 }

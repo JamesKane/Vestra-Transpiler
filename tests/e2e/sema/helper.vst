@@ -1,0 +1,2 @@
+// An importable helper module (resolved from disk by `import helper`).
+public func helperFn() -> Int32 { return 42 }
