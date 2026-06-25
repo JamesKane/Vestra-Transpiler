@@ -878,7 +878,9 @@ enum Nd {
     case addrOf(Vec[Nd])
     case matchE(Vec[Nd], Vec[Nd])           // scrutinee (boxed), arms — still prints /*?expr*/ (no C++ printer case), but carries the match
     case matchArm(Bool, Vec[Nd], Vec[Nd], Vec[Nd]) // isDefault, pattern (empty if default), guard (empty if none), body — all boxed
-    case exoticE                            // vector / tuple literal, comptime, closure, etc — /*?expr*/
+    case exoticE                            // comptime, closure, select, etc — /*?expr*/
+    case vecLit(Vec[Nd])                    // [e1, e2, ...] array/vector literal — prints /*?expr*/ (no C++ case)
+    case tupleLit(Vec[Nd])                  // (e1, e2, ...) tuple literal — prints /*?expr*/ (no C++ case)
     case throwE(Vec[Nd])                    // throw OPERAND — also prints /*?expr*/ (no C++ printer case), but carries the operand
     case prefixE(String, Vec[Nd])           // copy / await / spawn / try (kw string), operand — printed fully
     case doCatchE(Vec[Nd], String, Vec[Nd], Vec[Nd]) // doBody, errName, errType?, catchBody
@@ -1796,24 +1798,27 @@ func parsePrimary(_ p: inout Ps) using Alloc -> Nd {
         advP(&p)
         let first = parseExpr(&p)
         if eat(p, TokKind.comma) {
-            // tuple literal: consume remaining elements (printed as /*?expr*/)
-            let e2 = parseExpr(&p)
-            while eat(p, TokKind.comma) { let en = parseExpr(&p) }
+            // tuple literal: keep the elements (still printed as /*?expr*/).
+            var elems: Vec[Nd] = Vec.new()
+            elems.push(first)
+            elems.push(parseExpr(&p))
+            while eat(p, TokKind.comma) { elems.push(parseExpr(&p)) }
             eat(p, TokKind.rparen)
-            return Nd.exoticE
+            return Nd.tupleLit(elems)
         }
         eat(p, TokKind.rparen)
         return Nd.paren(bE(first))
     }
     if isKind(p, TokKind.lbracket) {
-        // vector literal (printed as /*?expr*/)
+        // array / vector literal: keep the elements (still printed as /*?expr*/).
         advP(&p)
+        var elems: Vec[Nd] = Vec.new()
         if !isKind(p, TokKind.rbracket) {
-            let e1 = parseExpr(&p)
-            while eat(p, TokKind.comma) { let en = parseExpr(&p) }
+            elems.push(parseExpr(&p))
+            while eat(p, TokKind.comma) { elems.push(parseExpr(&p)) }
         }
         eat(p, TokKind.rbracket)
-        return Nd.exoticE
+        return Nd.vecLit(elems)
     }
     if isKind(p, TokKind.kwIf) { return parseIf(&p) }
     if isKind(p, TokKind.kwMatch) { return parseMatch(&p) }

@@ -1,0 +1,5 @@
+// An undefined name inside an array literal is reported.
+func f() -> Int32 {
+  let v = [1, missing, 3]
+  return 0
+}

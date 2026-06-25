@@ -1,0 +1,5 @@
+// Tuple-literal elements resolve against the enclosing scope.
+func f(_ a: Int32) -> Int32 {
+  let t = (a, a)
+  return 0
+}

@@ -1,0 +1,5 @@
+// An undefined name inside a tuple literal is reported.
+func f() -> Int32 {
+  let t = (1, missing)
+  return 0
+}
