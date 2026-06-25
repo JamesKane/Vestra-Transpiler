@@ -1,0 +1,4 @@
+// Calls a public export of an imported module by its qualified name.
+import mathmod
+
+func f() -> Int32 { return mathmod.good() }

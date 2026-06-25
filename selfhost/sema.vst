@@ -2815,6 +2815,10 @@ struct Env {
     var dups: Vec[String]    // "duplicate definition of '<n>'" full messages
     var curThrows: Bool      // does the function whose body we're walking declare `throws`?
     var throwBad: Vec[String] // "'throw' is only valid ..." full messages
+    var modPaths: Vec[String]   // declared module paths of imported modules
+    var modExpMod: Vec[String]  // export rows: owning module path ...
+    var modExpName: Vec[String] // ... -> public export name
+    var modBad: Vec[String]     // "module '<m>' has no public member '<x>'" messages
 }
 
 func noop() {}
@@ -3016,7 +3020,7 @@ func resolveExpr(_ env: inout Env, _ e: Nd) using Alloc {
         case .binary(let op, let l, let r): resolvePair(env, l, r)
         case .call(let callee, let args): resolveCall(env, callee, args)
         case .arg(let label, let isInout, let val): resolveBoxed(env, val)
-        case .member(let base, let n, let chain): resolveBoxed(env, base)
+        case .member(let base, let n, let chain): resolveMember(env, base, n, chain)
         case .index(let base, let idxs): resolveIndex(env, base, idxs)
         case .ifE(let ln, let li, let cond, let thenB, let els): resolveIf(env, ln, li, cond, thenB, els)
         case .block(let stmts): resolveBlock(env, stmts)
@@ -3073,6 +3077,107 @@ func throwMsg() using Alloc -> String {
 func resolvePair(_ env: inout Env, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc {
     resolveBoxed(env, l)
     resolveBoxed(env, r)
+}
+
+// Member access. A pure identifier/member chain `a.b.c` whose head is NOT a value
+// in scope and whose leading segments name an imported module is a qualified
+// module reference: the final segment must be a public export, else
+// "module '<a.b>' has no public member '<c>'". The module head is then NOT
+// resolved as an ordinary value. Everything else is an ordinary member access.
+func resolveMember(_ env: inout Env, _ base: Vec[Nd], _ n: String, _ chain: Bool) using Alloc {
+    if !chain && tryModRef(env, base, n) { return }
+    resolveBoxed(env, base)
+}
+
+func tryModRef(_ env: inout Env, _ base: Vec[Nd], _ n: String) using Alloc -> Bool {
+    let segs = modSegs(base, n)
+    if segs.len() < 2 { return false }
+    let head = segs.get(0) ?? own("")
+    if inScope(env, head) { return false }            // head is a real value -> ordinary access
+    let dotted = joinSegsButLast(segs)
+    if !modKnown(env, dotted) { return false }         // not an imported module -> ordinary access
+    let exportName = segs.get(segs.len() - 1) ?? own("")
+    if !modHasExport(env, dotted, exportName) { env.modBad.push(moduleNoMemberMsg(dotted, exportName)) }
+    return true
+}
+
+// Flatten `a.b.c` (member-of-member-of-ident) into segments [a, b, c]; empty if
+// the chain is not a pure identifier/member path (or uses an optional `?.`).
+func modSegs(_ base: Vec[Nd], _ n: String) using Alloc -> Vec[String] {
+    var segs = modBaseSegs(base)
+    if segs.len() == 0 { return Vec.new() }
+    segs.push(n)
+    return segs
+}
+
+func modBaseSegs(_ base: Vec[Nd]) using Alloc -> Vec[String] {
+    if base.len() == 0 { return Vec.new() }
+    return modSegsOf(base.get(0) ?? Nd.wildcard)
+}
+
+func modSegsOf(_ e: Nd) using Alloc -> Vec[String] {
+    return match e {
+        case .ident(let h): modSingle(h)
+        case .member(let b2, let m2, let chain2): modNested(b2, m2, chain2)
+        default: Vec.new()
+    }
+}
+
+func modSingle(_ h: String) using Alloc -> Vec[String] {
+    var v: Vec[String] = Vec.new()
+    v.push(h)
+    return v
+}
+
+func modNested(_ b2: Vec[Nd], _ m2: String, _ chain2: Bool) using Alloc -> Vec[String] {
+    if chain2 { return Vec.new() }
+    var inner = modBaseSegs(b2)
+    if inner.len() == 0 { return Vec.new() }
+    inner.push(m2)
+    return inner
+}
+
+func joinSegsButLast(_ segs: Vec[String]) using Alloc -> String {
+    var s: String = ""
+    var i: Int = 0
+    let stop = segs.len() - 1
+    while i < stop {
+        if i > 0 { s.append(".") }
+        if let seg = segs.get(i) { s.append(seg) }
+        i = i + 1
+    }
+    return s
+}
+
+func modKnown(_ env: inout Env, _ dotted: String) -> Bool {
+    var i: Int = 0
+    while i < env.modPaths.len() {
+        if let m = env.modPaths.get(i) { if streq(m, dotted) { return true } }
+        i = i + 1
+    }
+    return false
+}
+
+func modHasExport(_ env: inout Env, _ dotted: String, _ name: String) -> Bool {
+    var i: Int = 0
+    while i < env.modExpMod.len() {
+        if let m = env.modExpMod.get(i) {
+            if streq(m, dotted) {
+                if let nm = env.modExpName.get(i) { if streq(nm, name) { return true } }
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func moduleNoMemberMsg(_ dotted: String, _ name: String) using Alloc -> String {
+    var s: String = "module '"
+    s.append(dotted)
+    s.append("' has no public member '")
+    s.append(name)
+    s.append("'")
+    return s
 }
 
 func resolveCall(_ env: inout Env, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
@@ -6007,31 +6112,6 @@ func tyBodyMsg(_ name: String, _ ret: String, _ body: String) using Alloc -> Str
 // is not given). A missing import yields
 // "cannot find imported module '<a.b.c>' (searched: <candidate>)".
 // ===========================================================================
-func checkImports(_ u: NUnit, _ path: Str) using Alloc, Fs -> Vec[String] {
-    let dir = dirName(path)
-    var errs: Vec[String] = Vec.new()
-    var i: Int = 0
-    while i < u.imports.len() {
-        checkOneImport(u.imports.get(i) ?? Nd.importD(false, ""), dir, &errs)
-        i = i + 1
-    }
-    return errs
-}
-
-func checkOneImport(_ imp: Nd, _ dir: Str, _ errs: inout Vec[String]) using Alloc, Fs {
-    match imp {
-        case .importD(let isC, let dotted): checkImportPath(isC, dotted, dir, &errs)
-        default: noop()
-    }
-}
-
-func checkImportPath(_ isC: Bool, _ dotted: String, _ dir: Str, _ errs: inout Vec[String]) using Alloc, Fs {
-    if isC { return }
-    if streq(dotted, "") { return }
-    let cand = importCandidate(dir, dotted)
-    if !fileExists(cand) { errs.push(missingImportMsg(dotted, cand)) }
-}
-
 // <dir>/<dotted-with-slashes>.vst
 func importCandidate(_ dir: Str, _ dotted: Str) using Alloc -> String {
     var rel: String = dotToSlash(dotted)
@@ -6069,11 +6149,6 @@ func joinPath(_ dir: Str, _ rel: Str) using Alloc -> String {
     return s
 }
 
-func fileExists(_ path: Str) using Alloc, Fs -> Bool {
-    if let contents = readFile(path) { return true }
-    return false
-}
-
 func missingImportMsg(_ dotted: Str, _ searched: Str) using Alloc -> String {
     var s: String = "cannot find imported module '"
     s.append(dotted)
@@ -6081,6 +6156,76 @@ func missingImportMsg(_ dotted: Str, _ searched: Str) using Alloc -> String {
     s.append(searched)
     s.append(")")
     return s
+}
+
+// §5 module loading: resolve each `import a.b.c` to <dir>/a/b/c.vst. A missing
+// import is reported (and aborts before sema, as the driver does); a found one
+// is parsed and its public declarations tabulated into env's export tables,
+// keyed by the imported file's *declared* module path, so qualified references
+// `mod.member` can be checked during resolution.
+func loadModules(_ u: NUnit, _ path: Str, _ env: inout Env) using Alloc, Fs -> Vec[String] {
+    let dir = dirName(path)
+    var errs: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < u.imports.len() {
+        loadOneImport(u.imports.get(i) ?? Nd.importD(false, ""), dir, &errs, &env)
+        i = i + 1
+    }
+    return errs
+}
+
+func loadOneImport(_ imp: Nd, _ dir: Str, _ errs: inout Vec[String], _ env: inout Env) using Alloc, Fs {
+    match imp {
+        case .importD(let isC, let dotted): loadImportPath(isC, dotted, dir, &errs, &env)
+        default: noop()
+    }
+}
+
+func loadImportPath(_ isC: Bool, _ dotted: String, _ dir: Str, _ errs: inout Vec[String], _ env: inout Env) using Alloc, Fs {
+    if isC { return }
+    if streq(dotted, "") { return }
+    let cand = importCandidate(dir, dotted)
+    if let contents = readFile(cand) { harvestModule(&env, contents) }
+    else { errs.push(missingImportMsg(dotted, cand)) }
+}
+
+// Parse a found import and record its public declarations under its declared
+// module path. A file with no `module` line exports nothing addressable.
+func harvestModule(_ env: inout Env, _ contents: Str) using Alloc {
+    let toks = tokenize(contents)
+    var p = Ps(toks: toks, pos: 0)
+    let mu = parseUnit(&p)
+    if !mu.hasMod { return }
+    env.modPaths.push(own(mu.modPath))
+    var i: Int = 0
+    while i < mu.decls.len() {
+        harvestDecl(&env, mu.modPath, mu.decls.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func harvestDecl(_ env: inout Env, _ modPath: Str, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let ps, let cap, let th, let r, let b):
+            harvestPublic(&env, modPath, vis, name)
+        case .structD(let vis, let name, let f, let m, let dn, let lin, let g):
+            harvestPublic(&env, modPath, vis, name)
+        case .enumD(let vis, let name, let c, let m, let g):
+            harvestPublic(&env, modPath, vis, name)
+        case .constD(let vis, let name, let t, let v):
+            harvestPublic(&env, modPath, vis, name)
+        case .staticD(let vis, let name, let t, let v):
+            harvestPublic(&env, modPath, vis, name)
+        case .opaqueD(let vis, let name, let t):
+            harvestPublic(&env, modPath, vis, name)
+        default: noop()
+    }
+}
+
+func harvestPublic(_ env: inout Env, _ modPath: Str, _ vis: Str, _ name: Str) using Alloc {
+    if !streq(vis, "public ") { return }
+    env.modExpMod.push(own(modPath))
+    env.modExpName.push(own(name))
 }
 
 func main() -> Int32 {
@@ -6100,15 +6245,17 @@ func main() -> Int32 {
                     // §5 module loading: every `import a.b.c` must resolve to a
                     // file <dir>/a/b/c.vst; a missing one aborts before sema (as
                     // the driver does), reporting the searched path.
-                    let impErrs = checkImports(u, path)
+                    var env = Env(names: Vec.new(), bad: Vec.new(), marks: Vec.new(),
+                                  dups: Vec.new(), curThrows: false, throwBad: Vec.new(),
+                                  modPaths: Vec.new(), modExpMod: Vec.new(),
+                                  modExpName: Vec.new(), modBad: Vec.new())
+                    let impErrs = loadModules(u, path, &env)
                     var ie: Int = 0
                     while ie < impErrs.len() {
                         if let m = impErrs.get(ie) { println(m) }
                         ie = ie + 1
                     }
                     if impErrs.len() > 0 { return 1 }
-                    var env = Env(names: Vec.new(), bad: Vec.new(), marks: Vec.new(),
-                                  dups: Vec.new(), curThrows: false, throwBad: Vec.new())
                     addBuiltins(&env)
                     resolve(&env, u)
                     var di: Int = 0
@@ -6120,6 +6267,11 @@ func main() -> Int32 {
                     while thi < env.throwBad.len() {
                         if let msg = env.throwBad.get(thi) { println(msg) }
                         thi = thi + 1
+                    }
+                    var mbi: Int = 0
+                    while mbi < env.modBad.len() {
+                        if let msg = env.modBad.get(mbi) { println(msg) }
+                        mbi = mbi + 1
                     }
                     var tnenv = TnEnv(types: Vec.new(), userTypes: Vec.new(),
                                       genericUserTypes: Vec.new(), tparams: Vec.new(),
@@ -6144,7 +6296,7 @@ func main() -> Int32 {
                     // mirrors the driver: type checking is part of resolution (so
                     // its errors gate too), then ownership, exclusivity, capability.
                     if env.bad.len() > 0 || env.dups.len() > 0 || env.throwBad.len() > 0
-                        || tnenv.bad.len() > 0 { return 1 }
+                        || env.modBad.len() > 0 || tnenv.bad.len() > 0 { return 1 }
                     var tenv = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(),
                                      pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(),
                                      structs: Vec.new(), sFldStruct: Vec.new(), sFldName: Vec.new(),

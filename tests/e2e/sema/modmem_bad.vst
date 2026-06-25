@@ -1,0 +1,4 @@
+// References a member the imported module does not publicly export.
+import mathmod
+
+func f() -> Int32 { return mathmod.bad() }

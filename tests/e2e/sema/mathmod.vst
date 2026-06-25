@@ -1,0 +1,5 @@
+// An importable module with a declared module path and one public export.
+module mathmod
+
+public func good() -> Int32 { return 1 }
+func secret() -> Int32 { return 2 }
