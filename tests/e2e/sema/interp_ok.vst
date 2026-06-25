@@ -1,0 +1,5 @@
+// Interpolated expressions resolve against the enclosing scope.
+func f(_ a: Int32) -> Int32 {
+  let s = "a=\(a) twice=\(a)"
+  return 0
+}
