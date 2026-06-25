@@ -2990,10 +2990,48 @@ func emitWhile(_ indent: Str, _ cond: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log
     print("}\n")
 }
 
+// An expression statement is `<expr>;`, EXCEPT a statement-position `if` (an
+// expression in Vestra) which lowers to the emitter's inline braced form with no
+// trailing semicolon — see emitIfStmt.
 func emitExprStmt(_ indent: Str, _ e: Vec[Nd]) using Alloc, Log {
+    if e.len() == 0 { return }
+    match e.get(0) ?? Nd.wildcard {
+        case .ifE(let ln, let li, let cond, let thenB, let els): emitIfStmt(indent, ln, li, cond, thenB, els)
+        default: emitPlainExprStmt(indent, e)
+    }
+}
+
+func emitPlainExprStmt(_ indent: Str, _ e: Vec[Nd]) using Alloc, Log {
     print(indent)
     emitBoxed(e)
     print(";\n")
+}
+
+// The inline statement-`if`: `<indent>if (<cond>) { <then-stmts>}` then an
+// optional ` else { <else-stmts>}` and a trailing newline. The branch statements
+// are emitted with EMPTY indentation (the emitter opens the block inline and the
+// closing braces sit at column 0), and no `;` follows. Plain `if` only; if-let
+// (a non-empty bind name) and else-if chains are deferred.
+func emitIfStmt(_ indent: Str, _ ln: Str, _ li: Vec[Nd], _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    print("if (")
+    emitBoxed(cond)
+    print(") { ")
+    if thenB.len() > 0 { emitBlockStmts(thenB.get(0) ?? Nd.wildcard, "") }
+    print("}")
+    if els.len() > 0 {
+        print(" else { ")
+        emitElse(els.get(0) ?? Nd.wildcard)
+        print("}")
+    }
+    print("\n")
+}
+
+func emitElse(_ e: Nd) using Alloc, Log {
+    match e {
+        case .block(let stmts): emitStmtList(stmts, "")
+        default: noop()
+    }
 }
 
 func emitReturn(_ indent: Str, _ v: Vec[Nd]) using Alloc, Log {
