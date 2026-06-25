@@ -1,0 +1,21 @@
+func add(_ a: Int32, _ b: Int32) -> Int32 {
+  return a + b
+}
+func nested(_ a: Int32) -> Int32 {
+  return add(add(a, a), a)
+}
+func flags(_ a: Bool, _ b: Bool) -> Bool {
+  return a && b
+}
+func lit() -> Bool {
+  return true
+}
+func greet() -> Str {
+  return "hi"
+}
+func ratio() -> Float64 {
+  return 3.14
+}
+func letter() -> Char {
+  return 'x'
+}

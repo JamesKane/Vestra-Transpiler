@@ -2967,10 +2967,56 @@ func emitExpr(_ e: Nd) using Alloc, Log {
     match e {
         case .ident(let n): print(n)
         case .intLit(let s): print(s)
+        case .floatLit(let s): print(s)
+        case .boolLit(let b): emitBool(b)
+        case .charLit(let s): emitChar(s)
+        case .strLit(let s): emitStr(s)
         case .paren(let inner): emitParen(inner)
         case .unary(let op, let x): emitUnary(op, x)
         case .binary(let op, let l, let r): emitBinary(op, l, r)
+        case .call(let callee, let args): emitCall(callee, args)
         default: print("/*?expr*/")
+    }
+}
+
+func emitBool(_ b: Bool) using Log { if b { print("true") } else { print("false") } }
+
+// A Char literal lowers to a char32_t literal: `'x'` -> `U'x'`.
+func emitChar(_ s: Str) using Alloc, Log {
+    print("U'")
+    print(s)
+    print("'")
+}
+
+// A string literal lowers to a string_view over its (already source-escaped) text.
+func emitStr(_ s: Str) using Alloc, Log {
+    print("std::string_view(\"")
+    print(s)
+    print("\")")
+}
+
+// A call emits the callee then a parenthesized, comma-separated argument list.
+func emitCall(_ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
+    emitBoxed(callee)
+    print("(")
+    emitArgList(args)
+    print(")")
+}
+
+func emitArgList(_ args: Vec[Nd]) using Alloc, Log {
+    var i: Int = 0
+    while i < args.len() {
+        if i > 0 { print(", ") }
+        emitArg(args.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+// Slice 2: positional argument — emit its value (call labels are deferred).
+func emitArg(_ a: Nd) using Alloc, Log {
+    match a {
+        case .arg(let label, let isInout, let val): emitBoxed(val)
+        default: noop()
     }
 }
 
