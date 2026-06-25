@@ -2925,38 +2925,103 @@ func cppNamed(_ path: Str) using Alloc -> String {
     return own(path)
 }
 
-// A function body is a single boxed block; emit its statements at one indent.
+// A function body is a single boxed block; emit its statements one level in.
 func emitBody(_ body: Vec[Nd]) using Alloc, Log {
     if body.len() == 0 { return }
-    emitBlockStmts(body.get(0) ?? Nd.wildcard)
+    emitBlockStmts(body.get(0) ?? Nd.wildcard, "    ")
 }
 
-func emitBlockStmts(_ b: Nd) using Alloc, Log {
+func emitBlockStmts(_ b: Nd, _ indent: Str) using Alloc, Log {
     match b {
-        case .block(let stmts): emitStmtList(stmts)
+        case .block(let stmts): emitStmtList(stmts, indent)
         default: noop()
     }
 }
 
-func emitStmtList(_ stmts: Vec[Nd]) using Alloc, Log {
+func emitStmtList(_ stmts: Vec[Nd], _ indent: Str) using Alloc, Log {
     var i: Int = 0
     while i < stmts.len() {
-        emitStmt(stmts.get(i) ?? Nd.wildcard)
+        emitStmt(stmts.get(i) ?? Nd.wildcard, indent)
         i = i + 1
     }
 }
 
-func emitStmt(_ s: Nd) using Alloc, Log {
+func emitStmt(_ s: Nd, _ indent: Str) using Alloc, Log {
     match s {
-        case .retS(let v): emitReturn(v)
+        case .letS(let pat, let ty, let value): emitBinding(indent, pat, ty, value)
+        case .varS(let pat, let ty, let value): emitBinding(indent, pat, ty, value)
+        case .assignS(let op, let t, let v): emitAssign(indent, op, t, v)
+        case .whileS(let cond, let body): emitWhile(indent, cond, body)
+        case .exprS(let e): emitExprStmt(indent, e)
+        case .retS(let v): emitReturn(indent, v)
         default: noop()
     }
 }
 
-func emitReturn(_ v: Vec[Nd]) using Alloc, Log {
-    print("    return")
-    if v.len() > 0 { print(" "); emitExpr(v.get(0) ?? Nd.wildcard) }
+// `let`/`var` lower identically: an annotated binding keeps its C++ type, an
+// inferred one uses `auto` (Vestra's immutability is not re-expressed in C++).
+func emitBinding(_ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    if ty.len() > 0 { emitTypeBoxed(ty) } else { print("auto") }
+    print(" ")
+    print(patName(pat))
+    print(" = ")
+    emitBoxed(value)
     print(";\n")
+}
+
+func emitAssign(_ indent: Str, _ op: Str, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    emitBoxed(t)
+    print(" ")
+    print(op)
+    print(" ")
+    emitBoxed(v)
+    print(";\n")
+}
+
+func emitWhile(_ indent: Str, _ cond: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    print("while (")
+    emitBoxed(cond)
+    print(") {\n")
+    if body.len() > 0 { emitBlockStmts(body.get(0) ?? Nd.wildcard, deeper(indent)) }
+    print(indent)
+    print("}\n")
+}
+
+func emitExprStmt(_ indent: Str, _ e: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    emitBoxed(e)
+    print(";\n")
+}
+
+func emitReturn(_ indent: Str, _ v: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    print("return")
+    if v.len() > 0 { print(" "); emitBoxed(v) }
+    print(";\n")
+}
+
+// The binding name of a simple `let`/`var` pattern (identifier or `let`-binding).
+func patName(_ pat: Vec[Nd]) using Alloc -> String {
+    if pat.len() == 0 { return own("") }
+    return patNameOf(pat.get(0) ?? Nd.wildcard)
+}
+
+func patNameOf(_ p: Nd) using Alloc -> String {
+    return match p {
+        case .identP(let n): own(n)
+        case .bindP(let n): own(n)
+        default: own("")
+    }
+}
+
+// One nesting level deeper (4 more spaces of indentation).
+func deeper(_ indent: Str) using Alloc -> String {
+    var s: String = own(indent)
+    s.append("    ")
+    return s
 }
 
 func emitBoxed(_ v: Vec[Nd]) using Alloc, Log {

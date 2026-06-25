@@ -1,0 +1,18 @@
+func g(_ a: Int32) {
+  return
+}
+func f(_ a: Int32) -> Int32 {
+  let x: Int32 = a
+  var y = a + 1
+  y += 1
+  y = y - 1
+  g(y)
+  while y > 0 {
+    var z = y
+    while z > 0 {
+      z = z - 1
+    }
+    y = y - 1
+  }
+  return x + y
+}
