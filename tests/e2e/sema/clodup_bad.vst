@@ -1,0 +1,5 @@
+// A closure body binding that shadows a parameter is a duplicate definition.
+func f() -> Int32 {
+  let g = { x => let x = 1 }
+  return 0
+}

@@ -1,0 +1,5 @@
+// A closure body resolves against its parameters and the enclosing scope.
+func f(_ a: Int32) -> Int32 {
+  let g = { x => x }
+  return a
+}

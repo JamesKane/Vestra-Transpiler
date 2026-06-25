@@ -879,6 +879,7 @@ enum Nd {
     case exoticE                            // comptime, closure, select, etc — /*?expr*/
     case vecLit(Vec[Nd])                    // [e1, e2, ...] array/vector literal — prints /*?expr*/ (no C++ case), carries elements for sema
     case tupleLit(Vec[Nd])                  // (e1, e2, ...) tuple literal — prints /*?expr*/ (no C++ case), carries elements for sema
+    case closureE(Vec[Nd], Vec[Nd])         // { params => body } — params (ident nodes) + body stmts; prints /*?expr*/ (no C++ case), carries both for sema
     case throwE(Vec[Nd])                    // throw OPERAND — also prints /*?expr*/ (no C++ printer case), but carries the operand for sema
     case prefixE(String, Vec[Nd])           // copy / await / spawn / try (kw string), operand — printed fully
     case doCatchE(Vec[Nd], String, Vec[Nd], Vec[Nd]) // doBody, errName, errType?, catchBody
@@ -2019,22 +2020,25 @@ func isKind2(_ a: TokKind, _ b: TokKind) -> Bool { return streq(spelling(a), spe
 
 func parseClosure(_ p: inout Ps) using Alloc -> Nd {
     advP(&p)  // '{'
+    var params: Vec[Nd] = Vec.new()
     if !isKind(p, TokKind.fatArrow) {
         if isKind(p, TokKind.identifier) {
+            params.push(Nd.ident(curText(p)))
             advP(&p)
             while eat(p, TokKind.comma) {
-                if isKind(p, TokKind.identifier) { advP(&p) }
+                if isKind(p, TokKind.identifier) { params.push(Nd.ident(curText(p))); advP(&p) }
             }
         }
     }
     eat(p, TokKind.fatArrow)
     skipNL(&p)
+    var body: Vec[Nd] = Vec.new()
     while !isKind(p, TokKind.rbrace) && !atEndP(p) {
-        let s = parseStmt(&p)
+        body.push(parseStmt(&p))
         skipNL(&p)
     }
     eat(p, TokKind.rbrace)
-    return Nd.exoticE
+    return Nd.closureE(params, body)
 }
 
 // A match expression. The C++ printer has no MatchExpr case, so it dumps as
@@ -3039,6 +3043,7 @@ func resolveExpr(_ env: inout Env, _ e: Nd) using Alloc {
         case .doCatchE(let db, let en, let et, let cb): resolveDoCatch(env, db, en, cb)
         case .vecLit(let elems): resolveExprList(env, elems)
         case .tupleLit(let elems): resolveExprList(env, elems)
+        case .closureE(let params, let body): resolveClosure(env, params, body)
         default: noop()
     }
 }
@@ -3049,6 +3054,37 @@ func resolveExprList(_ env: inout Env, _ elems: Vec[Nd]) using Alloc {
     while i < elems.len() {
         resolveExpr(env, elems.get(i) ?? Nd.wildcard)
         i = i + 1
+    }
+}
+
+// A closure is one scope shared by its parameters and body statements: a body
+// `let` that shadows a parameter clashes (duplicate definition), and the body
+// resolves against the parameters plus the enclosing scope (captures).
+func resolveClosure(_ env: inout Env, _ params: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    let save = env.names.len()
+    scopeEnter(env)
+    bindClosureParams(env, params)
+    var i: Int = 0
+    while i < body.len() {
+        resolveStmt(env, body.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    scopeLeave(env)
+    popTo(env, save)
+}
+
+func bindClosureParams(_ env: inout Env, _ params: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < params.len() {
+        bindClosureParam(env, params.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func bindClosureParam(_ env: inout Env, _ p: Nd) using Alloc {
+    match p {
+        case .ident(let n): addBinding(env, n)
+        default: noop()
     }
 }
 

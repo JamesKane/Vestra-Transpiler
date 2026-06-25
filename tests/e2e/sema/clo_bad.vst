@@ -1,0 +1,5 @@
+// An undefined name inside a closure body is reported.
+func f() -> Int32 {
+  let g = { x => missing }
+  return 0
+}
