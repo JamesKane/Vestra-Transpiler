@@ -1,0 +1,5 @@
+// An array literal matches a fixed-size array annotation (element widths align).
+func f() -> Int32 {
+  let v: [3]Int32 = [1, 2, 3]
+  return 0
+}

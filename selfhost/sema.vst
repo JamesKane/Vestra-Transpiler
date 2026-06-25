@@ -5777,8 +5777,24 @@ func tyInfer(_ env: inout TyEnv, _ e: Nd) using Alloc -> String {
         case .unary(let op, let x): tyInferUnary(env, op, x)
         case .member(let base, let name, let chain): tyInferMember(env, base, name, chain)
         case .index(let base, let idxs): tyInferIndex(env, base, idxs)
+        case .vecLit(let elems): tyInferVecLit(env, elems)
         default: own("")
     }
+}
+
+// An array literal `[e1, ...]` types as `[N]T`, where N is the element count and
+// T is the FIRST element's type (vestra does not unify the rest); the spelling
+// nests, so `[[1,2],[3,4]]` -> `[2][2]Int`. An empty literal or an unknown first
+// element stays unknown so the value is tolerated rather than mis-flagged.
+func tyInferVecLit(_ env: inout TyEnv, _ elems: Vec[Nd]) using Alloc -> String {
+    if elems.len() == 0 { return own("") }
+    let et = tyInfer(env, elems.get(0) ?? Nd.wildcard)
+    if streq(et, "") { return own("") }
+    var s: String = "["
+    s.append(intToStr(elems.len()))
+    s.append("]")
+    s.append(et)
+    return s
 }
 
 // Indexing a Vec[T] / Span[T] / MutSpan[T] yields its element T; other bases stay
@@ -6094,8 +6110,19 @@ func typeSpelling(_ t: Nd) using Alloc -> String {
     return match t {
         case .named(let path, let hasG, let args): tyNamedSpelling(path, hasG, args)
         case .opt(let inner): tyOptSpelling(inner)
+        case .vecT(let len, let elem): tyVecTSpelling(len, elem)
         default: own("")
     }
+}
+
+// A fixed-size array type `[N]T` spells as "[N]" + the element spelling, no
+// space — the same shape an array literal infers to (see tyInferVecLit).
+func tyVecTSpelling(_ len: String, _ elem: Vec[Nd]) using Alloc -> String {
+    var s: String = "["
+    s.append(len)
+    s.append("]")
+    s.append(tyAnnSpelling(elem))
+    return s
 }
 
 func tyNamedSpelling(_ path: String, _ hasG: Bool, _ args: Vec[Nd]) using Alloc -> String {
@@ -6123,10 +6150,43 @@ func tyOptSpelling(_ inner: Vec[Nd]) using Alloc -> String {
 func tyAssignable(_ from: String, _ to: String) using Alloc -> Bool {
     if streq(from, "") || streq(to, "") { return true }   // unknown: don't pile on
     if streq(from, to) { return true }
+    if tyIsArray(from) && tyIsArray(to) { return tyArrayAssignable(from, to) }
     if tyIntNatural(from, to) { return true }
     if tyStrLattice(from, to) { return true }
     if tyOptionalWrap(from, to) { return true }
     return false
+}
+
+// Two array types `[N]T` / `[M]U` are assignable when their counts match and the
+// element types are assignable (so `[3]Int` -> `[3]Int32` by natural width, but
+// neither a count nor a Vec mismatch passes).
+func tyIsArray(_ s: String) -> Bool {
+    return s.len() > 0 && (s.byteAt(0) ?? 0) == 91   // '[' == 91
+}
+
+func tyArrayAssignable(_ from: String, _ to: String) using Alloc -> Bool {
+    return streq(tyArrayCount(from), tyArrayCount(to))
+        && tyAssignable(tyArrayElem(from), tyArrayElem(to))
+}
+
+// "[3]Int32" -> "3" (between '[' and the first ']').
+func tyArrayCount(_ s: String) using Alloc -> String {
+    var i: Int = 1
+    while i < s.len() {
+        if (s.byteAt(i) ?? 0) == 93 { return own(s.slice(1, i)) }   // ']' == 93
+        i = i + 1
+    }
+    return own("")
+}
+
+// "[3]Int32" -> "Int32" (everything after the first ']').
+func tyArrayElem(_ s: String) using Alloc -> String {
+    var i: Int = 1
+    while i < s.len() {
+        if (s.byteAt(i) ?? 0) == 93 { return own(s.slice(i + 1, s.len())) }
+        i = i + 1
+    }
+    return own("")
 }
 
 func tyIsInt(_ s: String) -> Bool {

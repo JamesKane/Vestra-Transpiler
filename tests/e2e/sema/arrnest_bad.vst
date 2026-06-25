@@ -1,0 +1,5 @@
+// A nested array literal infers a nested array type, not Bool.
+func f() -> Int32 {
+  let v: Bool = [[1, 2], [3, 4]]
+  return 0
+}

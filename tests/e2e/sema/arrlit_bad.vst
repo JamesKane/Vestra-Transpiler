@@ -1,0 +1,5 @@
+// An array literal is not a Vec; the initializer type does not match.
+func f() -> Int32 {
+  let v: Vec[Int32] = [1, 2, 3]
+  return 0
+}
