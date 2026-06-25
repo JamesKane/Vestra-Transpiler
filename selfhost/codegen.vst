@@ -1,0 +1,3034 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// The dog-food compiler, phase 4: the Vestra C++ code generator, written in
+// Vestra. It reuses the self-hosted lexer + parser (the front of this file is a
+// copy of selfhost/parser.vst), then emits C++ from the AST, differentially
+// tested against `vestra build`:
+//
+//   vgen <file.vst>    prints the generated C++ *definitions* (the `.cpp` body)
+//                      to stdout.
+//
+// The contract is the emitted `.cpp` text: the e2e runs `vestra build` to produce
+// <stem>.cpp and diffs it against vgen's stdout. The huge fixed runtime prelude
+// and the per-program forward declarations live in the `.hpp`, which a later
+// slice can mirror; this phase focuses on the definitions the codegen actually
+// generates per construct.
+//
+// Slice 1 scope: free functions with explicitly-typed read-mode parameters and
+// bodies of plain `return` statements over identifiers, integer literals, and
+// binary / parenthesized expressions. Builtin scalar types map to their C++
+// spellings (Int32 -> std::int32_t, Unit -> void, ...). Richer constructs are
+// added slice by slice; the AST and parser below are unchanged from
+// selfhost/parser.vst.
+
+// ---------------------------------------------------------------------------
+// The real token kinds (mirrors include/vestra/lex/token.hpp).
+// ---------------------------------------------------------------------------
+enum TokKind {
+    // bookkeeping
+    case eof
+    case error
+    case newline
+    // literals
+    case intLit
+    case floatLit
+    case stringLit
+    case byteStringLit
+    case charLit
+    case identifier
+    case interpBegin
+    case interpPart
+    case interpEnd
+    // punctuation
+    case lparen
+    case rparen
+    case lbrace
+    case rbrace
+    case lbracket
+    case rbracket
+    case comma
+    case semicolon
+    case colon
+    case dot
+    case dotDot
+    case dotDotLt
+    case arrow
+    case fatArrow
+    case at
+    case dollar
+    case question
+    case underscore
+    // operators
+    case plus
+    case minus
+    case star
+    case slash
+    case percent
+    case ampPlus
+    case ampMinus
+    case ampStar
+    case amp
+    case pipe
+    case caret
+    case tilde
+    case bang
+    case shiftL
+    case shiftR
+    case assign
+    case plusEq
+    case minusEq
+    case starEq
+    case slashEq
+    case percentEq
+    case ampEq
+    case pipeEq
+    case caretEq
+    case shiftLEq
+    case shiftREq
+    case eqEq
+    case bangEq
+    case lt
+    case gt
+    case ltEq
+    case gtEq
+    case ampAmp
+    case pipePipe
+    case questionQuestion
+    // keywords
+    case kwModule
+    case kwImport
+    case kwFunc
+    case kwStruct
+    case kwEnum
+    case kwProtocol
+    case kwExtension
+    case kwOpaque
+    case kwType
+    case kwEmbed
+    case kwDeinit
+    case kwLet
+    case kwVar
+    case kwConst
+    case kwStatic
+    case kwReturn
+    case kwIf
+    case kwElse
+    case kwMatch
+    case kwCase
+    case kwDefault
+    case kwFor
+    case kwIn
+    case kwWhile
+    case kwBreak
+    case kwContinue
+    case kwWhere
+    case kwDo
+    case kwCatch
+    case kwThrow
+    case kwThrows
+    case kwWith
+    case kwUsing
+    case kwAsync
+    case kwAwait
+    case kwSpawn
+    case kwSelect
+    case kwOn
+    case kwComptime
+    case kwQuote
+    case kwCopy
+    case kwRead
+    case kwInout
+    case kwSink
+    case kwNonescaping
+    case kwSome
+    case kwDyn
+    case kwLinear
+    case kwTry
+    case kwTryQuestion
+    case kwTryBang
+    case kwAs
+    case kwAsQuestion
+    case kwDerive
+    case kwTrue
+    case kwFalse
+    case kwNil
+    case kwSelfLower
+    case kwSelfUpper
+    case kwPrivate
+    case kwInternal
+    case kwPackage
+    case kwPublic
+}
+
+struct Token {
+    let kind: TokKind
+    let text: Str
+}
+
+// The scanner state, threaded by inout through the scan functions.
+struct Lex {
+    var src: Str
+    var pos: Int
+    var depth: Int
+    var prevOp: Bool
+}
+
+// ---------------------------------------------------------------------------
+// Token spelling — the exact strings the C++ `spelling()` returns (token.cpp).
+// ---------------------------------------------------------------------------
+func spelling(_ k: TokKind) -> Str {
+    return match k {
+        case .eof: "<eof>"
+        case .error: "<error>"
+        case .newline: "<newline>"
+        case .intLit: "integer literal"
+        case .floatLit: "float literal"
+        case .stringLit: "string literal"
+        case .byteStringLit: "byte string literal"
+        case .charLit: "character literal"
+        case .identifier: "identifier"
+        case .interpBegin: "<interp string begin>"
+        case .interpPart: "interp string fragment"
+        case .interpEnd: "<interp string end>"
+        case .lparen: "("
+        case .rparen: ")"
+        case .lbrace: "{"
+        case .rbrace: "}"
+        case .lbracket: "["
+        case .rbracket: "]"
+        case .comma: ","
+        case .semicolon: ";"
+        case .colon: ":"
+        case .dot: "."
+        case .dotDot: ".."
+        case .dotDotLt: "..<"
+        case .arrow: "->"
+        case .fatArrow: "=>"
+        case .at: "@"
+        case .dollar: "$"
+        case .question: "?"
+        case .underscore: "_"
+        case .plus: "+"
+        case .minus: "-"
+        case .star: "*"
+        case .slash: "/"
+        case .percent: "%"
+        case .ampPlus: "&+"
+        case .ampMinus: "&-"
+        case .ampStar: "&*"
+        case .amp: "&"
+        case .pipe: "|"
+        case .caret: "^"
+        case .tilde: "~"
+        case .bang: "!"
+        case .shiftL: "<<"
+        case .shiftR: ">>"
+        case .assign: "="
+        case .plusEq: "+="
+        case .minusEq: "-="
+        case .starEq: "*="
+        case .slashEq: "/="
+        case .percentEq: "%="
+        case .ampEq: "&="
+        case .pipeEq: "|="
+        case .caretEq: "^="
+        case .shiftLEq: "<<="
+        case .shiftREq: ">>="
+        case .eqEq: "=="
+        case .bangEq: "!="
+        case .lt: "<"
+        case .gt: ">"
+        case .ltEq: "<="
+        case .gtEq: ">="
+        case .ampAmp: "&&"
+        case .pipePipe: "||"
+        case .questionQuestion: "??"
+        case .kwModule: "module"
+        case .kwImport: "import"
+        case .kwFunc: "func"
+        case .kwStruct: "struct"
+        case .kwEnum: "enum"
+        case .kwProtocol: "protocol"
+        case .kwExtension: "extension"
+        case .kwOpaque: "opaque"
+        case .kwType: "type"
+        case .kwEmbed: "embed"
+        case .kwDeinit: "deinit"
+        case .kwLet: "let"
+        case .kwVar: "var"
+        case .kwConst: "const"
+        case .kwStatic: "static"
+        case .kwReturn: "return"
+        case .kwIf: "if"
+        case .kwElse: "else"
+        case .kwMatch: "match"
+        case .kwCase: "case"
+        case .kwDefault: "default"
+        case .kwFor: "for"
+        case .kwIn: "in"
+        case .kwWhile: "while"
+        case .kwBreak: "break"
+        case .kwContinue: "continue"
+        case .kwWhere: "where"
+        case .kwDo: "do"
+        case .kwCatch: "catch"
+        case .kwThrow: "throw"
+        case .kwThrows: "throws"
+        case .kwWith: "with"
+        case .kwUsing: "using"
+        case .kwAsync: "async"
+        case .kwAwait: "await"
+        case .kwSpawn: "spawn"
+        case .kwSelect: "select"
+        case .kwOn: "on"
+        case .kwComptime: "comptime"
+        case .kwQuote: "quote"
+        case .kwCopy: "copy"
+        case .kwRead: "read"
+        case .kwInout: "inout"
+        case .kwSink: "sink"
+        case .kwNonescaping: "nonescaping"
+        case .kwSome: "some"
+        case .kwDyn: "dyn"
+        case .kwLinear: "linear"
+        case .kwTry: "try"
+        case .kwTryQuestion: "try?"
+        case .kwTryBang: "try!"
+        case .kwAs: "as"
+        case .kwAsQuestion: "as?"
+        case .kwDerive: "derive"
+        case .kwTrue: "true"
+        case .kwFalse: "false"
+        case .kwNil: "nil"
+        case .kwSelfLower: "self"
+        case .kwSelfUpper: "Self"
+        case .kwPrivate: "private"
+        case .kwInternal: "internal"
+        case .kwPackage: "package"
+        case .kwPublic: "public"
+    }
+}
+
+// The §3 binary-operator set: a newline right after one of these is suppressed
+// (mirrors is_binary_operator in lexer.cpp). Unary !, ~, ? are NOT included.
+func isBinOp(_ k: TokKind) -> Bool {
+    return match k {
+        case .plus: true
+        case .minus: true
+        case .star: true
+        case .slash: true
+        case .percent: true
+        case .ampPlus: true
+        case .ampMinus: true
+        case .ampStar: true
+        case .amp: true
+        case .pipe: true
+        case .caret: true
+        case .shiftL: true
+        case .shiftR: true
+        case .eqEq: true
+        case .bangEq: true
+        case .lt: true
+        case .gt: true
+        case .ltEq: true
+        case .gtEq: true
+        case .ampAmp: true
+        case .pipePipe: true
+        case .questionQuestion: true
+        case .assign: true
+        case .plusEq: true
+        case .minusEq: true
+        case .starEq: true
+        case .slashEq: true
+        case .percentEq: true
+        case .ampEq: true
+        case .pipeEq: true
+        case .caretEq: true
+        case .shiftLEq: true
+        case .shiftREq: true
+        case .arrow: true
+        case .fatArrow: true
+        case .comma: true
+        case .colon: true
+        case .dotDot: true
+        case .dotDotLt: true
+        default: false
+    }
+}
+
+// The §17.1 keyword table. `try` / `as` map to their base kind here; the `?` / `!`
+// suffixes are folded in by the identifier scanner.
+func keywordKind(_ s: Str) -> TokKind {
+    return match s {
+        case "module": TokKind.kwModule
+        case "import": TokKind.kwImport
+        case "func": TokKind.kwFunc
+        case "struct": TokKind.kwStruct
+        case "enum": TokKind.kwEnum
+        case "protocol": TokKind.kwProtocol
+        case "extension": TokKind.kwExtension
+        case "opaque": TokKind.kwOpaque
+        case "type": TokKind.kwType
+        case "embed": TokKind.kwEmbed
+        case "deinit": TokKind.kwDeinit
+        case "let": TokKind.kwLet
+        case "var": TokKind.kwVar
+        case "const": TokKind.kwConst
+        case "static": TokKind.kwStatic
+        case "return": TokKind.kwReturn
+        case "if": TokKind.kwIf
+        case "else": TokKind.kwElse
+        case "match": TokKind.kwMatch
+        case "case": TokKind.kwCase
+        case "default": TokKind.kwDefault
+        case "for": TokKind.kwFor
+        case "in": TokKind.kwIn
+        case "while": TokKind.kwWhile
+        case "break": TokKind.kwBreak
+        case "continue": TokKind.kwContinue
+        case "where": TokKind.kwWhere
+        case "do": TokKind.kwDo
+        case "catch": TokKind.kwCatch
+        case "throw": TokKind.kwThrow
+        case "throws": TokKind.kwThrows
+        case "with": TokKind.kwWith
+        case "using": TokKind.kwUsing
+        case "async": TokKind.kwAsync
+        case "await": TokKind.kwAwait
+        case "spawn": TokKind.kwSpawn
+        case "select": TokKind.kwSelect
+        case "on": TokKind.kwOn
+        case "comptime": TokKind.kwComptime
+        case "quote": TokKind.kwQuote
+        case "copy": TokKind.kwCopy
+        case "read": TokKind.kwRead
+        case "inout": TokKind.kwInout
+        case "sink": TokKind.kwSink
+        case "nonescaping": TokKind.kwNonescaping
+        case "some": TokKind.kwSome
+        case "dyn": TokKind.kwDyn
+        case "linear": TokKind.kwLinear
+        case "try": TokKind.kwTry
+        case "as": TokKind.kwAs
+        case "derive": TokKind.kwDerive
+        case "true": TokKind.kwTrue
+        case "false": TokKind.kwFalse
+        case "nil": TokKind.kwNil
+        case "self": TokKind.kwSelfLower
+        case "Self": TokKind.kwSelfUpper
+        case "private": TokKind.kwPrivate
+        case "internal": TokKind.kwInternal
+        case "package": TokKind.kwPackage
+        case "public": TokKind.kwPublic
+        default: TokKind.identifier
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ASCII character classes — written out to match the C++ predicates exactly
+// (rather than relying on Char.isAlpha, which could differ on non-ASCII).
+// ---------------------------------------------------------------------------
+func isDigitC(_ c: Char) -> Bool { return c >= '0' && c <= '9' }
+func isHexC(_ c: Char) -> Bool {
+    return isDigitC(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+func isOctC(_ c: Char) -> Bool { return c >= '0' && c <= '7' }
+func isBinC(_ c: Char) -> Bool { return c == '0' || c == '1' }
+func isIdStartC(_ c: Char) -> Bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+func isIdContC(_ c: Char) -> Bool { return isIdStartC(c) || isDigitC(c) }
+
+// Byte-wise string equality (avoids the Str-vs-StrConst operator mismatch).
+func streq(_ a: Str, _ b: Str) -> Bool {
+    if a.len() != b.len() { return false }
+    var i: Int = 0
+    while i < a.len() {
+        if (a.byteAt(i) ?? 0) != (b.byteAt(i) ?? 0) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// ---------------------------------------------------------------------------
+// Cursor primitives over the Lex state.
+// ---------------------------------------------------------------------------
+func atC(_ src: Str, _ i: Int) -> Char {
+    if i >= src.len() { return '\0' }
+    return src.charAt(i) ?? '\0'
+}
+func curC(_ l: Lex) -> Char { return atC(l.src, l.pos) }
+func aheadC(_ l: Lex, _ n: Int) -> Char { return atC(l.src, l.pos + n) }
+func atEndL(_ l: Lex) -> Bool { return l.pos >= l.src.len() }
+func advC(_ l: inout Lex) { l.pos = l.pos + 1 }
+func bumpC(_ l: inout Lex) -> Char {
+    let c = curC(l)
+    l.pos = l.pos + 1
+    return c
+}
+func eatC(_ l: inout Lex, _ expected: Char) -> Bool {
+    if curC(l) == expected {
+        l.pos = l.pos + 1
+        return true
+    }
+    return false
+}
+
+// Emit a token spanning [start, pos); records whether it was a binary operator
+// so the next newline knows whether to continue the statement.
+func emitTok(_ toks: inout Vec[Token], _ l: inout Lex, _ k: TokKind, _ start: Int) using Alloc {
+    let bin = isBinOp(k)
+    toks.push(Token(kind: k, text: l.src.slice(start, l.pos)))
+    l.prevOp = bin
+}
+
+// Does the next significant char (past horizontal whitespace, blank lines, and
+// line comments) begin a binary operator? Then the pending newline continues.
+func nextStartsWithOperator(_ src: Str, _ scanStart: Int) -> Bool {
+    var scan: Int = scanStart
+    var go: Bool = true
+    while go && scan < src.len() {
+        let d = atC(src, scan)
+        if d == ' ' || d == '\t' || d == '\r' || d == '\n' {
+            scan = scan + 1
+        } else if d == '/' && atC(src, scan + 1) == '/' {
+            while scan < src.len() && atC(src, scan) != '\n' { scan = scan + 1 }
+        } else {
+            go = false
+        }
+    }
+    if scan < src.len() {
+        let d = atC(src, scan)
+        return d == '+' || d == '-' || d == '*' || d == '/' || d == '%'
+            || d == '|' || d == '^' || d == '?' || d == '.'
+    }
+    return false
+}
+
+// /* ... */ with §3 nesting.
+func scanBlockComment(_ l: inout Lex) {
+    var depth: Int = 1
+    while depth > 0 && !atEndL(l) {
+        if curC(l) == '/' && aheadC(l, 1) == '*' {
+            advC(&l)
+            advC(&l)
+            depth = depth + 1
+        } else if curC(l) == '*' && aheadC(l, 1) == '/' {
+            advC(&l)
+            advC(&l)
+            depth = depth - 1
+        } else {
+            advC(&l)
+        }
+    }
+}
+
+// Skip whitespace and comments, emitting Newline tokens where they terminate a
+// statement (§3 continuation rules).
+func skipTrivia(_ toks: inout Vec[Token], _ l: inout Lex) using Alloc {
+    var go: Bool = true
+    while go && !atEndL(l) {
+        let c = curC(l)
+        if c == ' ' || c == '\t' || c == '\r' {
+            advC(&l)
+        } else if c == '\n' {
+            let nlStart = l.pos
+            advC(&l)
+            if l.depth > 0 || l.prevOp {
+                // continuation: newline suppressed
+            } else if !nextStartsWithOperator(l.src, l.pos) {
+                toks.push(Token(kind: TokKind.newline, text: l.src.slice(nlStart, nlStart + 1)))
+            }
+        } else if c == '/' && aheadC(l, 1) == '/' {
+            while !atEndL(l) && curC(l) != '\n' { advC(&l) }
+        } else if c == '/' && aheadC(l, 1) == '*' {
+            advC(&l)
+            advC(&l)
+            scanBlockComment(&l)
+        } else {
+            go = false
+        }
+    }
+}
+
+// Consume a run of digits (and `_` separators) in the given base.
+func eatDigits(_ l: inout Lex, _ base: Int) {
+    var go: Bool = true
+    while go && !atEndL(l) {
+        let c = curC(l)
+        var ok: Bool = false
+        if base == 16 { ok = isHexC(c) }
+        else if base == 8 { ok = isOctC(c) }
+        else if base == 2 { ok = isBinC(c) }
+        else { ok = isDigitC(c) }
+        if ok || c == '_' { advC(&l) } else { go = false }
+    }
+}
+
+func scanNumber(_ toks: inout Vec[Token], _ l: inout Lex, _ start: Int) using Alloc {
+    var isFloat: Bool = false
+    let first = atC(l.src, start)
+    let c1 = curC(l)
+    if first == '0' && (c1 == 'x' || c1 == 'o' || c1 == 'b') {
+        let base = bumpC(&l)
+        if base == 'x' { eatDigits(&l, 16) }
+        else if base == 'o' { eatDigits(&l, 8) }
+        else { eatDigits(&l, 2) }
+    } else {
+        eatDigits(&l, 10)
+        if curC(l) == '.' && isDigitC(aheadC(l, 1)) {
+            isFloat = true
+            advC(&l)
+            eatDigits(&l, 10)
+        }
+        if curC(l) == 'e' || curC(l) == 'E' {
+            isFloat = true
+            advC(&l)
+            if curC(l) == '+' || curC(l) == '-' { advC(&l) }
+            eatDigits(&l, 10)
+        }
+    }
+    var k: TokKind = TokKind.intLit
+    if isFloat { k = TokKind.floatLit }
+    emitTok(&toks, &l, k, start)
+}
+
+func scanIdentifier(_ toks: inout Vec[Token], _ l: inout Lex, _ start: Int) using Alloc {
+    while !atEndL(l) && isIdContC(curC(l)) { advC(&l) }
+    let lex = l.src.slice(start, l.pos)
+    var kind = keywordKind(lex)
+    if streq(lex, "try") {
+        if curC(l) == '?' { advC(&l); kind = TokKind.kwTryQuestion }
+        else if curC(l) == '!' { advC(&l); kind = TokKind.kwTryBang }
+    } else if streq(lex, "as") && curC(l) == '?' {
+        advC(&l)
+        kind = TokKind.kwAsQuestion
+    }
+    if streq(lex, "_") { kind = TokKind.underscore }
+    emitTok(&toks, &l, kind, start)
+}
+
+// §4 interpolation: pick up the next literal fragment after the opening `"` of an
+// interpolated string or the `)` that closed a splice. Emit the fragment as an
+// InterpStringPart, then either close on `"` (part + InterpStringEnd) or split on
+// `\(` (part + LParen, push the splice's bracket depth, and return so the main loop
+// runs the splice body). The `)` that closes the splice resumes us via the main
+// loop. The splice-opening LParen carries the two-char lexeme `\(`, matching the
+// C++ lexer; InterpStringBegin / End each carry the `"`.
+func scanInterpContinue(_ toks: inout Vec[Token], _ l: inout Lex, _ splices: inout Vec[Int]) using Alloc {
+    let fragStart = l.pos
+    var go: Bool = true
+    while go && !atEndL(l) {
+        let c = curC(l)
+        if c == '"' {
+            emitTok(&toks, &l, TokKind.interpPart, fragStart)
+            let endStart = l.pos
+            advC(&l)
+            emitTok(&toks, &l, TokKind.interpEnd, endStart)
+            return
+        }
+        if c == '\\' && aheadC(l, 1) == '(' {
+            emitTok(&toks, &l, TokKind.interpPart, fragStart)
+            let markerStart = l.pos
+            advC(&l)
+            advC(&l)
+            l.depth = l.depth + 1
+            splices.push(l.depth)
+            emitTok(&toks, &l, TokKind.lparen, markerStart)
+            return
+        }
+        if c == '\\' {
+            advC(&l)
+            if !atEndL(l) { advC(&l) }
+        } else if c == '\n' {
+            emitTok(&toks, &l, TokKind.error, fragStart)
+            return
+        } else {
+            advC(&l)
+        }
+    }
+    emitTok(&toks, &l, TokKind.error, fragStart)
+}
+
+// String / byte string. Regular strings are pre-scanned for a `\(` splice: if one
+// is present the literal lexes as InterpStringBegin + (Part / splice tokens)* +
+// InterpStringEnd; otherwise it is a single StringLit. Byte strings (§17.1) never
+// interpolate.
+func scanString(_ toks: inout Vec[Token], _ l: inout Lex, _ splices: inout Vec[Int], _ start: Int, _ isByte: Bool) using Alloc {
+    if !isByte {
+        let saved = l.pos
+        var hasSplice: Bool = false
+        var scan: Bool = true
+        while scan && !atEndL(l) {
+            let c = curC(l)
+            if c == '"' || c == '\n' {
+                scan = false
+            } else if c == '\\' {
+                if aheadC(l, 1) == '(' {
+                    hasSplice = true
+                    scan = false
+                } else {
+                    advC(&l)
+                    if !atEndL(l) { advC(&l) }
+                }
+            } else {
+                advC(&l)
+            }
+        }
+        l.pos = saved
+        if hasSplice {
+            emitTok(&toks, &l, TokKind.interpBegin, start)
+            scanInterpContinue(&toks, &l, &splices)
+            return
+        }
+    }
+
+    var go: Bool = true
+    while go && !atEndL(l) {
+        let c = curC(l)
+        if c == '"' {
+            advC(&l)
+            var k: TokKind = TokKind.stringLit
+            if isByte { k = TokKind.byteStringLit }
+            emitTok(&toks, &l, k, start)
+            return
+        }
+        if c == '\\' {
+            advC(&l)
+            if !atEndL(l) { advC(&l) }
+        } else if c == '\n' {
+            emitTok(&toks, &l, TokKind.error, start)
+            return
+        } else {
+            advC(&l)
+        }
+    }
+    emitTok(&toks, &l, TokKind.error, start)
+}
+
+func scanChar(_ toks: inout Vec[Token], _ l: inout Lex, _ start: Int) using Alloc {
+    if curC(l) == '\\' {
+        advC(&l)
+        if !atEndL(l) { advC(&l) }
+    } else if !atEndL(l) && curC(l) != '\'' {
+        advC(&l)
+    }
+    if curC(l) != '\'' {
+        emitTok(&toks, &l, TokKind.error, start)
+        return
+    }
+    advC(&l)
+    emitTok(&toks, &l, TokKind.charLit, start)
+}
+
+// The main scan loop: skip trivia, dispatch on the first char, append Eof.
+func tokenize(_ src: Str) using Alloc -> Vec[Token] {
+    var l = Lex(src: src, pos: 0, depth: 0, prevOp: false)
+    var toks: Vec[Token] = Vec.new()
+    var splices: Vec[Int] = Vec.new()
+    while !atEndL(l) {
+        skipTrivia(&toks, &l)
+        if atEndL(l) { return finish(&toks, &l) }
+        let start = l.pos
+        let c = bumpC(&l)
+        if c == '(' { l.depth = l.depth + 1; emitTok(&toks, &l, TokKind.lparen, start) }
+        else if c == ')' {
+            l.depth = l.depth - 1
+            emitTok(&toks, &l, TokKind.rparen, start)
+            // §4: a `)` that drops bracket depth below the current splice's level
+            // closes the splice and resumes the surrounding string fragment.
+            if splices.len() > 0 && l.depth < (splices.get(splices.len() - 1) ?? 0) {
+                let _ = splices.pop()
+                scanInterpContinue(&toks, &l, &splices)
+            }
+        }
+        else if c == '[' { l.depth = l.depth + 1; emitTok(&toks, &l, TokKind.lbracket, start) }
+        else if c == ']' { l.depth = l.depth - 1; emitTok(&toks, &l, TokKind.rbracket, start) }
+        else if c == '{' { l.depth = l.depth + 1; emitTok(&toks, &l, TokKind.lbrace, start) }
+        else if c == '}' { l.depth = l.depth - 1; emitTok(&toks, &l, TokKind.rbrace, start) }
+        else if c == ',' { emitTok(&toks, &l, TokKind.comma, start) }
+        else if c == ';' { emitTok(&toks, &l, TokKind.semicolon, start) }
+        else if c == '@' { emitTok(&toks, &l, TokKind.at, start) }
+        else if c == '$' { emitTok(&toks, &l, TokKind.dollar, start) }
+        else if c == '~' { emitTok(&toks, &l, TokKind.tilde, start) }
+        else if c == ':' { emitTok(&toks, &l, TokKind.colon, start) }
+        else if c == '.' {
+            if eatC(&l, '.') {
+                if eatC(&l, '<') { emitTok(&toks, &l, TokKind.dotDotLt, start) }
+                else { emitTok(&toks, &l, TokKind.dotDot, start) }
+            } else { emitTok(&toks, &l, TokKind.dot, start) }
+        }
+        else if c == '?' {
+            if eatC(&l, '?') { emitTok(&toks, &l, TokKind.questionQuestion, start) }
+            else { emitTok(&toks, &l, TokKind.question, start) }
+        }
+        else if c == '+' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.plusEq, start) }
+            else { emitTok(&toks, &l, TokKind.plus, start) }
+        }
+        else if c == '-' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.minusEq, start) }
+            else if eatC(&l, '>') { emitTok(&toks, &l, TokKind.arrow, start) }
+            else { emitTok(&toks, &l, TokKind.minus, start) }
+        }
+        else if c == '*' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.starEq, start) }
+            else { emitTok(&toks, &l, TokKind.star, start) }
+        }
+        else if c == '/' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.slashEq, start) }
+            else { emitTok(&toks, &l, TokKind.slash, start) }
+        }
+        else if c == '%' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.percentEq, start) }
+            else { emitTok(&toks, &l, TokKind.percent, start) }
+        }
+        else if c == '^' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.caretEq, start) }
+            else { emitTok(&toks, &l, TokKind.caret, start) }
+        }
+        else if c == '&' {
+            if eatC(&l, '&') { emitTok(&toks, &l, TokKind.ampAmp, start) }
+            else if eatC(&l, '=') { emitTok(&toks, &l, TokKind.ampEq, start) }
+            else if eatC(&l, '+') { emitTok(&toks, &l, TokKind.ampPlus, start) }
+            else if eatC(&l, '-') { emitTok(&toks, &l, TokKind.ampMinus, start) }
+            else if eatC(&l, '*') { emitTok(&toks, &l, TokKind.ampStar, start) }
+            else { emitTok(&toks, &l, TokKind.amp, start) }
+        }
+        else if c == '|' {
+            if eatC(&l, '|') { emitTok(&toks, &l, TokKind.pipePipe, start) }
+            else if eatC(&l, '=') { emitTok(&toks, &l, TokKind.pipeEq, start) }
+            else { emitTok(&toks, &l, TokKind.pipe, start) }
+        }
+        else if c == '=' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.eqEq, start) }
+            else if eatC(&l, '>') { emitTok(&toks, &l, TokKind.fatArrow, start) }
+            else { emitTok(&toks, &l, TokKind.assign, start) }
+        }
+        else if c == '!' {
+            if eatC(&l, '=') { emitTok(&toks, &l, TokKind.bangEq, start) }
+            else { emitTok(&toks, &l, TokKind.bang, start) }
+        }
+        else if c == '<' {
+            if eatC(&l, '<') {
+                if eatC(&l, '=') { emitTok(&toks, &l, TokKind.shiftLEq, start) }
+                else { emitTok(&toks, &l, TokKind.shiftL, start) }
+            } else if eatC(&l, '=') { emitTok(&toks, &l, TokKind.ltEq, start) }
+            else { emitTok(&toks, &l, TokKind.lt, start) }
+        }
+        else if c == '>' {
+            if eatC(&l, '>') {
+                if eatC(&l, '=') { emitTok(&toks, &l, TokKind.shiftREq, start) }
+                else { emitTok(&toks, &l, TokKind.shiftR, start) }
+            } else if eatC(&l, '=') { emitTok(&toks, &l, TokKind.gtEq, start) }
+            else { emitTok(&toks, &l, TokKind.gt, start) }
+        }
+        else if c == '"' { scanString(&toks, &l, &splices, start, false) }
+        else if c == '\'' { scanChar(&toks, &l, start) }
+        else if c == 'b' && curC(l) == '"' { advC(&l); scanString(&toks, &l, &splices, start, true) }
+        else if isDigitC(c) { scanNumber(&toks, &l, start) }
+        else if isIdStartC(c) { scanIdentifier(&toks, &l, start) }
+        else { emitTok(&toks, &l, TokKind.error, start) }
+    }
+    return finish(&toks, &l)
+}
+
+// Append the final Eof token (empty lexeme) and hand back the stream.
+func finish(_ toks: inout Vec[Token], _ l: inout Lex) using Alloc -> Vec[Token] {
+    let n = l.src.len()
+    toks.push(Token(kind: TokKind.eof, text: l.src.slice(n, n)))
+    return toks
+}
+
+// ===========================================================================
+// One self-recursive node type. Folding expressions, statements, types, patterns,
+// params, and decls into a single enum avoids mutual recursion between separate
+// enums (which the transpiler can't forward-declare); self-recursion through
+// Vec[Nd] lowers cleanly. Children are boxed as one-element Vec[Nd]; lists are
+// many-element Vec[Nd]. Operator / visibility tags are stored as their already-
+// printable strings, so the printer just emits them.
+// ===========================================================================
+enum Nd {
+    // expressions
+    case intLit(String)
+    case floatLit(String)
+    case strLit(String)                     // text without the surrounding quotes
+    case byteStrLit(String)                 // text without b"…"
+    case charLit(String)                    // text without the quotes
+    case boolLit(Bool)
+    case nilLit
+    case ident(String)
+    case selfE
+    case leadingDot(String)
+    case paren(Vec[Nd])                     // inner (boxed)
+    case unary(String, Vec[Nd])             // op string, operand
+    case binary(String, Vec[Nd], Vec[Nd])
+    case call(Vec[Nd], Vec[Nd])             // callee (boxed), args (each an .arg)
+    case arg(String, Bool, Vec[Nd])         // label, is_inout, value (only as a call arg)
+    case member(Vec[Nd], String, Bool)      // base, name, is_optional_chain
+    case index(Vec[Nd], Vec[Nd])            // base (boxed), indices
+    case ifE(String, Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd]) // letName, letInit, cond, then, else
+    case block(Vec[Nd])                     // statements
+    case asE(Vec[Nd], Vec[Nd], Bool)        // value, target type, is_optional
+    case addrOf(Vec[Nd])
+    case matchE(Vec[Nd], Vec[Nd])           // scrutinee (boxed), arms — still prints /*?expr*/ (no C++ printer case), but carries the match for sema
+    case matchArm(Bool, Vec[Nd], Vec[Nd], Vec[Nd]) // isDefault, pattern (empty if default), guard (empty if none), body — all boxed
+    case exoticE                            // comptime, closure, select, etc — /*?expr*/
+    case vecLit(Vec[Nd])                    // [e1, e2, ...] array/vector literal — prints /*?expr*/ (no C++ case), carries elements for sema
+    case tupleLit(Vec[Nd])                  // (e1, e2, ...) tuple literal — prints /*?expr*/ (no C++ case), carries elements for sema
+    case closureE(Vec[Nd], Vec[Nd])         // { params => body } — params (ident nodes) + body stmts; prints /*?expr*/ (no C++ case), carries both for sema
+    case interpE(Vec[Nd])                   // "...\(e)..." interpolated string — prints /*?expr*/ (no C++ case), carries the embedded exprs for sema
+    case throwE(Vec[Nd])                    // throw OPERAND — also prints /*?expr*/ (no C++ printer case), but carries the operand for sema
+    case prefixE(String, Vec[Nd])           // copy / await / spawn / try (kw string), operand — printed fully
+    case doCatchE(Vec[Nd], String, Vec[Nd], Vec[Nd]) // doBody, errName, errType?, catchBody
+    case quoteE(Vec[Nd])                     // quote { EXPR } — printed fully
+    case spliceE(Bool, Vec[Nd])              // isBareIdent, inner — $ident or $(expr)
+    // statements
+    case letS(Vec[Nd], Vec[Nd], Vec[Nd])    // pattern, type?, value
+    case varS(Vec[Nd], Vec[Nd], Vec[Nd])
+    case exprS(Vec[Nd])
+    case retS(Vec[Nd])                       // value?
+    case assignS(String, Vec[Nd], Vec[Nd])   // op, target, value
+    case whileS(Vec[Nd], Vec[Nd])            // cond, body (block)
+    case forS(Vec[Nd], Vec[Nd], Vec[Nd])     // pattern, iter, body (block)
+    case breakS(String)                      // label ("" if none)
+    case continueS(String)
+    case withS(Vec[Nd], Vec[Nd], Vec[Nd])    // granted cap types, binding values, body (printed /*?stmt*/)
+    // patterns
+    case wildcard
+    case identP(String)
+    case bindP(String)
+    case litP(Vec[Nd])                       // literal pattern (boxed expr)
+    case enumP(String, Vec[Nd])              // case name, children patterns
+    case tupleP(Vec[Nd])                     // printed /*?pat*/
+    case rangeP(Vec[Nd], Vec[Nd], Bool)      // printed /*?pat*/
+    case orP(Vec[Nd])                        // printed /*?pat*/
+    // types
+    case named(String, Bool, Vec[Nd])        // path, hasGenerics, type args
+    case opt(Vec[Nd])                        // inner type (boxed)
+    case someT(Vec[Nd])                      // some T
+    case dynT(Vec[Nd])                       // dyn T
+    case vecT(String, Vec[Nd])               // length (int or ident string), element
+    case tupleT(Vec[Nd])                     // (T, U, ...)
+    case fnT(Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd]) // params, usingCaps, throws?, result?
+    // generic parameters (printed on funcs; parsed-and-dropped on structs/enums)
+    case genConst(String, Vec[Nd])           // name, const type
+    case genType(String, Vec[Nd])            // name, bounds (types joined by " & ")
+    // a function parameter
+    case param(Bool, String, String, Bool, String, Vec[Nd]) // labelOmitted, label, name, nonesc, mode, type
+    // struct / enum members
+    case field(String, String, Vec[Nd])     // kind ("let "/"var "/"embed "), name, type
+    case enumCase(String, Vec[Nd])           // name, payload (payElem list)
+    case payElem(String, Vec[Nd])            // label ("" if positional), type
+    // declarations
+    case importD(Bool, String)               // is_c_header, payload (joined path or header)
+    case funcD(String, String, String, Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd])
+    // visibilityPrefix, modifiers (async/recv), name, generics, params, usingCaps, throwsType?, result?, body?
+    case structD(String, String, Vec[Nd], Vec[Nd], Vec[Nd], Bool, Vec[Nd]) // vis, name, fields, methods, deinit?, isLinear, generics
+    case enumD(String, String, Vec[Nd], Vec[Nd], Vec[Nd])   // vis, name, cases, methods, generics
+    case constD(String, String, Vec[Nd], Vec[Nd])           // vis, name, type?, value
+    case staticD(String, String, Vec[Nd], Vec[Nd])          // vis, name, type, value?
+    case opaqueD(String, String, Vec[Nd])                   // vis, name, underlying type
+    case deriveD(Vec[Nd], Vec[Nd])                          // protocols, target type
+}
+
+struct NUnit {
+    var hasMod: Bool
+    var modPath: String
+    var imports: Vec[Nd]
+    var decls: Vec[Nd]
+}
+
+struct Ps {
+    var toks: Vec[Token]
+    var pos: Int
+}
+
+struct BP {
+    let left: Int
+    let right: Int
+}
+
+// ----- small constructors / helpers ----------------------------------------
+func own(_ s: Str) using Alloc -> String { var r: String = ""; r.append(s); return r }
+func bE(_ e: Nd) using Alloc -> Vec[Nd] { var v: Vec[Nd] = Vec.new(); v.push(e); return v }
+func bT(_ t: Nd) using Alloc -> Vec[Nd] { var v: Vec[Nd] = Vec.new(); v.push(t); return v }
+func noE() using Alloc -> Vec[Nd] { var v: Vec[Nd] = Vec.new(); return v }
+func noT() using Alloc -> Vec[Nd] { var v: Vec[Nd] = Vec.new(); return v }
+func errE() using Alloc -> Nd { return Nd.ident("?") }
+func errT() using Alloc -> Nd { return Nd.named("?", false, noT()) }
+func errP() using Alloc -> Nd { return Nd.wildcard }
+
+func eofTok() -> Token { return Token(kind: TokKind.eof, text: "") }
+func curT(_ p: inout Ps) -> Token { return p.toks.get(p.pos) ?? eofTok() }
+func curKind(_ p: inout Ps) -> TokKind { let t = curT(p); return t.kind }
+func aheadKindP(_ p: inout Ps, _ n: Int) -> TokKind { let t = p.toks.get(p.pos + n) ?? eofTok(); return t.kind }
+func curRaw(_ p: inout Ps) -> Str { let t = curT(p); return t.text }
+func curText(_ p: inout Ps) using Alloc -> String { return own(curRaw(p)) }
+func advP(_ p: inout Ps) { p.pos = p.pos + 1 }
+func isKind(_ p: inout Ps, _ k: TokKind) -> Bool { return streq(spelling(curKind(p)), spelling(k)) }
+func isKindAt(_ p: inout Ps, _ n: Int, _ k: TokKind) -> Bool { return streq(spelling(aheadKindP(p, n)), spelling(k)) }
+func eat(_ p: inout Ps, _ k: TokKind) -> Bool { if isKind(p, k) { advP(&p); return true } return false }
+func eatV(_ p: inout Ps, _ k: TokKind) { if isKind(p, k) { advP(&p) } }
+func atEndP(_ p: inout Ps) -> Bool { return isKind(p, TokKind.eof) }
+func skipNL(_ p: inout Ps) { while isKind(p, TokKind.newline) || isKind(p, TokKind.semicolon) { advP(&p) } }
+
+// ----- operator tables (token kind -> printable string / binding power) -----
+func binOpStr(_ k: TokKind) -> Str {
+    return match k {
+        case .star: "*"
+        case .slash: "/"
+        case .percent: "%"
+        case .ampStar: "&*"
+        case .plus: "+"
+        case .minus: "-"
+        case .ampPlus: "&+"
+        case .ampMinus: "&-"
+        case .shiftL: "<<"
+        case .shiftR: ">>"
+        case .amp: "&"
+        case .caret: "^"
+        case .pipe: "|"
+        case .dotDot: ".."
+        case .dotDotLt: "..<"
+        case .eqEq: "=="
+        case .bangEq: "!="
+        case .lt: "<"
+        case .ltEq: "<="
+        case .gt: ">"
+        case .gtEq: ">="
+        case .ampAmp: "&&"
+        case .pipePipe: "||"
+        case .questionQuestion: "??"
+        default: "?"
+    }
+}
+
+func infixBp(_ k: TokKind) -> BP {
+    return match k {
+        case .star: BP(left: 130, right: 131)
+        case .slash: BP(left: 130, right: 131)
+        case .percent: BP(left: 130, right: 131)
+        case .ampStar: BP(left: 130, right: 131)
+        case .plus: BP(left: 120, right: 121)
+        case .minus: BP(left: 120, right: 121)
+        case .ampPlus: BP(left: 120, right: 121)
+        case .ampMinus: BP(left: 120, right: 121)
+        case .shiftL: BP(left: 110, right: 111)
+        case .shiftR: BP(left: 110, right: 111)
+        case .amp: BP(left: 100, right: 101)
+        case .caret: BP(left: 90, right: 91)
+        case .pipe: BP(left: 80, right: 81)
+        case .dotDot: BP(left: 70, right: 71)
+        case .dotDotLt: BP(left: 70, right: 71)
+        case .eqEq: BP(left: 60, right: 61)
+        case .bangEq: BP(left: 60, right: 61)
+        case .lt: BP(left: 60, right: 61)
+        case .ltEq: BP(left: 60, right: 61)
+        case .gt: BP(left: 60, right: 61)
+        case .gtEq: BP(left: 60, right: 61)
+        case .ampAmp: BP(left: 50, right: 51)
+        case .pipePipe: BP(left: 40, right: 41)
+        case .questionQuestion: BP(left: 30, right: 31)
+        default: BP(left: 0, right: 0)
+    }
+}
+
+func isAssignOp(_ k: TokKind) -> Bool {
+    return match k {
+        case .assign: true
+        case .plusEq: true
+        case .minusEq: true
+        case .starEq: true
+        case .slashEq: true
+        case .percentEq: true
+        case .ampEq: true
+        case .pipeEq: true
+        case .caretEq: true
+        case .shiftLEq: true
+        case .shiftREq: true
+        default: false
+    }
+}
+
+func assignOpStr(_ k: TokKind) -> Str {
+    return match k {
+        case .assign: "="
+        case .plusEq: "+="
+        case .minusEq: "-="
+        case .starEq: "*="
+        case .slashEq: "/="
+        case .percentEq: "%="
+        case .ampEq: "&="
+        case .pipeEq: "|="
+        case .caretEq: "^="
+        case .shiftLEq: "<<="
+        case .shiftREq: ">>="
+        default: "?="
+    }
+}
+
+// ----- parser ---------------------------------------------------------------
+func parseUnit(_ p: inout Ps) using Alloc -> NUnit {
+    var u = NUnit(hasMod: false, modPath: "", imports: Vec.new(), decls: Vec.new())
+    skipNL(&p)
+    if isKind(p, TokKind.kwModule) {
+        advP(&p)
+        u.hasMod = true
+        u.modPath = parseDottedPath(&p)
+        skipNL(&p)
+    }
+    while isKind(p, TokKind.kwImport) {
+        u.imports.push(parseImport(&p))
+        skipNL(&p)
+    }
+    while !atEndP(p) {
+        u.decls.push(parseDecl(&p))
+        skipNL(&p)
+    }
+    return u
+}
+
+func parseDottedPath(_ p: inout Ps) using Alloc -> String {
+    var s: String = curText(p)
+    advP(&p)
+    while isKind(p, TokKind.dot) {
+        advP(&p)
+        s.append(".")
+        s.append(curText(p))
+        advP(&p)
+    }
+    return s
+}
+
+func parseImport(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // 'import'
+    if isKind(p, TokKind.identifier) && streq(curRaw(p), "c") && isKindAt(p, 1, TokKind.stringLit) {
+        advP(&p)  // 'c'
+        let raw = curRaw(p)
+        advP(&p)
+        var body: String = ""
+        if raw.len() >= 2 { body = own(raw.slice(1, raw.len() - 1)) }
+        return Nd.importD(true, body)
+    }
+    return Nd.importD(false, parseDottedPath(&p))
+}
+
+func parseVisibility(_ p: inout Ps) -> Str {
+    if isKind(p, TokKind.kwPrivate) { advP(&p); return "private " }
+    if isKind(p, TokKind.kwPublic) { advP(&p); return "public " }
+    if isKind(p, TokKind.kwPackage) { advP(&p); return "package " }
+    if isKind(p, TokKind.kwInternal) { advP(&p); return "" }
+    return ""
+}
+
+// Skip declaration attributes `@name` / `@name(...)` (the C++ printer does not emit
+// them). Consumes any run of attributes, balancing parens in their argument lists.
+func skipAttributes(_ p: inout Ps) {
+    while isKind(p, TokKind.at) {
+        advP(&p)  // '@'
+        advP(&p)  // name (identifier or reserved word)
+        if isKind(p, TokKind.lparen) {
+            var depth: Int = 0
+            var go: Bool = true
+            while go && !atEndP(p) {
+                if isKind(p, TokKind.lparen) { depth = depth + 1 }
+                else if isKind(p, TokKind.rparen) {
+                    depth = depth - 1
+                    if depth == 0 { advP(&p); go = false }
+                }
+                if go { advP(&p) }
+            }
+        }
+        skipNL(&p)
+    }
+}
+
+func parseDecl(_ p: inout Ps) using Alloc -> Nd {
+    skipAttributes(&p)
+    let vis = own(parseVisibility(&p))
+    if isKind(p, TokKind.kwStruct) { return parseStruct(&p, vis, false) }
+    // §5 `linear struct Foo { … }` — the modifier (admitted on structs in v0.5)
+    // is captured on the node; the printer drops it, matching the C++ dump.
+    if eat(p, TokKind.kwLinear) { return parseStruct(&p, vis, true) }
+    if isKind(p, TokKind.kwEnum) { return parseEnum(&p, vis) }
+    if isKind(p, TokKind.kwConst) { return parseConst(&p, vis) }
+    if isKind(p, TokKind.kwStatic) { return parseStatic(&p, vis) }
+    if isKind(p, TokKind.kwOpaque) { return parseOpaque(&p, vis) }
+    if isKind(p, TokKind.kwDerive) { return parseDerive(&p) }
+    var mods: String = ""
+    if eat(p, TokKind.kwComptime) { mods = "comptime " }
+    if eat(p, TokKind.kwAsync) { mods.append("async ") }
+    if eat(p, TokKind.kwInout) { mods.append("inout ") }
+    else if eat(p, TokKind.kwSink) { mods.append("sink ") }
+    return parseFunc(&p, vis, mods)
+}
+
+func parseConst(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
+    advP(&p)  // 'const'
+    let name = curText(p)
+    advP(&p)
+    var ty: Vec[Nd] = Vec.new()
+    if eat(p, TokKind.colon) { ty.push(parseType(&p)) }
+    eat(p, TokKind.assign)
+    return Nd.constD(vis, name, ty, bE(parseExpr(&p)))
+}
+
+func parseStatic(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
+    advP(&p)  // 'static'
+    let name = curText(p)
+    advP(&p)
+    var ty: Vec[Nd] = Vec.new()
+    if eat(p, TokKind.colon) { ty.push(parseType(&p)) }
+    var val: Vec[Nd] = Vec.new()
+    if eat(p, TokKind.assign) { val.push(parseExpr(&p)) }
+    return Nd.staticD(vis, name, ty, val)
+}
+
+func parseOpaque(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
+    advP(&p)  // 'opaque'
+    eat(p, TokKind.kwType)
+    let name = curText(p)
+    advP(&p)
+    eat(p, TokKind.assign)
+    return Nd.opaqueD(vis, name, bT(parseType(&p)))
+}
+
+func parseDerive(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // 'derive'
+    eat(p, TokKind.lparen)
+    var protocols: Vec[Nd] = Vec.new()
+    if !isKind(p, TokKind.rparen) {
+        protocols.push(parseType(&p))
+        while eat(p, TokKind.comma) { protocols.push(parseType(&p)) }
+    }
+    eat(p, TokKind.rparen)
+    eat(p, TokKind.kwFor)
+    return Nd.deriveD(protocols, bT(parseType(&p)))
+}
+
+func parseStruct(_ p: inout Ps, _ vis: String, _ isLinear: Bool) using Alloc -> Nd {
+    advP(&p)  // 'struct'
+    let name = curText(p)
+    advP(&p)  // name
+    let g = parseGenerics(&p)
+    eat(p, TokKind.lbrace)
+    skipNL(&p)
+    var fields: Vec[Nd] = Vec.new()
+    var methods: Vec[Nd] = Vec.new()
+    var deinitB: Vec[Nd] = Vec.new()
+    while !isKind(p, TokKind.rbrace) && !atEndP(p) {
+        skipAttributes(&p)  // field / method attributes (e.g. @bits(4)) — printer drops them
+        if isKind(p, TokKind.kwFunc) || isKind(p, TokKind.kwAsync)
+            || isKind(p, TokKind.kwInout) || isKind(p, TokKind.kwSink) {
+            var mods: String = ""
+            if eat(p, TokKind.kwAsync) { mods = "async " }
+            if eat(p, TokKind.kwInout) { mods.append("inout ") }
+            else if eat(p, TokKind.kwSink) { mods.append("sink ") }
+            methods.push(parseFunc(&p, "", mods))
+        } else if isKind(p, TokKind.kwDeinit) {
+            advP(&p)
+            deinitB.push(parseBlock(&p))
+        } else {
+            var kind: String = ""
+            if eat(p, TokKind.kwLet) { kind = "let " }
+            else if eat(p, TokKind.kwVar) { kind = "var " }
+            else if eat(p, TokKind.kwEmbed) { kind = "embed " }
+            else { advP(&p) }
+            let fname = curText(p)
+            advP(&p)
+            eat(p, TokKind.colon)
+            fields.push(Nd.field(kind, fname, bT(parseType(&p))))
+        }
+        skipNL(&p)
+    }
+    eat(p, TokKind.rbrace)
+    return Nd.structD(vis, name, fields, methods, deinitB, isLinear, g)
+}
+
+func parseEnum(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
+    advP(&p)  // 'enum'
+    let name = curText(p)
+    advP(&p)  // name
+    let g = parseGenerics(&p)
+    eat(p, TokKind.lbrace)
+    skipNL(&p)
+    var cases: Vec[Nd] = Vec.new()
+    var methods: Vec[Nd] = Vec.new()
+    while !isKind(p, TokKind.rbrace) && !atEndP(p) {
+        if eat(p, TokKind.kwCase) {
+            let cname = curText(p)
+            advP(&p)
+            var payload: Vec[Nd] = Vec.new()
+            if eat(p, TokKind.lparen) {
+                if !isKind(p, TokKind.rparen) {
+                    payload.push(parsePayElem(&p))
+                    while eat(p, TokKind.comma) { payload.push(parsePayElem(&p)) }
+                }
+                eat(p, TokKind.rparen)
+            }
+            cases.push(Nd.enumCase(cname, payload))
+        } else if isKind(p, TokKind.at) {
+            skipAttributes(&p)  // member attributes — printer drops them
+        } else if isKind(p, TokKind.kwFunc) {
+            methods.push(parseFunc(&p, "", ""))
+        } else {
+            advP(&p)
+        }
+        skipNL(&p)
+    }
+    eat(p, TokKind.rbrace)
+    return Nd.enumD(vis, name, cases, methods, g)
+}
+
+func parsePayElem(_ p: inout Ps) using Alloc -> Nd {
+    var label: String = ""
+    if isKind(p, TokKind.identifier) && isKindAt(p, 1, TokKind.colon) {
+        label = curText(p)
+        advP(&p)
+        advP(&p)  // ':'
+    }
+    return Nd.payElem(label, bT(parseType(&p)))
+}
+
+func parseFunc(_ p: inout Ps, _ vis: String, _ mods: String) using Alloc -> Nd {
+    advP(&p)  // 'func'
+    let name = curText(p)
+    advP(&p)  // name
+    var generics = parseGenerics(&p)
+    let params = parseParams(&p)
+    var usingCaps: Vec[Nd] = Vec.new()
+    if isKind(p, TokKind.kwUsing) {
+        advP(&p)
+        usingCaps.push(parseType(&p))
+        while eat(p, TokKind.comma) { usingCaps.push(parseType(&p)) }
+    }
+    var throwsT: Vec[Nd] = Vec.new()
+    if isKind(p, TokKind.kwThrows) {
+        advP(&p)
+        eat(p, TokKind.lparen)
+        throwsT.push(parseType(&p))
+        eat(p, TokKind.rparen)
+    }
+    var result: Vec[Nd] = Vec.new()
+    if eat(p, TokKind.arrow) { result.push(parseType(&p)) }
+    // A trailing `where T: P & Q` clause folds its bounds back into the generic
+    // params, exactly as the C++ parser does (so they print inline as `[T: P & Q]`).
+    generics = mergeWhere(generics, parseWhereClause(&p))
+    var body: Vec[Nd] = Vec.new()
+    if isKind(p, TokKind.lbrace) { body.push(parseBlock(&p)) }
+    return Nd.funcD(vis, mods, name, generics, params, usingCaps, throwsT, result, body)
+}
+
+func parseWhereClause(_ p: inout Ps) using Alloc -> Vec[Nd] {
+    if !isKind(p, TokKind.kwWhere) { var empty: Vec[Nd] = Vec.new(); return empty }
+    advP(&p)  // 'where'
+    var out: Vec[Nd] = Vec.new()
+    var more: Bool = true
+    while more {
+        let nm = curText(p)
+        advP(&p)
+        eat(p, TokKind.colon)
+        var bounds: Vec[Nd] = Vec.new()
+        bounds.push(parseType(&p))
+        while eat(p, TokKind.amp) { bounds.push(parseType(&p)) }
+        out.push(Nd.genType(nm, bounds))
+        if !eat(p, TokKind.comma) { more = false }
+    }
+    return out
+}
+
+// Merge where-clause bounds (a list of genType entries) into the matching generic
+// params by name, returning a fresh generics list.
+func mergeWhere(_ gens: Vec[Nd], _ wheres: Vec[Nd]) using Alloc -> Vec[Nd] {
+    var out: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < gens.len() {
+        out.push(mergeOne(gens.get(i) ?? errT(), wheres))
+        i = i + 1
+    }
+    return out
+}
+
+func mergeOne(_ g: Nd, _ wheres: Vec[Nd]) using Alloc -> Nd {
+    return match g {
+        case .genType(let name, let bounds): Nd.genType(name, boundsFor(name, bounds, wheres))
+        default: g
+    }
+}
+
+func boundsFor(_ name: String, _ bounds: Vec[Nd], _ wheres: Vec[Nd]) using Alloc -> Vec[Nd] {
+    var nb: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < bounds.len() {
+        nb.push(bounds.get(i) ?? errT())
+        i = i + 1
+    }
+    var w: Int = 0
+    while w < wheres.len() {
+        appendWhereBounds(name, wheres.get(w) ?? errT(), &nb)
+        w = w + 1
+    }
+    return nb
+}
+
+func appendWhereBounds(_ name: String, _ entry: Nd, _ nb: inout Vec[Nd]) using Alloc {
+    match entry {
+        case .genType(let wname, let wbounds): appendIfMatch(name, wname, wbounds, &nb)
+        default: nb.push(entry)
+    }
+}
+
+func appendIfMatch(_ name: String, _ wname: String, _ wbounds: Vec[Nd], _ nb: inout Vec[Nd]) using Alloc {
+    if streq(name, wname) {
+        var i: Int = 0
+        while i < wbounds.len() {
+            nb.push(wbounds.get(i) ?? errT())
+            i = i + 1
+        }
+    }
+}
+
+func parseParams(_ p: inout Ps) using Alloc -> Vec[Nd] {
+    var params: Vec[Nd] = Vec.new()
+    eat(p, TokKind.lparen)
+    if !isKind(p, TokKind.rparen) {
+        params.push(parseParam(&p))
+        while eat(p, TokKind.comma) { params.push(parseParam(&p)) }
+    }
+    eat(p, TokKind.rparen)
+    return params
+}
+
+func parseParam(_ p: inout Ps) using Alloc -> Nd {
+    var labelOmitted: Bool = false
+    var label: String = ""
+    var name: String = ""
+    if isKind(p, TokKind.lparen) {
+        // §6 tuple-destructuring parameter `(a, b): T` — the C++ printer renders it
+        // as `_ : T` (label omitted, no name, pattern dropped). Consume the pattern.
+        skipBalancedParens(&p)
+        labelOmitted = true
+    } else if isKind(p, TokKind.underscore) {
+        advP(&p)
+        labelOmitted = true
+        // `_ name:` binds a name; bare `_:` is an anonymous parameter (no name).
+        if !isKind(p, TokKind.colon) { name = curText(p); advP(&p) }
+    } else if isKind(p, TokKind.identifier) && isKindAt(p, 1, TokKind.identifier) {
+        label = curText(p)
+        advP(&p)
+        name = curText(p)
+        advP(&p)
+    } else {
+        name = curText(p)
+        advP(&p)
+    }
+    eat(p, TokKind.colon)
+    var nonesc: Bool = false
+    if isKind(p, TokKind.kwNonescaping) { advP(&p); nonesc = true }
+    var mode: String = ""
+    if isKind(p, TokKind.kwInout) { advP(&p); mode = "inout " }
+    else if isKind(p, TokKind.kwSink) { advP(&p); mode = "sink " }
+    else if isKind(p, TokKind.kwRead) { advP(&p) }
+    let ty = bT(parseType(&p))
+    return Nd.param(labelOmitted, label, name, nonesc, mode, ty)
+}
+
+func parseType(_ p: inout Ps) using Alloc -> Nd {
+    var base = parseTypeBase(&p)
+    while isKind(p, TokKind.question) {
+        advP(&p)
+        base = Nd.opt(bT(base))
+    }
+    return base
+}
+
+func parseTypeBase(_ p: inout Ps) using Alloc -> Nd {
+    if eat(p, TokKind.kwSome) { return Nd.someT(bT(parseType(&p))) }
+    if eat(p, TokKind.kwDyn) { return Nd.dynT(bT(parseType(&p))) }
+    if isKind(p, TokKind.at) {
+        // §A8 @interrupt(T) in type position — InterruptType prints /*?type*/.
+        advP(&p)  // '@'
+        advP(&p)  // 'interrupt'
+        eatV(p, TokKind.lparen)
+        let t = parseType(&p)
+        eatV(p, TokKind.rparen)
+        return Nd.exoticE
+    }
+    if isKind(p, TokKind.lbracket) { return parseVectorType(&p) }
+    if isKind(p, TokKind.lparen) { return parseParenType(&p) }
+    // named type: path (identifier or `Self`) with optional generic args
+    var path: String = curText(p)
+    advP(&p)
+    while isKind(p, TokKind.dot) {
+        advP(&p)
+        path.append(".")
+        path.append(curText(p))
+        advP(&p)
+    }
+    var hasGen: Bool = false
+    var args: Vec[Nd] = Vec.new()
+    if isKind(p, TokKind.lbracket) {
+        advP(&p)
+        hasGen = true
+        if !isKind(p, TokKind.rbracket) {
+            args.push(parseType(&p))
+            while eat(p, TokKind.comma) { args.push(parseType(&p)) }
+        }
+        eat(p, TokKind.rbracket)
+    }
+    return Nd.named(path, hasGen, args)
+}
+
+func parseVectorType(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // '['
+    var lenStr: String = ""
+    if isKind(p, TokKind.intLit) { lenStr = curText(p); advP(&p) }
+    else if isKind(p, TokKind.identifier) { lenStr = curText(p); advP(&p) }
+    eat(p, TokKind.rbracket)
+    return Nd.vecT(lenStr, bT(parseType(&p)))
+}
+
+func parseParenType(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // '('
+    var parts: Vec[Nd] = Vec.new()
+    if !isKind(p, TokKind.rparen) {
+        parts.push(parseType(&p))
+        while eat(p, TokKind.comma) { parts.push(parseType(&p)) }
+    }
+    eat(p, TokKind.rparen)
+    if isKind(p, TokKind.kwUsing) || isKind(p, TokKind.kwThrows) || isKind(p, TokKind.arrow) {
+        var caps: Vec[Nd] = Vec.new()
+        if eat(p, TokKind.kwUsing) {
+            caps.push(parseType(&p))
+            while eat(p, TokKind.comma) { caps.push(parseType(&p)) }
+        }
+        var thr: Vec[Nd] = Vec.new()
+        if eat(p, TokKind.kwThrows) {
+            eat(p, TokKind.lparen)
+            thr.push(parseType(&p))
+            eat(p, TokKind.rparen)
+        }
+        var res: Vec[Nd] = Vec.new()
+        if eat(p, TokKind.arrow) { res.push(parseType(&p)) }
+        return Nd.fnT(parts, caps, thr, res)
+    }
+    if parts.len() == 1 { return parts.get(0) ?? errT() }
+    return Nd.tupleT(parts)
+}
+
+// Generic parameter list `[T, U: A & B, const N: Int]`. Returned for funcs (which
+// print them) and consumed-and-dropped for structs / enums (whose printer omits them).
+func parseGenerics(_ p: inout Ps) using Alloc -> Vec[Nd] {
+    if !isKind(p, TokKind.lbracket) { var empty: Vec[Nd] = Vec.new(); return empty }
+    advP(&p)  // '['
+    var out: Vec[Nd] = Vec.new()
+    var more: Bool = true
+    while more {
+        if eat(p, TokKind.kwConst) {
+            let nm = curText(p)
+            advP(&p)
+            eat(p, TokKind.colon)
+            out.push(Nd.genConst(nm, bT(parseType(&p))))
+        } else {
+            let nm = curText(p)
+            advP(&p)
+            var bounds: Vec[Nd] = Vec.new()
+            if eat(p, TokKind.colon) {
+                bounds.push(parseType(&p))
+                while eat(p, TokKind.amp) { bounds.push(parseType(&p)) }
+            }
+            out.push(Nd.genType(nm, bounds))
+        }
+        if !eat(p, TokKind.comma) { more = false }
+    }
+    eat(p, TokKind.rbracket)
+    return out
+}
+
+func parseBlock(_ p: inout Ps) using Alloc -> Nd {
+    eat(p, TokKind.lbrace)
+    skipNL(&p)
+    var stmts: Vec[Nd] = Vec.new()
+    while !isKind(p, TokKind.rbrace) && !atEndP(p) {
+        stmts.push(parseStmt(&p))
+        skipNL(&p)
+    }
+    eat(p, TokKind.rbrace)
+    return Nd.block(stmts)
+}
+
+func parseStmt(_ p: inout Ps) using Alloc -> Nd {
+    if isKind(p, TokKind.kwLet) {
+        advP(&p)
+        let pat = bP(parsePattern(&p))
+        var ty: Vec[Nd] = Vec.new()
+        if eat(p, TokKind.colon) { ty.push(parseType(&p)) }
+        eat(p, TokKind.assign)
+        return Nd.letS(pat, ty, bE(parseExpr(&p)))
+    }
+    if isKind(p, TokKind.kwVar) {
+        advP(&p)
+        let pat = bP(parsePattern(&p))
+        var ty: Vec[Nd] = Vec.new()
+        if eat(p, TokKind.colon) { ty.push(parseType(&p)) }
+        eat(p, TokKind.assign)
+        return Nd.varS(pat, ty, bE(parseExpr(&p)))
+    }
+    if isKind(p, TokKind.kwReturn) {
+        advP(&p)
+        var v: Vec[Nd] = Vec.new()
+        if !isKind(p, TokKind.newline) && !isKind(p, TokKind.semicolon)
+            && !isKind(p, TokKind.rbrace) && !atEndP(p) {
+            v.push(parseExpr(&p))
+        }
+        return Nd.retS(v)
+    }
+    if isKind(p, TokKind.kwWhile) {
+        advP(&p)
+        let cond = bE(parseExpr(&p))
+        let body = bE(parseBlock(&p))
+        return Nd.whileS(cond, body)
+    }
+    if isKind(p, TokKind.kwFor) {
+        advP(&p)
+        let pat = bP(parsePattern(&p))
+        eat(p, TokKind.kwIn)
+        let iter = bE(parseExpr(&p))
+        let body = bE(parseBlock(&p))
+        return Nd.forS(pat, iter, body)
+    }
+    if isKind(p, TokKind.kwWith) { return parseWith(&p) }
+    if isKind(p, TokKind.kwBreak) {
+        advP(&p)
+        var label: String = ""
+        if isKind(p, TokKind.identifier) { label = curText(p); advP(&p) }
+        return Nd.breakS(label)
+    }
+    if isKind(p, TokKind.kwContinue) {
+        advP(&p)
+        var label: String = ""
+        if isKind(p, TokKind.identifier) { label = curText(p); advP(&p) }
+        return Nd.continueS(label)
+    }
+    let e = parseExpr(&p)
+    if isAssignOp(curKind(p)) {
+        let op = own(assignOpStr(curKind(p)))
+        advP(&p)
+        return Nd.assignS(op, bE(e), bE(parseExpr(&p)))
+    }
+    return Nd.exprS(bE(e))
+}
+
+func bP(_ x: Nd) using Alloc -> Vec[Nd] { var v: Vec[Nd] = Vec.new(); v.push(x); return v }
+
+func firstCharLower(_ s: Str) -> Bool {
+    let c = s.charAt(0) ?? ' '
+    return c >= 'a' && c <= 'z'
+}
+
+// §17.4 `with` capability block. The C++ printer has no WithStmt case, so it dumps
+// as /*?stmt*/ (our default arm); we parse the bindings and body precisely to keep
+// the token stream aligned. A binding is `name (: type)? = expr` when the leading
+// identifier is lowercase and followed by `=` or `:`, otherwise `cap_type (= expr)?`.
+func parseWith(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // 'with'
+    var caps: Vec[Nd] = Vec.new()
+    var vals: Vec[Nd] = Vec.new()
+    var more: Bool = true
+    while more {
+        if isKind(p, TokKind.identifier)
+            && (isKindAt(p, 1, TokKind.assign) || isKindAt(p, 1, TokKind.colon))
+            && firstCharLower(curRaw(p)) {
+            advP(&p)  // name (value binding, grants no capability)
+            if eat(p, TokKind.colon) { let t = parseType(&p) }
+            eat(p, TokKind.assign)
+            vals.push(parseExpr(&p))
+        } else {
+            caps.push(parseType(&p))  // capability-typed binding
+            if eat(p, TokKind.assign) { vals.push(parseExpr(&p)) }
+        }
+        if !eat(p, TokKind.comma) { more = false }
+    }
+    let body = parseBlock(&p)
+    return Nd.withS(caps, vals, bE(body))
+}
+
+func parsePattern(_ p: inout Ps) using Alloc -> Nd {
+    var alts: Vec[Nd] = Vec.new()
+    alts.push(parsePatAlt(&p))
+    if !isKind(p, TokKind.pipe) { return alts.get(0) ?? errP() }
+    while eat(p, TokKind.pipe) { alts.push(parsePatAlt(&p)) }
+    return Nd.orP(alts)
+}
+
+func parsePatAlt(_ p: inout Ps) using Alloc -> Nd {
+    if isKind(p, TokKind.underscore) { advP(&p); return Nd.wildcard }
+    if isKind(p, TokKind.lparen) {
+        advP(&p)
+        var elems: Vec[Nd] = Vec.new()
+        if !isKind(p, TokKind.rparen) {
+            elems.push(parsePattern(&p))
+            while eat(p, TokKind.comma) { elems.push(parsePattern(&p)) }
+        }
+        eat(p, TokKind.rparen)
+        if elems.len() == 1 { return elems.get(0) ?? errP() }
+        return Nd.tupleP(elems)
+    }
+    if isKind(p, TokKind.kwLet) {
+        advP(&p)
+        let n = curText(p)
+        advP(&p)
+        return Nd.bindP(n)
+    }
+    if isKind(p, TokKind.dot) {
+        advP(&p)
+        let cname = curText(p)
+        advP(&p)
+        var children: Vec[Nd] = Vec.new()
+        if eat(p, TokKind.lparen) {
+            if !isKind(p, TokKind.rparen) {
+                children.push(parsePattern(&p))
+                while eat(p, TokKind.comma) { children.push(parsePattern(&p)) }
+            }
+            eat(p, TokKind.rparen)
+        }
+        return Nd.enumP(cname, children)
+    }
+    if isKind(p, TokKind.identifier) {
+        let n = curText(p)
+        advP(&p)
+        return Nd.identP(n)
+    }
+    if isKind(p, TokKind.intLit) || isKind(p, TokKind.floatLit) || isKind(p, TokKind.stringLit)
+        || isKind(p, TokKind.charLit) || isKind(p, TokKind.kwTrue) || isKind(p, TokKind.kwFalse) {
+        let lit = parsePrimary(&p)
+        if isKind(p, TokKind.dotDot) || isKind(p, TokKind.dotDotLt) {
+            let incl = isKind(p, TokKind.dotDot)
+            advP(&p)
+            let high = parsePrimary(&p)
+            return Nd.rangeP(bE(lit), bE(high), incl)
+        }
+        return Nd.litP(bE(lit))
+    }
+    return Nd.wildcard
+}
+
+func parseExpr(_ p: inout Ps) using Alloc -> Nd { return parseExprBp(&p, 0) }
+
+func parseExprBp(_ p: inout Ps, _ minBp: Int) using Alloc -> Nd {
+    var lhs = parsePrefix(&p)
+    var go: Bool = true
+    while go {
+        if isKind(p, TokKind.kwAs) || isKind(p, TokKind.kwAsQuestion) {
+            let isOpt = isKind(p, TokKind.kwAsQuestion)
+            advP(&p)
+            lhs = Nd.asE(bE(lhs), bT(parseType(&p)), isOpt)
+        } else {
+            let bp = infixBp(curKind(p))
+            if bp.left < minBp || bp.left == 0 {
+                go = false
+            } else {
+                let op = own(binOpStr(curKind(p)))
+                advP(&p)
+                let rhs = parseExprBp(&p, bp.right)
+                lhs = Nd.binary(op, bE(lhs), bE(rhs))
+            }
+        }
+    }
+    return lhs
+}
+
+func parsePrefix(_ p: inout Ps) using Alloc -> Nd {
+    // §17.7 prefix expressions. copy / await / spawn / try print fully; throw wraps
+    // its operand but the C++ printer has no ThrowExpr case, so it dumps /*?expr*/.
+    if eat(p, TokKind.kwCopy) { return Nd.prefixE("copy ", bE(parsePrefix(&p))) }
+    if eat(p, TokKind.kwAwait) { return Nd.prefixE("await ", bE(parsePrefix(&p))) }
+    if eat(p, TokKind.kwSpawn) { return Nd.prefixE("spawn ", bE(parsePrefix(&p))) }
+    if eat(p, TokKind.kwThrow) { return Nd.throwE(bE(parsePrefix(&p))) }
+    if isKind(p, TokKind.kwTry) || isKind(p, TokKind.kwTryQuestion) || isKind(p, TokKind.kwTryBang) {
+        var form: String = "try "
+        if isKind(p, TokKind.kwTryQuestion) { form = "try? " }
+        else if isKind(p, TokKind.kwTryBang) { form = "try! " }
+        advP(&p)
+        return Nd.prefixE(form, bE(parsePrefix(&p)))
+    }
+    if eat(p, TokKind.minus) { return Nd.unary("-", bE(parsePrefix(&p))) }
+    if eat(p, TokKind.bang) { return Nd.unary("!", bE(parsePrefix(&p))) }
+    if eat(p, TokKind.tilde) { return Nd.unary("~", bE(parsePrefix(&p))) }
+    if eat(p, TokKind.amp) { return Nd.addrOf(bE(parsePrefix(&p))) }
+    let prim = parsePrimary(&p)
+    return parsePostfix(&p, prim)
+}
+
+func parsePrimary(_ p: inout Ps) using Alloc -> Nd {
+    if isKind(p, TokKind.intLit) { let t = curText(p); advP(&p); return Nd.intLit(t) }
+    if isKind(p, TokKind.floatLit) { let t = curText(p); advP(&p); return Nd.floatLit(t) }
+    if isKind(p, TokKind.stringLit) {
+        let raw = curRaw(p); advP(&p)
+        var inner: String = ""
+        if raw.len() >= 2 { inner = own(raw.slice(1, raw.len() - 1)) }
+        return Nd.strLit(inner)
+    }
+    if isKind(p, TokKind.byteStringLit) {
+        let raw = curRaw(p); advP(&p)
+        var inner: String = ""
+        if raw.len() >= 3 { inner = own(raw.slice(2, raw.len() - 1)) }
+        return Nd.byteStrLit(inner)
+    }
+    if isKind(p, TokKind.charLit) {
+        let raw = curRaw(p); advP(&p)
+        var inner: String = ""
+        if raw.len() >= 2 { inner = own(raw.slice(1, raw.len() - 1)) }
+        return Nd.charLit(inner)
+    }
+    if isKind(p, TokKind.kwTrue) { advP(&p); return Nd.boolLit(true) }
+    if isKind(p, TokKind.kwFalse) { advP(&p); return Nd.boolLit(false) }
+    if isKind(p, TokKind.kwNil) { advP(&p); return Nd.nilLit }
+    if isKind(p, TokKind.kwSelfLower) { advP(&p); return Nd.selfE }
+    if isKind(p, TokKind.identifier) { let t = curText(p); advP(&p); return Nd.ident(t) }
+    if isKind(p, TokKind.dot) {
+        advP(&p)
+        let n = curText(p)
+        advP(&p)
+        return Nd.leadingDot(n)
+    }
+    if isKind(p, TokKind.lparen) {
+        advP(&p)
+        let first = parseExpr(&p)
+        if eat(p, TokKind.comma) {
+            // tuple literal: keep the elements (still printed as /*?expr*/).
+            var elems: Vec[Nd] = Vec.new()
+            elems.push(first)
+            elems.push(parseExpr(&p))
+            while eat(p, TokKind.comma) { elems.push(parseExpr(&p)) }
+            eat(p, TokKind.rparen)
+            return Nd.tupleLit(elems)
+        }
+        eat(p, TokKind.rparen)
+        return Nd.paren(bE(first))
+    }
+    if isKind(p, TokKind.lbracket) {
+        // array / vector literal: keep the elements (still printed as /*?expr*/).
+        advP(&p)
+        var elems: Vec[Nd] = Vec.new()
+        if !isKind(p, TokKind.rbracket) {
+            elems.push(parseExpr(&p))
+            while eat(p, TokKind.comma) { elems.push(parseExpr(&p)) }
+        }
+        eat(p, TokKind.rbracket)
+        return Nd.vecLit(elems)
+    }
+    if isKind(p, TokKind.kwIf) { return parseIf(&p) }
+    if isKind(p, TokKind.kwMatch) { return parseMatch(&p) }
+    if isKind(p, TokKind.kwSelect) {
+        // §11 select { ... } — SelectExpr has no printer case (/*?expr*/); consume
+        // the balanced body to stay token-aligned.
+        advP(&p)
+        skipBalancedBraces(&p)
+        return Nd.exoticE
+    }
+    if isKind(p, TokKind.kwQuote) { return parseQuote(&p) }
+    if isKind(p, TokKind.dollar) { return parseSplice(&p) }
+    if isKind(p, TokKind.kwDo) { return parseDoCatch(&p) }
+    if isKind(p, TokKind.kwComptime) {
+        advP(&p)
+        if isKind(p, TokKind.lbrace) { let b = parseBlock(&p) } else { let e = parseExpr(&p) }
+        return Nd.exoticE
+    }
+    if isKind(p, TokKind.at) {
+        // @embed(...) / @macro(...) — both print /*?expr*/ in the C++ printer.
+        advP(&p)  // '@'
+        advP(&p)  // intrinsic / macro name
+        if isKind(p, TokKind.lparen) { skipBalancedParens(&p) }
+        return Nd.exoticE
+    }
+    if isKind(p, TokKind.interpBegin) { return parseInterpString(&p) }
+    if isKind(p, TokKind.lbrace) {
+        if isClosureAhead(p) { return parseClosure(&p) }
+        return parseBlock(&p)
+    }
+    // unsupported construct in this slice; emit a stub and advance.
+    advP(&p)
+    return Nd.ident("<error>")
+}
+
+// `do { body } catch (NAME: E) { handler }` (or bare `catch NAME`). Prints fully.
+func parseDoCatch(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // 'do'
+    let doBody = bE(parseBlock(&p))
+    eat(p, TokKind.kwCatch)
+    var errName: String = ""
+    var errType: Vec[Nd] = Vec.new()
+    if eat(p, TokKind.lparen) {
+        errName = curText(p)
+        advP(&p)
+        eat(p, TokKind.colon)
+        errType.push(parseType(&p))
+        eatV(p, TokKind.rparen)
+    } else if isKind(p, TokKind.identifier) {
+        errName = curText(p)
+        advP(&p)
+    }
+    if eat(p, TokKind.kwWhere) { let guard = parseExpr(&p) }
+    let catchBody = bE(parseBlock(&p))
+    return Nd.doCatchE(doBody, errName, errType, catchBody)
+}
+
+// §12.4 `quote { EXPR }` (expression form, printed fully) vs `quote { <decls> }` (a
+// declaration-macro template, printed /*?expr*/). Disambiguated by a declaration
+// keyword at brace depth 1.
+func parseQuote(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // 'quote'  (now at '{')
+    if isDeclQuoteAhead(p) {
+        skipBalancedBraces(&p)
+        return Nd.exoticE
+    }
+    eatV(p, TokKind.lbrace)
+    skipNL(&p)
+    let inner = parseExpr(&p)
+    skipNL(&p)
+    eatV(p, TokKind.rbrace)
+    return Nd.quoteE(bE(inner))
+}
+
+func isDeclQuoteAhead(_ p: inout Ps) -> Bool {
+    var i: Int = p.pos + 1
+    var depth: Int = 1
+    var found: Bool = false
+    var go: Bool = true
+    while go {
+        let k = kindAtAbs(p, i)
+        if isKind2(k, TokKind.eof) { go = false }
+        else if isKind2(k, TokKind.lbrace) || isKind2(k, TokKind.lparen) || isKind2(k, TokKind.lbracket) {
+            depth = depth + 1
+        } else if isKind2(k, TokKind.rbrace) || isKind2(k, TokKind.rparen) || isKind2(k, TokKind.rbracket) {
+            depth = depth - 1
+            if depth == 0 { go = false }
+        } else if depth == 1 && isDeclKw(k) {
+            found = true
+            go = false
+        }
+        i = i + 1
+    }
+    return found
+}
+
+func isDeclKw(_ k: TokKind) -> Bool {
+    return isKind2(k, TokKind.kwFunc) || isKind2(k, TokKind.kwStruct) || isKind2(k, TokKind.kwEnum)
+        || isKind2(k, TokKind.kwProtocol) || isKind2(k, TokKind.kwExtension)
+        || isKind2(k, TokKind.kwConst) || isKind2(k, TokKind.kwStatic)
+}
+
+// §12.4 splice `$ident` / `$(expr)`. The C++ printer renders it bare when the inner
+// is an identifier (so `$(x)` also prints `$x`), otherwise with parens.
+func parseSplice(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // '$'
+    if eat(p, TokKind.lparen) {
+        let inner = parseExpr(&p)
+        eatV(p, TokKind.rparen)
+        let bare = isIdentNode(inner)
+        return Nd.spliceE(bare, bE(inner))
+    }
+    if isKind(p, TokKind.identifier) {
+        let n = curText(p)
+        advP(&p)
+        return Nd.spliceE(true, bE(Nd.ident(n)))
+    }
+    return Nd.exoticE
+}
+
+func isIdentNode(_ e: Nd) -> Bool {
+    return match e {
+        case .ident(let n): true
+        default: false
+    }
+}
+
+func skipBalancedParens(_ p: inout Ps) {
+    var depth: Int = 0
+    var go: Bool = true
+    while go && !atEndP(p) {
+        if isKind(p, TokKind.lparen) { depth = depth + 1 }
+        else if isKind(p, TokKind.rparen) {
+            depth = depth - 1
+            if depth == 0 { advP(&p); go = false }
+        }
+        if go { advP(&p) }
+    }
+}
+
+func skipBalancedBraces(_ p: inout Ps) {
+    var depth: Int = 0
+    var go: Bool = true
+    while go && !atEndP(p) {
+        if isKind(p, TokKind.lbrace) { depth = depth + 1 }
+        else if isKind(p, TokKind.rbrace) {
+            depth = depth - 1
+            if depth == 0 { advP(&p); go = false }
+        }
+        if go { advP(&p) }
+    }
+}
+
+// An interpolated string `"...\(e)..."` lexes as InterpStringBegin (Part | LParen
+// expr RParen)* InterpStringEnd; the C++ printer has no InterpStringExpr case, so
+// it dumps /*?expr*/. We consume the sequence to stay token-aligned.
+func parseInterpString(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // InterpStringBegin
+    var exprs: Vec[Nd] = Vec.new()
+    var go: Bool = true
+    while go && !isKind(p, TokKind.interpEnd) && !atEndP(p) {
+        if isKind(p, TokKind.interpPart) { advP(&p) }
+        else if isKind(p, TokKind.lparen) {
+            advP(&p)
+            exprs.push(parseExpr(&p))
+            eatV(p, TokKind.rparen)
+        } else { advP(&p) }
+    }
+    eatV(p, TokKind.interpEnd)
+    return Nd.interpE(exprs)
+}
+
+// A `{ params => body }` closure (vs a block). The C++ printer has no ClosureExpr
+// case, so it dumps /*?expr*/. Detect by scanning for a `=>` at brace depth 1.
+func isClosureAhead(_ p: inout Ps) -> Bool {
+    var i: Int = p.pos + 1
+    var depth: Int = 1
+    var found: Bool = false
+    var go: Bool = true
+    while go {
+        let k = kindAtAbs(p, i)
+        if isKind2(k, TokKind.eof) { go = false }
+        else if isKind2(k, TokKind.lbrace) || isKind2(k, TokKind.lparen) || isKind2(k, TokKind.lbracket) {
+            depth = depth + 1
+        } else if isKind2(k, TokKind.rbrace) || isKind2(k, TokKind.rparen) || isKind2(k, TokKind.rbracket) {
+            depth = depth - 1
+            if depth == 0 { go = false }
+        } else if depth == 1 && isKind2(k, TokKind.fatArrow) {
+            found = true
+            go = false
+        }
+        i = i + 1
+    }
+    return found
+}
+
+func kindAtAbs(_ p: inout Ps, _ i: Int) -> TokKind { let t = p.toks.get(i) ?? eofTok(); return t.kind }
+func isKind2(_ a: TokKind, _ b: TokKind) -> Bool { return streq(spelling(a), spelling(b)) }
+
+func parseClosure(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // '{'
+    var params: Vec[Nd] = Vec.new()
+    if !isKind(p, TokKind.fatArrow) {
+        if isKind(p, TokKind.identifier) {
+            params.push(Nd.ident(curText(p)))
+            advP(&p)
+            while eat(p, TokKind.comma) {
+                if isKind(p, TokKind.identifier) { params.push(Nd.ident(curText(p))); advP(&p) }
+            }
+        }
+    }
+    eat(p, TokKind.fatArrow)
+    skipNL(&p)
+    var body: Vec[Nd] = Vec.new()
+    while !isKind(p, TokKind.rbrace) && !atEndP(p) {
+        body.push(parseStmt(&p))
+        skipNL(&p)
+    }
+    eat(p, TokKind.rbrace)
+    return Nd.closureE(params, body)
+}
+
+// A match expression. The C++ printer has no MatchExpr case, so it dumps as
+// /*?expr*/; we still parse the arms (pattern / guard / body) precisely so the
+// surrounding token stream stays aligned, then discard them.
+func parseMatch(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // 'match'
+    let scrut = parseExpr(&p)
+    eat(p, TokKind.lbrace)
+    skipNL(&p)
+    var arms: Vec[Nd] = Vec.new()
+    while !isKind(p, TokKind.rbrace) && !atEndP(p) {
+        if eat(p, TokKind.kwDefault) {
+            eat(p, TokKind.colon)
+            arms.push(Nd.matchArm(true, Vec.new(), Vec.new(), bE(parseExpr(&p))))
+        } else {
+            eat(p, TokKind.kwCase)
+            let pat = parsePattern(&p)
+            var guard: Vec[Nd] = Vec.new()
+            if eat(p, TokKind.kwWhere) { guard.push(parseExpr(&p)) }
+            eat(p, TokKind.colon)
+            arms.push(Nd.matchArm(false, bP(pat), guard, bE(parseExpr(&p))))
+        }
+        skipNL(&p)
+    }
+    eat(p, TokKind.rbrace)
+    return Nd.matchE(bE(scrut), arms)
+}
+
+func parseIf(_ p: inout Ps) using Alloc -> Nd {
+    advP(&p)  // 'if'
+    var letName: String = ""
+    var letInit: Vec[Nd] = Vec.new()
+    var cond: Vec[Nd] = Vec.new()
+    if eat(p, TokKind.kwLet) {
+        letName = curText(p)
+        advP(&p)
+        eat(p, TokKind.assign)
+        letInit.push(parseExpr(&p))
+    } else {
+        cond.push(parseExpr(&p))
+    }
+    let thenB = bE(parseBlock(&p))
+    var els: Vec[Nd] = Vec.new()
+    if eat(p, TokKind.kwElse) {
+        if isKind(p, TokKind.kwIf) { els.push(parsePrimary(&p)) }
+        else { els.push(parseBlock(&p)) }
+    }
+    return Nd.ifE(letName, letInit, cond, thenB, els)
+}
+
+func parsePostfix(_ p: inout Ps, _ start: Nd) using Alloc -> Nd {
+    var lhs = start
+    var go: Bool = true
+    while go {
+        if isKind(p, TokKind.lparen) {
+            advP(&p)
+            var args: Vec[Nd] = Vec.new()
+            if !isKind(p, TokKind.rparen) {
+                args.push(parseArg(&p))
+                while eat(p, TokKind.comma) { args.push(parseArg(&p)) }
+            }
+            eat(p, TokKind.rparen)
+            lhs = Nd.call(bE(lhs), args)
+        } else if isKind(p, TokKind.dot)
+                  || (isKind(p, TokKind.question) && isKindAt(p, 1, TokKind.dot)) {
+            let isChain = isKind(p, TokKind.question)
+            if isChain { advP(&p) }
+            advP(&p)  // '.'
+            let n = curText(p)
+            advP(&p)
+            lhs = Nd.member(bE(lhs), n, isChain)
+        } else if isKind(p, TokKind.lbracket) {
+            advP(&p)
+            var idxs: Vec[Nd] = Vec.new()
+            if !isKind(p, TokKind.rbracket) {
+                idxs.push(parseExpr(&p))
+                while eat(p, TokKind.comma) { idxs.push(parseExpr(&p)) }
+            }
+            eat(p, TokKind.rbracket)
+            lhs = Nd.index(bE(lhs), idxs)
+        } else if isKind(p, TokKind.bang) {
+            advP(&p)
+            lhs = Nd.unary("!", bE(lhs))
+        } else {
+            go = false
+        }
+    }
+    return lhs
+}
+
+func parseArg(_ p: inout Ps) using Alloc -> Nd {
+    var label: String = ""
+    if isKind(p, TokKind.identifier) && isKindAt(p, 1, TokKind.colon) {
+        label = curText(p)
+        advP(&p)
+        advP(&p)  // ':'
+    }
+    var isInout: Bool = false
+    if eat(p, TokKind.amp) { isInout = true }
+    return Nd.arg(label, isInout, bE(parseExpr(&p)))
+}
+
+// ----- printer (mirrors src/ast/printer.cpp exactly) ------------------------
+func indentTo(_ n: Int) using Log {
+    var i: Int = 0
+    while i < n { print("    "); i = i + 1 }
+}
+
+func printUnit(_ u: NUnit) using Alloc, Log {
+    if u.hasMod {
+        print("module ")
+        print(u.modPath)
+        print("\n\n")
+    }
+    var i: Int = 0
+    while i < u.imports.len() {
+        printImport(u.imports.get(i) ?? Nd.importD(false, "?"))
+        i = i + 1
+    }
+    if u.imports.len() > 0 { print("\n") }
+    var j: Int = 0
+    while j < u.decls.len() {
+        printDecl(u.decls.get(j) ?? Nd.importD(false, "?"), 0)
+        print("\n")
+        j = j + 1
+    }
+}
+
+func printImport(_ d: Nd) using Alloc, Log {
+    match d {
+        case .importD(let isC, let payload): printImportBody(isC, payload)
+        default: print("")
+    }
+}
+
+func printImportBody(_ isC: Bool, _ payload: String) using Log {
+    if isC {
+        print("import c \"")
+        print(payload)
+        print("\"\n")
+    } else {
+        print("import ")
+        print(payload)
+        print("\n")
+    }
+}
+
+func printDecl(_ d: Nd, _ indent: Int) using Alloc, Log {
+    match d {
+        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
+            printFunc(vis, mods, name, gens, params, caps, thr, res, body, indent)
+        case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics):
+            printStruct(vis, name, fields, methods, deinitB, indent)
+        case .enumD(let vis, let name, let cases, let methods, let generics):
+            printEnum(vis, name, cases, methods, indent)
+        case .constD(let vis, let name, let ty, let val): printConst(vis, name, ty, val, indent)
+        case .staticD(let vis, let name, let ty, let val): printStatic(vis, name, ty, val, indent)
+        case .opaqueD(let vis, let name, let under): printOpaque(vis, name, under, indent)
+        case .deriveD(let protocols, let target): printDerive(protocols, target, indent)
+        default: print("")
+    }
+}
+
+func printStruct(_ vis: String, _ name: String, _ fields: Vec[Nd], _ methods: Vec[Nd],
+                 _ deinitB: Vec[Nd], _ indent: Int) using Alloc, Log {
+    indentTo(indent)
+    print(vis)
+    print("struct ")
+    print(name)
+    print(" {\n")
+    var i: Int = 0
+    while i < fields.len() {
+        printField(fields.get(i) ?? errE(), indent + 1)
+        i = i + 1
+    }
+    var m: Int = 0
+    while m < methods.len() {
+        printDecl(methods.get(m) ?? errE(), indent + 1)
+        m = m + 1
+    }
+    if deinitB.len() > 0 {
+        indentTo(indent + 1)
+        print("deinit ")
+        printExpr(deinitB.get(0) ?? errE())
+        print("\n")
+    }
+    indentTo(indent)
+    print("}\n")
+}
+
+func printField(_ f: Nd, _ indent: Int) using Alloc, Log {
+    match f {
+        case .field(let kind, let name, let ty): printFieldBody(kind, name, ty, indent)
+        default: print("")
+    }
+}
+
+func printFieldBody(_ kind: String, _ name: String, _ ty: Vec[Nd], _ indent: Int) using Alloc, Log {
+    indentTo(indent)
+    print(kind)
+    print(name)
+    print(": ")
+    if ty.len() > 0 { printType(ty.get(0) ?? errT()) }
+    print("\n")
+}
+
+func printEnum(_ vis: String, _ name: String, _ cases: Vec[Nd], _ methods: Vec[Nd],
+               _ indent: Int) using Alloc, Log {
+    indentTo(indent)
+    print(vis)
+    print("enum ")
+    print(name)
+    print(" {\n")
+    var i: Int = 0
+    while i < cases.len() {
+        printEnumCase(cases.get(i) ?? errE(), indent + 1)
+        i = i + 1
+    }
+    var m: Int = 0
+    while m < methods.len() {
+        printDecl(methods.get(m) ?? errE(), indent + 1)
+        m = m + 1
+    }
+    indentTo(indent)
+    print("}\n")
+}
+
+func printEnumCase(_ c: Nd, _ indent: Int) using Alloc, Log {
+    match c {
+        case .enumCase(let name, let payload): printEnumCaseBody(name, payload, indent)
+        default: print("")
+    }
+}
+
+func printEnumCaseBody(_ name: String, _ payload: Vec[Nd], _ indent: Int) using Alloc, Log {
+    indentTo(indent)
+    print("case ")
+    print(name)
+    if payload.len() > 0 {
+        print("(")
+        var i: Int = 0
+        while i < payload.len() {
+            if i > 0 { print(", ") }
+            printPayElem(payload.get(i) ?? errE())
+            i = i + 1
+        }
+        print(")")
+    }
+    print("\n")
+}
+
+func printPayElem(_ e: Nd) using Alloc, Log {
+    match e {
+        case .payElem(let label, let ty): printPayElemBody(label, ty)
+        default: print("")
+    }
+}
+
+func printPayElemBody(_ label: String, _ ty: Vec[Nd]) using Alloc, Log {
+    if !streq(label, "") {
+        print(label)
+        print(": ")
+    }
+    if ty.len() > 0 { printType(ty.get(0) ?? errT()) }
+}
+
+func printFunc(_ vis: String, _ mods: String, _ name: String, _ gens: Vec[Nd], _ params: Vec[Nd], _ caps: Vec[Nd],
+               _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd], _ indent: Int) using Alloc, Log {
+    indentTo(indent)
+    print(vis)
+    print(mods)
+    print("func ")
+    print(name)
+    printGenerics(gens)
+    print("(")
+    var i: Int = 0
+    while i < params.len() {
+        if i > 0 { print(", ") }
+        printParam(params.get(i) ?? errParam())
+        i = i + 1
+    }
+    print(")")
+    if caps.len() > 0 {
+        print(" using ")
+        var c: Int = 0
+        while c < caps.len() {
+            if c > 0 { print(", ") }
+            printType(caps.get(c) ?? errT())
+            c = c + 1
+        }
+    }
+    if thr.len() > 0 {
+        print(" throws(")
+        printType(thr.get(0) ?? errT())
+        print(")")
+    }
+    if res.len() > 0 {
+        print(" -> ")
+        printType(res.get(0) ?? errT())
+    }
+    if body.len() > 0 {
+        print(" ")
+        printExpr(body.get(0) ?? errE())
+    }
+    print("\n")
+}
+
+func printConst(_ vis: String, _ name: String, _ ty: Vec[Nd], _ val: Vec[Nd], _ indent: Int) using Alloc, Log {
+    indentTo(indent)
+    print(vis)
+    print("const ")
+    print(name)
+    if ty.len() > 0 {
+        print(": ")
+        printType(ty.get(0) ?? errT())
+    }
+    print(" = ")
+    if val.len() > 0 { printExpr(val.get(0) ?? errE()) }
+    print("\n")
+}
+
+func printStatic(_ vis: String, _ name: String, _ ty: Vec[Nd], _ val: Vec[Nd], _ indent: Int) using Alloc, Log {
+    indentTo(indent)
+    print(vis)
+    print("static ")
+    print(name)
+    print(": ")
+    if ty.len() > 0 { printType(ty.get(0) ?? errT()) }
+    print(" = ")
+    if val.len() > 0 { printExpr(val.get(0) ?? errE()) }
+    print("\n")
+}
+
+func printOpaque(_ vis: String, _ name: String, _ under: Vec[Nd], _ indent: Int) using Alloc, Log {
+    indentTo(indent)
+    print(vis)
+    print("opaque type ")
+    print(name)
+    print(" = ")
+    printType(under.get(0) ?? errT())
+    print("\n")
+}
+
+func printDerive(_ protocols: Vec[Nd], _ target: Vec[Nd], _ indent: Int) using Alloc, Log {
+    indentTo(indent)
+    print("derive(")
+    var i: Int = 0
+    while i < protocols.len() {
+        if i > 0 { print(", ") }
+        printType(protocols.get(i) ?? errT())
+        i = i + 1
+    }
+    print(") for ")
+    printType(target.get(0) ?? errT())
+    print("\n")
+}
+
+func printGenerics(_ gens: Vec[Nd]) using Alloc, Log {
+    if gens.len() == 0 { return }
+    print("[")
+    var i: Int = 0
+    while i < gens.len() {
+        if i > 0 { print(", ") }
+        printGenericParam(gens.get(i) ?? errT())
+        i = i + 1
+    }
+    print("]")
+}
+
+func printGenericParam(_ g: Nd) using Alloc, Log {
+    match g {
+        case .genConst(let name, let ct): printGenConst(name, ct)
+        case .genType(let name, let bounds): printGenType(name, bounds)
+        default: print("")
+    }
+}
+
+func printGenConst(_ name: String, _ ct: Vec[Nd]) using Alloc, Log {
+    print("const ")
+    print(name)
+    print(": ")
+    if ct.len() > 0 { printType(ct.get(0) ?? errT()) }
+}
+
+func printGenType(_ name: String, _ bounds: Vec[Nd]) using Alloc, Log {
+    print(name)
+    if bounds.len() > 0 {
+        print(": ")
+        var i: Int = 0
+        while i < bounds.len() {
+            if i > 0 { print(" & ") }
+            printType(bounds.get(i) ?? errT())
+            i = i + 1
+        }
+    }
+}
+
+func errParam() using Alloc -> Nd {
+    return Nd.param(false, "", "?", false, "", noT())
+}
+
+func printParam(_ pm: Nd) using Alloc, Log {
+    match pm {
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): printParamBody(lo, lbl, nm, ne, md, ty)
+        default: print("")
+    }
+}
+
+func printParamBody(_ lo: Bool, _ lbl: String, _ nm: String, _ ne: Bool, _ md: String, _ ty: Vec[Nd]) using Alloc, Log {
+    if lo {
+        print("_ ")
+    } else if !streq(lbl, "") && !streq(lbl, nm) {
+        print(lbl)
+        print(" ")
+    }
+    print(nm)
+    print(": ")
+    if ne { print("nonescaping ") }
+    print(md)
+    if ty.len() > 0 { printType(ty.get(0) ?? errT()) }
+}
+
+func printType(_ t: Nd) using Alloc, Log {
+    match t {
+        case .named(let path, let hasGen, let args): printNamed(path, hasGen, args)
+        case .opt(let inner): printOpt(inner)
+        case .someT(let inner): printPrefixType("some ", inner)
+        case .dynT(let inner): printPrefixType("dyn ", inner)
+        case .vecT(let len, let elem): printVecType(len, elem)
+        case .tupleT(let elems): printTupleType(elems)
+        case .fnT(let params, let caps, let thr, let res): printFnType(params, caps, thr, res)
+        default: print("/*?type*/")
+    }
+}
+
+func printPrefixType(_ kw: Str, _ inner: Vec[Nd]) using Alloc, Log {
+    print(kw)
+    printType(inner.get(0) ?? errT())
+}
+
+func printVecType(_ len: String, _ elem: Vec[Nd]) using Alloc, Log {
+    print("[")
+    print(len)
+    print("]")
+    printType(elem.get(0) ?? errT())
+}
+
+func printTypeList(_ ts: Vec[Nd]) using Alloc, Log {
+    var i: Int = 0
+    while i < ts.len() {
+        if i > 0 { print(", ") }
+        printType(ts.get(i) ?? errT())
+        i = i + 1
+    }
+}
+
+func printTupleType(_ elems: Vec[Nd]) using Alloc, Log {
+    print("(")
+    printTypeList(elems)
+    print(")")
+}
+
+func printFnType(_ params: Vec[Nd], _ caps: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
+    print("(")
+    printTypeList(params)
+    print(")")
+    if caps.len() > 0 {
+        print(" using ")
+        printTypeList(caps)
+    }
+    if thr.len() > 0 {
+        print(" throws(")
+        printType(thr.get(0) ?? errT())
+        print(")")
+    }
+    if res.len() > 0 {
+        print(" -> ")
+        printType(res.get(0) ?? errT())
+    }
+}
+
+func printNamed(_ path: String, _ hasGen: Bool, _ args: Vec[Nd]) using Alloc, Log {
+    print(path)
+    if hasGen {
+        print("[")
+        var i: Int = 0
+        while i < args.len() {
+            if i > 0 { print(", ") }
+            printType(args.get(i) ?? errT())
+            i = i + 1
+        }
+        print("]")
+    }
+}
+
+func printOpt(_ inner: Vec[Nd]) using Alloc, Log {
+    printType(inner.get(0) ?? errT())
+    print("?")
+}
+
+func printBlock(_ stmts: Vec[Nd], _ indent: Int) using Alloc, Log {
+    print("{\n")
+    var i: Int = 0
+    while i < stmts.len() {
+        printStmt(stmts.get(i) ?? Nd.exprS(noE()), indent + 1)
+        i = i + 1
+    }
+    indentTo(indent)
+    print("}")
+}
+
+func printStmt(_ s: Nd, _ indent: Int) using Alloc, Log {
+    indentTo(indent)
+    match s {
+        case .letS(let pat, let ty, let value): printBinding("let ", pat, ty, value)
+        case .varS(let pat, let ty, let value): printBinding("var ", pat, ty, value)
+        case .exprS(let e): printExprStmt(e)
+        case .retS(let v): printReturn(v)
+        case .assignS(let op, let t, let v): printAssign(op, t, v)
+        case .whileS(let c, let b): printWhile(c, b)
+        case .forS(let pat, let iter, let b): printFor(pat, iter, b)
+        case .breakS(let label): printBreakContinue("break", label)
+        case .continueS(let label): printBreakContinue("continue", label)
+        default: print("/*?stmt*/\n")
+    }
+}
+
+func printFor(_ pat: Vec[Nd], _ iter: Vec[Nd], _ b: Vec[Nd]) using Alloc, Log {
+    print("for ")
+    printPat(pat.get(0) ?? errP())
+    print(" in ")
+    printExpr(iter.get(0) ?? errE())
+    print(" ")
+    printExpr(b.get(0) ?? errE())
+    print("\n")
+}
+
+func printBreakContinue(_ kw: Str, _ label: String) using Log {
+    print(kw)
+    if !streq(label, "") {
+        print(" ")
+        print(label)
+    }
+    print("\n")
+}
+
+func printBinding(_ kw: Str, _ pat: Vec[Nd], _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    print(kw)
+    printPat(pat.get(0) ?? errP())
+    if ty.len() > 0 {
+        print(": ")
+        printType(ty.get(0) ?? errT())
+    }
+    print(" = ")
+    if value.len() > 0 { printExpr(value.get(0) ?? errE()) }
+    print("\n")
+}
+
+func printExprStmt(_ e: Vec[Nd]) using Alloc, Log {
+    printExpr(e.get(0) ?? errE())
+    print("\n")
+}
+
+func printReturn(_ v: Vec[Nd]) using Alloc, Log {
+    print("return")
+    if v.len() > 0 {
+        print(" ")
+        printExpr(v.get(0) ?? errE())
+    }
+    print("\n")
+}
+
+func printAssign(_ op: String, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc, Log {
+    printExpr(t.get(0) ?? errE())
+    print(" ")
+    print(op)
+    print(" ")
+    printExpr(v.get(0) ?? errE())
+    print("\n")
+}
+
+func printWhile(_ c: Vec[Nd], _ b: Vec[Nd]) using Alloc, Log {
+    print("while ")
+    printExpr(c.get(0) ?? errE())
+    print(" ")
+    printExpr(b.get(0) ?? errE())
+    print("\n")
+}
+
+func printPat(_ p: Nd) using Alloc, Log {
+    match p {
+        case .wildcard: print("_")
+        case .identP(let n): print(n)
+        case .bindP(let n): printBind(n)
+        case .litP(let inner): printExpr(inner.get(0) ?? errE())
+        case .enumP(let cname, let children): printEnumPat(cname, children)
+        default: print("/*?pat*/")
+    }
+}
+
+func printBind(_ n: String) using Log { print("let "); print(n) }
+
+func printEnumPat(_ cname: String, _ children: Vec[Nd]) using Alloc, Log {
+    print(".")
+    print(cname)
+    if children.len() > 0 {
+        print("(")
+        var i: Int = 0
+        while i < children.len() {
+            if i > 0 { print(", ") }
+            printPat(children.get(i) ?? errP())
+            i = i + 1
+        }
+        print(")")
+    }
+}
+
+func printExpr(_ e: Nd) using Alloc, Log {
+    match e {
+        case .intLit(let t): print(t)
+        case .floatLit(let t): print(t)
+        case .strLit(let t): printQuoted("\"", t, "\"")
+        case .byteStrLit(let t): printQuoted("b\"", t, "\"")
+        case .charLit(let t): printQuoted("'", t, "'")
+        case .boolLit(let b): printBool(b)
+        case .nilLit: print("/*?expr*/")
+        case .ident(let n): print(n)
+        case .selfE: print("self")
+        case .leadingDot(let n): printLeadingDot(n)
+        case .paren(let inner): printParen(inner)
+        case .unary(let op, let operand): printUnary(op, operand)
+        case .binary(let op, let l, let r): printBinary(op, l, r)
+        case .call(let callee, let args): printCall(callee, args)
+        case .arg(let label, let isInout, let val): printArg(label, isInout, val)
+        case .member(let base, let n, let chain): printMember(base, n)
+        case .index(let base, let idxs): printIndex(base, idxs)
+        case .ifE(let ln, let li, let cond, let thenB, let els): printIf(ln, li, cond, thenB, els)
+        case .block(let stmts): printBlock(stmts, 0)
+        case .asE(let v, let target, let isOpt): printAs(v, target, isOpt)
+        case .addrOf(let inner): print("/*?expr*/")
+        case .prefixE(let kw, let inner): printPrefixExpr(kw, inner)
+        case .doCatchE(let db, let en, let et, let cb): printDoCatch(db, en, et, cb)
+        case .quoteE(let inner): printQuote(inner)
+        case .spliceE(let bare, let inner): printSplice(bare, inner)
+        default: print("/*?expr*/")
+    }
+}
+
+func printQuote(_ inner: Vec[Nd]) using Alloc, Log {
+    print("quote { ")
+    printExpr(inner.get(0) ?? errE())
+    print(" }")
+}
+
+func printSplice(_ bare: Bool, _ inner: Vec[Nd]) using Alloc, Log {
+    print("$")
+    if bare {
+        printExpr(inner.get(0) ?? errE())
+    } else {
+        print("(")
+        printExpr(inner.get(0) ?? errE())
+        print(")")
+    }
+}
+
+func printPrefixExpr(_ kw: String, _ inner: Vec[Nd]) using Alloc, Log {
+    print(kw)
+    printExpr(inner.get(0) ?? errE())
+}
+
+func printDoCatch(_ db: Vec[Nd], _ en: String, _ et: Vec[Nd], _ cb: Vec[Nd]) using Alloc, Log {
+    print("do ")
+    printExpr(db.get(0) ?? errE())
+    print(" catch (")
+    print(en)
+    print(": ")
+    if et.len() > 0 { printType(et.get(0) ?? errT()) }
+    print(") ")
+    printExpr(cb.get(0) ?? errE())
+}
+
+func printQuoted(_ open: Str, _ t: String, _ close: Str) using Log {
+    print(open)
+    print(t)
+    print(close)
+}
+
+func printBool(_ b: Bool) using Log { if b { print("true") } else { print("false") } }
+func printLeadingDot(_ n: String) using Log { print("."); print(n) }
+
+func printParen(_ inner: Vec[Nd]) using Alloc, Log {
+    print("(")
+    printExpr(inner.get(0) ?? errE())
+    print(")")
+}
+
+func printUnary(_ op: String, _ operand: Vec[Nd]) using Alloc, Log {
+    print(op)
+    printExpr(operand.get(0) ?? errE())
+}
+
+func printBinary(_ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc, Log {
+    printExpr(l.get(0) ?? errE())
+    print(" ")
+    print(op)
+    print(" ")
+    printExpr(r.get(0) ?? errE())
+}
+
+func printCall(_ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
+    printExpr(callee.get(0) ?? errE())
+    print("(")
+    var i: Int = 0
+    while i < args.len() {
+        if i > 0 { print(", ") }
+        printExpr(args.get(i) ?? errE())
+        i = i + 1
+    }
+    print(")")
+}
+
+func printArg(_ label: String, _ isInout: Bool, _ val: Vec[Nd]) using Alloc, Log {
+    if !streq(label, "") {
+        print(label)
+        print(": ")
+    }
+    if isInout { print("&") }
+    printExpr(val.get(0) ?? errE())
+}
+
+func printMember(_ base: Vec[Nd], _ n: String) using Alloc, Log {
+    printExpr(base.get(0) ?? errE())
+    print(".")
+    print(n)
+}
+
+func printIndex(_ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc, Log {
+    printExpr(base.get(0) ?? errE())
+    print("[")
+    var i: Int = 0
+    while i < idxs.len() {
+        if i > 0 { print(", ") }
+        printExpr(idxs.get(i) ?? errE())
+        i = i + 1
+    }
+    print("]")
+}
+
+func printIf(_ ln: String, _ li: Vec[Nd], _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc, Log {
+    print("if ")
+    if !streq(ln, "") {
+        print("let ")
+        print(ln)
+        print(" = ")
+        if li.len() > 0 { printExpr(li.get(0) ?? errE()) }
+    } else if cond.len() > 0 {
+        printExpr(cond.get(0) ?? errE())
+    }
+    print(" ")
+    printExpr(thenB.get(0) ?? errE())
+    if els.len() > 0 {
+        print(" else ")
+        printExpr(els.get(0) ?? errE())
+    }
+}
+
+func printAs(_ v: Vec[Nd], _ target: Vec[Nd], _ isOpt: Bool) using Alloc, Log {
+    printExpr(v.get(0) ?? errE())
+    if isOpt { print(" as? ") } else { print(" as ") }
+    printType(target.get(0) ?? errT())
+}
+
+
+// ===========================================================================
+// C++ code emission (phase 4). The generated `.cpp` is:
+//
+//   // Generated by vestra-transpiler. Do not edit.
+//   #include "<stem>.hpp"
+//   <blank>
+//   <definition> <blank> <definition> <blank> ...
+//
+// Slice 1 emits free functions: `<retType> <name>(<params>) {` then 4-space
+// indented body statements, then `}` and a trailing blank line. Read-mode params
+// render as `const <type>& <name>`; the result type maps a builtin scalar to its
+// C++ spelling (an absent result is `void`).
+// ===========================================================================
+func noop() {}
+
+func emitUnit(_ u: NUnit, _ stem: Str) using Alloc, Log {
+    print("// Generated by vestra-transpiler. Do not edit.\n")
+    print("#include \"")
+    print(stem)
+    print(".hpp\"\n\n")
+    var i: Int = 0
+    while i < u.decls.len() {
+        emitDecl(u.decls.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func emitDecl(_ d: Nd) using Alloc, Log {
+    match d {
+        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
+            emitFunc(name, params, res, body)
+        default: noop()
+    }
+}
+
+func emitFunc(_ name: Str, _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    emitRetType(res)
+    print(" ")
+    print(name)
+    print("(")
+    emitParams(params)
+    print(") {\n")
+    emitBody(body)
+    print("}\n\n")
+}
+
+func emitRetType(_ res: Vec[Nd]) using Alloc, Log {
+    if res.len() == 0 { print("void"); return }
+    emitTypeBoxed(res)
+}
+
+func emitParams(_ params: Vec[Nd]) using Alloc, Log {
+    var i: Int = 0
+    while i < params.len() {
+        if i > 0 { print(", ") }
+        emitParam(params.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func emitParam(_ p: Nd) using Alloc, Log {
+    match p {
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): emitReadParam(nm, ty)
+        default: noop()
+    }
+}
+
+// Slice 1: read-mode parameter -> `const <type>& <name>`.
+func emitReadParam(_ nm: Str, _ ty: Vec[Nd]) using Alloc, Log {
+    print("const ")
+    emitTypeBoxed(ty)
+    print("& ")
+    print(nm)
+}
+
+func emitTypeBoxed(_ ty: Vec[Nd]) using Alloc, Log {
+    if ty.len() > 0 { emitType(ty.get(0) ?? Nd.wildcard) }
+}
+
+func emitType(_ t: Nd) using Alloc, Log {
+    match t {
+        case .named(let path, let hasG, let args): print(cppNamed(path))
+        default: print("/*?type*/")
+    }
+}
+
+// Map a builtin scalar type name to its C++ spelling; an unknown name passes
+// through unchanged (user types are added in a later slice).
+func cppNamed(_ path: Str) using Alloc -> String {
+    if streq(path, "Int8") { return own("std::int8_t") }
+    if streq(path, "Int16") { return own("std::int16_t") }
+    if streq(path, "Int32") { return own("std::int32_t") }
+    if streq(path, "Int64") { return own("std::int64_t") }
+    if streq(path, "Int") { return own("std::intptr_t") }
+    if streq(path, "UInt8") { return own("std::uint8_t") }
+    if streq(path, "UInt16") { return own("std::uint16_t") }
+    if streq(path, "UInt32") { return own("std::uint32_t") }
+    if streq(path, "UInt64") { return own("std::uint64_t") }
+    if streq(path, "UInt") { return own("std::uintptr_t") }
+    if streq(path, "Int128") { return own("__int128_t") }
+    if streq(path, "UInt128") { return own("__uint128_t") }
+    if streq(path, "Float32") { return own("float") }
+    if streq(path, "Float64") { return own("double") }
+    if streq(path, "Bool") { return own("bool") }
+    if streq(path, "Char") { return own("char32_t") }
+    if streq(path, "Unit") { return own("void") }
+    if streq(path, "String") { return own("std::string") }
+    if streq(path, "Str") { return own("std::string_view") }
+    if streq(path, "StrConst") { return own("std::string_view") }
+    return own(path)
+}
+
+// A function body is a single boxed block; emit its statements at one indent.
+func emitBody(_ body: Vec[Nd]) using Alloc, Log {
+    if body.len() == 0 { return }
+    emitBlockStmts(body.get(0) ?? Nd.wildcard)
+}
+
+func emitBlockStmts(_ b: Nd) using Alloc, Log {
+    match b {
+        case .block(let stmts): emitStmtList(stmts)
+        default: noop()
+    }
+}
+
+func emitStmtList(_ stmts: Vec[Nd]) using Alloc, Log {
+    var i: Int = 0
+    while i < stmts.len() {
+        emitStmt(stmts.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func emitStmt(_ s: Nd) using Alloc, Log {
+    match s {
+        case .retS(let v): emitReturn(v)
+        default: noop()
+    }
+}
+
+func emitReturn(_ v: Vec[Nd]) using Alloc, Log {
+    print("    return")
+    if v.len() > 0 { print(" "); emitExpr(v.get(0) ?? Nd.wildcard) }
+    print(";\n")
+}
+
+func emitBoxed(_ v: Vec[Nd]) using Alloc, Log {
+    if v.len() > 0 { emitExpr(v.get(0) ?? Nd.wildcard) }
+}
+
+func emitExpr(_ e: Nd) using Alloc, Log {
+    match e {
+        case .ident(let n): print(n)
+        case .intLit(let s): print(s)
+        case .paren(let inner): emitParen(inner)
+        case .unary(let op, let x): emitUnary(op, x)
+        case .binary(let op, let l, let r): emitBinary(op, l, r)
+        default: print("/*?expr*/")
+    }
+}
+
+func emitParen(_ inner: Vec[Nd]) using Alloc, Log {
+    print("(")
+    emitBoxed(inner)
+    print(")")
+}
+
+func emitUnary(_ op: Str, _ x: Vec[Nd]) using Alloc, Log {
+    print(op)
+    emitBoxed(x)
+}
+
+func emitBinary(_ op: Str, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc, Log {
+    emitBoxed(l)
+    print(" ")
+    print(op)
+    print(" ")
+    emitBoxed(r)
+}
+
+// Basename of the input path without its `.vst` extension (the `.hpp`/`.cpp` stem).
+func stemOf(_ path: Str) using Alloc -> String {
+    var start: Int = 0
+    var i: Int = 0
+    while i < path.len() {
+        if (path.byteAt(i) ?? 0) == 47 { start = i + 1 }   // '/' == 47
+        i = i + 1
+    }
+    var base: String = own(path.slice(start, path.len()))
+    let n = base.len()
+    if n >= 4 {
+        if streq(own(base.slice(n - 4, n)), ".vst") { return own(base.slice(0, n - 4)) }
+    }
+    return base
+}
+
+func main() -> Int32 {
+    with Alloc {
+        with Fs {
+            with Log {
+                let argv = args()
+                if argv.len() < 2 {
+                    eprintln("usage: vgen <file.vst>")
+                    return 1
+                }
+                let path = argv.get(1) ?? ""
+                if let src = readFile(path) {
+                    let toks = tokenize(src)
+                    var p = Ps(toks: toks, pos: 0)
+                    let u = parseUnit(&p)
+                    emitUnit(u, stemOf(path))
+                    return 0
+                }
+                eprintln("read failed")
+                return 1
+            }
+        }
+    }
+}

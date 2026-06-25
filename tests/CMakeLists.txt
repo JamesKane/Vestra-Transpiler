@@ -269,6 +269,39 @@ foreach(prog resolve_ok resolve_bad resolve_scope cap_ok cap_missing excl_ok exc
     set_tests_properties(e2e_selfhost_sema_diff_${prog} PROPERTIES DEPENDS e2e_selfhost_sema_compile)
 endforeach()
 
+# ---------------------------------------------------------------------------
+# Self-hosted C++ code generator (selfhost/codegen.vst). It re-uses the lexer +
+# parser, then emits the generated `.cpp` definitions to stdout. The differential
+# runs `vestra build` to produce the reference <stem>.cpp and diffs it against
+# `vgen`'s stdout, byte-for-byte. The fixed runtime prelude and forward
+# declarations live in the `.hpp` (mirrored in a later slice); this checks the
+# per-construct definitions codegen actually generates, on a CURATED corpus of
+# valid programs (a build error would suppress the reference .cpp).
+# ---------------------------------------------------------------------------
+set(selfhost_codegen ${CMAKE_SOURCE_DIR}/selfhost/codegen.vst)
+set(cg_dir           ${CMAKE_SOURCE_DIR}/tests/e2e/codegen)
+set(cg_workdir       ${e2e_workdir}/_codegen)
+
+add_test(
+    NAME    e2e_selfhost_codegen_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${selfhost_codegen} -o ${e2e_workdir})
+
+add_test(
+    NAME    e2e_selfhost_codegen_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_workdir}
+            ${e2e_workdir}/codegen.cpp
+            -o ${e2e_workdir}/vgen)
+set_tests_properties(e2e_selfhost_codegen_compile PROPERTIES DEPENDS e2e_selfhost_codegen_transpile)
+
+foreach(prog cg_func)
+    add_test(
+        NAME    e2e_selfhost_codegen_diff_${prog}
+        COMMAND sh -c "mkdir -p ${cg_workdir} && $<TARGET_FILE:vestra> build ${cg_dir}/${prog}.vst -o ${cg_workdir} >/dev/null 2>&1; ${e2e_workdir}/vgen ${cg_dir}/${prog}.vst > ${cg_workdir}/${prog}_got.cpp; diff ${cg_workdir}/${prog}.cpp ${cg_workdir}/${prog}_got.cpp")
+    set_tests_properties(e2e_selfhost_codegen_diff_${prog} PROPERTIES DEPENDS e2e_selfhost_codegen_compile)
+endforeach()
+
 # Shapes: exercises structs + member access + bare enum + match.
 set(e2e_shapes_input  ${CMAKE_SOURCE_DIR}/examples/shapes.vst)
 set(e2e_shapes_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_shapes.cpp)
