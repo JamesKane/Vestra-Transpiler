@@ -1,0 +1,16 @@
+struct Point {
+  var x: Int32
+  var y: Int32
+}
+func mk(_ a: Int32, _ b: Int32) -> Point {
+  return Point(x: a, y: b)
+}
+struct Holder {
+  let name: Str
+  var items: Vec[Int32]
+  var maybe: Int32?
+  var flag: Bool
+}
+func getx(_ p: Point) -> Int32 {
+  return p.x
+}

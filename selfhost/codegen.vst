@@ -2868,8 +2868,40 @@ func emitHppDecl(_ d: Nd) using Alloc, Log {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
             emitFwdDecl(name, params, res)
+        case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics):
+            emitStructDef(name, fields)
         default: noop()
     }
+}
+
+// A struct definition: `struct <Name> { <fields> };` then a trailing blank line.
+// Each field (let / var alike) is `    <type> <name>{};` with a `{}` default
+// initializer. Methods are emitted by a later slice.
+func emitStructDef(_ name: Str, _ fields: Vec[Nd]) using Alloc, Log {
+    print("struct ")
+    print(name)
+    print(" {\n")
+    var i: Int = 0
+    while i < fields.len() {
+        emitField(fields.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    print("};\n\n")
+}
+
+func emitField(_ f: Nd) using Alloc, Log {
+    match f {
+        case .field(let kind, let name, let ty): emitFieldDef(name, ty)
+        default: noop()
+    }
+}
+
+func emitFieldDef(_ name: Str, _ ty: Vec[Nd]) using Alloc, Log {
+    print("    ")
+    emitTypeBoxed(ty)
+    print(" ")
+    print(name)
+    print("{};\n")
 }
 
 // A free-function forward declaration. `[[nodiscard]]` is emitted whenever the
