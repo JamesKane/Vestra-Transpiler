@@ -1,0 +1,24 @@
+func sum_excl(_ n: Int32) -> Int32 {
+  var s = 0
+  for i in 0..<n {
+    s = s + i
+  }
+  return s
+}
+func sum_incl(_ n: Int32) -> Int32 {
+  var s = 0
+  for i in 0..n {
+    s = s + i
+  }
+  return s
+}
+func sum_vec(_ xs: Vec[Int32]) -> Int32 {
+  var s = 0
+  for x in xs {
+    s = s + x
+  }
+  return s
+}
+func types(_ a: HashMap[Str, Int32], _ b: Box[Int32], _ c: Int32?) -> Int32 {
+  return 0
+}

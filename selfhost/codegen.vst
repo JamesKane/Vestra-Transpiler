@@ -2894,9 +2894,51 @@ func emitTypeBoxed(_ ty: Vec[Nd]) using Alloc, Log {
 
 func emitType(_ t: Nd) using Alloc, Log {
     match t {
-        case .named(let path, let hasG, let args): print(cppNamed(path))
+        case .named(let path, let hasG, let args): emitNamedType(path, hasG, args)
+        case .opt(let inner): emitOptType(inner)
         default: print("/*?type*/")
     }
+}
+
+func emitNamedType(_ path: Str, _ hasG: Bool, _ args: Vec[Nd]) using Alloc, Log {
+    if hasG && args.len() > 0 { emitGenericType(path, args); return }
+    print(cppNamed(path))
+}
+
+// The builtin generic containers map onto their C++ standard-library spellings,
+// with the element / key / value types emitted recursively.
+func emitGenericType(_ path: Str, _ args: Vec[Nd]) using Alloc, Log {
+    if streq(path, "Vec") { emitWrap1("std::vector<", args); return }
+    if streq(path, "Box") { emitWrap1("std::unique_ptr<", args); return }
+    if streq(path, "Span") { emitWrap1("std::span<const ", args); return }
+    if streq(path, "MutSpan") { emitWrap1("std::span<", args); return }
+    if streq(path, "HashMap") { emitWrap2("std::unordered_map<", args); return }
+    print(cppNamed(path))
+}
+
+func emitWrap1(_ open: Str, _ args: Vec[Nd]) using Alloc, Log {
+    print(open)
+    emitTypeArg(args, 0)
+    print(">")
+}
+
+func emitWrap2(_ open: Str, _ args: Vec[Nd]) using Alloc, Log {
+    print(open)
+    emitTypeArg(args, 0)
+    print(", ")
+    emitTypeArg(args, 1)
+    print(">")
+}
+
+func emitTypeArg(_ args: Vec[Nd], _ i: Int) using Alloc, Log {
+    if i < args.len() { emitType(args.get(i) ?? Nd.wildcard) }
+}
+
+// An optional `T?` lowers to std::optional<T>.
+func emitOptType(_ inner: Vec[Nd]) using Alloc, Log {
+    print("std::optional<")
+    emitTypeBoxed(inner)
+    print(">")
 }
 
 // Map a builtin scalar type name to its C++ spelling; an unknown name passes
@@ -2952,6 +2994,7 @@ func emitStmt(_ s: Nd, _ indent: Str) using Alloc, Log {
         case .varS(let pat, let ty, let value): emitBinding(indent, pat, ty, value)
         case .assignS(let op, let t, let v): emitAssign(indent, op, t, v)
         case .whileS(let cond, let body): emitWhile(indent, cond, body)
+        case .forS(let pat, let iter, let body): emitFor(indent, pat, iter, body)
         case .exprS(let e): emitExprStmt(indent, e)
         case .retS(let v): emitReturn(indent, v)
         default: noop()
@@ -2993,6 +3036,54 @@ func emitWhile(_ indent: Str, _ cond: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log
 // An expression statement is `<expr>;`, EXCEPT a statement-position `if` (an
 // expression in Vestra) which lowers to the emitter's inline braced form with no
 // trailing semicolon — see emitIfStmt.
+// A `for v in <iter>` lowers two ways: a range `lo..<hi` / `lo..hi` becomes a
+// C-style loop with a hoisted `__vstr_end` bound (`<` exclusive, `<=` inclusive),
+// and any other iterable becomes a range-based `for (auto&& v : <iter>)`.
+func emitFor(_ indent: Str, _ pat: Vec[Nd], _ iter: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    print("for (")
+    emitForHead(patName(pat), iter)
+    print(") {\n")
+    if body.len() > 0 { emitBlockStmts(body.get(0) ?? Nd.wildcard, deeper(indent)) }
+    print(indent)
+    print("}\n")
+}
+
+func emitForHead(_ v: Str, _ iter: Vec[Nd]) using Alloc, Log {
+    if iter.len() == 0 { return }
+    match iter.get(0) ?? Nd.wildcard {
+        case .binary(let op, let lo, let hi): emitForMaybeRange(v, op, lo, hi, iter)
+        default: emitForEach(v, iter)
+    }
+}
+
+func emitForMaybeRange(_ v: Str, _ op: Str, _ lo: Vec[Nd], _ hi: Vec[Nd], _ iter: Vec[Nd]) using Alloc, Log {
+    if streq(op, "..<") { emitForRange(v, lo, hi, true); return }
+    if streq(op, "..") { emitForRange(v, lo, hi, false); return }
+    emitForEach(v, iter)
+}
+
+func emitForRange(_ v: Str, _ lo: Vec[Nd], _ hi: Vec[Nd], _ excl: Bool) using Alloc, Log {
+    print("auto ")
+    print(v)
+    print(" = ")
+    emitBoxed(lo)
+    print(", __vstr_end = ")
+    emitBoxed(hi)
+    print("; ")
+    print(v)
+    if excl { print(" < ") } else { print(" <= ") }
+    print("__vstr_end; ++")
+    print(v)
+}
+
+func emitForEach(_ v: Str, _ iter: Vec[Nd]) using Alloc, Log {
+    print("auto&& ")
+    print(v)
+    print(" : ")
+    emitBoxed(iter)
+}
+
 func emitExprStmt(_ indent: Str, _ e: Vec[Nd]) using Alloc, Log {
     if e.len() == 0 { return }
     match e.get(0) ?? Nd.wildcard {
