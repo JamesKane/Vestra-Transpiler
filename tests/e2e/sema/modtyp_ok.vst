@@ -1,0 +1,4 @@
+// Uses a public type of an imported module in type position.
+import geo
+
+func f(_ p: geo.Pt) -> Int32 { return p.x }

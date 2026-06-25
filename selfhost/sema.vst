@@ -2816,8 +2816,10 @@ struct Env {
     var curThrows: Bool      // does the function whose body we're walking declare `throws`?
     var throwBad: Vec[String] // "'throw' is only valid ..." full messages
     var modPaths: Vec[String]   // declared module paths of imported modules
-    var modExpMod: Vec[String]  // export rows: owning module path ...
-    var modExpName: Vec[String] // ... -> public export name
+    var modExpMod: Vec[String]  // member export rows: owning module path ...
+    var modExpName: Vec[String] // ... -> public member name (func/const/static/type ctor)
+    var modTypMod: Vec[String]  // type export rows: owning module path ...
+    var modTypName: Vec[String] // ... -> public type name (struct/enum/opaque)
     var modBad: Vec[String]     // "module '<m>' has no public member '<x>'" messages
 }
 
@@ -3303,7 +3305,27 @@ struct TnEnv {
     var genericUserTypes: Vec[String] // user types that take type parameters
     var tparams: Vec[String]          // generic parameters currently in scope (a stack)
     var tpMarks: Vec[Int]             // scope-start indices into tparams
+    var modPaths: Vec[String]         // declared module paths of imported modules
+    var modTypMod: Vec[String]        // type export rows: owning module path ...
+    var modTypName: Vec[String]       // ... -> public type name
     var bad: Vec[String]              // "unknown type '<n>'" / "'<n>' is not a generic type"
+}
+
+// Copy the imported-module type-export tables (harvested during module loading)
+// into the type-name environment so qualified type references can be checked.
+func tnSeedModules(_ env: inout TnEnv, _ srcPaths: Vec[String],
+                   _ srcTypMod: Vec[String], _ srcTypName: Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < srcPaths.len() {
+        if let p = srcPaths.get(i) { env.modPaths.push(own(p)) }
+        i = i + 1
+    }
+    var j: Int = 0
+    while j < srcTypMod.len() {
+        if let m = srcTypMod.get(j) { env.modTypMod.push(own(m)) }
+        if let n = srcTypName.get(j) { env.modTypName.push(own(n)) }
+        j = j + 1
+    }
 }
 
 func tnSeedBuiltins(_ env: inout TnEnv) using Alloc {
@@ -3335,8 +3357,10 @@ func tnRecordType(_ env: inout TnEnv, _ name: String, _ generics: Vec[Nd]) using
     if generics.len() > 0 { env.genericUserTypes.push(name) }
 }
 
-func tnCheck(_ env: inout TnEnv, _ u: NUnit) using Alloc {
+func tnCheck(_ env: inout TnEnv, _ u: NUnit, _ srcPaths: Vec[String],
+             _ srcTypMod: Vec[String], _ srcTypName: Vec[String]) using Alloc {
     tnSeedBuiltins(env)
+    tnSeedModules(env, srcPaths, srcTypMod, srcTypName)
     var c: Int = 0
     while c < u.decls.len() {
         tnCollectType(env, u.decls.get(c) ?? Nd.wildcard)
@@ -3464,9 +3488,71 @@ func tnType(_ env: inout TnEnv, _ t: Nd) using Alloc {
 // type applied to type arguments, is an error AND stops the walk (the C++ does
 // not descend into the args in either case). Otherwise the args are resolved.
 func tnNamed(_ env: inout TnEnv, _ path: String, _ args: Vec[Nd]) using Alloc {
+    if tnLastDot(path) >= 0 { tnQualifiedNamed(env, path, args); return }
     if !tnKnown(env, path) { env.bad.push(unknownTypeMsg(path)); return }
     if args.len() > 0 && tnUserNonGeneric(env, path) { env.bad.push(notGenericMsg(path)); return }
     tnTypeList(env, args)
+}
+
+// A dotted type head `mod.Type` references a public type of an imported module.
+// The leading segments must name an imported module and the final segment one of
+// its public type exports; either failure stops the walk (as the C++ does).
+func tnQualifiedNamed(_ env: inout TnEnv, _ path: String, _ args: Vec[Nd]) using Alloc {
+    let d = tnLastDot(path)
+    let head = own(path.slice(0, d))
+    let last = own(path.slice(d + 1, path.len()))
+    if !tnModKnown(env, head) { env.bad.push(notImportedModuleMsg(head)); return }
+    if !tnModHasType(env, head, last) { env.bad.push(noPublicTypeMsg(head, last)); return }
+    tnTypeList(env, args)
+}
+
+// Index of the last '.' (46) in path, or -1 if none.
+func tnLastDot(_ path: Str) -> Int {
+    var last: Int = -1
+    var i: Int = 0
+    while i < path.len() {
+        if (path.byteAt(i) ?? 0) == 46 { last = i }
+        i = i + 1
+    }
+    return last
+}
+
+func tnModKnown(_ env: inout TnEnv, _ head: String) -> Bool {
+    var i: Int = 0
+    while i < env.modPaths.len() {
+        if let m = env.modPaths.get(i) { if streq(m, head) { return true } }
+        i = i + 1
+    }
+    return false
+}
+
+func tnModHasType(_ env: inout TnEnv, _ head: String, _ name: String) -> Bool {
+    var i: Int = 0
+    while i < env.modTypMod.len() {
+        if let m = env.modTypMod.get(i) {
+            if streq(m, head) {
+                if let nm = env.modTypName.get(i) { if streq(nm, name) { return true } }
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func notImportedModuleMsg(_ head: String) using Alloc -> String {
+    var s: String = "'"
+    s.append(head)
+    s.append("' is not an imported module")
+    return s
+}
+
+func noPublicTypeMsg(_ head: String, _ name: String) using Alloc -> String {
+    var s: String = "module '"
+    s.append(head)
+    s.append("' has no public type '")
+    s.append(name)
+    s.append("'")
+    return s
 }
 
 // A user-declared type (struct / enum / opaque) that takes no type parameters.
@@ -6204,28 +6290,43 @@ func harvestModule(_ env: inout Env, _ contents: Str) using Alloc {
     }
 }
 
+// A public func/const/static is a value MEMBER; a public struct/enum/opaque is
+// both a type export (usable in type position) and a value member (its name
+// doubles as a constructor in value position).
 func harvestDecl(_ env: inout Env, _ modPath: Str, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let ps, let cap, let th, let r, let b):
-            harvestPublic(&env, modPath, vis, name)
+            harvestMember(&env, modPath, vis, name)
         case .structD(let vis, let name, let f, let m, let dn, let lin, let g):
-            harvestPublic(&env, modPath, vis, name)
+            harvestTypeMember(&env, modPath, vis, name)
         case .enumD(let vis, let name, let c, let m, let g):
-            harvestPublic(&env, modPath, vis, name)
+            harvestTypeMember(&env, modPath, vis, name)
         case .constD(let vis, let name, let t, let v):
-            harvestPublic(&env, modPath, vis, name)
+            harvestMember(&env, modPath, vis, name)
         case .staticD(let vis, let name, let t, let v):
-            harvestPublic(&env, modPath, vis, name)
+            harvestMember(&env, modPath, vis, name)
         case .opaqueD(let vis, let name, let t):
-            harvestPublic(&env, modPath, vis, name)
+            harvestTypeMember(&env, modPath, vis, name)
         default: noop()
     }
 }
 
-func harvestPublic(_ env: inout Env, _ modPath: Str, _ vis: Str, _ name: Str) using Alloc {
+// A struct / enum / opaque exports both a value member (constructor) and a type.
+func harvestTypeMember(_ env: inout Env, _ modPath: Str, _ vis: Str, _ name: Str) using Alloc {
+    harvestMember(&env, modPath, vis, name)
+    harvestType(&env, modPath, vis, name)
+}
+
+func harvestMember(_ env: inout Env, _ modPath: Str, _ vis: Str, _ name: Str) using Alloc {
     if !streq(vis, "public ") { return }
     env.modExpMod.push(own(modPath))
     env.modExpName.push(own(name))
+}
+
+func harvestType(_ env: inout Env, _ modPath: Str, _ vis: Str, _ name: Str) using Alloc {
+    if !streq(vis, "public ") { return }
+    env.modTypMod.push(own(modPath))
+    env.modTypName.push(own(name))
 }
 
 func main() -> Int32 {
@@ -6248,7 +6349,8 @@ func main() -> Int32 {
                     var env = Env(names: Vec.new(), bad: Vec.new(), marks: Vec.new(),
                                   dups: Vec.new(), curThrows: false, throwBad: Vec.new(),
                                   modPaths: Vec.new(), modExpMod: Vec.new(),
-                                  modExpName: Vec.new(), modBad: Vec.new())
+                                  modExpName: Vec.new(), modTypMod: Vec.new(),
+                                  modTypName: Vec.new(), modBad: Vec.new())
                     let impErrs = loadModules(u, path, &env)
                     var ie: Int = 0
                     while ie < impErrs.len() {
@@ -6275,8 +6377,10 @@ func main() -> Int32 {
                     }
                     var tnenv = TnEnv(types: Vec.new(), userTypes: Vec.new(),
                                       genericUserTypes: Vec.new(), tparams: Vec.new(),
-                                      tpMarks: Vec.new(), bad: Vec.new())
-                    tnCheck(&tnenv, u)
+                                      tpMarks: Vec.new(), modPaths: Vec.new(),
+                                      modTypMod: Vec.new(), modTypName: Vec.new(),
+                                      bad: Vec.new())
+                    tnCheck(&tnenv, u, env.modPaths, env.modTypMod, env.modTypName)
                     var tni: Int = 0
                     while tni < tnenv.bad.len() {
                         if let msg = tnenv.bad.get(tni) { println(msg) }

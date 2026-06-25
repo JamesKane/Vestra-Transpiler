@@ -1,0 +1,5 @@
+// An importable module exporting a public type and a private one.
+module geo
+
+public struct Pt { var x: Int32 }
+struct Hidden { var y: Int32 }

@@ -1,0 +1,2 @@
+// A qualified type whose head names no imported module.
+func f(_ p: nope.Bar) -> Int32 { return 0 }

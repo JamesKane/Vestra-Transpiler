@@ -1,0 +1,4 @@
+// References a type the imported module does not publicly export.
+import geo
+
+func f(_ p: geo.Missing) -> Int32 { return 0 }
