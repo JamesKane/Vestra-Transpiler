@@ -2848,6 +2848,43 @@ func emitDecl(_ d: Nd) using Alloc, Log {
     }
 }
 
+// ----- header (`.hpp`) emission --------------------------------------------
+// The per-program tail of the generated header (everything after the fixed
+// runtime prelude): a leading blank line, then each declaration in SOURCE order
+// — a free function as a forward declaration, a struct/enum as its definition
+// (definitions/methods are a later slice). The harness diffs this against the
+// `.hpp` tail `vestra build` writes (after the `#endif // VESTRA_RUNTIME_PRELUDE`
+// marker).
+func emitHpp(_ u: NUnit) using Alloc, Log {
+    print("\n")
+    var i: Int = 0
+    while i < u.decls.len() {
+        emitHppDecl(u.decls.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func emitHppDecl(_ d: Nd) using Alloc, Log {
+    match d {
+        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
+            emitFwdDecl(name, params, res)
+        default: noop()
+    }
+}
+
+// A free-function forward declaration. `[[nodiscard]]` is emitted whenever the
+// return type is written explicitly (even `-> Unit`); an omitted return type
+// gets a bare `void`.
+func emitFwdDecl(_ name: Str, _ params: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
+    if res.len() > 0 { print("[[nodiscard]] ") }
+    emitRetType(res)
+    print(" ")
+    print(name)
+    print("(")
+    emitParams(params)
+    print(");\n")
+}
+
 func emitFunc(_ name: Str, _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
     emitRetType(res)
     print(" ")
@@ -3337,15 +3374,23 @@ func main() -> Int32 {
             with Log {
                 let argv = args()
                 if argv.len() < 2 {
-                    eprintln("usage: vgen <file.vst>")
+                    eprintln("usage: vgen [--hpp] <file.vst>")
                     return 1
                 }
-                let path = argv.get(1) ?? ""
+                // `vgen --hpp FILE` emits the header tail (declarations);
+                // `vgen FILE` emits the source definitions.
+                var hppMode: Bool = false
+                var path: String = own(argv.get(1) ?? "")
+                if streq(path, "--hpp") {
+                    if argv.len() < 3 { eprintln("usage: vgen [--hpp] <file.vst>"); return 1 }
+                    hppMode = true
+                    path = own(argv.get(2) ?? "")
+                }
                 if let src = readFile(path) {
                     let toks = tokenize(src)
                     var p = Ps(toks: toks, pos: 0)
                     let u = parseUnit(&p)
-                    emitUnit(u, stemOf(path))
+                    if hppMode { emitHpp(u) } else { emitUnit(u, stemOf(path)) }
                     return 0
                 }
                 eprintln("read failed")

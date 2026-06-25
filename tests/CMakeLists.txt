@@ -302,6 +302,19 @@ foreach(prog cg_func cg_expr cg_stmt cg_if cg_for cg_struct cg_index)
     set_tests_properties(e2e_selfhost_codegen_diff_${prog} PROPERTIES DEPENDS e2e_selfhost_codegen_compile)
 endforeach()
 
+# Header (`.hpp`) differential: `vgen --hpp` emits the per-program tail of the
+# generated header (declarations after the fixed runtime prelude); the reference
+# is the real .hpp with everything up to and including the
+# `#endif // VESTRA_RUNTIME_PRELUDE` marker stripped (literal-substring awk match).
+# Restricted to declaration sets vgen can already emit (free-function forward
+# declarations); struct / enum definition emission grows this list.
+foreach(prog cg_func cg_expr cg_stmt cg_if cg_for cg_index)
+    add_test(
+        NAME    e2e_selfhost_codegen_hpp_${prog}
+        COMMAND sh -c "mkdir -p ${cg_workdir} && $<TARGET_FILE:vestra> build ${cg_dir}/${prog}.vst -o ${cg_workdir} >/dev/null 2>&1; awk 'f{print} index(\$0, \"#endif  // VESTRA_RUNTIME_PRELUDE\"){f=1}' ${cg_workdir}/${prog}.hpp > ${cg_workdir}/${prog}_href.txt; ${e2e_workdir}/vgen --hpp ${cg_dir}/${prog}.vst > ${cg_workdir}/${prog}_hgot.txt; diff ${cg_workdir}/${prog}_href.txt ${cg_workdir}/${prog}_hgot.txt")
+    set_tests_properties(e2e_selfhost_codegen_hpp_${prog} PROPERTIES DEPENDS e2e_selfhost_codegen_compile)
+endforeach()
+
 # Shapes: exercises structs + member access + bare enum + match.
 set(e2e_shapes_input  ${CMAKE_SOURCE_DIR}/examples/shapes.vst)
 set(e2e_shapes_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_shapes.cpp)
