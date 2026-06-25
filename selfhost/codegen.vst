@@ -3169,8 +3169,17 @@ func emitExpr(_ e: Nd) using Alloc, Log {
         case .unary(let op, let x): emitUnary(op, x)
         case .binary(let op, let l, let r): emitBinary(op, l, r)
         case .call(let callee, let args): emitCall(callee, args)
+        case .member(let base, let name, let chain): emitMember(base, name, chain)
         default: print("/*?expr*/")
     }
+}
+
+// Field / method access `base.name` lowers to `base.name`. (Optional-chain `?.`
+// is deferred.)
+func emitMember(_ base: Vec[Nd], _ name: Str, _ chain: Bool) using Alloc, Log {
+    emitBoxed(base)
+    print(".")
+    print(name)
 }
 
 func emitBool(_ b: Bool) using Log { if b { print("true") } else { print("false") } }
@@ -3189,12 +3198,64 @@ func emitStr(_ s: Str) using Alloc, Log {
     print("\")")
 }
 
-// A call emits the callee then a parenthesized, comma-separated argument list.
+// A call emits the callee then a parenthesized, comma-separated argument list —
+// unless it is struct construction (an identifier callee with labeled arguments),
+// which lowers to designated initializers `Name{.field = value, ...}`. Labeled
+// calls in the curated corpus are struct constructions; method calls have a
+// member callee (not an identifier) and so never match.
 func emitCall(_ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
+    if isStructCtor(callee, args) { emitStructCtor(callee, args); return }
     emitBoxed(callee)
     print("(")
     emitArgList(args)
     print(")")
+}
+
+func isStructCtor(_ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc -> Bool {
+    if !calleeIsIdent(callee) { return false }
+    if args.len() == 0 { return false }
+    return argHasLabel(args.get(0) ?? Nd.wildcard)
+}
+
+func calleeIsIdent(_ callee: Vec[Nd]) -> Bool {
+    if callee.len() == 0 { return false }
+    return match callee.get(0) ?? Nd.wildcard {
+        case .ident(let n): true
+        default: false
+    }
+}
+
+func argHasLabel(_ a: Nd) using Alloc -> Bool {
+    return match a {
+        case .arg(let label, let isInout, let val): !streq(label, "")
+        default: false
+    }
+}
+
+func emitStructCtor(_ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
+    emitBoxed(callee)
+    print("{")
+    var i: Int = 0
+    while i < args.len() {
+        if i > 0 { print(", ") }
+        emitCtorField(args.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    print("}")
+}
+
+func emitCtorField(_ a: Nd) using Alloc, Log {
+    match a {
+        case .arg(let label, let isInout, let val): emitCtorFieldParts(label, val)
+        default: noop()
+    }
+}
+
+func emitCtorFieldParts(_ label: Str, _ val: Vec[Nd]) using Alloc, Log {
+    print(".")
+    print(label)
+    print(" = ")
+    emitBoxed(val)
 }
 
 func emitArgList(_ args: Vec[Nd]) using Alloc, Log {

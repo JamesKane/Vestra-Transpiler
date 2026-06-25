@@ -295,7 +295,7 @@ add_test(
             -o ${e2e_workdir}/vgen)
 set_tests_properties(e2e_selfhost_codegen_compile PROPERTIES DEPENDS e2e_selfhost_codegen_transpile)
 
-foreach(prog cg_func cg_expr cg_stmt cg_if cg_for)
+foreach(prog cg_func cg_expr cg_stmt cg_if cg_for cg_struct)
     add_test(
         NAME    e2e_selfhost_codegen_diff_${prog}
         COMMAND sh -c "mkdir -p ${cg_workdir} && $<TARGET_FILE:vestra> build ${cg_dir}/${prog}.vst -o ${cg_workdir} >/dev/null 2>&1; ${e2e_workdir}/vgen ${cg_dir}/${prog}.vst > ${cg_workdir}/${prog}_got.cpp; diff ${cg_workdir}/${prog}.cpp ${cg_workdir}/${prog}_got.cpp")

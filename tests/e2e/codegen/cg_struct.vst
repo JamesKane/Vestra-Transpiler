@@ -1,0 +1,20 @@
+struct Vec2 {
+  var x: Int32
+  var y: Int32
+  func scaled(_ k: Int32) -> Vec2 {
+    return Vec2(x: self.x * k, y: self.y * k)
+  }
+}
+func origin() -> Vec2 {
+  return Vec2(x: 0, y: 0)
+}
+func dot(_ a: Vec2, _ b: Vec2) -> Int32 {
+  return a.x * b.x + a.y * b.y
+}
+func twice(_ a: Vec2) -> Vec2 {
+  return a.scaled(2)
+}
+func mksum(_ a: Int32, _ b: Int32) -> Int32 {
+  let p = Vec2(x: a, y: b)
+  return p.x + p.y
+}
