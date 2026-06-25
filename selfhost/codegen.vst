@@ -3170,8 +3170,18 @@ func emitExpr(_ e: Nd) using Alloc, Log {
         case .binary(let op, let l, let r): emitBinary(op, l, r)
         case .call(let callee, let args): emitCall(callee, args)
         case .member(let base, let name, let chain): emitMember(base, name, chain)
+        case .index(let base, let idxs): emitIndex(base, idxs)
         default: print("/*?expr*/")
     }
+}
+
+// Indexing lowers to a `std::size_t`-cast subscript: `xs[i]` ->
+// `xs[static_cast<std::size_t>(i)]`. (Single-index only.)
+func emitIndex(_ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc, Log {
+    emitBoxed(base)
+    print("[static_cast<std::size_t>(")
+    emitBoxed(idxs)
+    print(")]")
 }
 
 // Field / method access `base.name` lowers to `base.name`. (Optional-chain `?.`
@@ -3286,12 +3296,23 @@ func emitUnary(_ op: Str, _ x: Vec[Nd]) using Alloc, Log {
     emitBoxed(x)
 }
 
+// Most binary operators pass through (`a + b`, `a == b`, `a && b`); nil-coalescing
+// `l ?? r` lowers to `(l).value_or(r)`.
 func emitBinary(_ op: Str, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc, Log {
+    if streq(op, "??") { emitCoalesce(l, r); return }
     emitBoxed(l)
     print(" ")
     print(op)
     print(" ")
     emitBoxed(r)
+}
+
+func emitCoalesce(_ l: Vec[Nd], _ r: Vec[Nd]) using Alloc, Log {
+    print("(")
+    emitBoxed(l)
+    print(").value_or(")
+    emitBoxed(r)
+    print(")")
 }
 
 // Basename of the input path without its `.vst` extension (the `.hpp`/`.cpp` stem).

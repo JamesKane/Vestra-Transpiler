@@ -1,0 +1,15 @@
+func at(_ xs: Vec[Int32], _ i: Int32) -> Int32 {
+  return xs[i]
+}
+func first(_ xs: Vec[Int32]) -> Int32 {
+  return xs[0]
+}
+func orelse(_ x: Int32?) -> Int32 {
+  return x ?? 0
+}
+func notb(_ b: Bool) -> Bool {
+  return !b
+}
+func twosum(_ xs: Vec[Int32]) -> Int32 {
+  return xs[0] + xs[1]
+}
