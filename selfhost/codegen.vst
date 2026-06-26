@@ -4989,6 +4989,7 @@ func emitReturnMatch(_ env: inout TyEnv, _ indent: Str, _ m: Nd) using Alloc, Lo
 
 func emitReturnMatchParts(_ env: inout TyEnv, _ indent: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
     let enumName = tyInferBoxed(env, scrut)
+    if isPayloadEnum(env, enumName) { emitReturnVisitMatch(env, indent, enumName, scrut, arms); return }
     print(indent)
     print("return [&]() -> ")
     emitTypeBoxed(env.curRetNode)
@@ -5022,6 +5023,95 @@ func emitMatchArmParts(_ env: inout TyEnv, _ armIndent: Str, _ enumName: Str, _ 
     print(deeper(armIndent))
     print("return ")
     emitBoxed(env, body)
+    print(";\n")
+}
+
+// `return match <scrut> { case .C(let a, ...): <body> ... }` over a PAYLOAD enum
+// lowers to a std::visit over the variant, with an `if constexpr` chain selecting
+// the active alternative and binding its payload fields:
+//
+//   return std::visit([&](auto&& __vstr_alt) -> <retType> {
+//       using __vstr_alt_t = std::decay_t<decltype(__vstr_alt)>;
+//       if constexpr (std::is_same_v<__vstr_alt_t, <Enum>::<C>_t>) {
+//           {
+//               auto&& a = __vstr_alt._0;
+//               return <body>;
+//           }
+//       } else if constexpr (...) { ... } else { std::unreachable(); }
+//   }, <scrut>.value);
+func emitReturnVisitMatch(_ env: inout TyEnv, _ indent: Str, _ enumName: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    print("return std::visit([&](auto&& __vstr_alt) -> ")
+    emitTypeBoxed(env.curRetNode)
+    print(" {\n")
+    let i8 = deeper(indent)
+    print(i8)
+    print("using __vstr_alt_t = std::decay_t<decltype(__vstr_alt)>;\n")
+    let i12 = deeper(i8)
+    let i16 = deeper(i12)
+    var j: Int = 0
+    while j < arms.len() {
+        emitVisitArm(env, i8, i12, i16, enumName, arms.get(j) ?? Nd.wildcard, j)
+        j = j + 1
+    }
+    print(i8)
+    print("} else { std::unreachable(); }\n")
+    print(indent)
+    print("}, ")
+    emitBoxed(env, scrut)
+    print(".value);\n")
+}
+
+func emitVisitArm(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ i16: Str, _ enumName: Str, _ arm: Nd, _ j: Int) using Alloc, Log {
+    match arm {
+        case .matchArm(let isDefault, let pat, let guard, let body): emitVisitArmParts(env, i8, i12, i16, enumName, pat, body, j)
+        default: noop()
+    }
+}
+
+func emitVisitArmParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ i16: Str, _ enumName: Str, _ pat: Vec[Nd], _ body: Vec[Nd], _ j: Int) using Alloc, Log {
+    print(i8)
+    if j == 0 { print("if constexpr (std::is_same_v<__vstr_alt_t, ") }
+    else { print("} else if constexpr (std::is_same_v<__vstr_alt_t, ") }
+    print(enumName)
+    print("::")
+    print(armCaseName(pat))
+    print("_t>) {\n")
+    print(i12)
+    print("{\n")
+    emitPayloadBindings(i16, pat)
+    print(i16)
+    print("return ")
+    emitBoxed(env, body)
+    print(";\n")
+    print(i12)
+    print("}\n")
+}
+
+// `auto&& <bind> = __vstr_alt._<idx>;` for each payload binding in the pattern.
+func emitPayloadBindings(_ i16: Str, _ pat: Vec[Nd]) using Alloc, Log {
+    match pat.get(0) ?? Nd.wildcard {
+        case .enumP(let cname, let children): emitBindingList(i16, children)
+        default: noop()
+    }
+}
+
+func emitBindingList(_ i16: Str, _ children: Vec[Nd]) using Alloc, Log {
+    var i: Int = 0
+    while i < children.len() {
+        emitOneBinding(i16, children.get(i) ?? Nd.wildcard, i)
+        i = i + 1
+    }
+}
+
+func emitOneBinding(_ i16: Str, _ child: Nd, _ idx: Int) using Alloc, Log {
+    let bn = patNameOf(child)
+    if streq(bn, "") { return }
+    print(i16)
+    print("auto&& ")
+    print(bn)
+    print(" = __vstr_alt._")
+    print(intToStr(idx))
     print(";\n")
 }
 

@@ -1,0 +1,19 @@
+enum Shape {
+  case circle(Int32)
+  case rect(Int32, Int32)
+  case point
+}
+func first(_ s: Shape) -> Int32 {
+  return match s {
+    case .circle(let r): r
+    case .rect(let w, let h): w
+    case .point: 0
+  }
+}
+func second(_ s: Shape) -> Int32 {
+  return match s {
+    case .circle(let r): r
+    case .rect(let w, let h): h
+    case .point: 0 - 1
+  }
+}
