@@ -1,0 +1,14 @@
+enum Color {
+  case red
+  case green
+  case blue
+}
+func pick() -> Color {
+  return Color.red
+}
+func other() -> Color {
+  return Color.blue
+}
+func mid() -> Color {
+  return Color.green
+}

@@ -3435,12 +3435,37 @@ func emitIndex(_ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc, Log {
     print(")]")
 }
 
-// Field / method access `base.name` lowers to `base.name`. (Optional-chain `?.`
-// is deferred.)
+// Field / method access `base.name` lowers to `base.name`, EXCEPT a type-qualified
+// access whose base is a capitalized identifier (an enum/type name) lowers to
+// `Base::name` — this covers payload-free enum cases (`Color.red` -> `Color::red`).
+// The capitalization heuristic stands in for the type info vgen lacks; values are
+// lowercase by convention, so instance access is unaffected. (Optional-chain `?.`
+// and payload-enum case construction — which needs the variant wrapping — are not
+// handled here.)
 func emitMember(_ base: Vec[Nd], _ name: Str, _ chain: Bool) using Alloc, Log {
+    if baseIsCapIdent(base) {
+        emitBoxed(base)
+        print("::")
+        print(name)
+        return
+    }
     emitBoxed(base)
     print(".")
     print(name)
+}
+
+func baseIsCapIdent(_ base: Vec[Nd]) -> Bool {
+    if base.len() == 0 { return false }
+    return match base.get(0) ?? Nd.wildcard {
+        case .ident(let n): isCapitalized(n)
+        default: false
+    }
+}
+
+func isCapitalized(_ n: Str) -> Bool {
+    if n.len() == 0 { return false }
+    let c = n.byteAt(0) ?? 0
+    return c >= 65 && c <= 90   // 'A'..'Z'
 }
 
 func emitBool(_ b: Bool) using Log { if b { print("true") } else { print("false") } }
