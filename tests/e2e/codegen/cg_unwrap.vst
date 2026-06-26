@@ -1,0 +1,10 @@
+func unwrap(_ x: Int32?) -> Int32 {
+  return x!
+}
+func nott(_ b: Bool) -> Bool {
+  return !b
+}
+func unlocal(_ a: Int32) -> Int32 {
+  let o: Int32? = a
+  return o!
+}
