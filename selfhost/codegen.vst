@@ -3607,6 +3607,1527 @@ func stemOf(_ path: Str) using Alloc -> String {
     return base
 }
 
+
+
+func containsSub(_ s: String, _ sub: Str) -> Bool {
+    let n = s.len()
+    let m = sub.len()
+    if m == 0 { return true }
+    if m > n { return false }
+    var i: Int = 0
+    while i + m <= n {
+        var j: Int = 0
+        var ok: Bool = true
+        while ok && j < m {
+            if (s.byteAt(i + j) ?? 0) != (sub.byteAt(j) ?? 1) { ok = false }
+            j = j + 1
+        }
+        if ok { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func exCalleeNameBoxed(_ callee: Vec[Nd]) using Alloc -> String {
+    if callee.len() > 0 { return exCalleeName(callee.get(0) ?? Nd.wildcard) }
+    return own("")
+}
+
+func exCalleeName(_ callee: Nd) using Alloc -> String {
+    return match callee {
+        case .ident(let nm): nm
+        default: own("")
+    }
+}
+
+// ===========================================================================
+// Type inference (ported from selfhost/sema.vst's type checker). The checking
+// functions are unused here; codegen drives the table collection + tyInfer to
+// recover expression types for type-directed lowerings (force-unwrap, match,
+// payload-enum construction).
+// ===========================================================================
+struct TyEnv {
+    var funcName: Vec[String]   // global: function name ...
+    var funcRet: Vec[String]    // ... -> return-type spelling ("Unit" if none) ...
+    var funcArity: Vec[Int]     // ... -> declared parameter count
+    var pFn: Vec[String]        // global: per-parameter rows — function name ...
+    var pIdx: Vec[Int]          // ... parameter index ...
+    var pType: Vec[String]      // ... -> parameter type spelling
+    var structs: Vec[String]    // global: struct names (construction yields that type)
+    var sFldStruct: Vec[String] // global: per-field rows — owning struct ...
+    var sFldName: Vec[String]   // ... field name ...
+    var sFldType: Vec[String]   // ... -> field type spelling (embeds excluded)
+    var mStruct: Vec[String]    // global: per-method rows — owning struct/enum ...
+    var mName: Vec[String]      // ... method name ...
+    var mRet: Vec[String]       // ... -> result-type spelling ("Unit" if none, "Self"->owner)
+    var eName: Vec[String]      // global: enum names (a bare `E.case` is a type ref)
+    var ecEnum: Vec[String]     // global: per-case rows — owning enum ...
+    var ecName: Vec[String]     // ... case name ...
+    var ecArity: Vec[Int]       // ... -> payload field count
+    var symName: Vec[String]    // per-function: binding name ...
+    var symType: Vec[String]    // ... -> type spelling
+    var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
+    var bad: Vec[String]
+}
+
+func tyCheck(_ env: inout TyEnv, _ u: NUnit) using Alloc {
+    var i: Int = 0
+    while i < u.decls.len() {
+        tyCollectDecl(env, u.decls.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    var j: Int = 0
+    while j < u.decls.len() {
+        tyCheckDecl(env, u.decls.get(j) ?? Nd.wildcard)
+        j = j + 1
+    }
+}
+
+// ----- pass 1: function return types and struct names -----------------------
+func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
+            tyRecordFunc(env, name, params, r)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyRecordStructDecl(env, name, fl, m)
+        case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumDecl(env, name, cs, m)
+        default: noop()
+    }
+}
+
+func tyRecordEnumDecl(_ env: inout TyEnv, _ name: String, _ cases: Vec[Nd], _ methods: Vec[Nd]) using Alloc {
+    env.eName.push(name)
+    var i: Int = 0
+    while i < cases.len() {
+        tyRecordCase(env, name, cases.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    tyRecordMethods(env, name, methods)
+}
+
+func tyRecordCase(_ env: inout TyEnv, _ enumName: String, _ c: Nd) using Alloc {
+    match c {
+        case .enumCase(let cn, let pay): tyPushCase(env, enumName, cn, pay.len())
+        default: noop()
+    }
+}
+
+func tyPushCase(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ arity: Int) using Alloc {
+    env.ecEnum.push(enumName)
+    env.ecName.push(cn)
+    env.ecArity.push(arity)
+}
+
+func tyCaseArity(_ env: inout TyEnv, _ enumName: String, _ cn: String) -> Int {
+    var i: Int = 0
+    while i < env.ecEnum.len() {
+        if let e = env.ecEnum.get(i) {
+            if streq(e, enumName) {
+                if let c = env.ecName.get(i) {
+                    if streq(c, cn) { return env.ecArity.get(i) ?? -1 }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+func tyIsEnum(_ env: inout TyEnv, _ name: String) -> Bool {
+    var i: Int = 0
+    while i < env.eName.len() {
+        if let n = env.eName.get(i) {
+            if streq(n, name) { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func tyEnumHasCase(_ env: inout TyEnv, _ enumName: String, _ caseName: String) -> Bool {
+    var i: Int = 0
+    while i < env.ecEnum.len() {
+        if let e = env.ecEnum.get(i) {
+            if streq(e, enumName) {
+                if let c = env.ecName.get(i) {
+                    if streq(c, caseName) { return true }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func tyRecordStructDecl(_ env: inout TyEnv, _ name: String, _ fields: Vec[Nd], _ methods: Vec[Nd]) using Alloc {
+    tyRecordStruct(env, name, fields)
+    tyRecordMethods(env, name, methods)
+}
+
+// Record each user-declared method's result spelling under its owning type. A
+// method with its OWN generic parameters is skipped (its result may name a type
+// variable we can't resolve) so it stays unknown and tolerated, like a builtin.
+func tyRecordMethods(_ env: inout TyEnv, _ owner: String, _ methods: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < methods.len() {
+        tyRecordMethod(env, owner, methods.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyRecordMethod(_ env: inout TyEnv, _ owner: String, _ m: Nd) using Alloc {
+    match m {
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
+            tyPushMethod(env, owner, name, g, r)
+        default: noop()
+    }
+}
+
+func tyPushMethod(_ env: inout TyEnv, _ owner: String, _ name: String, _ gens: Vec[Nd], _ result: Vec[Nd]) using Alloc {
+    if gens.len() > 0 { return }
+    env.mStruct.push(owner)
+    env.mName.push(name)
+    env.mRet.push(tyRetSpelling(result))
+}
+
+func tyRecordStruct(_ env: inout TyEnv, _ name: String, _ fields: Vec[Nd]) using Alloc {
+    env.structs.push(name)
+    var i: Int = 0
+    while i < fields.len() {
+        tyRecordField(env, name, fields.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyRecordField(_ env: inout TyEnv, _ structName: String, _ f: Nd) using Alloc {
+    match f {
+        case .field(let kind, let fname, let fty): tyPushField(env, structName, kind, fname, fty)
+        default: noop()
+    }
+}
+
+// Record a constructible field (`let`/`var`); embeds aren't set by label.
+func tyPushField(_ env: inout TyEnv, _ structName: String, _ kind: String, _ fname: String, _ fty: Vec[Nd]) using Alloc {
+    if containsSub(kind, "embed") { return }
+    env.sFldStruct.push(structName)
+    env.sFldName.push(fname)
+    env.sFldType.push(tyAnnSpelling(fty))
+}
+
+func tyHasField(_ env: inout TyEnv, _ structName: String, _ label: String) -> Bool {
+    var i: Int = 0
+    while i < env.sFldStruct.len() {
+        if let s = env.sFldStruct.get(i) {
+            if streq(s, structName) {
+                if let fn = env.sFldName.get(i) {
+                    if streq(fn, label) { return true }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func tyFieldType(_ env: inout TyEnv, _ structName: String, _ label: String) using Alloc -> String {
+    var i: Int = 0
+    while i < env.sFldStruct.len() {
+        if let s = env.sFldStruct.get(i) {
+            if streq(s, structName) {
+                if let fn = env.sFldName.get(i) {
+                    if streq(fn, label) { return env.sFldType.get(i) ?? own("") }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return own("")
+}
+
+func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ result: Vec[Nd]) using Alloc {
+    env.funcName.push(name)
+    if result.len() == 0 { env.funcRet.push("Unit") }
+    else { env.funcRet.push(typeSpelling(result.get(0) ?? Nd.wildcard)) }
+    env.funcArity.push(params.len())
+    var i: Int = 0
+    while i < params.len() {
+        tyRecordParam(env, name, i, params.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyRecordParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ p: Nd) using Alloc {
+    match p {
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyPushParam(env, name, idx, tyAnnSpelling(ty))
+        default: noop()
+    }
+}
+
+func tyPushParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ sp: String) using Alloc {
+    env.pFn.push(name)
+    env.pIdx.push(idx)
+    env.pType.push(sp)
+}
+
+func tyArity(_ env: inout TyEnv, _ name: String) -> Int {
+    var i: Int = 0
+    while i < env.funcName.len() {
+        if let n = env.funcName.get(i) {
+            if streq(n, name) { return env.funcArity.get(i) ?? -1 }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+func tyParamType(_ env: inout TyEnv, _ name: String, _ idx: Int) using Alloc -> String {
+    var i: Int = 0
+    while i < env.pFn.len() {
+        if let n = env.pFn.get(i) {
+            if streq(n, name) && (env.pIdx.get(i) ?? -1) == idx { return env.pType.get(i) ?? own("") }
+        }
+        i = i + 1
+    }
+    return own("")
+}
+
+func tyFuncRet(_ env: inout TyEnv, _ name: String) using Alloc -> String {
+    var i: Int = 0
+    while i < env.funcName.len() {
+        if let n = env.funcName.get(i) {
+            if streq(n, name) { return env.funcRet.get(i) ?? own("") }
+        }
+        i = i + 1
+    }
+    return own("")
+}
+
+func tyIsStruct(_ env: inout TyEnv, _ name: String) -> Bool {
+    var i: Int = 0
+    while i < env.structs.len() {
+        if let s = env.structs.get(i) {
+            if streq(s, name) { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// ----- pass 2: per-function walk --------------------------------------------
+func tyCheckDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
+            tyCheckFunc(env, name, params, r, b)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyCheckMethods(env, m)
+        case .enumD(let vis, let name, let cs, let m, let generics): tyCheckMethods(env, m)
+        case .constD(let vis, let name, let ty, let v): tyCheckConst(env, ty, v)
+        default: noop()
+    }
+}
+
+func tyCheckMethods(_ env: inout TyEnv, _ methods: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < methods.len() {
+        tyCheckDecl(env, methods.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyCheckFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ result: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    env.curRet = tyRetSpelling(result)
+    tyResetSyms(env)
+    tyRegisterParams(env, params)
+    tyBoxed(env, body)
+    tyCheckBodyProduces(env, name, body)
+}
+
+func tyRetSpelling(_ result: Vec[Nd]) using Alloc -> String {
+    if result.len() == 0 { return own("Unit") }
+    return typeSpelling(result.get(0) ?? Nd.wildcard)
+}
+
+// §10/§17 — when the body's trailing expression is present and its type is not
+// assignable to the declared (non-Unit) result, the implicit return is wrong.
+// A body ending in a non-expression statement (let / return / ...) produces Unit
+// and is tolerated (an explicit return we don't flow-check).
+func tyCheckBodyProduces(_ env: inout TyEnv, _ name: String, _ body: Vec[Nd]) using Alloc {
+    if streq(env.curRet, "") || streq(env.curRet, "Unit") { return }
+    let bt = tyBodyType(env, body)
+    if streq(bt, "") || streq(bt, "Unit") { return }
+    if !tyAssignable(bt, env.curRet) { env.bad.push(tyBodyMsg(name, env.curRet, bt)) }
+}
+
+func tyBodyType(_ env: inout TyEnv, _ body: Vec[Nd]) using Alloc -> String {
+    if body.len() == 0 { return own("Unit") }
+    return tyBlockLastType(env, body.get(0) ?? Nd.wildcard)
+}
+
+func tyBlockLastType(_ env: inout TyEnv, _ blk: Nd) using Alloc -> String {
+    return match blk {
+        case .block(let stmts): tyLastStmtType(env, stmts)
+        default: own("Unit")
+    }
+}
+
+func tyLastStmtType(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc -> String {
+    if stmts.len() == 0 { return own("Unit") }
+    return tyStmtType(env, stmts.get(stmts.len() - 1) ?? Nd.wildcard)
+}
+
+func tyStmtType(_ env: inout TyEnv, _ s: Nd) using Alloc -> String {
+    return match s {
+        case .exprS(let e): tyInferBoxed(env, e)
+        default: own("Unit")
+    }
+}
+
+func tyResetSyms(_ env: inout TyEnv) using Alloc {
+    while env.symName.len() > 0 { let _ = env.symName.pop() }
+    while env.symType.len() > 0 { let _ = env.symType.pop() }
+}
+
+func tyRegisterParams(_ env: inout TyEnv, _ params: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < params.len() {
+        tyRegisterParam(env, params.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyRegisterParam(_ env: inout TyEnv, _ p: Nd) using Alloc {
+    match p {
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyAddSym(env, nm, ty)
+        default: noop()
+    }
+}
+
+// Register a binding's type from its annotation (empty annotation => untracked).
+func tyAddSym(_ env: inout TyEnv, _ name: String, _ ty: Vec[Nd]) using Alloc {
+    let sp = tyAnnSpelling(ty)
+    if !streq(sp, "") {
+        env.symName.push(name)
+        env.symType.push(sp)
+    }
+}
+
+func tySymType(_ env: inout TyEnv, _ name: String) using Alloc -> String {
+    var i: Int = 0
+    while i < env.symName.len() {
+        if let n = env.symName.get(i) {
+            if streq(n, name) { return env.symType.get(i) ?? own("") }
+        }
+        i = i + 1
+    }
+    return own("")
+}
+
+func tyCheckConst(_ env: inout TyEnv, _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    let ann = tyAnnSpelling(ty)
+    if streq(ann, "") { return }
+    let vt = tyInferBoxed(env, v)
+    if !tyAssignable(vt, ann) { env.bad.push(tyConstMsg(vt, ann)) }
+}
+
+// ----- statement / expression walk (find every let/var, check initializers) -
+func tyBoxed(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc {
+    if v.len() > 0 { tyExpr(env, v.get(0) ?? Nd.wildcard) }
+}
+
+func tyPair(_ env: inout TyEnv, _ a: Vec[Nd], _ b: Vec[Nd]) using Alloc {
+    tyBoxed(env, a)
+    tyBoxed(env, b)
+}
+
+func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
+    match e {
+        case .call(let callee, let args): tyExprCall(env, callee, args)
+        case .prefixE(let kw, let inner): tyBoxed(env, inner)
+        case .paren(let x): tyBoxed(env, x)
+        case .unary(let op, let x): tyUnary(env, op, x)
+        case .binary(let op, let l, let r): tyBinary(env, op, l, r)
+        case .member(let base, let n, let c): tyMember(env, base, n, c)
+        case .index(let base, let idxs): tyIndex(env, base, idxs)
+        case .ifE(let ln, let li, let cond, let thenB, let els): tyIf(env, li, cond, thenB, els)
+        case .block(let stmts): tyBlock(env, stmts)
+        case .asE(let v, let t, let o): tyBoxed(env, v)
+        case .addrOf(let x): tyBoxed(env, x)
+        case .arg(let l, let io, let v): tyBoxed(env, v)
+        case .throwE(let inner): tyBoxed(env, inner)
+        case .matchE(let scrut, let arms): tyMatch(env, scrut, arms)
+        case .doCatchE(let db, let en, let et, let cb): tyPair(env, db, cb)
+        default: noop()
+    }
+}
+
+// Walk a match: descend the scrutinee and every arm body, and require each arm's
+// `where` guard to be Bool. (Pattern-bound variables type as unknown here and are
+// tolerated; arm-result-type unification is a later slice.)
+func tyMatch(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc {
+    tyBoxed(env, scrut)
+    var i: Int = 0
+    while i < arms.len() {
+        tyArm(env, arms.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    tyCheckArmPatterns(env, scrut, arms)
+    tyCheckExhaustive(env, scrut, arms)
+    tyCheckArmTypes(env, arms)
+}
+
+// Validate each arm pattern against the scrutinee type: an enum-case pattern on a
+// non-enum scrutinee; a payload-binding count that disagrees with the case; and a
+// literal pattern whose type does not match the scrutinee. (An unknown scrutinee
+// type is tolerated; default / catch-all arms carry no pattern.)
+func tyCheckArmPatterns(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc {
+    let st = tyInferBoxed(env, scrut)
+    if streq(st, "") { return }
+    var i: Int = 0
+    while i < arms.len() {
+        tyCheckArmPattern(env, st, arms.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyCheckArmPattern(_ env: inout TyEnv, _ st: String, _ a: Nd) using Alloc {
+    match a {
+        case .matchArm(let isDef, let pat, let guard, let body): tyCheckPatBoxed(env, st, pat)
+        default: noop()
+    }
+}
+
+func tyCheckPatBoxed(_ env: inout TyEnv, _ st: String, _ pat: Vec[Nd]) using Alloc {
+    if pat.len() > 0 { tyCheckPatNode(env, st, pat.get(0) ?? Nd.wildcard) }
+}
+
+func tyCheckPatNode(_ env: inout TyEnv, _ st: String, _ p: Nd) using Alloc {
+    match p {
+        case .enumP(let cn, let children): tyCheckEnumPat(env, st, cn, children)
+        case .litP(let inner): tyCheckLitPat(env, st, inner)
+        case .orP(let alts): tyCheckAltPats(env, st, alts)
+        default: noop()
+    }
+}
+
+func tyCheckAltPats(_ env: inout TyEnv, _ st: String, _ alts: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < alts.len() {
+        tyCheckPatNode(env, st, alts.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyCheckEnumPat(_ env: inout TyEnv, _ st: String, _ cn: String, _ children: Vec[Nd]) using Alloc {
+    if !tyIsEnum(env, st) { env.bad.push(tyEnumPatNonEnumMsg(cn, st)); return }
+    let arity = tyCaseArity(env, st, cn)
+    if arity >= 0 && children.len() != arity { env.bad.push(tyPayloadArityMsg(cn, arity, children.len())) }
+}
+
+func tyCheckLitPat(_ env: inout TyEnv, _ st: String, _ inner: Vec[Nd]) using Alloc {
+    let lt = tyInferBoxed(env, inner)
+    if streq(lt, "") { return }
+    if !tyAssignable(lt, st) && !tyAssignable(st, lt) { env.bad.push(tyLitScrutMsg(lt, st)) }
+}
+
+func tyEnumPatNonEnumMsg(_ cn: String, _ st: String) using Alloc -> String {
+    var s: String = "enum pattern '."
+    s.append(cn)
+    s.append("' used against non-enum type ")
+    s.append(st)
+    return s
+}
+
+func tyPayloadArityMsg(_ cn: String, _ arity: Int, _ binds: Int) using Alloc -> String {
+    var s: String = "case '"
+    s.append(cn)
+    s.append("' has ")
+    s.append(intToStr(arity))
+    s.append(" payload field(s), pattern binds ")
+    s.append(intToStr(binds))
+    return s
+}
+
+func tyLitScrutMsg(_ lt: String, _ st: String) using Alloc -> String {
+    var s: String = "literal of type "
+    s.append(lt)
+    s.append(" does not match scrutinee of type ")
+    s.append(st)
+    return s
+}
+
+// The arm bodies must share one type. The first arm with a known type sets the
+// baseline; a later arm whose known type is incompatible reports
+// "match arms have different types: <baseline> vs <arm>", after which the
+// baseline becomes the error type so every following known arm reports
+// "<error> vs <arm>" (mirroring the resolver's cascade). Arms whose body type is
+// unknown are skipped. NB this unifies the arms among themselves (no expected
+// type is threaded in), so it matches the resolver only where the match has no
+// expected type, e.g. an unannotated `let x = match …`.
+func tyCheckArmTypes(_ env: inout TyEnv, _ arms: Vec[Nd]) using Alloc {
+    var unified: String = ""
+    var errored: Bool = false
+    var i: Int = 0
+    while i < arms.len() {
+        let t = tyArmBodyType(env, arms.get(i) ?? Nd.wildcard)
+        if !streq(t, "") {
+            if errored {
+                env.bad.push(tyArmDiffMsg("<error>", t))
+            } else if streq(unified, "") {
+                unified = own(t)
+            } else if !tyArmCompatible(unified, t) {
+                env.bad.push(tyArmDiffMsg(unified, t))
+                errored = true
+            }
+        }
+        i = i + 1
+    }
+}
+
+func tyArmBodyType(_ env: inout TyEnv, _ a: Nd) using Alloc -> String {
+    return match a {
+        case .matchArm(let isDef, let pat, let guard, let body): tyInferBoxed(env, body)
+        default: own("")
+    }
+}
+
+func tyArmCompatible(_ a: String, _ b: String) using Alloc -> Bool {
+    return tyAssignable(a, b) || tyAssignable(b, a)
+}
+
+func tyArmDiffMsg(_ x: Str, _ y: Str) using Alloc -> String {
+    var s: String = "match arms have different types: "
+    s.append(x)
+    s.append(" vs ")
+    s.append(y)
+    return s
+}
+
+// When the scrutinee is a known enum and no arm is a catch-all (a `default` or a
+// `_` wildcard), every case must be covered by some arm's pattern, else
+// "match is not exhaustive: case '<c>' is not covered" — one per uncovered case,
+// in declaration order. Guards do not affect coverage (matching the resolver).
+func tyCheckExhaustive(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc {
+    let st = tyInferBoxed(env, scrut)
+    if !tyIsEnum(env, st) { return }
+    if tyHasCatchAll(arms) { return }
+    var i: Int = 0
+    while i < env.ecEnum.len() {
+        if let e = env.ecEnum.get(i) {
+            if streq(e, st) {
+                if let cn = env.ecName.get(i) {
+                    if !tyArmsCover(arms, cn) { env.bad.push(notExhaustiveMsg(cn)) }
+                }
+            }
+        }
+        i = i + 1
+    }
+}
+
+func tyHasCatchAll(_ arms: Vec[Nd]) -> Bool {
+    var i: Int = 0
+    while i < arms.len() {
+        if tyArmIsCatchAll(arms.get(i) ?? Nd.wildcard) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func tyArmIsCatchAll(_ a: Nd) -> Bool {
+    return match a {
+        case .matchArm(let isDef, let pat, let guard, let body): tyDefaultOrWild(isDef, pat)
+        default: false
+    }
+}
+
+func tyDefaultOrWild(_ isDef: Bool, _ pat: Vec[Nd]) -> Bool {
+    if isDef { return true }
+    if pat.len() == 0 { return false }
+    return tyPatIsWild(pat.get(0) ?? Nd.wildcard)
+}
+
+func tyPatIsWild(_ p: Nd) -> Bool {
+    return match p {
+        case .wildcard: true
+        default: false
+    }
+}
+
+func tyArmsCover(_ arms: Vec[Nd], _ caseName: String) -> Bool {
+    var i: Int = 0
+    while i < arms.len() {
+        if tyArmCovers(arms.get(i) ?? Nd.wildcard, caseName) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func tyArmCovers(_ a: Nd, _ caseName: String) -> Bool {
+    return match a {
+        case .matchArm(let isDef, let pat, let guard, let body): tyPatBoxedCovers(pat, caseName)
+        default: false
+    }
+}
+
+func tyPatBoxedCovers(_ pat: Vec[Nd], _ caseName: String) -> Bool {
+    if pat.len() == 0 { return false }
+    return tyPatCoversCase(pat.get(0) ?? Nd.wildcard, caseName)
+}
+
+func tyPatCoversCase(_ p: Nd, _ caseName: String) -> Bool {
+    return match p {
+        case .enumP(let cn, let ch): streq(cn, caseName)
+        case .orP(let alts): tyAltsCover(alts, caseName)
+        default: false
+    }
+}
+
+func tyAltsCover(_ alts: Vec[Nd], _ caseName: String) -> Bool {
+    var i: Int = 0
+    while i < alts.len() {
+        if tyPatCoversCase(alts.get(i) ?? Nd.wildcard, caseName) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func notExhaustiveMsg(_ caseName: String) using Alloc -> String {
+    var s: String = "match is not exhaustive: case '"
+    s.append(caseName)
+    s.append("' is not covered")
+    return s
+}
+
+func tyArm(_ env: inout TyEnv, _ a: Nd) using Alloc {
+    match a {
+        case .matchArm(let isDefault, let pat, let guard, let body): tyArmParts(env, guard, body)
+        default: noop()
+    }
+}
+
+func tyArmParts(_ env: inout TyEnv, _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    tyBoxed(env, body)
+    if guard.len() > 0 {
+        let gt = tyInferBoxed(env, guard)
+        if !streq(gt, "") && !streq(gt, "Bool") { env.bad.push(tyGuardMsg(gt)) }
+    }
+}
+
+func tyGuardMsg(_ got: String) using Alloc -> String {
+    var s: String = "match guard must be Bool, got "
+    s.append(got)
+    return s
+}
+
+func tyExprCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    tyBoxed(env, callee)
+    var i: Int = 0
+    while i < args.len() {
+        tyExpr(env, args.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    tyCheckCallArgs(env, callee, args)
+}
+
+// A call to a known user function must supply the right arity, and each argument
+// must be assignable to its parameter. Calls to builtins / methods / struct
+// constructors (no entry in funcName) are left to later slices.
+func tyCheckCallArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    let fname = exCalleeNameBoxed(callee)
+    let arity = tyArity(env, fname)
+    if arity >= 0 {
+        if arity != args.len() {
+            env.bad.push(tyArityMsg(arity, args.len()))
+            return
+        }
+        var i: Int = 0
+        while i < args.len() {
+            tyCheckArg(env, fname, i, args.get(i) ?? Nd.wildcard)
+            i = i + 1
+        }
+        return
+    }
+    if tyIsStruct(env, fname) { tyCheckCtor(env, fname, args) }
+}
+
+// §6 struct construction: each labeled argument must name a field whose type
+// accepts the value, and every (non-embed) field must be supplied. (Non-generic,
+// non-union structs only; generics are dropped from the AST and unions are rare.)
+func tyCheckCtor(_ env: inout TyEnv, _ structName: String, _ args: Vec[Nd]) using Alloc {
+    var seen: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < args.len() {
+        tyCtorArg(env, structName, i, args.get(i) ?? Nd.wildcard, seen)
+        i = i + 1
+    }
+    tyCtorMissing(env, structName, seen)
+}
+
+func tyCtorArg(_ env: inout TyEnv, _ structName: String, _ idx: Int, _ a: Nd, _ seen: inout Vec[String]) using Alloc {
+    match a {
+        case .arg(let label, let isInout, let val): tyCtorArgLabeled(env, structName, idx, label, val, seen)
+        default: noop()
+    }
+}
+
+func tyCtorArgLabeled(_ env: inout TyEnv, _ structName: String, _ idx: Int, _ label: String, _ val: Vec[Nd], _ seen: inout Vec[String]) using Alloc {
+    if streq(label, "") { env.bad.push(tyCtorLabelMsg(idx + 1)); return }
+    if !tyHasField(env, structName, label) { env.bad.push(tyNoFieldMsg(structName, label)); return }
+    let ft = tyFieldType(env, structName, label)
+    let at = tyInferBoxed(env, val)
+    if !tyAssignable(at, ft) { env.bad.push(tyFieldMsg(label, ft, at)) }
+    seen.push(label)
+}
+
+func tyCtorMissing(_ env: inout TyEnv, _ structName: String, _ seen: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < env.sFldStruct.len() {
+        tyCtorMissingField(env, structName, i, seen)
+        i = i + 1
+    }
+}
+
+func tyCtorMissingField(_ env: inout TyEnv, _ structName: String, _ i: Int, _ seen: inout Vec[String]) using Alloc {
+    if let s = env.sFldStruct.get(i) {
+        if streq(s, structName) {
+            if let fn = env.sFldName.get(i) {
+                if !tyContains(seen, fn) { env.bad.push(tyMissingMsg(structName, fn)) }
+            }
+        }
+    }
+}
+
+func tyContains(_ v: inout Vec[String], _ s: String) -> Bool {
+    var i: Int = 0
+    while i < v.len() {
+        if let e = v.get(i) {
+            if streq(e, s) { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func tyCheckArg(_ env: inout TyEnv, _ fname: String, _ idx: Int, _ a: Nd) using Alloc {
+    match a {
+        case .arg(let label, let isInout, let val): tyCheckArgVal(env, fname, idx, val)
+        default: noop()
+    }
+}
+
+func tyCheckArgVal(_ env: inout TyEnv, _ fname: String, _ idx: Int, _ val: Vec[Nd]) using Alloc {
+    let at = tyInferBoxed(env, val)
+    let pt = tyParamType(env, fname, idx)
+    if !tyAssignable(at, pt) { env.bad.push(tyArgMsg(idx + 1, at, pt)) }
+}
+
+func tyIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc {
+    tyBoxed(env, base)
+    var i: Int = 0
+    while i < idxs.len() {
+        tyExpr(env, idxs.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    tyCheckIndex(env, base, idxs)
+}
+
+// §18.5 — every index must be integer-typed, then a known base that is not a
+// Vec/Span/MutSpan is not indexable. (Mirrors the resolver: indices first, then
+// the base shape; an unknown base is tolerated.)
+func tyCheckIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < idxs.len() {
+        tyCheckIndexExpr(env, idxs.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    let bt = tyInferBoxed(env, base)
+    if !streq(bt, "") && !tyIsIndexable(bt) { env.bad.push(tyNotIndexableMsg(bt)) }
+}
+
+func tyCheckIndexExpr(_ env: inout TyEnv, _ idx: Nd) using Alloc {
+    let it = tyInfer(env, idx)
+    if !streq(it, "") && !tyIsInt(it) { env.bad.push(tyIndexIntMsg(it)) }
+}
+
+func tyIndexIntMsg(_ got: String) using Alloc -> String {
+    var s: String = "index must be integer-typed, got "
+    s.append(got)
+    return s
+}
+
+func tyNotIndexableMsg(_ bt: String) using Alloc -> String {
+    var s: String = "type "
+    s.append(bt)
+    s.append(" is not indexable")
+    return s
+}
+
+// Member access: descend into the base, then check enum-case access. `E.case`
+// where `E` names an enum (and is a type ref, not a value binding) must name a
+// real case of `E`. Value member access (`x.field` / `x.method()`) is handled by
+// inference; a `?.` chain is tolerated.
+func tyMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain: Bool) using Alloc {
+    tyBoxed(env, base)
+    if chain { return }
+    tyCheckEnumCase(env, base, name)
+}
+
+func tyCheckEnumCase(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String) using Alloc {
+    let bn = exCalleeNameBoxed(base)               // base ident name, or "" if not a bare ident
+    if streq(bn, "") { return }
+    if !streq(tySymType(env, bn), "") { return }   // a value binding shadows: not a type ref
+    if !tyIsEnum(env, bn) { return }
+    if !tyEnumHasCase(env, bn, name) { env.bad.push(tyNoCaseMsg(bn, name)) }
+}
+
+func tyNoCaseMsg(_ enumName: String, _ caseName: String) using Alloc -> String {
+    var s: String = "enum '"
+    s.append(enumName)
+    s.append("' has no case '")
+    s.append(caseName)
+    s.append("'")
+    return s
+}
+
+func tyIf(_ env: inout TyEnv, _ li: Vec[Nd], _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc {
+    tyCheckCond(env, cond, "if")
+    tyBoxed(env, cond)
+    tyBoxed(env, li)
+    tyBoxed(env, thenB)
+    tyBoxed(env, els)
+}
+
+// §10 — an `if`/`while` condition must be Bool. (An `if let` has no `cond`, so
+// the empty-condition case is skipped; an unknown-typed condition is tolerated.)
+func tyCheckCond(_ env: inout TyEnv, _ cond: Vec[Nd], _ kind: Str) using Alloc {
+    if cond.len() == 0 { return }
+    let ct = tyInferBoxed(env, cond)
+    if !streq(ct, "") && !streq(ct, "Bool") { env.bad.push(tyCondMsg(kind, ct)) }
+}
+
+func tyCondMsg(_ kind: Str, _ got: String) using Alloc -> String {
+    var s: String = own(kind)
+    s.append(" condition must be Bool, got ")
+    s.append(got)
+    return s
+}
+
+func tyWhile(_ env: inout TyEnv, _ cond: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    tyCheckCond(env, cond, "while")
+    tyBoxed(env, cond)
+    tyBoxed(env, body)
+}
+
+func tyBlock(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < stmts.len() {
+        tyStmt(env, stmts.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyStmt(_ env: inout TyEnv, _ s: Nd) using Alloc {
+    match s {
+        case .letS(let p, let ty, let v): tyLet(env, p, ty, v)
+        case .varS(let p, let ty, let v): tyLet(env, p, ty, v)
+        case .exprS(let e): tyBoxed(env, e)
+        case .retS(let v): tyRet(env, v)
+        case .assignS(let op, let t, let v): tyAssign(env, t, v)
+        case .whileS(let c, let b): tyWhile(env, c, b)
+        case .forS(let pp, let it, let b): tyPair(env, it, b)
+        case .withS(let caps, let vals, let body): tyWith(env, vals, body)
+        default: noop()
+    }
+}
+
+// `let`/`var`: if annotated, the initializer must be assignable to it; then walk
+// the value for any nested bindings, and register this one for later idents.
+func tyLet(_ env: inout TyEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    let ann = tyAnnSpelling(ty)
+    if !streq(ann, "") {
+        let vt = tyInferBoxed(env, v)
+        if !tyAssignable(vt, ann) { env.bad.push(tyInitMsg(vt, ann)) }
+    }
+    tyBoxed(env, v)
+    tyRegisterPat(env, pat, ty)
+}
+
+// Assignment (incl. compound ops, which the resolver checks identically): the
+// value must be assignable to the target. Only ident targets type to a known
+// slot here; member/index targets are unknown and tolerated.
+func tyAssign(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    tyBoxed(env, t)
+    tyBoxed(env, v)
+    let lt = tyInferBoxed(env, t)
+    let rt = tyInferBoxed(env, v)
+    if streq(lt, "") || streq(rt, "") { return }
+    if !tyAssignable(rt, lt) { env.bad.push(tyAssignMsg(rt, lt)) }
+}
+
+func tyAssignMsg(_ from: String, _ to: String) using Alloc -> String {
+    var s: String = "cannot assign value of type "
+    s.append(from)
+    s.append(" to target of type ")
+    s.append(to)
+    return s
+}
+
+// `return EXPR`: walk the value (nested checks), then its type must be assignable
+// to the enclosing function's declared result. A bare `return` produces Unit.
+func tyRet(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc {
+    tyBoxed(env, v)
+    if streq(env.curRet, "") { return }
+    var rt: String = own("Unit")
+    if v.len() > 0 { rt = tyInferBoxed(env, v) }
+    if !tyAssignable(rt, env.curRet) { env.bad.push(tyReturnMsg(rt, env.curRet)) }
+}
+
+func tyWith(_ env: inout TyEnv, _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < vals.len() {
+        tyExpr(env, vals.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    tyBoxed(env, body)
+}
+
+func tyRegisterPat(_ env: inout TyEnv, _ pat: Vec[Nd], _ ty: Vec[Nd]) using Alloc {
+    if pat.len() > 0 { tyRegisterPatE(env, pat.get(0) ?? Nd.wildcard, ty) }
+}
+
+func tyRegisterPatE(_ env: inout TyEnv, _ p: Nd, _ ty: Vec[Nd]) using Alloc {
+    match p {
+        case .identP(let n): tyAddSym(env, n, ty)
+        case .bindP(let n): tyAddSym(env, n, ty)
+        default: noop()
+    }
+}
+
+// ----- inference ------------------------------------------------------------
+func tyInferBoxed(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc -> String {
+    if v.len() > 0 { return tyInfer(env, v.get(0) ?? Nd.wildcard) }
+    return own("")
+}
+
+func tyInfer(_ env: inout TyEnv, _ e: Nd) using Alloc -> String {
+    return match e {
+        case .intLit(let s): own("Int")
+        case .floatLit(let s): own("Float64")
+        case .boolLit(let b): own("Bool")
+        case .charLit(let s): own("Char")
+        case .strLit(let s): own("StrConst")
+        case .ident(let n): tySymType(env, n)
+        case .paren(let inner): tyInferBoxed(env, inner)
+        case .call(let callee, let args): tyInferCall(env, callee)
+        case .binary(let op, let l, let r): tyInferBinary(env, op, l, r)
+        case .unary(let op, let x): tyInferUnary(env, op, x)
+        case .member(let base, let name, let chain): tyInferMember(env, base, name, chain)
+        case .index(let base, let idxs): tyInferIndex(env, base, idxs)
+        case .vecLit(let elems): tyInferVecLit(env, elems)
+        default: own("")
+    }
+}
+
+// An array literal `[e1, ...]` types as `[N]T`, where N is the element count and
+// T is the FIRST element's type (vestra does not unify the rest); the spelling
+// nests, so `[[1,2],[3,4]]` -> `[2][2]Int`. An empty literal or an unknown first
+// element stays unknown so the value is tolerated rather than mis-flagged.
+func tyInferVecLit(_ env: inout TyEnv, _ elems: Vec[Nd]) using Alloc -> String {
+    if elems.len() == 0 { return own("") }
+    let et = tyInfer(env, elems.get(0) ?? Nd.wildcard)
+    if streq(et, "") { return own("") }
+    var s: String = "["
+    s.append(intToStr(elems.len()))
+    s.append("]")
+    s.append(et)
+    return s
+}
+
+// Indexing a Vec[T] / Span[T] / MutSpan[T] yields its element T; other bases stay
+// unknown (arrays spell empty here, and non-indexables type as unknown anyway).
+func tyInferIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc -> String {
+    let bt = tyInferBoxed(env, base)
+    if tyIsIndexable(bt) { return tyBracketInner(bt) }
+    return own("")
+}
+
+func tyIsIndexable(_ s: String) -> Bool {
+    return tyStartsWith(s, "Vec[") || tyStartsWith(s, "Span[") || tyStartsWith(s, "MutSpan[")
+}
+
+func tyStartsWith(_ s: String, _ prefix: Str) -> Bool {
+    let pn = prefix.len()
+    if pn > s.len() { return false }
+    var i: Int = 0
+    while i < pn {
+        if (s.byteAt(i) ?? 0) != (prefix.byteAt(i) ?? 1) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// "Vec[Int32]" -> "Int32" (the text between the first '[' and the trailing ']',
+// so a nested element like "HashMap[Int32, Str]" comes back whole).
+func tyBracketInner(_ s: String) using Alloc -> String {
+    let n = s.len()
+    if n < 2 || (s.byteAt(n - 1) ?? 0) != 93 { return own("") }   // ']' == 93
+    var open: Int = -1
+    var i: Int = 0
+    while i < n {
+        if (s.byteAt(i) ?? 0) == 91 { open = i; i = n }           // first '[' == 91
+        else { i = i + 1 }
+    }
+    if open < 0 { return own("") }
+    return own(s.slice(open + 1, n - 1))
+}
+
+// `base.field` types as the field's declared type when `base` is a known struct
+// and `field` is one of its fields; a `?.` chain (optional result) and anything
+// else stay unknown. Nested access (`a.b.c`) falls out of the recursion.
+func tyInferMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain: Bool) using Alloc -> String {
+    if chain { return own("") }
+    let bt = tyInferBoxed(env, base)
+    if tyHasField(env, bt, name) { return tyFieldType(env, bt, name) }
+    return own("")
+}
+
+// A binary expression's type, mirroring the resolver's result types (and its
+// "error type on failure" so a mis-typed operator suppresses downstream checks):
+// comparisons -> Bool when the operands match (else unknown); logical -> Bool
+// when both Bool; arithmetic/bitwise -> the operand type with the §17 sized
+// operand winning (`Int32 + Int` -> Int32), or unknown when the operand rule is
+// violated. Unknown operands stay permissive so a partly-inferred condition is
+// tolerated. Other operators (??, ranges) are unknown.
+func tyInferBinary(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc -> String {
+    let lt = tyInferBoxed(env, l)
+    let rt = tyInferBoxed(env, r)
+    if isCmpOp(op) { return tyCmpResult(lt, rt) }
+    if isLogOp(op) { return tyLogResult(lt, rt) }
+    if isArithOp(op) { return tyNumResult(lt, rt, false) }
+    if isBitOp(op) { return tyNumResult(lt, rt, true) }
+    if streq(op, "??") { return tyUnwrapOpt(lt) }
+    return own("")
+}
+
+// §9 `lhs ?? rhs` yields the wrapped element T when lhs is a known Optional
+// `T?`; an lhs of any other (or unknown) type stays unknown, mirroring the
+// resolver's error type when the left operand is not an Optional.
+func tyUnwrapOpt(_ s: String) using Alloc -> String {
+    let n = s.len()
+    if n > 0 && (s.byteAt(n - 1) ?? 0) == 63 { return own(s.slice(0, n - 1)) }   // '?' == 63
+    return own("")
+}
+
+func tyCmpResult(_ lt: String, _ rt: String) using Alloc -> String {
+    if streq(lt, "") || streq(rt, "") { return own("Bool") }
+    if tyReqMatch(lt, rt) { return own("Bool") }
+    return own("")
+}
+
+func tyLogResult(_ lt: String, _ rt: String) using Alloc -> String {
+    if streq(lt, "") || streq(rt, "") { return own("Bool") }
+    if streq(lt, "Bool") && streq(rt, "Bool") { return own("Bool") }
+    return own("")
+}
+
+func tyNumResult(_ lt: String, _ rt: String, _ needInt: Bool) using Alloc -> String {
+    if streq(lt, "") || streq(rt, "") { return own("") }
+    var lok: Bool = tyIsNumeric(lt)
+    if needInt { lok = tyIsInt(lt) }
+    if !lok { return own("") }
+    if !tyReqMatch(lt, rt) { return own("") }
+    if streq(lt, "Int") || streq(lt, "UInt") { return rt }
+    return lt
+}
+
+// The self-host AST spells both prefix logical-not `!x` and postfix force-unwrap
+// `x!` as `unary("!", _)`, so they are told apart by the operand: an Optional
+// `T?` operand is a force-unwrap yielding T (§9), anything else is logical-not
+// yielding Bool. `-x` carries a numeric operand through, `~x` an integer one;
+// a constraint violation yields the error type ("") so it doesn't cascade.
+func tyInferUnary(_ env: inout TyEnv, _ op: String, _ x: Vec[Nd]) using Alloc -> String {
+    let xt = tyInferBoxed(env, x)
+    if streq(op, "!") {
+        if (xt.byteAt(xt.len() - 1) ?? 0) == 63 { return tyUnwrapOpt(xt) }   // T? -> T
+        return own("Bool")
+    }
+    if streq(xt, "") { return own("") }                   // unknown operand: stay permissive
+    if streq(op, "-") { if tyIsNumeric(xt) { return own(xt) }; return own("") }
+    if streq(op, "~") { if tyIsInt(xt) { return own(xt) }; return own("") }
+    return own(xt)
+}
+
+func isCmpOp(_ op: String) -> Bool {
+    return streq(op, "==") || streq(op, "!=") || streq(op, "<") || streq(op, "<=")
+        || streq(op, ">") || streq(op, ">=")
+}
+
+func isLogOp(_ op: String) -> Bool {
+    return streq(op, "&&") || streq(op, "||")
+}
+
+func isArithOp(_ op: String) -> Bool {
+    return streq(op, "+") || streq(op, "-") || streq(op, "*") || streq(op, "/")
+        || streq(op, "%") || streq(op, "&*") || streq(op, "&+") || streq(op, "&-")
+}
+
+func isBitOp(_ op: String) -> Bool {
+    return streq(op, "<<") || streq(op, ">>") || streq(op, "&") || streq(op, "^") || streq(op, "|")
+}
+
+func tyIsNumeric(_ s: String) -> Bool {
+    return tyIsInt(s) || streq(s, "Float32") || streq(s, "Float64")
+}
+
+// The resolver's require_match: operands match when they are equal, or both
+// integers where one assigns to the other (the §17 natural-width rule).
+func tyReqMatch(_ lt: String, _ rt: String) using Alloc -> Bool {
+    if streq(lt, rt) { return true }
+    if tyIsInt(lt) && tyIsInt(rt) && (tyAssignable(lt, rt) || tyAssignable(rt, lt)) { return true }
+    return false
+}
+
+// ----- binary operator constraints ------------------------------------------
+func tyBinary(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc {
+    tyBoxed(env, l)
+    tyBoxed(env, r)
+    tyCheckBinOp(env, op, l, r)
+}
+
+func tyCheckBinOp(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc {
+    let lt = tyInferBoxed(env, l)
+    let rt = tyInferBoxed(env, r)
+    if streq(lt, "") || streq(rt, "") { return }
+    if isLogOp(op) {
+        if !streq(lt, "Bool") || !streq(rt, "Bool") { env.bad.push(tyLogMsg()) }
+    } else if isArithOp(op) {
+        if !tyIsNumeric(lt) { env.bad.push(tyArithMsg(lt)) }
+        else if !tyReqMatch(lt, rt) { env.bad.push(tyDiffMsg(lt, rt)) }
+    } else if isBitOp(op) {
+        if !tyIsInt(lt) { env.bad.push(tyBitMsg(lt)) }
+        else if !tyReqMatch(lt, rt) { env.bad.push(tyDiffMsg(lt, rt)) }
+    } else if isCmpOp(op) {
+        if !tyReqMatch(lt, rt) { env.bad.push(tyDiffMsg(lt, rt)) }
+    }
+}
+
+func tyArithMsg(_ got: String) using Alloc -> String {
+    var s: String = "arithmetic operator requires numeric operands, got "
+    s.append(got)
+    return s
+}
+
+func tyBitMsg(_ got: String) using Alloc -> String {
+    var s: String = "bitwise operator requires integer operands, got "
+    s.append(got)
+    return s
+}
+
+func tyDiffMsg(_ lt: String, _ rt: String) using Alloc -> String {
+    var s: String = "binary operator operands of different types: "
+    s.append(lt)
+    s.append(" vs ")
+    s.append(rt)
+    return s
+}
+
+func tyLogMsg() using Alloc -> String {
+    return own("logical && / || require Bool operands")
+}
+
+// ----- unary operator constraints -------------------------------------------
+func tyUnary(_ env: inout TyEnv, _ op: String, _ x: Vec[Nd]) using Alloc {
+    tyBoxed(env, x)
+    tyCheckUnOp(env, op, x)
+}
+
+// `-x` needs a numeric operand, `~x` an integer one. `!` is skipped: the AST
+// merges prefix logical-not and postfix force-unwrap into one node, so the right
+// diagnostic ("requires Bool" vs "requires an Optional") can't be chosen.
+func tyCheckUnOp(_ env: inout TyEnv, _ op: String, _ x: Vec[Nd]) using Alloc {
+    let xt = tyInferBoxed(env, x)
+    if streq(xt, "") { return }
+    if streq(op, "-") {
+        if !tyIsNumeric(xt) { env.bad.push(tyNegMsg(xt)) }
+    } else if streq(op, "~") {
+        if !tyIsInt(xt) { env.bad.push(tyBitNotMsg(xt)) }
+    }
+}
+
+func tyNegMsg(_ got: String) using Alloc -> String {
+    var s: String = "unary '-' requires a numeric type, got "
+    s.append(got)
+    return s
+}
+
+func tyBitNotMsg(_ got: String) using Alloc -> String {
+    var s: String = "unary '~' requires an integer type, got "
+    s.append(got)
+    return s
+}
+
+func tyFieldMsg(_ label: String, _ fieldType: String, _ argType: String) using Alloc -> String {
+    var s: String = "field '"
+    s.append(label)
+    s.append("' of type ")
+    s.append(fieldType)
+    s.append(" cannot accept value of type ")
+    s.append(argType)
+    return s
+}
+
+func tyNoFieldMsg(_ structName: String, _ label: String) using Alloc -> String {
+    var s: String = "'"
+    s.append(structName)
+    s.append("' has no field '")
+    s.append(label)
+    s.append("'")
+    return s
+}
+
+func tyMissingMsg(_ structName: String, _ fieldName: String) using Alloc -> String {
+    var s: String = "struct '"
+    s.append(structName)
+    s.append("' constructor is missing field '")
+    s.append(fieldName)
+    s.append("'")
+    return s
+}
+
+func tyCtorLabelMsg(_ n: Int) using Alloc -> String {
+    var s: String = "struct constructor argument "
+    s.append(intToStr(n))
+    s.append(" requires a field label")
+    return s
+}
+
+func tyInferCall(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
+    return match (callee.get(0) ?? Nd.wildcard) {
+        case .member(let base, let name, let chain): tyInferMethodCall(env, base, name, chain)
+        default: tyInferPlainCall(env, callee)
+    }
+}
+
+func tyInferPlainCall(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
+    let nm = exCalleeNameBoxed(callee)
+    let r = tyFuncRet(env, nm)
+    if !streq(r, "") { return r }
+    if tyIsStruct(env, nm) { return nm }
+    return own("")
+}
+
+// `recv.method(...)` types as the method's declared result, found by the
+// receiver's (struct/enum) type. A `?.` chain, an unknown receiver, or a builtin
+// / generic method (none recorded) stays unknown and is tolerated. A `Self`
+// result resolves to the receiver type so a chained / stored result types right.
+func tyInferMethodCall(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain: Bool) using Alloc -> String {
+    if chain { return own("") }
+    let bt = tyInferBoxed(env, base)
+    if streq(bt, "") { return own("") }
+    return tyMethodRet(env, bt, name)
+}
+
+func tyMethodRet(_ env: inout TyEnv, _ owner: String, _ name: String) using Alloc -> String {
+    var i: Int = 0
+    while i < env.mStruct.len() {
+        if let s = env.mStruct.get(i) {
+            if streq(s, owner) {
+                if let mn = env.mName.get(i) {
+                    if streq(mn, name) {
+                        let r = env.mRet.get(i) ?? own("")
+                        if streq(r, "Self") { return owner }
+                        return r
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return own("")
+}
+
+// ----- type spelling (describe) of an annotation node -----------------------
+func tyAnnSpelling(_ ty: Vec[Nd]) using Alloc -> String {
+    if ty.len() == 0 { return own("") }
+    return typeSpelling(ty.get(0) ?? Nd.wildcard)
+}
+
+func typeSpelling(_ t: Nd) using Alloc -> String {
+    return match t {
+        case .named(let path, let hasG, let args): tyNamedSpelling(path, hasG, args)
+        case .opt(let inner): tyOptSpelling(inner)
+        case .vecT(let len, let elem): tyVecTSpelling(len, elem)
+        default: own("")
+    }
+}
+
+// A fixed-size array type `[N]T` spells as "[N]" + the element spelling, no
+// space — the same shape an array literal infers to (see tyInferVecLit).
+func tyVecTSpelling(_ len: String, _ elem: Vec[Nd]) using Alloc -> String {
+    var s: String = "["
+    s.append(len)
+    s.append("]")
+    s.append(tyAnnSpelling(elem))
+    return s
+}
+
+func tyNamedSpelling(_ path: String, _ hasG: Bool, _ args: Vec[Nd]) using Alloc -> String {
+    var s: String = path
+    if hasG && args.len() > 0 {
+        s.append("[")
+        var i: Int = 0
+        while i < args.len() {
+            if i > 0 { s.append(", ") }
+            s.append(typeSpelling(args.get(i) ?? Nd.wildcard))
+            i = i + 1
+        }
+        s.append("]")
+    }
+    return s
+}
+
+func tyOptSpelling(_ inner: Vec[Nd]) using Alloc -> String {
+    var s: String = tyAnnSpelling(inner)
+    s.append("?")
+    return s
+}
+
+// ----- assignability --------------------------------------------------------
+func tyAssignable(_ from: String, _ to: String) using Alloc -> Bool {
+    if streq(from, "") || streq(to, "") { return true }   // unknown: don't pile on
+    if streq(from, to) { return true }
+    if tyIsArray(from) && tyIsArray(to) { return tyArrayAssignable(from, to) }
+    if tyIntNatural(from, to) { return true }
+    if tyStrLattice(from, to) { return true }
+    if tyOptionalWrap(from, to) { return true }
+    return false
+}
+
+// Two array types `[N]T` / `[M]U` are assignable when their counts match and the
+// element types are assignable (so `[3]Int` -> `[3]Int32` by natural width, but
+// neither a count nor a Vec mismatch passes).
+func tyIsArray(_ s: String) -> Bool {
+    return s.len() > 0 && (s.byteAt(0) ?? 0) == 91   // '[' == 91
+}
+
+func tyArrayAssignable(_ from: String, _ to: String) using Alloc -> Bool {
+    return streq(tyArrayCount(from), tyArrayCount(to))
+        && tyAssignable(tyArrayElem(from), tyArrayElem(to))
+}
+
+// "[3]Int32" -> "3" (between '[' and the first ']').
+func tyArrayCount(_ s: String) using Alloc -> String {
+    var i: Int = 1
+    while i < s.len() {
+        if (s.byteAt(i) ?? 0) == 93 { return own(s.slice(1, i)) }   // ']' == 93
+        i = i + 1
+    }
+    return own("")
+}
+
+// "[3]Int32" -> "Int32" (everything after the first ']').
+func tyArrayElem(_ s: String) using Alloc -> String {
+    var i: Int = 1
+    while i < s.len() {
+        if (s.byteAt(i) ?? 0) == 93 { return own(s.slice(i + 1, s.len())) }
+        i = i + 1
+    }
+    return own("")
+}
+
+func tyIsInt(_ s: String) -> Bool {
+    return streq(s, "Int") || streq(s, "Int8") || streq(s, "Int16") || streq(s, "Int32")
+        || streq(s, "Int64") || streq(s, "Int128") || streq(s, "UInt") || streq(s, "UInt8")
+        || streq(s, "UInt16") || streq(s, "UInt32") || streq(s, "UInt64") || streq(s, "UInt128")
+}
+
+func tyIsSignedInt(_ s: String) -> Bool {
+    return streq(s, "Int") || streq(s, "Int8") || streq(s, "Int16") || streq(s, "Int32")
+        || streq(s, "Int64") || streq(s, "Int128")
+}
+
+// §17 — a natural-width Int/UInt assigns to/from a specific width of the same
+// signedness; specific widths remain mutually incompatible.
+func tyIntNatural(_ from: String, _ to: String) -> Bool {
+    if !(tyIsInt(from) && tyIsInt(to)) { return false }
+    let fn = streq(from, "Int") || streq(from, "UInt")
+    let tn = streq(to, "Int") || streq(to, "UInt")
+    if !(fn || tn) { return false }
+    return tyIsSignedInt(from) == tyIsSignedInt(to)
+}
+
+func tyStrRank(_ s: String) -> Int {
+    if streq(s, "StrConst") { return 0 }
+    if streq(s, "Str") { return 1 }
+    if streq(s, "String") { return 2 }
+    return -1
+}
+
+// §4 — StrConst <= Str <= String (narrowing literal to wider owner/view).
+func tyStrLattice(_ from: String, _ to: String) -> Bool {
+    let f = tyStrRank(from)
+    let t = tyStrRank(to)
+    return f >= 0 && t >= 0 && f <= t
+}
+
+// §9 — a value of T is assignable to an Optional T (`.some(...)` wrap).
+func tyOptionalWrap(_ from: String, _ to: String) using Alloc -> Bool {
+    let n = to.len()
+    if n == 0 { return false }
+    if (to.byteAt(n - 1) ?? 0) != 63 { return false }   // ends with '?'
+    return tyAssignable(from, own(to.slice(0, n - 1)))
+}
+
+// ----- diagnostics ----------------------------------------------------------
+func tyInitMsg(_ from: String, _ to: String) using Alloc -> String {
+    var s: String = "initializer of type "
+    s.append(from)
+    s.append(" does not match annotation ")
+    s.append(to)
+    return s
+}
+
+func tyConstMsg(_ from: String, _ to: String) using Alloc -> String {
+    var s: String = "const value of type "
+    s.append(from)
+    s.append(" does not match annotation ")
+    s.append(to)
+    return s
+}
+
+func tyArityMsg(_ expected: Int, _ got: Int) using Alloc -> String {
+    var s: String = "call expects "
+    s.append(intToStr(expected))
+    s.append(" argument(s), got ")
+    s.append(intToStr(got))
+    return s
+}
+
+func tyArgMsg(_ idx1: Int, _ from: String, _ to: String) using Alloc -> String {
+    var s: String = "argument "
+    s.append(intToStr(idx1))
+    s.append(" of type ")
+    s.append(from)
+    s.append(" does not match parameter type ")
+    s.append(to)
+    return s
+}
+
+func tyReturnMsg(_ from: String, _ to: String) using Alloc -> String {
+    var s: String = "return value of type "
+    s.append(from)
+    s.append(" does not match function result type ")
+    s.append(to)
+    return s
+}
+
+func tyBodyMsg(_ name: String, _ ret: String, _ body: String) using Alloc -> String {
+    var s: String = "function '"
+    s.append(name)
+    s.append("' returns ")
+    s.append(ret)
+    s.append(" but body produces ")
+    s.append(body)
+    return s
+}
+
 func main() -> Int32 {
     with Alloc {
         with Fs {
