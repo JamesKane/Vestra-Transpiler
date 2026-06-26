@@ -1,6 +1,15 @@
 struct Point {
   var x: Int32
   var y: Int32
+  func sumf() -> Int32 {
+    return self.x + self.y
+  }
+  func scaled(_ k: Int32) -> Point {
+    return Point(x: self.x * k, y: self.y * k)
+  }
+  func reset() {
+    return
+  }
 }
 func mk(_ a: Int32, _ b: Int32) -> Point {
   return Point(x: a, y: b)

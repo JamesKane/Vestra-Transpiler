@@ -2869,15 +2869,15 @@ func emitHppDecl(_ d: Nd) using Alloc, Log {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
             emitFwdDecl(name, params, res)
         case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics):
-            emitStructDef(name, fields)
+            emitStructDef(name, fields, methods)
         default: noop()
     }
 }
 
-// A struct definition: `struct <Name> { <fields> };` then a trailing blank line.
-// Each field (let / var alike) is `    <type> <name>{};` with a `{}` default
-// initializer. Methods are emitted by a later slice.
-func emitStructDef(_ name: Str, _ fields: Vec[Nd]) using Alloc, Log {
+// A struct definition: `struct <Name> { <fields> <methods> };` then a trailing
+// blank line. Each field (let / var alike) is `    <type> <name>{};` with a `{}`
+// default initializer; methods follow as inline definitions.
+func emitStructDef(_ name: Str, _ fields: Vec[Nd], _ methods: Vec[Nd]) using Alloc, Log {
     print("struct ")
     print(name)
     print(" {\n")
@@ -2886,7 +2886,35 @@ func emitStructDef(_ name: Str, _ fields: Vec[Nd]) using Alloc, Log {
         emitField(fields.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    var m: Int = 0
+    while m < methods.len() {
+        emitMethod(methods.get(m) ?? Nd.wildcard)
+        m = m + 1
+    }
     print("};\n\n")
+}
+
+func emitMethod(_ d: Nd) using Alloc, Log {
+    match d {
+        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
+            emitMethodDef(name, params, res, body)
+        default: noop()
+    }
+}
+
+// An inline struct method, indented one level: a method ALWAYS carries
+// `[[nodiscard]]` (even an omitted / Unit return), unlike a free function. Its
+// body sits two levels in; `self.x` lowers to `(*this).x`.
+func emitMethodDef(_ name: Str, _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    print("    [[nodiscard]] ")
+    emitRetType(res)
+    print(" ")
+    print(name)
+    print("(")
+    emitParams(params)
+    print(") {\n")
+    if body.len() > 0 { emitBlockStmts(body.get(0) ?? Nd.wildcard, "        ") }
+    print("    }\n")
 }
 
 func emitField(_ f: Nd) using Alloc, Log {
@@ -3229,6 +3257,7 @@ func emitBoxed(_ v: Vec[Nd]) using Alloc, Log {
 func emitExpr(_ e: Nd) using Alloc, Log {
     match e {
         case .ident(let n): print(n)
+        case .selfE: print("(*this)")
         case .intLit(let s): print(s)
         case .floatLit(let s): print(s)
         case .boolLit(let b): emitBool(b)
