@@ -1,0 +1,19 @@
+enum Color {
+  case red
+  case green
+  case blue
+}
+func classify(_ c: Color, _ n: Int32) -> Int32 {
+  return match c {
+    case .red where n > 0: 1
+    case .red: 2
+    case .green: 3
+    case .blue: 4
+  }
+}
+func guarded(_ c: Color, _ n: Int32) -> Int32 {
+  return match c {
+    case .green where n > 10: 100
+    default: 0
+  }
+}

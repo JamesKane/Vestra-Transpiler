@@ -4989,6 +4989,12 @@ func emitReturnMatch(_ env: inout TyEnv, _ indent: Str, _ m: Nd) using Alloc, Lo
 
 func emitReturnMatchParts(_ env: inout TyEnv, _ indent: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
     let enumName = tyInferBoxed(env, scrut)
+    // A guarded payload-free match cannot be a switch (a guard is a runtime
+    // condition); it lowers to an if/else-if chain over the scrutinee.
+    if !isPayloadEnum(env, enumName) && anyArmGuarded(arms) {
+        emitReturnGuardMatch(env, indent, enumName, scrut, arms)
+        return
+    }
     if isPayloadEnum(env, enumName) { emitReturnVisitMatch(env, indent, enumName, scrut, arms); return }
     print(indent)
     print("return [&]() -> ")
@@ -5004,6 +5010,108 @@ func emitReturnMatchParts(_ env: inout TyEnv, _ indent: Str, _ scrut: Vec[Nd], _
     }
     print(indent)
     print("} }();\n")
+}
+
+func anyArmGuarded(_ arms: Vec[Nd]) -> Bool {
+    var i: Int = 0
+    while i < arms.len() {
+        if armGuarded(arms.get(i) ?? Nd.wildcard) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func armGuarded(_ arm: Nd) -> Bool {
+    return match arm {
+        case .matchArm(let isDefault, let pat, let guard, let body): guard.len() > 0
+        default: false
+    }
+}
+
+// A guarded payload-free match lowers to an if/else-if chain over a copy of the
+// scrutinee:
+//
+//   return [&]() -> <retType> {
+//       auto&& __vstr_m = <scrut>;
+//       if (__vstr_m == <Enum>::<case> && (<guard>)) {
+//           return <body>;
+//       }
+//       else if (__vstr_m == <Enum>::<case>) { ... }
+//       else { return <default>; }   // or `else { std::unreachable(); }`
+//   }();
+func emitReturnGuardMatch(_ env: inout TyEnv, _ indent: Str, _ enumName: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    print("return [&]() -> ")
+    emitTypeBoxed(env.curRetNode)
+    print(" {\n")
+    let i8 = deeper(indent)
+    print(i8)
+    print("auto&& __vstr_m = ")
+    emitBoxed(env, scrut)
+    print(";\n")
+    let i12 = deeper(i8)
+    var k: Int = 0
+    var di: Int = 0 - 1
+    var j: Int = 0
+    while j < arms.len() {
+        if armIsDefault(arms.get(j) ?? Nd.wildcard) {
+            di = j
+        } else {
+            emitGuardArm(env, i8, i12, enumName, arms.get(j) ?? Nd.wildcard, k)
+            k = k + 1
+        }
+        j = j + 1
+    }
+    if di >= 0 {
+        emitGuardDefault(env, i8, arms.get(di) ?? Nd.wildcard)
+    } else {
+        print(i8)
+        print("else { std::unreachable(); }\n")
+    }
+    print(indent)
+    print("}();\n")
+}
+
+func emitGuardArm(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ enumName: Str, _ arm: Nd, _ k: Int) using Alloc, Log {
+    match arm {
+        case .matchArm(let isDefault, let pat, let guard, let body): emitGuardArmParts(env, i8, i12, enumName, pat, guard, body, k)
+        default: noop()
+    }
+}
+
+func emitGuardArmParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ enumName: Str, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd], _ k: Int) using Alloc, Log {
+    print(i8)
+    if k == 0 { print("if (") } else { print("else if (") }
+    print("__vstr_m == ")
+    print(enumName)
+    print("::")
+    print(armCaseName(pat))
+    if guard.len() > 0 {
+        print(" && (")
+        emitBoxed(env, guard)
+        print(")")
+    }
+    print(") {\n")
+    print(i12)
+    print("return ")
+    emitBoxed(env, body)
+    print(";\n")
+    print(i8)
+    print("}\n")
+}
+
+func emitGuardDefault(_ env: inout TyEnv, _ i8: Str, _ arm: Nd) using Alloc, Log {
+    match arm {
+        case .matchArm(let isDefault, let pat, let guard, let body): emitGuardDefaultParts(env, i8, body)
+        default: noop()
+    }
+}
+
+func emitGuardDefaultParts(_ env: inout TyEnv, _ i8: Str, _ body: Vec[Nd]) using Alloc, Log {
+    print(i8)
+    print("else { return ")
+    emitBoxed(env, body)
+    print("; }\n")
 }
 
 func emitMatchArm(_ env: inout TyEnv, _ armIndent: Str, _ enumName: Str, _ arm: Nd) using Alloc, Log {
