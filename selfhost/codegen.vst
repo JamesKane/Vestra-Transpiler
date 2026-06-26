@@ -5094,6 +5094,15 @@ func emitIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc
 // and payload-enum case construction — which needs the variant wrapping — are not
 // handled here.)
 func emitMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool) using Alloc, Log {
+    // A bare case of a payload-carrying enum constructs the variant:
+    // `Shape.point` -> `Shape{Shape::point_t{}}`.
+    let bn = identBaseName(base)
+    if !streq(bn, "") && isPayloadEnum(env, bn) {
+        emitPayloadCase(env, bn, name, Vec.new())
+        return
+    }
+    // A payload-free enum case (or another capitalized type-qualified name) is
+    // a scoped reference: `Color.red` -> `Color::red`.
     if baseIsCapIdent(base) {
         emitBoxed(env, base)
         print("::")
@@ -5103,6 +5112,47 @@ func emitMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool)
     emitBoxed(env, base)
     print(".")
     print(name)
+}
+
+// An enum whose declaration has at least one payload-carrying case (so it lowers
+// to the struct + std::variant form rather than an `enum class`).
+func isPayloadEnum(_ env: inout TyEnv, _ name: Str) -> Bool {
+    var k: Int = 0
+    var isEnum: Bool = false
+    while k < env.eName.len() {
+        if let e = env.eName.get(k) { if streq(e, name) { isEnum = true } }
+        k = k + 1
+    }
+    if !isEnum { return false }
+    var i: Int = 0
+    while i < env.ecEnum.len() {
+        if let en = env.ecEnum.get(i) {
+            if streq(en, name) && (env.ecArity.get(i) ?? 0) > 0 { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func identBaseName(_ base: Vec[Nd]) using Alloc -> String {
+    if base.len() == 0 { return own("") }
+    return match base.get(0) ?? Nd.wildcard {
+        case .ident(let n): own(n)
+        default: own("")
+    }
+}
+
+// `Enum{Enum::case_t{<args>}}` — variant construction for a payload-enum case
+// (a bare case passes an empty argument list, yielding `{}`).
+func emitPayloadCase(_ env: inout TyEnv, _ enumName: Str, _ caseName: Str, _ args: Vec[Nd]) using Alloc, Log {
+    print(enumName)
+    print("{")
+    print(enumName)
+    print("::")
+    print(caseName)
+    print("_t{")
+    emitArgList(env, args)
+    print("}}")
 }
 
 func baseIsCapIdent(_ base: Vec[Nd]) -> Bool {
@@ -5141,11 +5191,35 @@ func emitStr(_ s: Str) using Alloc, Log {
 // calls in the curated corpus are struct constructions; method calls have a
 // member callee (not an identifier) and so never match.
 func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
+    if tryEmitPayloadCase(env, callee, args) { return }
     if isStructCtor(callee, args) { emitStructCtor(env, callee, args); return }
     emitBoxed(env, callee)
     print("(")
     emitArgList(env, args)
     print(")")
+}
+
+// A call `Enum.case(args)` where Enum is a payload enum constructs the variant:
+// `Shape.circle(r)` -> `Shape{Shape::circle_t{r}}`. Returns whether it matched
+// (and emitted).
+func tryEmitPayloadCase(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if callee.len() == 0 { return false }
+    return tryEmitPayloadCaseNode(env, callee.get(0) ?? Nd.wildcard, args)
+}
+
+func tryEmitPayloadCaseNode(_ env: inout TyEnv, _ c: Nd, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    return match c {
+        case .member(let base, let name, let chain): emitPayloadCaseIfEnum(env, base, name, args)
+        default: false
+    }
+}
+
+func emitPayloadCaseIfEnum(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    let bn = identBaseName(base)
+    if streq(bn, "") { return false }
+    if !isPayloadEnum(env, bn) { return false }
+    emitPayloadCase(env, bn, name, args)
+    return true
 }
 
 func isStructCtor(_ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc -> Bool {

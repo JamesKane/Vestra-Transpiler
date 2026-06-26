@@ -1,0 +1,14 @@
+enum Shape {
+  case circle(Int32)
+  case rect(Int32, Int32)
+  case point
+}
+func mkc(_ r: Int32) -> Shape {
+  return Shape.circle(r)
+}
+func mkr(_ a: Int32, _ b: Int32) -> Shape {
+  return Shape.rect(a, b)
+}
+func mkp() -> Shape {
+  return Shape.point
+}
