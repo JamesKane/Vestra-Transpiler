@@ -1,0 +1,31 @@
+enum Dir {
+  case north
+  case south
+  case east
+  case west
+}
+func dx(_ d: Dir) -> Int32 {
+  return match d {
+    case .north: 0
+    case .south: 0
+    case .east: 1
+    case .west: 0 - 1
+  }
+}
+func label(_ d: Dir) -> Str {
+  return match d {
+    case .north: "N"
+    case .south: "S"
+    case .east: "E"
+    case .west: "W"
+  }
+}
+func viaLocal(_ d: Dir) -> Int32 {
+  let e = d
+  return match e {
+    case .north: 1
+    case .south: 2
+    case .east: 3
+    case .west: 4
+  }
+}

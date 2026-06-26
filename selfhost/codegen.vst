@@ -2911,6 +2911,7 @@ struct TyEnv {
     var symName: Vec[String]    // per-function: binding name ...
     var symType: Vec[String]    // ... -> type spelling
     var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
+    var curRetNode: Vec[Nd]     // per-function: the result TYPE node (for emitting the C++ return type, e.g. a match lambda)
     var bad: Vec[String]
 }
 
@@ -4383,7 +4384,7 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     mRet: Vec.new(), eName: Vec.new(), ecEnum: Vec.new(),
                     ecName: Vec.new(), ecArity: Vec.new(),
                     symName: Vec.new(), symType: Vec.new(),
-                    curRet: own(""), bad: Vec.new())
+                    curRet: own(""), curRetNode: Vec.new(), bad: Vec.new())
     var i: Int = 0
     while i < u.decls.len() {
         tyCollectDecl(&env, u.decls.get(i) ?? Nd.wildcard)
@@ -4613,6 +4614,7 @@ func emitMethodDef(_ env: inout TyEnv, _ name: Str, _ params: Vec[Nd], _ res: Ve
     print(") {\n")
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
+    tySetRetNode(&env, res)
     if body.len() > 0 { emitBlockStmts(env, body.get(0) ?? Nd.wildcard, "        ") }
     print("    }\n")
 }
@@ -4654,8 +4656,17 @@ func emitFunc(_ env: inout TyEnv, _ name: Str, _ params: Vec[Nd], _ res: Vec[Nd]
     print(") {\n")
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
+    tySetRetNode(&env, res)
     emitBody(env, body)
     print("}\n\n")
+}
+
+// Record the enclosing function's result type node (used when an emitted match
+// expression needs the C++ return type for its lambda). Copies the node out so
+// the caller's `res` is not consumed.
+func tySetRetNode(_ env: inout TyEnv, _ res: Vec[Nd]) using Alloc {
+    while env.curRetNode.len() > 0 { let _ = env.curRetNode.pop() }
+    if res.len() > 0 { env.curRetNode.push(res.get(0) ?? Nd.wildcard) }
 }
 
 func emitRetType(_ res: Vec[Nd]) using Alloc, Log {
@@ -4810,9 +4821,20 @@ func emitBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd
     print(" = ")
     emitBoxed(env, value)
     print(";\n")
-    // Record the binding's type so later expressions can be inferred (annotated
-    // bindings only; an inferred binding stays untracked, matching the resolver).
-    tyRegisterPat(&env, pat, ty)
+    // Record the binding's type so later expressions can be inferred: an annotated
+    // binding from its annotation, an inferred one from its initializer's type.
+    if ty.len() > 0 {
+        tyRegisterPat(&env, pat, ty)
+    } else {
+        tyAddSymSpelling(&env, patName(pat), tyInferBoxed(&env, value))
+    }
+}
+
+func tyAddSymSpelling(_ env: inout TyEnv, _ name: String, _ sp: String) using Alloc {
+    if !streq(sp, "") {
+        env.symName.push(name)
+        env.symType.push(sp)
+    }
 }
 
 func emitAssign(_ env: inout TyEnv, _ indent: Str, _ op: Str, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc, Log {
@@ -4928,10 +4950,87 @@ func emitElse(_ env: inout TyEnv, _ e: Nd) using Alloc, Log {
 }
 
 func emitReturn(_ env: inout TyEnv, _ indent: Str, _ v: Vec[Nd]) using Alloc, Log {
+    if v.len() > 0 && isMatchE(v.get(0) ?? Nd.wildcard) {
+        emitReturnMatch(env, indent, v.get(0) ?? Nd.wildcard)
+        return
+    }
     print(indent)
     print("return")
     if v.len() > 0 { print(" "); emitBoxed(env, v) }
     print(";\n")
+}
+
+func isMatchE(_ e: Nd) -> Bool {
+    return match e {
+        case .matchE(let scrut, let arms): true
+        default: false
+    }
+}
+
+// `return match <scrut> { case .X: <body> ... }` over a payload-free enum lowers
+// to an immediately-invoked lambda wrapping a switch:
+//
+//   return [&]() -> <retType> { switch (<scrut>) {
+//       case <Enum>::<case>:
+//           return <body>;
+//       ...
+//   } }();
+//
+// The lambda's return type is the enclosing function's result type; the scrutinee
+// type (inferred) supplies the enum name that qualifies each case label. (Payload
+// patterns, guards, default / wildcard arms, and non-return positions are not yet
+// handled.)
+func emitReturnMatch(_ env: inout TyEnv, _ indent: Str, _ m: Nd) using Alloc, Log {
+    match m {
+        case .matchE(let scrut, let arms): emitReturnMatchParts(env, indent, scrut, arms)
+        default: noop()
+    }
+}
+
+func emitReturnMatchParts(_ env: inout TyEnv, _ indent: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    let enumName = tyInferBoxed(env, scrut)
+    print(indent)
+    print("return [&]() -> ")
+    emitTypeBoxed(env.curRetNode)
+    print(" { switch (")
+    emitBoxed(env, scrut)
+    print(") {\n")
+    let armIndent = deeper(indent)
+    var i: Int = 0
+    while i < arms.len() {
+        emitMatchArm(env, armIndent, enumName, arms.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    print(indent)
+    print("} }();\n")
+}
+
+func emitMatchArm(_ env: inout TyEnv, _ armIndent: Str, _ enumName: Str, _ arm: Nd) using Alloc, Log {
+    match arm {
+        case .matchArm(let isDefault, let pat, let guard, let body): emitMatchArmParts(env, armIndent, enumName, pat, body)
+        default: noop()
+    }
+}
+
+func emitMatchArmParts(_ env: inout TyEnv, _ armIndent: Str, _ enumName: Str, _ pat: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    print(armIndent)
+    print("case ")
+    print(enumName)
+    print("::")
+    print(armCaseName(pat))
+    print(":\n")
+    print(deeper(armIndent))
+    print("return ")
+    emitBoxed(env, body)
+    print(";\n")
+}
+
+func armCaseName(_ pat: Vec[Nd]) using Alloc -> String {
+    if pat.len() == 0 { return own("") }
+    return match pat.get(0) ?? Nd.wildcard {
+        case .enumP(let cname, let children): own(cname)
+        default: own("")
+    }
 }
 
 // The binding name of a simple `let`/`var` pattern (identifier or `let`-binding).
