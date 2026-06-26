@@ -1,0 +1,28 @@
+enum Color {
+  case red
+  case green
+  case blue
+}
+func viaDefault(_ c: Color) -> Int32 {
+  return match c {
+    case .red: 1
+    default: 0
+  }
+}
+func viaWild(_ c: Color) -> Int32 {
+  return match c {
+    case .green: 2
+    case _: 0
+  }
+}
+enum Shape {
+  case circle(Int32)
+  case rect(Int32, Int32)
+  case point
+}
+func payDefault(_ s: Shape) -> Int32 {
+  return match s {
+    case .circle(let r): r
+    default: 0
+  }
+}

@@ -5008,22 +5008,36 @@ func emitReturnMatchParts(_ env: inout TyEnv, _ indent: Str, _ scrut: Vec[Nd], _
 
 func emitMatchArm(_ env: inout TyEnv, _ armIndent: Str, _ enumName: Str, _ arm: Nd) using Alloc, Log {
     match arm {
-        case .matchArm(let isDefault, let pat, let guard, let body): emitMatchArmParts(env, armIndent, enumName, pat, body)
+        case .matchArm(let isDefault, let pat, let guard, let body): emitMatchArmParts(env, armIndent, enumName, isDefault, pat, body)
         default: noop()
     }
 }
 
-func emitMatchArmParts(_ env: inout TyEnv, _ armIndent: Str, _ enumName: Str, _ pat: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+// A `default:` / wildcard `case _:` arm lowers to a `default:` label; any other
+// arm to its `case <Enum>::<case>:` label.
+func emitMatchArmParts(_ env: inout TyEnv, _ armIndent: Str, _ enumName: Str, _ isDefault: Bool, _ pat: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
     print(armIndent)
-    print("case ")
-    print(enumName)
-    print("::")
-    print(armCaseName(pat))
-    print(":\n")
+    if isDefault || isWildcardPat(pat) {
+        print("default:\n")
+    } else {
+        print("case ")
+        print(enumName)
+        print("::")
+        print(armCaseName(pat))
+        print(":\n")
+    }
     print(deeper(armIndent))
     print("return ")
     emitBoxed(env, body)
     print(";\n")
+}
+
+func isWildcardPat(_ pat: Vec[Nd]) -> Bool {
+    if pat.len() == 0 { return false }
+    return match pat.get(0) ?? Nd.wildcard {
+        case .wildcard: true
+        default: false
+    }
 }
 
 // `return match <scrut> { case .C(let a, ...): <body> ... }` over a PAYLOAD enum
@@ -5049,17 +5063,58 @@ func emitReturnVisitMatch(_ env: inout TyEnv, _ indent: Str, _ enumName: Str, _ 
     print("using __vstr_alt_t = std::decay_t<decltype(__vstr_alt)>;\n")
     let i12 = deeper(i8)
     let i16 = deeper(i12)
+    // Non-default arms form the if-constexpr chain (indexed so the first is `if`
+    // and the rest `else if`); a default / wildcard arm becomes the trailing
+    // `else`, otherwise the chain ends in `std::unreachable()`.
+    var k: Int = 0
+    var di: Int = 0 - 1
     var j: Int = 0
     while j < arms.len() {
-        emitVisitArm(env, i8, i12, i16, enumName, arms.get(j) ?? Nd.wildcard, j)
+        if armIsDefault(arms.get(j) ?? Nd.wildcard) {
+            di = j
+        } else {
+            emitVisitArm(env, i8, i12, i16, enumName, arms.get(j) ?? Nd.wildcard, k)
+            k = k + 1
+        }
         j = j + 1
     }
-    print(i8)
-    print("} else { std::unreachable(); }\n")
+    if di >= 0 {
+        emitVisitDefault(env, i8, i12, arms.get(di) ?? Nd.wildcard)
+    } else {
+        print(i8)
+        print("} else { std::unreachable(); }\n")
+    }
     print(indent)
     print("}, ")
     emitBoxed(env, scrut)
     print(".value);\n")
+}
+
+func armIsDefault(_ arm: Nd) -> Bool {
+    return match arm {
+        case .matchArm(let isDefault, let pat, let guard, let body): isDefault || isWildcardPat(pat)
+        default: false
+    }
+}
+
+// The trailing `} else { return <body>; }` for a default / wildcard arm of a
+// payload match (no inner scope block, unlike the if-constexpr arms).
+func emitVisitDefault(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ arm: Nd) using Alloc, Log {
+    match arm {
+        case .matchArm(let isDefault, let pat, let guard, let body): emitVisitDefaultParts(env, i8, i12, body)
+        default: noop()
+    }
+}
+
+func emitVisitDefaultParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ body: Vec[Nd]) using Alloc, Log {
+    print(i8)
+    print("} else {\n")
+    print(i12)
+    print("return ")
+    emitBoxed(env, body)
+    print(";\n")
+    print(i8)
+    print("}\n")
 }
 
 func emitVisitArm(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ i16: Str, _ enumName: Str, _ arm: Nd, _ j: Int) using Alloc, Log {
