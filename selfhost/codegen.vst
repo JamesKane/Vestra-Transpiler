@@ -2870,8 +2870,59 @@ func emitHppDecl(_ d: Nd) using Alloc, Log {
             emitFwdDecl(name, params, res)
         case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics):
             emitStructDef(name, fields, methods)
+        case .enumD(let vis, let name, let cases, let methods, let generics):
+            emitEnumDecl(name, cases, methods)
         default: noop()
     }
+}
+
+// A payload-free, methodless enum lowers to a C++ `enum class` (each case a
+// trailing-comma enumerator). Enums with payloads or methods lower to a
+// struct + std::variant form, which is a later slice — guarded out here so they
+// are deferred rather than mis-emitted.
+func emitEnumDecl(_ name: Str, _ cases: Vec[Nd], _ methods: Vec[Nd]) using Alloc, Log {
+    if methods.len() == 0 && allCasesBare(cases) { emitEnumClass(name, cases) }
+}
+
+func allCasesBare(_ cases: Vec[Nd]) -> Bool {
+    var i: Int = 0
+    while i < cases.len() {
+        if !caseIsBare(cases.get(i) ?? Nd.wildcard) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+func caseIsBare(_ c: Nd) -> Bool {
+    return match c {
+        case .enumCase(let n, let payload): payload.len() == 0
+        default: true
+    }
+}
+
+func emitEnumClass(_ name: Str, _ cases: Vec[Nd]) using Alloc, Log {
+    print("enum class ")
+    print(name)
+    print(" {\n")
+    var i: Int = 0
+    while i < cases.len() {
+        emitEnumCaseName(cases.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    print("};\n\n")
+}
+
+func emitEnumCaseName(_ c: Nd) using Alloc, Log {
+    match c {
+        case .enumCase(let n, let payload): emitCaseEnumerator(n)
+        default: noop()
+    }
+}
+
+func emitCaseEnumerator(_ n: Str) using Alloc, Log {
+    print("    ")
+    print(n)
+    print(",\n")
 }
 
 // A struct definition: `struct <Name> { <fields> <methods> };` then a trailing

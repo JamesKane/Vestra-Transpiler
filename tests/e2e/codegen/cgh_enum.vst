@@ -1,0 +1,12 @@
+enum Color {
+  case red
+  case green
+  case blue
+}
+func code(_ c: Color) -> Int32 {
+  return 0
+}
+enum Dir {
+  case north
+  case south
+}
