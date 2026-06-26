@@ -1,0 +1,16 @@
+enum Token {
+  case ident(Str)
+  case number(Int64)
+  case pair(Bool, Int32)
+  case eof
+}
+enum Color {
+  case red
+  case green
+}
+struct Wrap {
+  var t: Int32
+}
+func tag(_ x: Int32) -> Int32 {
+  return x
+}
