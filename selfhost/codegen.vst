@@ -4448,8 +4448,10 @@ func emitHppDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
 // `<case>_t` payload struct per case and a `std::variant<...> value` member.
 // Enum methods are deferred (the variant form gets methods in a later slice), so
 // they are guarded out rather than mis-emitted.
+// Enum methods are dropped by the C++ emitter (an `enum class` cannot carry them,
+// and the variant form does not lower them either), so only the definition is
+// emitted whether or not the enum declares methods.
 func emitEnumDecl(_ name: Str, _ cases: Vec[Nd], _ methods: Vec[Nd]) using Alloc, Log {
-    if methods.len() > 0 { return }
     if allCasesBare(cases) { emitEnumClass(name, cases) }
     else { emitPayloadEnum(name, cases) }
 }
