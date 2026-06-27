@@ -4439,8 +4439,26 @@ func emitHppDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
             emitStructDef(env, name, fields, methods)
         case .enumD(let vis, let name, let cases, let methods, let generics):
             emitEnumDecl(name, cases, methods)
+        case .constD(let vis, let name, let ty, let value):
+            emitGlobalDef(env, "inline constexpr ", name, ty, value)
+        case .staticD(let vis, let name, let ty, let value):
+            emitGlobalDef(env, "inline ", name, ty, value)
         default: noop()
     }
+}
+
+// A top-level `const` / `static` lowers to an inline variable in the header:
+// `inline constexpr <type> <name> = <value>;` / `inline <type> <name> = <value>;`
+// (one line, no trailing blank — like a forward declaration). The `.cpp` emits
+// nothing for them.
+func emitGlobalDef(_ env: inout TyEnv, _ prefix: Str, _ name: Str, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    print(prefix)
+    emitTypeBoxed(ty)
+    print(" ")
+    print(name)
+    print(" = ")
+    emitBoxed(env, value)
+    print(";\n")
 }
 
 // A payload-free enum lowers to a C++ `enum class` (each case a trailing-comma

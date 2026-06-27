@@ -1,0 +1,6 @@
+const MAX: Int32 = 100
+const NAME: Str = "hi"
+static counter: Int64 = 0
+func limit() -> Int32 {
+  return MAX
+}
