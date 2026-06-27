@@ -894,7 +894,7 @@ enum Nd {
     case forS(Vec[Nd], Vec[Nd], Vec[Nd])     // pattern, iter, body (block)
     case breakS(String)                      // label ("" if none)
     case continueS(String)
-    case withS(Vec[Nd], Vec[Nd], Vec[Nd])    // granted cap types, binding values, body (printed /*?stmt*/)
+    case withS(Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd])  // grant-only cap types, binding names (parallel to values; "" = capability instance), binding values, body (printed /*?stmt*/)
     // patterns
     case wildcard
     case identP(String)
@@ -1635,24 +1635,32 @@ func firstCharLower(_ s: Str) -> Bool {
 func parseWith(_ p: inout Ps) using Alloc -> Nd {
     advP(&p)  // 'with'
     var caps: Vec[Nd] = Vec.new()
+    var names: Vec[Nd] = Vec.new()
     var vals: Vec[Nd] = Vec.new()
     var more: Bool = true
     while more {
         if isKind(p, TokKind.identifier)
             && (isKindAt(p, 1, TokKind.assign) || isKindAt(p, 1, TokKind.colon))
             && firstCharLower(curRaw(p)) {
+            let nm = curText(p)
             advP(&p)  // name (value binding, grants no capability)
             if eat(p, TokKind.colon) { let t = parseType(&p) }
             eat(p, TokKind.assign)
+            names.push(Nd.ident(nm))
             vals.push(parseExpr(&p))
         } else {
-            caps.push(parseType(&p))  // capability-typed binding
-            if eat(p, TokKind.assign) { vals.push(parseExpr(&p)) }
+            let t = parseType(&p)  // capability-typed binding
+            if eat(p, TokKind.assign) {
+                names.push(Nd.ident(""))  // "" sentinel => capability instance, lowers to (void)(val)
+                vals.push(parseExpr(&p))
+            } else {
+                caps.push(t)  // grant-only, lowers to nothing
+            }
         }
         if !eat(p, TokKind.comma) { more = false }
     }
     let body = parseBlock(&p)
-    return Nd.withS(caps, vals, bE(body))
+    return Nd.withS(caps, names, vals, bE(body))
 }
 
 func parsePattern(_ p: inout Ps) using Alloc -> Nd {
@@ -3777,7 +3785,7 @@ func tyStmt(_ env: inout TyEnv, _ s: Nd) using Alloc {
         case .assignS(let op, let t, let v): tyAssign(env, t, v)
         case .whileS(let c, let b): tyWhile(env, c, b)
         case .forS(let pp, let it, let b): tyPair(env, it, b)
-        case .withS(let caps, let vals, let body): tyWith(env, vals, body)
+        case .withS(let caps, let names, let vals, let body): tyWith(env, vals, body)
         default: noop()
     }
 }
@@ -4829,7 +4837,46 @@ func emitStmt(_ env: inout TyEnv, _ s: Nd, _ indent: Str) using Alloc, Log {
         case .retS(let v): emitReturn(env, indent, v)
         case .breakS(let label): emitJump(indent, "break")
         case .continueS(let label): emitJump(indent, "continue")
+        case .withS(let caps, let names, let vals, let body): emitWith(env, indent, names, vals, body)
         default: noop()
+    }
+}
+
+// `with ... { body }` lowers to a bare nested block `{ ... }` at the current
+// statement indent. Grant-only capabilities (`with Cap`) are erased. A value
+// binding (`with x = e`) emits `auto&& x = e;`; a capability instance
+// (`with Cap = e`) emits `(void)(e);`. Bindings precede the body, in source order.
+func emitWith(_ env: inout TyEnv, _ indent: Str, _ names: Vec[Nd], _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    print("{\n")
+    let d = deeper(indent)
+    var i: Int = 0
+    while i < vals.len() {
+        let nm = identName(names.get(i) ?? Nd.ident(""))
+        print(d)
+        if streq(nm, "") {
+            print("(void)(")
+            emitExpr(env, vals.get(i) ?? Nd.wildcard)
+            print(");\n")
+        } else {
+            print("auto&& ")
+            print(nm)
+            print(" = ")
+            emitExpr(env, vals.get(i) ?? Nd.wildcard)
+            print(";\n")
+            tyAddSymSpelling(&env, nm, tyInfer(&env, vals.get(i) ?? Nd.wildcard))
+        }
+        i = i + 1
+    }
+    if body.len() > 0 { emitBlockStmts(env, body.get(0) ?? Nd.wildcard, d) }
+    print(indent)
+    print("}\n")
+}
+
+func identName(_ n: Nd) using Alloc -> String {
+    return match n {
+        case .ident(let s): own(s)
+        default: String.new()
     }
 }
 

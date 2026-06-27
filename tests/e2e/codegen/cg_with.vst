@@ -1,0 +1,24 @@
+// `with` capability blocks lower to bare nested blocks. Grant-only capabilities
+// are erased; value bindings become `auto&& x = e;`; a capability instance
+// becomes `(void)(e);`. Covers all three forms plus nesting.
+struct Pool {}
+
+func grantOnly() using Alloc, Log -> Int32 {
+    with Alloc {
+        with Log {
+            return 0
+        }
+    }
+}
+
+func valueBind(_ x: Int32) -> Int32 {
+    with a = x, b = 7 {
+        return a + b
+    }
+}
+
+func instanceBind(_ p: Pool) -> Int32 {
+    with Pool = p {
+        return 0
+    }
+}
