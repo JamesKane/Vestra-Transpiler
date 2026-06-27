@@ -1,0 +1,23 @@
+func f(_ n: Int32) -> Int32 {
+  var s = 0
+  var i = 0
+  while i < n {
+    i = i + 1
+    if i > 5 {
+      break
+    }
+    if i > 2 {
+      continue
+    }
+    s = s + i
+  }
+  return s
+}
+func g(_ n: Int32) -> Int32 {
+  var i = 0
+  while i < n {
+    i = i + 1
+    continue
+  }
+  return i
+}

@@ -4809,8 +4809,17 @@ func emitStmt(_ env: inout TyEnv, _ s: Nd, _ indent: Str) using Alloc, Log {
         case .forS(let pat, let iter, let body): emitFor(env, indent, pat, iter, body)
         case .exprS(let e): emitExprStmt(env, indent, e)
         case .retS(let v): emitReturn(env, indent, v)
+        case .breakS(let label): emitJump(indent, "break")
+        case .continueS(let label): emitJump(indent, "continue")
         default: noop()
     }
+}
+
+// `break;` / `continue;` (loop labels are not handled).
+func emitJump(_ indent: Str, _ kw: Str) using Alloc, Log {
+    print(indent)
+    print(kw)
+    print(";\n")
 }
 
 // `let`/`var` lower identically: an annotated binding keeps its C++ type, an
