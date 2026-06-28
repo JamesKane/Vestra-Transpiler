@@ -1,0 +1,22 @@
+// Closure literals `{ p => body }` lower to `[&]`-capturing C++ lambdas. The
+// parameter types are not written in the source; they come from the expected
+// function type, here the binding's annotation. A single-expression body becomes
+// `return <expr>;`; a multi-statement body emits earlier statements inline and
+// returns its trailing expression.
+func single() -> Int32 {
+    let g: (Int32) -> Int32 = { n => n * 2 }
+    return g(4)
+}
+
+func twoArg() -> Int32 {
+    let h: (Int32, Int32) -> Int32 = { x, y => x + y }
+    return h(2, 3)
+}
+
+func multi() -> Int32 {
+    let g: (Int32) -> Int32 = { n =>
+        let t = n + 1
+        t * 2
+    }
+    return g(4)
+}

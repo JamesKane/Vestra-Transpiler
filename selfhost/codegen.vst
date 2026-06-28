@@ -4941,7 +4941,12 @@ func emitBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd
         print(patName(pat))
     }
     print(" = ")
-    emitBoxed(env, value)
+    if isFnTy(ty) && valIsClosure(value) {
+        // The annotation's function type supplies the lambda's parameter types.
+        emitClosureWithFnTy(env, ty, value)
+    } else {
+        emitBoxed(env, value)
+    }
     print(";\n")
     // Record the binding's type so later expressions can be inferred: an annotated
     // binding from its annotation, an inferred one from its initializer's type.
@@ -5658,6 +5663,91 @@ func emitArg(_ env: inout TyEnv, _ a: Nd) using Alloc, Log {
     match a {
         case .arg(let label, let isInout, let val): emitBoxed(env, val)
         default: noop()
+    }
+}
+
+// A closure literal `{ p => body }` lowers to a `[&]`-capturing C++ lambda:
+// `[&](<ptype> p, ...) { <body> }`. Parameter types are NOT in the source — they
+// come from the expected function type at the use site (here, ptypes). The body
+// is a statement list whose final expression becomes the lambda's `return` (when
+// the closure yields a value); earlier statements emit inline, separated by the
+// `;\n` their normal emission already carries.
+func emitClosure(_ env: inout TyEnv, _ cparams: Vec[Nd], _ body: Vec[Nd], _ ptypes: Vec[Nd], _ resTy: Vec[Nd]) using Alloc, Log {
+    print("[&](")
+    var i: Int = 0
+    while i < cparams.len() {
+        if i > 0 { print(", ") }
+        if i < ptypes.len() { emitType(ptypes.get(i) ?? Nd.wildcard) } else { print("auto") }
+        print(" ")
+        print(identName(cparams.get(i) ?? Nd.ident("")))
+        i = i + 1
+    }
+    print(") { ")
+    emitClosureBody(env, body, resTy)
+    print(" }")
+}
+
+func emitClosureBody(_ env: inout TyEnv, _ body: Vec[Nd], _ resTy: Vec[Nd]) using Alloc, Log {
+    let valueRet = closureReturnsValue(resTy)
+    let n = body.len()
+    var i: Int = 0
+    while i < n {
+        let s = body.get(i) ?? Nd.wildcard
+        if i == n - 1 {
+            emitClosureTail(env, s, valueRet)
+        } else {
+            emitStmt(env, s, "")
+        }
+        i = i + 1
+    }
+}
+
+// The closure's final statement. A value-returning closure turns a trailing
+// expression into `return <expr>;`; a Unit closure emits the bare statement.
+func emitClosureTail(_ env: inout TyEnv, _ s: Nd, _ valueRet: Bool) using Alloc, Log {
+    match s {
+        case .exprS(let e): emitClosureRet(env, e, valueRet)
+        default: emitStmt(env, s, "")
+    }
+}
+
+func emitClosureRet(_ env: inout TyEnv, _ e: Vec[Nd], _ valueRet: Bool) using Alloc, Log {
+    if valueRet { print("return ") }
+    emitBoxed(env, e)
+    print(";")
+}
+
+// A closure yields a value unless its expected result type is absent or Unit.
+func closureReturnsValue(_ resTy: Vec[Nd]) using Alloc -> Bool {
+    if resTy.len() == 0 { return false }
+    return match resTy.get(0) ?? Nd.wildcard {
+        case .named(let path, let hasG, let args): !streq(path, "Unit")
+        default: true
+    }
+}
+
+// Emit a closure binding's value when the annotation is a function type: pull the
+// expected parameter/result types from the fnT and the params/body from the
+// closure literal, then lower the lambda.
+func emitClosureWithFnTy(_ env: inout TyEnv, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    match ty.get(0) ?? Nd.wildcard {
+        case .fnT(let params, let caps, let thr, let res): emitClosureVal(env, value, params, res)
+        default: noop()
+    }
+}
+
+func emitClosureVal(_ env: inout TyEnv, _ value: Vec[Nd], _ ptypes: Vec[Nd], _ resTy: Vec[Nd]) using Alloc, Log {
+    match value.get(0) ?? Nd.wildcard {
+        case .closureE(let cparams, let body): emitClosure(env, cparams, body, ptypes, resTy)
+        default: noop()
+    }
+}
+
+func valIsClosure(_ v: Vec[Nd]) using Alloc -> Bool {
+    if v.len() == 0 { return false }
+    return match v.get(0) ?? Nd.wildcard {
+        case .closureE(let p, let b): true
+        default: false
     }
 }
 
