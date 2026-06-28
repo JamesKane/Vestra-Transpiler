@@ -1,0 +1,18 @@
+// Function types lower to C++ function-pointer declarators: `(A) -> R` becomes
+// `R(*<name>)(const A&)` where the name is spliced mid-type, or the abstract
+// `R(*)(const A&)` form in return / type-argument position. A bare function name
+// used as a value emits unchanged. Read-mode function-pointer parameters.
+func inc(_ x: Int32) -> Int32 { return x + 1 }
+
+func apply(_ f: (Int32) -> Int32, _ x: Int32) -> Int32 {
+    return f(x)
+}
+
+func use() -> Int32 {
+    let g: (Int32) -> Int32 = inc
+    return apply(g, 5)
+}
+
+func makeAdder() -> (Int32) -> Int32 {
+    return inc
+}

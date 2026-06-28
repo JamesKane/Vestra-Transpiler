@@ -4718,8 +4718,10 @@ func emitParam(_ p: Nd) using Alloc, Log {
     }
 }
 
-// Slice 1: read-mode parameter -> `const <type>& <name>`.
+// Slice 1: read-mode parameter -> `const <type>& <name>`. A function-typed
+// parameter instead becomes a bare function pointer `<res>(*<name>)(...)`.
 func emitReadParam(_ nm: Str, _ ty: Vec[Nd]) using Alloc, Log {
+    if isFnTy(ty) { emitFnPtrDecl(ty, nm); return }
     print("const ")
     emitTypeBoxed(ty)
     print("& ")
@@ -4734,7 +4736,46 @@ func emitType(_ t: Nd) using Alloc, Log {
     match t {
         case .named(let path, let hasG, let args): emitNamedType(path, hasG, args)
         case .opt(let inner): emitOptType(inner)
+        case .fnT(let params, let caps, let thr, let res): emitFnPtr(res, "", params)
         default: print("/*?type*/")
+    }
+}
+
+// A function type lowers to a C++ function-pointer declarator: `<res>(*<name>)(
+// const P0&, const P1&, ...)`. In type-argument / return-type position the name
+// is empty, giving the abstract `<res>(*)(...)` form. Parameters are read-mode.
+func emitFnPtr(_ res: Vec[Nd], _ name: Str, _ params: Vec[Nd]) using Alloc, Log {
+    emitRetType(res)
+    print("(*")
+    print(name)
+    print(")(")
+    var i: Int = 0
+    while i < params.len() {
+        if i > 0 { print(", ") }
+        print("const ")
+        emitType(params.get(i) ?? Nd.wildcard)
+        print("&")
+        i = i + 1
+    }
+    print(")")
+}
+
+// True when a (boxed) type annotation is a function type, which needs the
+// declarator form (name embedded mid-type) rather than `<type> <name>`.
+func isFnTy(_ ty: Vec[Nd]) -> Bool {
+    if ty.len() == 0 { return false }
+    return match ty.get(0) ?? Nd.wildcard {
+        case .fnT(let a, let b, let c, let d): true
+        default: false
+    }
+}
+
+// Emit a function-pointer declarator for an annotation known to be a function
+// type, splicing `name` into the `(*name)` slot.
+func emitFnPtrDecl(_ ty: Vec[Nd], _ name: Str) using Alloc, Log {
+    match ty.get(0) ?? Nd.wildcard {
+        case .fnT(let params, let caps, let thr, let res): emitFnPtr(res, name, params)
+        default: noop()
     }
 }
 
@@ -4891,9 +4932,14 @@ func emitJump(_ indent: Str, _ kw: Str) using Alloc, Log {
 // inferred one uses `auto` (Vestra's immutability is not re-expressed in C++).
 func emitBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
     print(indent)
-    if ty.len() > 0 { emitTypeBoxed(ty) } else { print("auto") }
-    print(" ")
-    print(patName(pat))
+    if isFnTy(ty) {
+        // A function-typed binding needs the declarator form `<res>(*<name>)(...)`.
+        emitFnPtrDecl(ty, patName(pat))
+    } else {
+        if ty.len() > 0 { emitTypeBoxed(ty) } else { print("auto") }
+        print(" ")
+        print(patName(pat))
+    }
     print(" = ")
     emitBoxed(env, value)
     print(";\n")
