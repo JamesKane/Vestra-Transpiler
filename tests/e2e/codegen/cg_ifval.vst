@@ -1,0 +1,57 @@
+// If-as-value. In value position (binding initializer, call argument, nested
+// branch) an if-expression lowers to a parenthesized immediately-invoked
+// lambda whose branches return their own branch lambda's value; an else-if
+// recurses into the same form. In RETURN position it instead lowers to a plain
+// statement `if` whose branch tails return (emitIfStmt's inline-braced shape).
+// The binding's annotation only changes the LHS type; the RHS lambda is
+// type-independent.
+func bindAnn(_ c: Bool) -> Int32 {
+    let n: Int32 = if c { 1 } else { 2 }
+    return n
+}
+
+func bindInferred(_ c: Bool) -> Int32 {
+    let n = if c { 1 } else { 2 }
+    return n
+}
+
+func chain(_ k: Int32) -> Int32 {
+    let n = if k > 10 { 1 } else if k > 5 { 2 } else { 3 }
+    return n
+}
+
+func retIf(_ c: Bool) -> Int32 {
+    return if c { 4 } else { 5 }
+}
+
+func multi(_ c: Bool) -> Int32 {
+    let n = if c {
+        let t = 2
+        t + 1
+    } else { 9 }
+    return n
+}
+
+func retChain(_ k: Int32) -> Int32 {
+    return if k > 10 { 1 } else if k > 5 { 2 } else { 3 }
+}
+
+func retMulti(_ c: Bool) -> Int32 {
+    return if c {
+        let t: Int32 = 1
+        t + 2
+    } else { 9 }
+}
+
+func nested(_ c: Bool, _ d: Bool) -> Int32 {
+    let n = if c { if d { 1 } else { 2 } } else { 3 }
+    return n
+}
+
+func argPos(_ c: Bool) -> Int32 {
+    return twice(if c { 1 } else { 2 })
+}
+
+func twice(_ n: Int32) -> Int32 {
+    return n * 2
+}

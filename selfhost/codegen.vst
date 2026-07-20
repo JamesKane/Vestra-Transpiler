@@ -5247,6 +5247,10 @@ func emitReturn(_ env: inout TyEnv, _ indent: Str, _ v: Vec[Nd]) using Alloc, Lo
         emitReturnMatch(env, indent, v.get(0) ?? Nd.wildcard)
         return
     }
+    if v.len() > 0 && isValueIfE(v.get(0) ?? Nd.wildcard) {
+        emitReturnIfNode(env, indent, v.get(0) ?? Nd.wildcard)
+        return
+    }
     print(indent)
     print("return")
     if v.len() > 0 { print(" "); emitBoxed(env, v) }
@@ -5258,6 +5262,99 @@ func isMatchE(_ e: Nd) -> Bool {
         case .matchE(let scrut, let arms): true
         default: false
     }
+}
+
+// A value-position if (plain, with an else) — if-let stays on the general path.
+func isValueIfE(_ e: Nd) -> Bool {
+    return match e {
+        case .ifE(let ln, let li, let cond, let thenB, let els): streq(ln, "") && els.len() > 0
+        default: false
+    }
+}
+
+// `return if <c> { <a> } else { <b> }` lowers NOT to the value lambda but to a
+// statement `if` whose branch tails return — the same inline-braced,
+// column-0-closing shape as emitIfStmt:
+//
+//   if (<c>) { return <a>;
+//   } else { return <b>;
+//   }
+//
+// An else-if chain nests the same form inside the else block.
+func emitReturnIfNode(_ env: inout TyEnv, _ indent: Str, _ m: Nd) using Alloc, Log {
+    match m {
+        case .ifE(let ln, let li, let cond, let thenB, let els): emitReturnIf(env, indent, cond, thenB, els)
+        default: noop()
+    }
+}
+
+func emitReturnIf(_ env: inout TyEnv, _ indent: Str, _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    print("if (")
+    emitBoxed(env, cond)
+    print(") { ")
+    emitRetBlock(env, thenB)
+    print("}")
+    emitRetElse(env, els)
+    print("\n")
+}
+
+func emitRetBlock(_ env: inout TyEnv, _ b: Vec[Nd]) using Alloc, Log {
+    match b.get(0) ?? Nd.wildcard {
+        case .block(let stmts): emitRetStmts(env, stmts)
+        default: noop()
+    }
+}
+
+// Branch statements at "" indent; the value-yielding trailing expression
+// becomes `return <expr>;` with its newline (unlike the inline-lambda shape,
+// the closing brace follows on the next line).
+func emitRetStmts(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc, Log {
+    let n = stmts.len()
+    var i: Int = 0
+    while i < n {
+        let s = stmts.get(i) ?? Nd.wildcard
+        if i == n - 1 {
+            emitRetTail(env, s)
+        } else {
+            emitStmt(env, s, "")
+        }
+        i = i + 1
+    }
+}
+
+func emitRetTail(_ env: inout TyEnv, _ s: Nd) using Alloc, Log {
+    match s {
+        case .exprS(let e): emitRetTailExpr(env, e)
+        default: emitStmt(env, s, "")
+    }
+}
+
+func emitRetTailExpr(_ env: inout TyEnv, _ e: Vec[Nd]) using Alloc, Log {
+    print("return ")
+    emitBoxed(env, e)
+    print(";\n")
+}
+
+func emitRetElse(_ env: inout TyEnv, _ els: Vec[Nd]) using Alloc, Log {
+    if els.len() == 0 { return }
+    match els.get(0) ?? Nd.wildcard {
+        case .block(let stmts): emitRetElseBlock(env, stmts)
+        case .ifE(let ln, let li, let cond, let thenB, let els2): emitRetElseIf(env, cond, thenB, els2)
+        default: noop()
+    }
+}
+
+func emitRetElseBlock(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc, Log {
+    print(" else { ")
+    emitRetStmts(env, stmts)
+    print("}")
+}
+
+func emitRetElseIf(_ env: inout TyEnv, _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc, Log {
+    print(" else { ")
+    emitReturnIf(env, "", cond, thenB, els)
+    print("}")
 }
 
 // `return match <scrut> { case .X: <body> ... }` over a payload-free enum lowers
@@ -5647,7 +5744,53 @@ func emitExpr(_ env: inout TyEnv, _ e: Nd) using Alloc, Log {
         case .call(let callee, let args): emitCall(env, callee, args)
         case .member(let base, let name, let chain): emitMember(env, base, name, chain)
         case .index(let base, let idxs): emitIndex(env, base, idxs)
+        case .ifE(let ln, let li, let cond, let thenB, let els): emitIfE(env, ln, cond, thenB, els)
         default: print("/*?expr*/")
+    }
+}
+
+// An if-expression in VALUE position lowers to a parenthesized, immediately-
+// invoked lambda whose branches each return their own branch lambda's value:
+//
+//   ([&]{ if (<cond>) { return [&]{ <then> }(); } else { return <else>; } }())
+//
+// where a block <else> is another branch lambda and an else-if recurses into
+// the same form (parens and all). If-let (a non-empty bind name) and else-less
+// ifs (never values; sema rejects them) keep the /*?expr*/ stub.
+func emitIfE(_ env: inout TyEnv, _ ln: Str, _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc, Log {
+    if !streq(ln, "") || els.len() == 0 {
+        print("/*?expr*/")
+        return
+    }
+    emitIfValue(env, cond, thenB, els)
+}
+
+func emitIfValue(_ env: inout TyEnv, _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc, Log {
+    print("([&]{ if (")
+    emitBoxed(env, cond)
+    print(") { return ")
+    emitIfBranchLambda(env, thenB)
+    print("; } else { return ")
+    emitIfElseValue(env, els)
+    print("; } }())")
+}
+
+// `[&]{ <branch stmts> }()` — the branch block as an invoked lambda, its
+// trailing expression returned (the closure-body shape).
+func emitIfBranchLambda(_ env: inout TyEnv, _ b: Vec[Nd]) using Alloc, Log {
+    print("[&]{ ")
+    match b.get(0) ?? Nd.wildcard {
+        case .block(let stmts): emitClosureStmts(env, stmts, true)
+        default: noop()
+    }
+    print(" }()")
+}
+
+func emitIfElseValue(_ env: inout TyEnv, _ els: Vec[Nd]) using Alloc, Log {
+    match els.get(0) ?? Nd.wildcard {
+        case .block(let stmts): emitIfBranchLambda(env, els)
+        case .ifE(let ln, let li, let cond, let thenB, let els2): emitIfValue(env, cond, thenB, els2)
+        default: noop()
     }
 }
 
@@ -5981,7 +6124,14 @@ func emitClosure(_ env: inout TyEnv, _ cparams: Vec[Nd], _ body: Vec[Nd], _ ptyp
 }
 
 func emitClosureBody(_ env: inout TyEnv, _ body: Vec[Nd], _ resTy: Vec[Nd]) using Alloc, Log {
-    let valueRet = closureReturnsValue(resTy)
+    emitClosureStmts(env, body, closureReturnsValue(resTy))
+}
+
+// A statement list in inline-lambda position: earlier statements emit at ""
+// indent (each carrying its own `;\n`); a value-yielding trailing expression
+// becomes `return <expr>;` with no trailing newline. Shared by closure bodies
+// and if-expression branch lambdas.
+func emitClosureStmts(_ env: inout TyEnv, _ body: Vec[Nd], _ valueRet: Bool) using Alloc, Log {
     let n = body.len()
     var i: Int = 0
     while i < n {
