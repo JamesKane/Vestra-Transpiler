@@ -1,0 +1,40 @@
+// Array and tuple literals in expression position. An array literal lowers to
+// `std::array<<elemT>, N>{...}` — the element type threads from the expected
+// type (binding annotation or function return type, as the bootstrap threads
+// it), else from the first element's inferred type; nested literals thread the
+// element's own element. Indexing a `[N]T` array is a PLAIN subscript (only
+// container bases get the std::size_t cast). A tuple literal is context-free
+// `std::tuple{...}` (CTAD); `let (a, b) = ...` lowers to a structured binding.
+func arrAnn() -> Int32 {
+    let xs: [3]Int32 = [1, 2, 3]
+    return xs[1]
+}
+
+func arrInferred() -> Int32 {
+    let xs = [4, 5, 6]
+    return xs[0]
+}
+
+func arrNested() -> Int32 {
+    let m = [[1, 2], [3, 4]]
+    return m[1][0]
+}
+
+func arrRet() -> [2]Int32 {
+    return [7, 8]
+}
+
+func makePair(_ n: Int32) -> (Int32, Bool) {
+    return (n, n > 0)
+}
+
+func usePair(_ n: Int32) -> Int32 {
+    let (v, ok) = makePair(n)
+    if ok { return v }
+    return 0
+}
+
+func tupBind() -> Int32 {
+    let (a, b) = (1, 2)
+    return a + b
+}

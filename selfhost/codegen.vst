@@ -4012,6 +4012,7 @@ func tyInferVecLit(_ env: inout TyEnv, _ elems: Vec[Nd]) using Alloc -> String {
 func tyInferIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc -> String {
     let bt = tyInferBoxed(env, base)
     if tyIsIndexable(bt) { return tyBracketInner(bt) }
+    if tyIsArray(bt) { return tyArrayElem(bt) }
     return own("")
 }
 
@@ -4872,8 +4873,30 @@ func emitType(_ t: Nd) using Alloc, Log {
         case .named(let path, let hasG, let args): emitNamedType(path, hasG, args)
         case .opt(let inner): emitOptType(inner)
         case .fnT(let params, let caps, let thr, let res): emitFnPtr(res, "", params)
+        case .vecT(let len, let elem): emitVecType(len, elem)
+        case .tupleT(let elems): emitTupleType(elems)
         default: print("/*?type*/")
     }
+}
+
+// `[N]T` -> `std::array<T', N>`; `(T, U, ...)` -> `std::tuple<T', U', ...>`.
+func emitVecType(_ len: Str, _ elem: Vec[Nd]) using Alloc, Log {
+    print("std::array<")
+    emitTypeBoxed(elem)
+    print(", ")
+    print(len)
+    print(">")
+}
+
+func emitTupleType(_ elems: Vec[Nd]) using Alloc, Log {
+    print("std::tuple<")
+    var i: Int = 0
+    while i < elems.len() {
+        if i > 0 { print(", ") }
+        emitType(elems.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    print(">")
 }
 
 // A function type lowers to a C++ function-pointer declarator: `<res>(*<name>)(
@@ -5066,7 +5089,9 @@ func emitJump(_ indent: Str, _ kw: Str) using Alloc, Log {
 // `let`/`var` lower identically: an annotated binding keeps its C++ type, an
 // inferred one uses `auto` (Vestra's immutability is not re-expressed in C++).
 func emitBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    if patIsTuple(pat) { emitTupleBinding(env, indent, pat, value); return }
     if valIsMatch(value) { emitMatchBinding(env, indent, pat, ty, value); return }
+    if valIsVecLit(value) { emitVecLitBinding(env, indent, pat, ty, value); return }
     print(indent)
     if isFnTy(ty) {
         // A function-typed binding needs the declarator form `<res>(*<name>)(...)`.
@@ -5096,6 +5121,73 @@ func emitBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd
 func valIsMatch(_ v: Vec[Nd]) -> Bool {
     if v.len() == 0 { return false }
     return isMatchE(v.get(0) ?? Nd.wildcard)
+}
+
+func patIsTuple(_ pat: Vec[Nd]) -> Bool {
+    if pat.len() == 0 { return false }
+    return match pat.get(0) ?? Nd.wildcard {
+        case .tupleP(let elems): true
+        default: false
+    }
+}
+
+// `let (a, b) = <expr>` lowers to a C++ structured binding: `auto [a, b] = <expr>;`.
+func emitTupleBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    print("auto [")
+    emitTuplePatNames(pat.get(0) ?? Nd.wildcard)
+    print("] = ")
+    emitBoxed(env, value)
+    print(";\n")
+}
+
+func emitTuplePatNames(_ p: Nd) using Alloc, Log {
+    match p {
+        case .tupleP(let elems): emitPatNameList(elems)
+        default: noop()
+    }
+}
+
+func emitPatNameList(_ elems: Vec[Nd]) using Alloc, Log {
+    var i: Int = 0
+    while i < elems.len() {
+        if i > 0 { print(", ") }
+        print(patNameOf(elems.get(i) ?? Nd.wildcard))
+        i = i + 1
+    }
+}
+
+func valIsVecLit(_ v: Vec[Nd]) -> Bool {
+    if v.len() == 0 { return false }
+    return match v.get(0) ?? Nd.wildcard {
+        case .vecLit(let elems): true
+        default: false
+    }
+}
+
+// An array-literal binding threads the annotation's ELEMENT type into the
+// literal (`[3]Int32` elements emit as std::int32_t, not the inferred default).
+func emitVecLitBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    if ty.len() > 0 { emitTypeBoxed(ty) } else { print("auto") }
+    print(" ")
+    print(patName(pat))
+    print(" = ")
+    let et = annElemBox(ty)
+    emitVecLitVal(env, et, value)
+    print(";\n")
+    if ty.len() > 0 {
+        tyRegisterPat(&env, pat, ty)
+    } else {
+        tyAddSymSpelling(&env, patName(pat), tyInferBoxed(&env, value))
+    }
+}
+
+func emitVecLitVal(_ env: inout TyEnv, _ et: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    match value.get(0) ?? Nd.wildcard {
+        case .vecLit(let elems): emitVecLit(env, elems, et)
+        default: noop()
+    }
 }
 
 // A match-valued binding is `<type-or-auto> <name> = <match lambda>;` — the
@@ -5262,10 +5354,36 @@ func emitReturn(_ env: inout TyEnv, _ indent: Str, _ v: Vec[Nd]) using Alloc, Lo
         emitReturnIfNode(env, indent, v.get(0) ?? Nd.wildcard)
         return
     }
+    if valIsVecLit(v) {
+        emitReturnVecLit(env, indent, v.get(0) ?? Nd.wildcard)
+        return
+    }
     print(indent)
     print("return")
     if v.len() > 0 { print(" "); emitBoxed(env, v) }
     print(";\n")
+}
+
+// A returned array literal threads the function's `[N]T` result type into the
+// literal's element type.
+func emitReturnVecLit(_ env: inout TyEnv, _ indent: Str, _ m: Nd) using Alloc, Log {
+    print(indent)
+    print("return ")
+    let et = retElemBox(env)
+    emitReturnVecLitNode(env, et, m)
+    print(";\n")
+}
+
+func retElemBox(_ env: inout TyEnv) using Alloc -> Vec[Nd] {
+    if env.curRetNode.len() == 0 { return emptyNdBox() }
+    return vecElemBox(env.curRetNode.get(0) ?? Nd.wildcard)
+}
+
+func emitReturnVecLitNode(_ env: inout TyEnv, _ et: Vec[Nd], _ m: Nd) using Alloc, Log {
+    match m {
+        case .vecLit(let elems): emitVecLit(env, elems, et)
+        default: noop()
+    }
 }
 
 func isMatchE(_ e: Nd) -> Bool {
@@ -5839,8 +5957,100 @@ func emitExpr(_ env: inout TyEnv, _ e: Nd) using Alloc, Log {
         case .member(let base, let name, let chain): emitMember(env, base, name, chain)
         case .index(let base, let idxs): emitIndex(env, base, idxs)
         case .ifE(let ln, let li, let cond, let thenB, let els): emitIfE(env, ln, cond, thenB, els)
+        case .vecLit(let elems): emitVecLitNoTy(env, elems)
+        case .tupleLit(let elems): emitTupleLit(env, elems)
         default: print("/*?expr*/")
     }
+}
+
+// `(e0, e1, ...)` -> `std::tuple{<e0>, <e1>, ...}` — CTAD deduces the element
+// types, so the lowering is context-free.
+func emitTupleLit(_ env: inout TyEnv, _ elems: Vec[Nd]) using Alloc, Log {
+    print("std::tuple{")
+    var i: Int = 0
+    while i < elems.len() {
+        if i > 0 { print(", ") }
+        emitExpr(env, elems.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    print("}")
+}
+
+// `[e0, e1, ...]` -> `std::array<<elemT>, N>{<e0>, ...}`. The element type
+// comes from the expected type when one is in hand (a binding annotation or
+// the function's return type — the bootstrap threads it), else from the FIRST
+// element's inferred type. A nested literal element threads the expected
+// element type's own element.
+func emitVecLit(_ env: inout TyEnv, _ elems: Vec[Nd], _ elemTy: Vec[Nd]) using Alloc, Log {
+    print("std::array<")
+    if elemTy.len() > 0 { emitTypeBoxed(elemTy) } else { emitInferredElemTy(env, elems) }
+    print(", ")
+    print(intToStr(elems.len()))
+    print(">{")
+    var i: Int = 0
+    while i < elems.len() {
+        if i > 0 { print(", ") }
+        emitVecElem(env, elems.get(i) ?? Nd.wildcard, elemTy)
+        i = i + 1
+    }
+    print("}")
+}
+
+func emitVecLitNoTy(_ env: inout TyEnv, _ elems: Vec[Nd]) using Alloc, Log {
+    let noTy: Vec[Nd] = Vec.new()
+    emitVecLit(env, elems, noTy)
+}
+
+func emitInferredElemTy(_ env: inout TyEnv, _ elems: Vec[Nd]) using Alloc, Log {
+    if elems.len() == 0 { return }
+    print(cppOfSpelling(tyInfer(env, elems.get(0) ?? Nd.wildcard)))
+}
+
+// The C++ spelling of an inferred type spelling: `[N]T` recurses into
+// std::array, anything else is the scalar mapping.
+func cppOfSpelling(_ sp: String) using Alloc -> String {
+    if !tyIsArray(sp) { return cppNamed(sp) }
+    var s: String = "std::array<"
+    s.append(cppOfSpelling(tyArrayElem(sp)))
+    s.append(", ")
+    s.append(tyArrayCount(sp))
+    s.append(">")
+    return s
+}
+
+func emitVecElem(_ env: inout TyEnv, _ e: Nd, _ elemTy: Vec[Nd]) using Alloc, Log {
+    match e {
+        case .vecLit(let inner): emitNestedVecLit(env, inner, elemTy)
+        default: emitExpr(env, e)
+    }
+}
+
+func emitNestedVecLit(_ env: inout TyEnv, _ inner: Vec[Nd], _ elemTy: Vec[Nd]) using Alloc, Log {
+    let et = annElemBox(elemTy)
+    emitVecLit(env, inner, et)
+}
+
+// The boxed element-type node of a boxed `[N]T` type (empty otherwise).
+func annElemBox(_ ty: Vec[Nd]) using Alloc -> Vec[Nd] {
+    if ty.len() == 0 { return emptyNdBox() }
+    return vecElemBox(ty.get(0) ?? Nd.wildcard)
+}
+
+func vecElemBox(_ t: Nd) using Alloc -> Vec[Nd] {
+    return match t {
+        case .vecT(let len, let elem): elemBoxCopy(elem)
+        default: emptyNdBox()
+    }
+}
+
+func elemBoxCopy(_ elem: Vec[Nd]) using Alloc -> Vec[Nd] {
+    var b: Vec[Nd] = Vec.new()
+    if elem.len() > 0 { b.push(elem.get(0) ?? Nd.wildcard) }
+    return b
+}
+
+func emptyNdBox() using Alloc -> Vec[Nd] {
+    return Vec.new()
 }
 
 // An if-expression in VALUE position lowers to a parenthesized, immediately-
@@ -5888,13 +6098,19 @@ func emitIfElseValue(_ env: inout TyEnv, _ els: Vec[Nd]) using Alloc, Log {
     }
 }
 
-// Indexing lowers to a `std::size_t`-cast subscript: `xs[i]` ->
-// `xs[static_cast<std::size_t>(i)]`. (Single-index only.)
+// Indexing lowers to a subscript. Container bases (Vec / Span / MutSpan) take
+// std::size_t in operator[], so the (signed) index is cast: `xs[i]` ->
+// `xs[static_cast<std::size_t>(i)]`; a fixed-size `[N]T` array (std::array)
+// indexes plainly — the bootstrap casts only container bases. (Single-index
+// only.)
 func emitIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc, Log {
+    let plainIdx = tyIsArray(tyInferBoxed(env, base))
     emitBoxed(env, base)
-    print("[static_cast<std::size_t>(")
+    print("[")
+    if !plainIdx { print("static_cast<std::size_t>(") }
     emitBoxed(env, idxs)
-    print(")]")
+    if !plainIdx { print(")") }
+    print("]")
 }
 
 // Field / method access `base.name` lowers to `base.name`, EXCEPT a type-qualified
