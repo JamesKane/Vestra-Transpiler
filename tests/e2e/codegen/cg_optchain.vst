@@ -1,0 +1,23 @@
+// Optional-chain field access. `base?.name` lowers to std::optional::transform
+// — `base.transform([](auto&& __vstr_o) { return __vstr_o.name; })` — so an
+// engaged optional maps to the field and an empty one stays empty; `??` then
+// composes as the usual `.value_or`. (Sema allows only a single field hop
+// through `?.` — no method calls or deeper members — so this is the family.)
+struct Point {
+    var x: Int32
+    var y: Int32
+}
+
+func getX(_ p: Point?) -> Int32 {
+    return p?.x ?? 0
+}
+
+func bindChain(_ p: Point?) -> Int32 {
+    let v = p?.y
+    return v ?? 1
+}
+
+func chainAnn(_ p: Point?) -> Int32? {
+    let v: Int32? = p?.x
+    return v
+}

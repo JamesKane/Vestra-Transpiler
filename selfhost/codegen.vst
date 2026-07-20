@@ -6117,10 +6117,9 @@ func emitIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc
 // access whose base is a capitalized identifier (an enum/type name) lowers to
 // `Base::name` — this covers payload-free enum cases (`Color.red` -> `Color::red`).
 // The capitalization heuristic stands in for the type info vgen lacks; values are
-// lowercase by convention, so instance access is unaffected. (Optional-chain `?.`
-// and payload-enum case construction — which needs the variant wrapping — are not
-// handled here.)
+// lowercase by convention, so instance access is unaffected.
 func emitMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool) using Alloc, Log {
+    if chain { emitChainMember(env, base, name); return }
     // A bare case of a payload-carrying enum constructs the variant:
     // `Shape.point` -> `Shape{Shape::point_t{}}`.
     let bn = identBaseName(base)
@@ -6139,6 +6138,18 @@ func emitMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool)
     emitBoxed(env, base)
     print(".")
     print(name)
+}
+
+// Optional-chain field access `base?.name` lowers to std::optional::transform:
+// `base.transform([](auto&& __vstr_o) { return __vstr_o.<name>; })` — an
+// engaged optional maps to the field, an empty one stays empty. The bootstrap's
+// sema allows only a single field hop through `?.` (no method calls, no deeper
+// member access), so this is the whole family.
+func emitChainMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str) using Alloc, Log {
+    emitBoxed(env, base)
+    print(".transform([](auto&& __vstr_o) { return __vstr_o.")
+    print(name)
+    print("; })")
 }
 
 // An enum whose declaration has at least one payload-carrying case (so it lowers
