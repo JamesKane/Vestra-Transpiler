@@ -1,0 +1,38 @@
+// Named payload fields. A case declared `circle(r: Float64)` lowers its payload
+// struct field with the declared label (`double r{};`), and a match binding
+// against it reads that member (`auto&& x = __vstr_alt.r;`); positional payloads
+// keep the `_<idx>` form. The Mixed enum has one of each, exercising the
+// per-field choice within one variant.
+enum Shape {
+    case circle(r: Float64)
+    case rect(w: Float64, h: Float64)
+    case dot
+}
+
+enum Mixed {
+    case tagged(Int32)
+    case labeled(n: Int32)
+}
+
+func area(_ s: Shape) -> Float64 {
+    return match s {
+        case .circle(let r): r * r * 3.0
+        case .rect(let w, let h): w * h
+        case .dot: 0.0
+    }
+}
+
+func pick(_ m: Mixed) -> Int32 {
+    return match m {
+        case .tagged(let a): a
+        case .labeled(let b): b
+    }
+}
+
+func makeCircle() -> Shape {
+    return Shape.circle(2.0)
+}
+
+func makeRect() -> Shape {
+    return Shape.rect(1.0, 2.0)
+}

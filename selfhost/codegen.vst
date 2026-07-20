@@ -2917,6 +2917,10 @@ struct TyEnv {
     var ecEnum: Vec[String]     // global: per-case rows — owning enum ...
     var ecName: Vec[String]     // ... case name ...
     var ecArity: Vec[Int]       // ... -> payload field count
+    var ecfEnum: Vec[String]    // global: per-payload-field rows — owning enum ...
+    var ecfCase: Vec[String]    // ... case name ...
+    var ecfIdx: Vec[Int]        // ... field index ...
+    var ecfName: Vec[String]    // ... -> declared field label ("" if positional)
     var symName: Vec[String]    // per-function: binding name ...
     var symType: Vec[String]    // ... -> type spelling
     var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
@@ -2960,15 +2964,55 @@ func tyRecordEnumDecl(_ env: inout TyEnv, _ name: String, _ cases: Vec[Nd], _ me
 
 func tyRecordCase(_ env: inout TyEnv, _ enumName: String, _ c: Nd) using Alloc {
     match c {
-        case .enumCase(let cn, let pay): tyPushCase(env, enumName, cn, pay.len())
+        case .enumCase(let cn, let pay): tyPushCaseFields(env, enumName, cn, pay)
         default: noop()
     }
+}
+
+func tyPushCaseFields(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ pay: Vec[Nd]) using Alloc {
+    tyPushCase(env, enumName, cn, pay.len())
+    var i: Int = 0
+    while i < pay.len() {
+        tyPushCaseField(env, enumName, cn, i, pay.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyPushCaseField(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ idx: Int, _ pe: Nd) using Alloc {
+    match pe {
+        case .payElem(let label, let ty): tyPushCaseFieldRow(env, enumName, cn, idx, label)
+        default: noop()
+    }
+}
+
+func tyPushCaseFieldRow(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ idx: Int, _ label: String) using Alloc {
+    env.ecfEnum.push(enumName)
+    env.ecfCase.push(cn)
+    env.ecfIdx.push(idx)
+    env.ecfName.push(label)
 }
 
 func tyPushCase(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ arity: Int) using Alloc {
     env.ecEnum.push(enumName)
     env.ecName.push(cn)
     env.ecArity.push(arity)
+}
+
+// The declared label of payload field <idx> of <enum>.<case> — "" when the field
+// is positional (or the case is unknown), in which case it lowers to `._<idx>`.
+func tyPayFieldName(_ env: inout TyEnv, _ enumName: Str, _ cn: Str, _ idx: Int) using Alloc -> String {
+    var i: Int = 0
+    while i < env.ecfEnum.len() {
+        if let e = env.ecfEnum.get(i) {
+            if streq(e, enumName) && (env.ecfIdx.get(i) ?? -1) == idx {
+                if let c = env.ecfCase.get(i) {
+                    if streq(c, cn) { return env.ecfName.get(i) ?? own("") }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return own("")
 }
 
 func tyCaseArity(_ env: inout TyEnv, _ enumName: String, _ cn: String) -> Int {
@@ -4423,6 +4467,8 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     sFldType: Vec.new(), mStruct: Vec.new(), mName: Vec.new(),
                     mRet: Vec.new(), eName: Vec.new(), ecEnum: Vec.new(),
                     ecName: Vec.new(), ecArity: Vec.new(),
+                    ecfEnum: Vec.new(), ecfCase: Vec.new(),
+                    ecfIdx: Vec.new(), ecfName: Vec.new(),
                     symName: Vec.new(), symType: Vec.new(),
                     curRet: own(""), curRetNode: Vec.new(), bad: Vec.new())
     var i: Int = 0
@@ -4536,8 +4582,9 @@ func emitCaseStruct(_ c: Nd) using Alloc, Log {
 }
 
 // `    struct <case>_t {};` for a bare case, or `    struct <case>_t {<f0>  <f1> };`
-// — payload fields `<type> _<i>{};` joined by two spaces, with a trailing space
-// before the closing brace.
+// — payload fields `<type> <name>{};` joined by two spaces, with a trailing
+// space before the closing brace. A named field keeps its declared label; a
+// positional one is `_<i>`.
 func emitCaseStructBody(_ cname: Str, _ payload: Vec[Nd]) using Alloc, Log {
     print("    struct ")
     print(cname)
@@ -4557,15 +4604,20 @@ func emitCaseStructBody(_ cname: Str, _ payload: Vec[Nd]) using Alloc, Log {
 
 func emitPayloadField(_ pe: Nd, _ idx: Int) using Alloc, Log {
     match pe {
-        case .payElem(let label, let ty): emitPayloadFieldParts(ty, idx)
+        case .payElem(let label, let ty): emitPayloadFieldParts(label, ty, idx)
         default: noop()
     }
 }
 
-func emitPayloadFieldParts(_ ty: Vec[Nd], _ idx: Int) using Alloc, Log {
+func emitPayloadFieldParts(_ label: Str, _ ty: Vec[Nd], _ idx: Int) using Alloc, Log {
     emitTypeBoxed(ty)
-    print(" _")
-    print(intToStr(idx))
+    print(" ")
+    if streq(label, "") {
+        print("_")
+        print(intToStr(idx))
+    } else {
+        print(label)
+    }
     print("{};")
 }
 
@@ -5463,7 +5515,7 @@ func emitVisitArmParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ i16: Str, _ 
     print("_t>) {\n")
     print(i12)
     print("{\n")
-    emitPayloadBindings(i16, pat)
+    emitPayloadBindings(env, i16, enumName, pat)
     print(i16)
     print("return ")
     emitBoxed(env, body)
@@ -5472,30 +5524,38 @@ func emitVisitArmParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ i16: Str, _ 
     print("}\n")
 }
 
-// `auto&& <bind> = __vstr_alt._<idx>;` for each payload binding in the pattern.
-func emitPayloadBindings(_ i16: Str, _ pat: Vec[Nd]) using Alloc, Log {
+// `auto&& <bind> = __vstr_alt.<field>;` for each payload binding in the pattern
+// — <field> is the case's declared label when the payload field is named, else
+// the positional `_<idx>`.
+func emitPayloadBindings(_ env: inout TyEnv, _ i16: Str, _ enumName: Str, _ pat: Vec[Nd]) using Alloc, Log {
     match pat.get(0) ?? Nd.wildcard {
-        case .enumP(let cname, let children): emitBindingList(i16, children)
+        case .enumP(let cname, let children): emitBindingList(env, i16, enumName, cname, children)
         default: noop()
     }
 }
 
-func emitBindingList(_ i16: Str, _ children: Vec[Nd]) using Alloc, Log {
+func emitBindingList(_ env: inout TyEnv, _ i16: Str, _ enumName: Str, _ cname: Str, _ children: Vec[Nd]) using Alloc, Log {
     var i: Int = 0
     while i < children.len() {
-        emitOneBinding(i16, children.get(i) ?? Nd.wildcard, i)
+        emitOneBinding(env, i16, enumName, cname, children.get(i) ?? Nd.wildcard, i)
         i = i + 1
     }
 }
 
-func emitOneBinding(_ i16: Str, _ child: Nd, _ idx: Int) using Alloc, Log {
+func emitOneBinding(_ env: inout TyEnv, _ i16: Str, _ enumName: Str, _ cname: Str, _ child: Nd, _ idx: Int) using Alloc, Log {
     let bn = patNameOf(child)
     if streq(bn, "") { return }
     print(i16)
     print("auto&& ")
     print(bn)
-    print(" = __vstr_alt._")
-    print(intToStr(idx))
+    print(" = __vstr_alt.")
+    let fn = tyPayFieldName(env, enumName, cname, idx)
+    if streq(fn, "") {
+        print("_")
+        print(intToStr(idx))
+    } else {
+        print(fn)
+    }
     print(";\n")
 }
 
