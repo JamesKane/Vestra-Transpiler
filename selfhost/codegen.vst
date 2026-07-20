@@ -2905,6 +2905,7 @@ struct TyEnv {
     var pFn: Vec[String]        // global: per-parameter rows — function name ...
     var pIdx: Vec[Int]          // ... parameter index ...
     var pType: Vec[String]      // ... -> parameter type spelling
+    var pTyNode: Vec[Nd]        // ... -> parameter type NODE (wildcard if unannotated; for closure-arg lowering)
     var structs: Vec[String]    // global: struct names (construction yields that type)
     var sFldStruct: Vec[String] // global: per-field rows — owning struct ...
     var sFldName: Vec[String]   // ... field name ...
@@ -3110,15 +3111,20 @@ func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ resul
 
 func tyRecordParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ p: Nd) using Alloc {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyPushParam(env, name, idx, tyAnnSpelling(ty))
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyPushParam(env, name, idx, tyAnnSpelling(ty), tyAnnNode(ty))
         default: noop()
     }
 }
 
-func tyPushParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ sp: String) using Alloc {
+func tyAnnNode(_ ty: Vec[Nd]) using Alloc -> Nd {
+    return ty.get(0) ?? Nd.wildcard
+}
+
+func tyPushParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ sp: String, _ tn: Nd) using Alloc {
     env.pFn.push(name)
     env.pIdx.push(idx)
     env.pType.push(sp)
+    env.pTyNode.push(tn)
 }
 
 func tyArity(_ env: inout TyEnv, _ name: String) -> Int {
@@ -3141,6 +3147,17 @@ func tyParamType(_ env: inout TyEnv, _ name: String, _ idx: Int) using Alloc -> 
         i = i + 1
     }
     return own("")
+}
+
+func tyParamTypeNode(_ env: inout TyEnv, _ name: Str, _ idx: Int) using Alloc -> Nd {
+    var i: Int = 0
+    while i < env.pFn.len() {
+        if let n = env.pFn.get(i) {
+            if streq(n, name) && (env.pIdx.get(i) ?? -1) == idx { return env.pTyNode.get(i) ?? Nd.wildcard }
+        }
+        i = i + 1
+    }
+    return Nd.wildcard
 }
 
 func tyFuncRet(_ env: inout TyEnv, _ name: String) using Alloc -> String {
@@ -4386,7 +4403,7 @@ func tyBodyMsg(_ name: String, _ ret: String, _ body: String) using Alloc -> Str
 // (re)built per function/method body.
 func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
     var env = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(),
-                    pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(),
+                    pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(), pTyNode: Vec.new(),
                     structs: Vec.new(), sFldStruct: Vec.new(), sFldName: Vec.new(),
                     sFldType: Vec.new(), mStruct: Vec.new(), mName: Vec.new(),
                     mRet: Vec.new(), eName: Vec.new(), ecEnum: Vec.new(),
@@ -5573,10 +5590,53 @@ func emitStr(_ s: Str) using Alloc, Log {
 func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
     if tryEmitPayloadCase(env, callee, args) { return }
     if isStructCtor(callee, args) { emitStructCtor(env, callee, args); return }
+    let fname = identBaseName(callee)
     emitBoxed(env, callee)
     print("(")
-    emitArgList(env, args)
+    emitCallArgList(env, fname, args)
     print(")")
+}
+
+// Slice 27: a named call's arguments have the callee's declared parameter types
+// in hand, so a closure-literal argument can lower against the callee's
+// function-typed parameter: `apply({ n => n + 1 }, 5)` -> `apply([&](...) {...}, 5)`.
+// Any other argument (or an unnamed/unknown callee) emits as before.
+func emitCallArgList(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using Alloc, Log {
+    var i: Int = 0
+    while i < args.len() {
+        if i > 0 { print(", ") }
+        emitCallArg(env, fname, i, args.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func emitCallArg(_ env: inout TyEnv, _ fname: Str, _ idx: Int, _ a: Nd) using Alloc, Log {
+    match a {
+        case .arg(let label, let isInout, let val): emitCallArgVal(env, fname, idx, val)
+        default: noop()
+    }
+}
+
+func emitCallArgVal(_ env: inout TyEnv, _ fname: Str, _ idx: Int, _ val: Vec[Nd]) using Alloc, Log {
+    if valIsClosure(val) && !streq(fname, "") {
+        let tn = tyParamTypeNode(env, fname, idx)
+        if nodeIsFnTy(tn) { emitClosureArgTy(env, tn, val); return }
+    }
+    emitBoxed(env, val)
+}
+
+func nodeIsFnTy(_ t: Nd) -> Bool {
+    return match t {
+        case .fnT(let a, let b, let c, let d): true
+        default: false
+    }
+}
+
+func emitClosureArgTy(_ env: inout TyEnv, _ tn: Nd, _ val: Vec[Nd]) using Alloc, Log {
+    match tn {
+        case .fnT(let params, let caps, let thr, let res): emitClosureVal(env, val, params, res)
+        default: noop()
+    }
 }
 
 // A call `Enum.case(args)` where Enum is a payload enum constructs the variant:

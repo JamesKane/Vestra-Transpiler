@@ -1,0 +1,27 @@
+// A closure literal passed as a call argument lowers against the CALLEE's
+// declared parameter type: the argument position's function type supplies the
+// lambda's parameter types (the closure itself writes none). Covers a closure
+// alongside other arguments, a two-parameter closure, and a multi-statement
+// closure body in argument position.
+func apply(f: (Int32) -> Int32, x: Int32) -> Int32 {
+    return f(x)
+}
+
+func combine(f: (Int32, Int32) -> Int32) -> Int32 {
+    return f(2, 3)
+}
+
+func useApply() -> Int32 {
+    return apply({ n => n + 1 }, 5)
+}
+
+func useCombine() -> Int32 {
+    return combine({ a, b => a * b })
+}
+
+func useMulti() -> Int32 {
+    return apply({ n =>
+        let t = n * 2
+        t + 1
+    }, 4)
+}
