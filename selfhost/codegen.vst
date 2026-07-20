@@ -5728,10 +5728,31 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     if tryEmitPayloadCase(env, callee, args) { return }
     if isStructCtor(callee, args) { emitStructCtor(env, callee, args); return }
     let fname = identBaseName(callee)
+    if tryEmitPrint(env, fname, args) { return }
     emitBoxed(env, callee)
     print("(")
     emitCallArgList(env, fname, args)
     print(")")
+}
+
+// The print family — `print`/`println` (stdout) and `eprint`/`eprintln`
+// (stderr, a leading `stderr` stream argument) — lowers to std::print /
+// std::println with the text passed as a formatting ARGUMENT (`"{}"`), so a
+// `{` in it is harmless. Only the builtin is intercepted: a unit-defined
+// function of the same name (tyArity >= 0) emits as a plain call.
+func tryEmitPrint(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if args.len() != 1 { return false }
+    let isOut = streq(fname, "print") || streq(fname, "println")
+    let isErr = streq(fname, "eprint") || streq(fname, "eprintln")
+    if !isOut && !isErr { return false }
+    if tyArity(env, fname) >= 0 { return false }
+    let ln = streq(fname, "println") || streq(fname, "eprintln")
+    if ln { print("std::println(") } else { print("std::print(") }
+    if isErr { print("stderr, ") }
+    print("\"{}\", ")
+    emitArg(env, args.get(0) ?? Nd.wildcard)
+    print(")")
+    return true
 }
 
 // Slice 27: a named call's arguments have the callee's declared parameter types

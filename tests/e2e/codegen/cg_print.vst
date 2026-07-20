@@ -1,0 +1,19 @@
+// The print family lowers to std::print / std::println with the text passed as
+// a formatting ARGUMENT (`"{}", <text>`), never as the format string, so brace
+// characters in the text are harmless; the stderr pair (`eprint`/`eprintln`)
+// adds a leading `stderr` stream argument. (Sema rejects user functions named
+// after the builtins, so no shadowing case can reach codegen.)
+func hello() using Log {
+    print("hello")
+    println("world")
+}
+
+func strs(_ s: Str) using Log {
+    print(s)
+    println(s)
+}
+
+func errs(_ s: Str) using Log {
+    eprint(s)
+    eprintln("bad")
+}
