@@ -1,0 +1,35 @@
+// Closures as METHOD-call arguments: the expected function type comes from the
+// method's declared parameter on the base expression's inferred type (TyEnv's
+// per-method-parameter rows), so `c.apply({ n => n + 1 })` lowers the closure
+// exactly like a free-function argument (slice 27). Also exercises the
+// bootstrap fix that emits a method's function-typed parameter in declarator
+// form (`R(*f)(...)`) instead of the ill-formed `const R(*)(...)& f`.
+struct Counter {
+    var total: Int32
+
+    func apply(_ f: (Int32) -> Int32) -> Int32 {
+        return f(self.total)
+    }
+
+    func combine(_ f: (Int32, Int32) -> Int32, _ extra: Int32) -> Int32 {
+        return f(self.total, extra)
+    }
+}
+
+func useApply() -> Int32 {
+    var c = Counter(total: 3)
+    return c.apply({ n => n + 1 })
+}
+
+func useCombine() -> Int32 {
+    var c = Counter(total: 5)
+    return c.combine({ a, b => a * b }, 4)
+}
+
+func useMulti() -> Int32 {
+    var c = Counter(total: 7)
+    return c.apply({ n =>
+        let t = n * 2
+        t + 3
+    })
+}

@@ -2913,6 +2913,10 @@ struct TyEnv {
     var mStruct: Vec[String]    // global: per-method rows — owning struct/enum ...
     var mName: Vec[String]      // ... method name ...
     var mRet: Vec[String]       // ... -> result-type spelling ("Unit" if none, "Self"->owner)
+    var mpOwner: Vec[String]    // global: per-method-parameter rows — owning struct/enum ...
+    var mpName: Vec[String]     // ... method name ...
+    var mpIdx: Vec[Int]         // ... parameter index ...
+    var mpTyNode: Vec[Nd]       // ... -> parameter type NODE (wildcard if unannotated; for closure-arg lowering)
     var eName: Vec[String]      // global: enum names (a bare `E.case` is a type ref)
     var ecEnum: Vec[String]     // global: per-case rows — owning enum ...
     var ecName: Vec[String]     // ... case name ...
@@ -3075,16 +3079,50 @@ func tyRecordMethods(_ env: inout TyEnv, _ owner: String, _ methods: Vec[Nd]) us
 func tyRecordMethod(_ env: inout TyEnv, _ owner: String, _ m: Nd) using Alloc {
     match m {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
-            tyPushMethod(env, owner, name, g, r)
+            tyPushMethod(env, owner, name, g, params, r)
         default: noop()
     }
 }
 
-func tyPushMethod(_ env: inout TyEnv, _ owner: String, _ name: String, _ gens: Vec[Nd], _ result: Vec[Nd]) using Alloc {
+func tyPushMethod(_ env: inout TyEnv, _ owner: String, _ name: String, _ gens: Vec[Nd], _ params: Vec[Nd], _ result: Vec[Nd]) using Alloc {
     if gens.len() > 0 { return }
     env.mStruct.push(owner)
     env.mName.push(name)
     env.mRet.push(tyRetSpelling(result))
+    var i: Int = 0
+    while i < params.len() {
+        tyPushMethodParam(env, owner, name, i, params.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyPushMethodParam(_ env: inout TyEnv, _ owner: String, _ name: String, _ idx: Int, _ p: Nd) using Alloc {
+    match p {
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyPushMethodParamRow(env, owner, name, idx, tyAnnNode(ty))
+        default: noop()
+    }
+}
+
+func tyPushMethodParamRow(_ env: inout TyEnv, _ owner: String, _ name: String, _ idx: Int, _ tn: Nd) using Alloc {
+    env.mpOwner.push(owner)
+    env.mpName.push(name)
+    env.mpIdx.push(idx)
+    env.mpTyNode.push(tn)
+}
+
+func tyMethodParamTypeNode(_ env: inout TyEnv, _ owner: Str, _ mname: Str, _ idx: Int) using Alloc -> Nd {
+    var i: Int = 0
+    while i < env.mpOwner.len() {
+        if let o = env.mpOwner.get(i) {
+            if streq(o, owner) && (env.mpIdx.get(i) ?? -1) == idx {
+                if let n = env.mpName.get(i) {
+                    if streq(n, mname) { return env.mpTyNode.get(i) ?? Nd.wildcard }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return Nd.wildcard
 }
 
 func tyRecordStruct(_ env: inout TyEnv, _ name: String, _ fields: Vec[Nd]) using Alloc {
@@ -4465,7 +4503,9 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(), pTyNode: Vec.new(),
                     structs: Vec.new(), sFldStruct: Vec.new(), sFldName: Vec.new(),
                     sFldType: Vec.new(), mStruct: Vec.new(), mName: Vec.new(),
-                    mRet: Vec.new(), eName: Vec.new(), ecEnum: Vec.new(),
+                    mRet: Vec.new(), mpOwner: Vec.new(), mpName: Vec.new(),
+                    mpIdx: Vec.new(), mpTyNode: Vec.new(),
+                    eName: Vec.new(), ecEnum: Vec.new(),
                     ecName: Vec.new(), ecArity: Vec.new(),
                     ecfEnum: Vec.new(), ecfCase: Vec.new(),
                     ecfIdx: Vec.new(), ecfName: Vec.new(),
@@ -5729,10 +5769,38 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     if isStructCtor(callee, args) { emitStructCtor(env, callee, args); return }
     let fname = identBaseName(callee)
     if tryEmitPrint(env, fname, args) { return }
+    let owner = calleeMethodOwner(env, callee)
+    if !streq(owner, "") {
+        emitBoxed(env, callee)
+        print("(")
+        emitCallArgList(env, owner, calleeMemberName(callee), args)
+        print(")")
+        return
+    }
     emitBoxed(env, callee)
     print("(")
-    emitCallArgList(env, fname, args)
+    emitCallArgList(env, "", fname, args)
     print(")")
+}
+
+// The owner type of a method callee `base.name` — the base expression's inferred
+// type spelling. "" when the callee isn't a member access or the base type is
+// unknown (including a capitalized type-qualified base like `Vec.new`, whose
+// ident carries no symbol type).
+func calleeMethodOwner(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
+    if callee.len() == 0 { return own("") }
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let name, let chain): tyInferBoxed(env, base)
+        default: own("")
+    }
+}
+
+func calleeMemberName(_ callee: Vec[Nd]) using Alloc -> String {
+    if callee.len() == 0 { return own("") }
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let name, let chain): own(name)
+        default: own("")
+    }
 }
 
 // The print family — `print`/`println` (stdout) and `eprint`/`eprintln`
@@ -5755,32 +5823,39 @@ func tryEmitPrint(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using Alloc
     return true
 }
 
-// Slice 27: a named call's arguments have the callee's declared parameter types
-// in hand, so a closure-literal argument can lower against the callee's
-// function-typed parameter: `apply({ n => n + 1 }, 5)` -> `apply([&](...) {...}, 5)`.
+// Slices 27 + 31: a call's arguments have the callee's declared parameter types
+// in hand — from the free function's signature (`owner` empty) or the method's
+// signature on the base expression's inferred type — so a closure-literal
+// argument can lower against the callee's function-typed parameter:
+// `apply({ n => n + 1 }, 5)` / `c.apply({ n => n + 1 })` -> a `[&]` lambda.
 // Any other argument (or an unnamed/unknown callee) emits as before.
-func emitCallArgList(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using Alloc, Log {
+func emitCallArgList(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ args: Vec[Nd]) using Alloc, Log {
     var i: Int = 0
     while i < args.len() {
         if i > 0 { print(", ") }
-        emitCallArg(env, fname, i, args.get(i) ?? Nd.wildcard)
+        emitCallArg(env, owner, fname, i, args.get(i) ?? Nd.wildcard)
         i = i + 1
     }
 }
 
-func emitCallArg(_ env: inout TyEnv, _ fname: Str, _ idx: Int, _ a: Nd) using Alloc, Log {
+func emitCallArg(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int, _ a: Nd) using Alloc, Log {
     match a {
-        case .arg(let label, let isInout, let val): emitCallArgVal(env, fname, idx, val)
+        case .arg(let label, let isInout, let val): emitCallArgVal(env, owner, fname, idx, val)
         default: noop()
     }
 }
 
-func emitCallArgVal(_ env: inout TyEnv, _ fname: Str, _ idx: Int, _ val: Vec[Nd]) using Alloc, Log {
+func emitCallArgVal(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int, _ val: Vec[Nd]) using Alloc, Log {
     if valIsClosure(val) && !streq(fname, "") {
-        let tn = tyParamTypeNode(env, fname, idx)
+        let tn = callArgTypeNode(env, owner, fname, idx)
         if nodeIsFnTy(tn) { emitClosureArgTy(env, tn, val); return }
     }
     emitBoxed(env, val)
+}
+
+func callArgTypeNode(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int) using Alloc -> Nd {
+    if !streq(owner, "") { return tyMethodParamTypeNode(env, owner, fname, idx) }
+    return tyParamTypeNode(env, fname, idx)
 }
 
 func nodeIsFnTy(_ t: Nd) -> Bool {
