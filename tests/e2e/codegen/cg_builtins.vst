@@ -1,0 +1,37 @@
+// The remaining §18 builtins lower to their __vstr runtime shims:
+// panic -> __vstr::panic, abort -> __vstr::abort_fn, unreachable ->
+// __vstr::unreachable_fn, readFile -> __vstr::read_file, writeFile ->
+// __vstr::write_file, args -> __vstr::args. readFile's builtin return type
+// (String?) drives the `!` disambiguation, so `readFile(p)!` force-unwraps
+// (__vstr::unwrap_opt) instead of reading as logical-not.
+func mustPositive(_ n: Int32) -> Int32 {
+    if n < 0 { panic("negative") }
+    return n
+}
+
+func readIt(_ path: Str) using Fs -> String {
+    return readFile(path)!
+}
+
+func readBind(_ path: Str) using Fs -> String {
+    let text: String = readFile(path)!
+    return text
+}
+
+func writeIt(_ path: Str, _ contents: Str) using Fs -> Bool {
+    return writeFile(path, contents)
+}
+
+func echoArg(_ p: Str) using Alloc, Fs -> Bool {
+    let xs = args()
+    return writeFile(p, xs[0])
+}
+
+func bail() {
+    abort()
+}
+
+func never() -> Int32 {
+    unreachable()
+    return 0
+}

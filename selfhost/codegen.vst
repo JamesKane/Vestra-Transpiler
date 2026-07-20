@@ -4276,7 +4276,18 @@ func tyInferPlainCall(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> Stri
     let nm = exCalleeNameBoxed(callee)
     let r = tyFuncRet(env, nm)
     if !streq(r, "") { return r }
+    let b = tyBuiltinRet(nm)
+    if !streq(b, "") { return b }
     if tyIsStruct(env, nm) { return nm }
+    return own("")
+}
+
+// Return types of the §18 builtins vgen lowers (a unit-defined function wins in
+// the lookup above). readFile's optional makes the `!` disambiguation fire so
+// `readFile(p)!` lowers as a force-unwrap, not logical-not.
+func tyBuiltinRet(_ nm: Str) using Alloc -> String {
+    if streq(nm, "readFile") { return own("String?") }
+    if streq(nm, "writeFile") { return own("Bool") }
     return own("")
 }
 
@@ -5995,6 +6006,7 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     if isStructCtor(callee, args) { emitStructCtor(env, callee, args); return }
     let fname = identBaseName(callee)
     if tryEmitPrint(env, fname, args) { return }
+    if tryEmitBuiltin(env, fname, args) { return }
     let owner = calleeMethodOwner(env, callee)
     if !streq(owner, "") {
         emitBoxed(env, callee)
@@ -6027,6 +6039,47 @@ func calleeMemberName(_ callee: Vec[Nd]) using Alloc -> String {
         case .member(let base, let name, let chain): own(name)
         default: own("")
     }
+}
+
+// The remaining §18 builtins, each lowering to its __vstr runtime shim.
+// `panic`/`abort`/`unreachable` intercept unconditionally on name + arity
+// (mirroring the bootstrap emitter); `readFile`/`writeFile`/`args` only when no
+// unit-defined function shadows the name.
+func tryEmitBuiltin(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if streq(fname, "panic") && args.len() == 1 {
+        print("__vstr::panic(")
+        emitArg(env, args.get(0) ?? Nd.wildcard)
+        print(")")
+        return true
+    }
+    if streq(fname, "abort") && args.len() == 0 {
+        print("__vstr::abort_fn()")
+        return true
+    }
+    if streq(fname, "unreachable") && args.len() == 0 {
+        print("__vstr::unreachable_fn()")
+        return true
+    }
+    if tyArity(env, fname) >= 0 { return false }
+    if streq(fname, "readFile") && args.len() == 1 {
+        print("__vstr::read_file(")
+        emitArg(env, args.get(0) ?? Nd.wildcard)
+        print(")")
+        return true
+    }
+    if streq(fname, "writeFile") && args.len() == 2 {
+        print("__vstr::write_file(")
+        emitArg(env, args.get(0) ?? Nd.wildcard)
+        print(", ")
+        emitArg(env, args.get(1) ?? Nd.wildcard)
+        print(")")
+        return true
+    }
+    if streq(fname, "args") && args.len() == 0 {
+        print("__vstr::args()")
+        return true
+    }
+    return false
 }
 
 // The print family — `print`/`println` (stdout) and `eprint`/`eprintln`
