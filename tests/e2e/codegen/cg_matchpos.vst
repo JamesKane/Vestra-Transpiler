@@ -1,0 +1,85 @@
+// Match expressions in NON-return positions. A binding-position match keeps the
+// immediately-invoked-lambda lowering with the lambda's return type drawn from
+// the annotation when present, else the match's inferred arm type (`auto` on the
+// LHS); a statement-position match uses `-> auto` and discards the value. All
+// three lowering forms appear: payload-free switch, payload std::visit, and the
+// guarded if/else chain.
+enum Color {
+    case red
+    case green
+    case blue
+}
+
+enum Shape {
+    case circle(Float64)
+    case square(Float64)
+}
+
+func doIt(_ n: Int32) {
+}
+
+func bindAnn(_ c: Color) -> Int32 {
+    let n: Int32 = match c {
+        case .red: 1
+        case .green: 2
+        case .blue: 3
+    }
+    return n
+}
+
+func bindInferred(_ c: Color) -> Int32 {
+    let n = match c {
+        case .red: 1
+        case .green: 2
+        case .blue: 3
+    }
+    return n
+}
+
+func bindPayloadAnn(_ s: Shape) -> Float64 {
+    let a: Float64 = match s {
+        case .circle(let r): r * 2.0
+        case .square(let side): side
+    }
+    return a
+}
+
+func bindGuarded(_ c: Color, _ k: Int32) -> Int32 {
+    var n = match c {
+        case .red: 1
+        case .green where k > 0: 2
+        default: 3
+    }
+    n = n + 1
+    return n
+}
+
+func bindBool(_ c: Color) -> Bool {
+    let b = match c {
+        case .red: true
+        default: false
+    }
+    return b
+}
+
+func stmtMatch(_ c: Color) {
+    match c {
+        case .red: doIt(1)
+        case .green: doIt(2)
+        case .blue: doIt(3)
+    }
+}
+
+func stmtPayload(_ s: Shape) {
+    match s {
+        case .circle(let r): doIt(1)
+        case .square(let side): doIt(2)
+    }
+}
+
+func stmtGuarded(_ c: Color, _ k: Int32) {
+    match c {
+        case .red where k > 0: doIt(1)
+        default: doIt(2)
+    }
+}

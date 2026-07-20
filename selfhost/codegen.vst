@@ -3891,8 +3891,23 @@ func tyInfer(_ env: inout TyEnv, _ e: Nd) using Alloc -> String {
         case .member(let base, let name, let chain): tyInferMember(env, base, name, chain)
         case .index(let base, let idxs): tyInferIndex(env, base, idxs)
         case .vecLit(let elems): tyInferVecLit(env, elems)
+        case .matchE(let scrut, let arms): tyInferMatch(env, scrut, arms)
         default: own("")
     }
+}
+
+// A match expression types as its first known-typed arm body — the same baseline
+// tyCheckArmTypes unifies the remaining arms against. Pattern-bound payload
+// names are unknown to the symbol table, so a payload arm's body may stay
+// unknown; an annotated binding supplies the type in that case.
+func tyInferMatch(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc -> String {
+    var i: Int = 0
+    while i < arms.len() {
+        let t = tyArmBodyType(env, arms.get(i) ?? Nd.wildcard)
+        if !streq(t, "") { return t }
+        i = i + 1
+    }
+    return own("")
 }
 
 // An array literal `[e1, ...]` types as `[N]T`, where N is the element count and
@@ -4948,6 +4963,7 @@ func emitJump(_ indent: Str, _ kw: Str) using Alloc, Log {
 // `let`/`var` lower identically: an annotated binding keeps its C++ type, an
 // inferred one uses `auto` (Vestra's immutability is not re-expressed in C++).
 func emitBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    if valIsMatch(value) { emitMatchBinding(env, indent, pat, ty, value); return }
     print(indent)
     if isFnTy(ty) {
         // A function-typed binding needs the declarator form `<res>(*<name>)(...)`.
@@ -4971,6 +4987,37 @@ func emitBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd
         tyRegisterPat(&env, pat, ty)
     } else {
         tyAddSymSpelling(&env, patName(pat), tyInferBoxed(&env, value))
+    }
+}
+
+func valIsMatch(_ v: Vec[Nd]) -> Bool {
+    if v.len() == 0 { return false }
+    return isMatchE(v.get(0) ?? Nd.wildcard)
+}
+
+// A match-valued binding is `<type-or-auto> <name> = <match lambda>;` — the
+// lambda's return type comes from the annotation when present, else from the
+// match's inferred arm type (already a C++ spelling via cppNamed).
+func emitMatchBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    if ty.len() > 0 { emitTypeBoxed(ty) } else { print("auto") }
+    print(" ")
+    print(patName(pat))
+    print(" = ")
+    let sp = cppNamed(tyInferBoxed(env, value))
+    emitMatchBindingVal(env, indent, ty, sp, value)
+    print(";\n")
+    if ty.len() > 0 {
+        tyRegisterPat(&env, pat, ty)
+    } else {
+        tyAddSymSpelling(&env, patName(pat), tyInferBoxed(&env, value))
+    }
+}
+
+func emitMatchBindingVal(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyStr: Str, _ value: Vec[Nd]) using Alloc, Log {
+    match value.get(0) ?? Nd.wildcard {
+        case .matchE(let scrut, let arms): emitMatchValue(env, indent, ty, tyStr, scrut, arms)
+        default: noop()
     }
 }
 
@@ -5056,8 +5103,18 @@ func emitExprStmt(_ env: inout TyEnv, _ indent: Str, _ e: Vec[Nd]) using Alloc, 
     if e.len() == 0 { return }
     match e.get(0) ?? Nd.wildcard {
         case .ifE(let ln, let li, let cond, let thenB, let els): emitIfStmt(env, indent, ln, li, cond, thenB, els)
+        case .matchE(let scrut, let arms): emitMatchStmt(env, indent, scrut, arms)
         default: emitPlainExprStmt(env, indent, e)
     }
+}
+
+// A statement-position match is the same immediately-invoked lambda with an
+// `auto` return type, its value discarded.
+func emitMatchStmt(_ env: inout TyEnv, _ indent: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    let noTy: Vec[Nd] = Vec.new()
+    emitMatchValue(env, indent, noTy, "auto", scrut, arms)
+    print(";\n")
 }
 
 func emitPlainExprStmt(_ env: inout TyEnv, _ indent: Str, _ e: Vec[Nd]) using Alloc, Log {
@@ -5120,10 +5177,9 @@ func isMatchE(_ e: Nd) -> Bool {
 //       ...
 //   } }();
 //
-// The lambda's return type is the enclosing function's result type; the scrutinee
-// type (inferred) supplies the enum name that qualifies each case label. (Payload
-// patterns, guards, default / wildcard arms, and non-return positions are not yet
-// handled.)
+// The scrutinee type (inferred) supplies the enum name that qualifies each case
+// label. In return position the lambda's return type is the enclosing function's
+// result type.
 func emitReturnMatch(_ env: inout TyEnv, _ indent: Str, _ m: Nd) using Alloc, Log {
     match m {
         case .matchE(let scrut, let arms): emitReturnMatchParts(env, indent, scrut, arms)
@@ -5132,17 +5188,30 @@ func emitReturnMatch(_ env: inout TyEnv, _ indent: Str, _ m: Nd) using Alloc, Lo
 }
 
 func emitReturnMatchParts(_ env: inout TyEnv, _ indent: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    print("return ")
+    let noTy: Vec[Nd] = Vec.new()
+    emitMatchValue(env, indent, noTy, "", scrut, arms)
+    print(";\n")
+}
+
+// The lambda-expression core of a match lowering, shared by every position
+// (return value, binding initializer, bare statement). Emits from `[&](` or
+// `std::visit(` through the closing `()` — the caller prints whatever precedes
+// (indent, `return `, `<type> <name> = `) and the trailing `;\n`. The `indent`
+// still shapes the inner lines and closing brace, which sit at statement level
+// in every position.
+func emitMatchValue(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyStr: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
     let enumName = tyInferBoxed(env, scrut)
     // A guarded payload-free match cannot be a switch (a guard is a runtime
     // condition); it lowers to an if/else-if chain over the scrutinee.
     if !isPayloadEnum(env, enumName) && anyArmGuarded(arms) {
-        emitReturnGuardMatch(env, indent, enumName, scrut, arms)
+        emitGuardMatchValue(env, indent, ty, tyStr, enumName, scrut, arms)
         return
     }
-    if isPayloadEnum(env, enumName) { emitReturnVisitMatch(env, indent, enumName, scrut, arms); return }
-    print(indent)
-    print("return [&]() -> ")
-    emitTypeBoxed(env.curRetNode)
+    if isPayloadEnum(env, enumName) { emitVisitMatchValue(env, indent, ty, tyStr, enumName, scrut, arms); return }
+    print("[&]() -> ")
+    emitMatchRetTy(env, ty, tyStr)
     print(" { switch (")
     emitBoxed(env, scrut)
     print(") {\n")
@@ -5153,7 +5222,17 @@ func emitReturnMatchParts(_ env: inout TyEnv, _ indent: Str, _ scrut: Vec[Nd], _
         i = i + 1
     }
     print(indent)
-    print("} }();\n")
+    print("} }()")
+}
+
+// The lambda's C++ return type: a binding annotation (`ty`) when present, else
+// an already-C++ spelling (`tyStr`, e.g. `auto` in statement position or an
+// inferred scalar in an unannotated binding), else the enclosing function's
+// result type (return position).
+func emitMatchRetTy(_ env: inout TyEnv, _ ty: Vec[Nd], _ tyStr: Str) using Alloc, Log {
+    if ty.len() > 0 { emitTypeBoxed(ty); return }
+    if !streq(tyStr, "") { print(tyStr); return }
+    emitTypeBoxed(env.curRetNode)
 }
 
 func anyArmGuarded(_ arms: Vec[Nd]) -> Bool {
@@ -5175,18 +5254,17 @@ func armGuarded(_ arm: Nd) -> Bool {
 // A guarded payload-free match lowers to an if/else-if chain over a copy of the
 // scrutinee:
 //
-//   return [&]() -> <retType> {
+//   [&]() -> <retType> {
 //       auto&& __vstr_m = <scrut>;
 //       if (__vstr_m == <Enum>::<case> && (<guard>)) {
 //           return <body>;
 //       }
 //       else if (__vstr_m == <Enum>::<case>) { ... }
 //       else { return <default>; }   // or `else { std::unreachable(); }`
-//   }();
-func emitReturnGuardMatch(_ env: inout TyEnv, _ indent: Str, _ enumName: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
-    print(indent)
-    print("return [&]() -> ")
-    emitTypeBoxed(env.curRetNode)
+//   }()
+func emitGuardMatchValue(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyStr: Str, _ enumName: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    print("[&]() -> ")
+    emitMatchRetTy(env, ty, tyStr)
     print(" {\n")
     let i8 = deeper(indent)
     print(i8)
@@ -5213,7 +5291,7 @@ func emitReturnGuardMatch(_ env: inout TyEnv, _ indent: Str, _ enumName: Str, _ 
         print("else { std::unreachable(); }\n")
     }
     print(indent)
-    print("}();\n")
+    print("}()")
 }
 
 func emitGuardArm(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ enumName: Str, _ arm: Nd, _ k: Int) using Alloc, Log {
@@ -5292,11 +5370,11 @@ func isWildcardPat(_ pat: Vec[Nd]) -> Bool {
     }
 }
 
-// `return match <scrut> { case .C(let a, ...): <body> ... }` over a PAYLOAD enum
-// lowers to a std::visit over the variant, with an `if constexpr` chain selecting
-// the active alternative and binding its payload fields:
+// `match <scrut> { case .C(let a, ...): <body> ... }` over a PAYLOAD enum lowers
+// to a std::visit over the variant, with an `if constexpr` chain selecting the
+// active alternative and binding its payload fields:
 //
-//   return std::visit([&](auto&& __vstr_alt) -> <retType> {
+//   std::visit([&](auto&& __vstr_alt) -> <retType> {
 //       using __vstr_alt_t = std::decay_t<decltype(__vstr_alt)>;
 //       if constexpr (std::is_same_v<__vstr_alt_t, <Enum>::<C>_t>) {
 //           {
@@ -5304,11 +5382,10 @@ func isWildcardPat(_ pat: Vec[Nd]) -> Bool {
 //               return <body>;
 //           }
 //       } else if constexpr (...) { ... } else { std::unreachable(); }
-//   }, <scrut>.value);
-func emitReturnVisitMatch(_ env: inout TyEnv, _ indent: Str, _ enumName: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
-    print(indent)
-    print("return std::visit([&](auto&& __vstr_alt) -> ")
-    emitTypeBoxed(env.curRetNode)
+//   }, <scrut>.value)
+func emitVisitMatchValue(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyStr: Str, _ enumName: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    print("std::visit([&](auto&& __vstr_alt) -> ")
+    emitMatchRetTy(env, ty, tyStr)
     print(" {\n")
     let i8 = deeper(indent)
     print(i8)
@@ -5339,7 +5416,7 @@ func emitReturnVisitMatch(_ env: inout TyEnv, _ indent: Str, _ enumName: Str, _ 
     print(indent)
     print("}, ")
     emitBoxed(env, scrut)
-    print(".value);\n")
+    print(".value)")
 }
 
 func armIsDefault(_ arm: Nd) -> Bool {
