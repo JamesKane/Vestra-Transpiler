@@ -2601,12 +2601,22 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
                 hdr << ", ";
             }
             const auto& p = fn.params[i];
+            // §A12 (§14.6.3) — function-pointer params pass by value in the
+            // declarator form (`R(*name)(T1)`), exactly as on free functions:
+            // "ref to function pointer" would need `R(*const&)(T1)`, which
+            // emit_type cannot spell, and the previous fall-through to
+            // `const <fn-ptr>& name` was not valid C++ at all.
+            const bool is_fn_ptr = p.type != nullptr && p.type->kind == ast::NodeKind::FunctionType;
             switch (p.mode) {
             case ast::ParamMode::Read:
                 // §11 — an async method copies read params into its coroutine
                 // frame (by value), since a `const T&` would dangle across a
                 // suspension; a plain method keeps the canonical `const T&`.
-                if (fn.is_async) {
+                if (is_fn_ptr) {
+                    if (p.type) {
+                        emit_type_with_name(hdr, *p.type, p.name);
+                    }
+                } else if (fn.is_async) {
                     if (p.type) {
                         emit_type(hdr, *p.type);
                     }
