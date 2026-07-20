@@ -5581,20 +5581,27 @@ func emitVisitMatchValue(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyS
     print("using __vstr_alt_t = std::decay_t<decltype(__vstr_alt)>;\n")
     let i12 = deeper(i8)
     let i16 = deeper(i12)
-    // Non-default arms form the if-constexpr chain (indexed so the first is `if`
-    // and the rest `else if`); a default / wildcard arm becomes the trailing
-    // `else`, otherwise the chain ends in `std::unreachable()`.
-    var k: Int = 0
+    // Arms GROUP by case: each distinct case name (in arm order) forms one
+    // if-constexpr branch holding every arm of that case as its own binding
+    // scope. A guarded arm returns inside a runtime `if (<guard>)`, so control
+    // can fall through to the case's next scope; a group whose LAST arm is
+    // guarded falls back to the default arm's body after the scopes. A default
+    // / wildcard arm becomes the trailing `else`, otherwise the chain ends in
+    // `std::unreachable()`. (With no guards each case has one always-returning
+    // scope, the degenerate chain this emitter always produced.)
     var di: Int = 0 - 1
     var j: Int = 0
     while j < arms.len() {
-        if armIsDefault(arms.get(j) ?? Nd.wildcard) {
-            di = j
-        } else {
-            emitVisitArm(env, i8, i12, i16, enumName, arms.get(j) ?? Nd.wildcard, k)
-            k = k + 1
-        }
+        if armIsDefault(arms.get(j) ?? Nd.wildcard) { di = j }
         j = j + 1
+    }
+    let caseNames = distinctCaseNames(arms)
+    var k: Int = 0
+    while k < caseNames.len() {
+        if let cn = caseNames.get(k) {
+            emitVisitGroup(env, i8, i12, i16, enumName, cn, arms, k, di)
+        }
+        k = k + 1
     }
     if di >= 0 {
         emitVisitDefault(env, i8, i12, arms.get(di) ?? Nd.wildcard)
@@ -5606,6 +5613,108 @@ func emitVisitMatchValue(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyS
     print("}, ")
     emitBoxed(env, scrut)
     print(".value)")
+}
+
+// The distinct non-default case names, in order of first appearance.
+func distinctCaseNames(_ arms: Vec[Nd]) using Alloc -> Vec[String] {
+    var names: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < arms.len() {
+        let a = arms.get(i) ?? Nd.wildcard
+        if !armIsDefault(a) {
+            let cn = armCase(a)
+            if !nameListHas(names, cn) { names.push(cn) }
+        }
+        i = i + 1
+    }
+    return names
+}
+
+func nameListHas(_ xs: Vec[String], _ n: Str) -> Bool {
+    var i: Int = 0
+    while i < xs.len() {
+        if let x = xs.get(i) { if streq(x, n) { return true } }
+        i = i + 1
+    }
+    return false
+}
+
+func armCase(_ arm: Nd) using Alloc -> String {
+    return match arm {
+        case .matchArm(let isDef, let pat, let guard, let body): armCaseName(pat)
+        default: own("")
+    }
+}
+
+// One case group: the if-constexpr branch header, a scope per arm of the case,
+// and — when the last arm's guard can fail — the default body as fallback.
+func emitVisitGroup(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ i16: Str, _ enumName: Str, _ cn: Str, _ arms: Vec[Nd], _ idx: Int, _ di: Int) using Alloc, Log {
+    print(i8)
+    if idx == 0 { print("if constexpr (std::is_same_v<__vstr_alt_t, ") }
+    else { print("} else if constexpr (std::is_same_v<__vstr_alt_t, ") }
+    print(enumName)
+    print("::")
+    print(cn)
+    print("_t>) {\n")
+    var lastGuarded: Bool = false
+    var j: Int = 0
+    while j < arms.len() {
+        let a = arms.get(j) ?? Nd.wildcard
+        if !armIsDefault(a) && streq(armCase(a), cn) {
+            emitVisitScope(env, i12, i16, enumName, a)
+            lastGuarded = armGuarded(a)
+        }
+        j = j + 1
+    }
+    if lastGuarded && di >= 0 {
+        emitVisitFallback(env, i12, arms.get(di) ?? Nd.wildcard)
+    }
+}
+
+func emitVisitScope(_ env: inout TyEnv, _ i12: Str, _ i16: Str, _ enumName: Str, _ arm: Nd) using Alloc, Log {
+    match arm {
+        case .matchArm(let isDef, let pat, let guard, let body): emitVisitScopeParts(env, i12, i16, enumName, pat, guard, body)
+        default: noop()
+    }
+}
+
+func emitVisitScopeParts(_ env: inout TyEnv, _ i12: Str, _ i16: Str, _ enumName: Str, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    print(i12)
+    print("{\n")
+    emitPayloadBindings(env, i16, enumName, pat)
+    if guard.len() > 0 {
+        print(i16)
+        print("if (")
+        emitBoxed(env, guard)
+        print(") {\n")
+        print(deeper(i16))
+        print("return ")
+        emitBoxed(env, body)
+        print(";\n")
+        print(i16)
+        print("}\n")
+    } else {
+        print(i16)
+        print("return ")
+        emitBoxed(env, body)
+        print(";\n")
+    }
+    print(i12)
+    print("}\n")
+}
+
+func emitVisitFallback(_ env: inout TyEnv, _ i12: Str, _ arm: Nd) using Alloc, Log {
+    match arm {
+        case .matchArm(let isDef, let pat, let guard, let body): emitVisitFallbackBody(env, i12, body)
+        default: noop()
+    }
+}
+
+func emitVisitFallbackBody(_ env: inout TyEnv, _ i12: Str, _ body: Vec[Nd]) using Alloc, Log {
+    print(i12)
+    print("return ")
+    emitBoxed(env, body)
+    print(";\n")
 }
 
 func armIsDefault(_ arm: Nd) -> Bool {
@@ -5632,32 +5741,6 @@ func emitVisitDefaultParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ body: Ve
     emitBoxed(env, body)
     print(";\n")
     print(i8)
-    print("}\n")
-}
-
-func emitVisitArm(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ i16: Str, _ enumName: Str, _ arm: Nd, _ j: Int) using Alloc, Log {
-    match arm {
-        case .matchArm(let isDefault, let pat, let guard, let body): emitVisitArmParts(env, i8, i12, i16, enumName, pat, body, j)
-        default: noop()
-    }
-}
-
-func emitVisitArmParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ i16: Str, _ enumName: Str, _ pat: Vec[Nd], _ body: Vec[Nd], _ j: Int) using Alloc, Log {
-    print(i8)
-    if j == 0 { print("if constexpr (std::is_same_v<__vstr_alt_t, ") }
-    else { print("} else if constexpr (std::is_same_v<__vstr_alt_t, ") }
-    print(enumName)
-    print("::")
-    print(armCaseName(pat))
-    print("_t>) {\n")
-    print(i12)
-    print("{\n")
-    emitPayloadBindings(env, i16, enumName, pat)
-    print(i16)
-    print("return ")
-    emitBoxed(env, body)
-    print(";\n")
-    print(i12)
     print("}\n")
 }
 

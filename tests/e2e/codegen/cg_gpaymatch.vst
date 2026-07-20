@@ -1,0 +1,52 @@
+// Guarded-payload match — the last match-lowering family. Arms group by case:
+// one if-constexpr branch per distinct case, holding each of that case's arms
+// as its own binding scope. A guarded arm returns inside a runtime
+// `if (<guard>)` so control falls through to the case's next scope; a group
+// whose last arm is guarded falls back to the default arm's body. Covers a
+// guarded+unguarded pair, three stacked guards, a guard on a payload-free
+// case, and binding position.
+enum Shape {
+    case circle(Float64)
+    case square(Float64)
+    case dot
+}
+
+func classify(_ s: Shape) -> Int32 {
+    return match s {
+        case .circle(let r) where r > 10.0: 1
+        case .circle(let r): 2
+        case .square(let side): 3
+        case .dot: 4
+    }
+}
+
+func guarded2(_ s: Shape, _ k: Float64) -> Int32 {
+    return match s {
+        case .square(let side) where side > k: 5
+        default: 6
+    }
+}
+
+func multiGuard(_ s: Shape) -> Int32 {
+    return match s {
+        case .circle(let r) where r > 10.0: 1
+        case .circle(let r) where r > 5.0: 2
+        case .circle(let r): 3
+        default: 9
+    }
+}
+
+func bareGuard(_ s: Shape, _ k: Int32) -> Int32 {
+    return match s {
+        case .dot where k > 0: 7
+        default: 8
+    }
+}
+
+func bindPos(_ s: Shape) -> Int32 {
+    let n = match s {
+        case .circle(let r) where r > 1.0: 1
+        default: 2
+    }
+    return n
+}
