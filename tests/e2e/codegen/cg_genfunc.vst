@@ -1,0 +1,36 @@
+// Generic FUNCTIONS lower to C++ templates that live entirely in the header
+// (templates must be visible at the instantiation site): `template <class T,
+// class U>` then the usual inline definition, [[nodiscard]] under the
+// forward-declaration rule, in source position between struct defs and
+// forward decls. The .cpp emits nothing for them, and call sites stay plain
+// (C++ deduces the instantiation). Bodies get the full statement/expression
+// treatment — firstOf's `xs.get(0)` still lowers via the builtin-method
+// dispatch on the `Vec[T]` spelling.
+struct Box2 {
+    var v: Int32
+}
+
+func identity[T](_ x: T) -> T {
+    return x
+}
+
+func pick[T, U](_ a: T, _ b: U, _ takeFirst: Bool) -> Int32 {
+    if takeFirst { return 1 }
+    return 2
+}
+
+func firstOf[T](_ xs: Vec[T]) -> T? {
+    return xs.get(0)
+}
+
+func swallow[T](_ x: T) {
+    let y = x
+}
+
+func useThem() -> Int32 {
+    let i: Int32 = identity(7)
+    let f: Float64 = identity(1.5)
+    let k = pick(1, "x", true)
+    swallow(4)
+    return i + k
+}

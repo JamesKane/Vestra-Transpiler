@@ -4603,9 +4603,16 @@ func emitUnit(_ u: NUnit, _ stem: Str) using Alloc, Log {
 func emitDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
-            emitFunc(env, name, params, res, body)
+            emitFuncOrSkip(env, gens, name, params, res, body)
         default: noop()
     }
+}
+
+// A generic function emits nothing in the .cpp — its template definition
+// lives entirely in the header.
+func emitFuncOrSkip(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    if gens.len() > 0 { return }
+    emitFunc(env, name, params, res, body)
 }
 
 // ----- header (`.hpp`) emission --------------------------------------------
@@ -4628,7 +4635,7 @@ func emitHpp(_ u: NUnit) using Alloc, Log {
 func emitHppDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
-            emitFwdDecl(name, params, res)
+            emitHppFunc(env, gens, name, params, res, body)
         case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics):
             emitStructDef(env, name, fields, methods)
         case .enumD(let vis, let name, let cases, let methods, let generics):
@@ -4852,6 +4859,39 @@ func emitFieldDef(_ name: Str, _ ty: Vec[Nd]) using Alloc, Log {
     print(" ")
     print(name)
     print("{};\n")
+}
+
+// A non-generic function gets a forward declaration; a generic one is a full
+// template definition (C++ templates must be visible at the instantiation
+// site), in source position.
+func emitHppFunc(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    if gens.len() == 0 { emitFwdDecl(name, params, res); return }
+    emitTemplateFunc(env, gens, name, params, res, body)
+}
+
+// `template <class T, class U>` then the same inline definition shape as a
+// .cpp function, with [[nodiscard]] under the forward-declaration rule (an
+// explicitly written result type).
+func emitTemplateFunc(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    print("template <")
+    var i: Int = 0
+    while i < gens.len() {
+        if i > 0 { print(", ") }
+        print("class ")
+        print(genName(gens.get(i) ?? Nd.wildcard))
+        i = i + 1
+    }
+    print(">\n")
+    if res.len() > 0 { print("[[nodiscard]] ") }
+    emitFunc(env, name, params, res, body)
+}
+
+func genName(_ g: Nd) using Alloc -> String {
+    return match g {
+        case .genType(let nm, let bounds): own(nm)
+        case .genConst(let nm, let ty): own(nm)
+        default: own("")
+    }
 }
 
 // A free-function forward declaration. `[[nodiscard]]` is emitted whenever the
