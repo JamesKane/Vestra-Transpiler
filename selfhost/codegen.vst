@@ -4302,7 +4302,61 @@ func tyInferMethodCall(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ ch
     if chain { return own("") }
     let bt = tyInferBoxed(env, base)
     if streq(bt, "") { return own("") }
-    return tyMethodRet(env, bt, name)
+    let r = tyMethodRet(env, bt, name)
+    if !streq(r, "") { return r }
+    return tyBuiltinMethodRet(bt, name)
+}
+
+// Return types of the §18.5 builtin methods (a user method wins above), so a
+// binding from one participates in downstream type-directed lowerings —
+// chained builtin calls, force-unwrap, string coercion.
+func tyBuiltinMethodRet(_ bt: String, _ name: String) using Alloc -> String {
+    if tyStartsWith(bt, "Vec[") { return tyVecMethodRet(bt, name) }
+    if tyStartsWith(bt, "HashMap[") { return tyMapMethodRet(bt, name) }
+    if streq(bt, "String") || streq(bt, "Str") || streq(bt, "StrConst") { return tyStrMethodRet(name) }
+    if tyIsNumericScalar(bt) && streq(name, "toString") { return own("String") }
+    return own("")
+}
+
+func tyVecMethodRet(_ bt: String, _ name: String) using Alloc -> String {
+    if streq(name, "len") { return own("Int") }
+    if streq(name, "get") || streq(name, "pop") { return tyOptOf(tyBracketInner(bt)) }
+    return own("")
+}
+
+func tyMapMethodRet(_ bt: String, _ name: String) using Alloc -> String {
+    if streq(name, "len") { return own("Int") }
+    if streq(name, "contains") { return own("Bool") }
+    if streq(name, "get") { return tyOptOf(mapValSpelling(bt)) }
+    if streq(name, "keys") { return tyVecOf(mapKeySpelling(bt)) }
+    if streq(name, "values") { return tyVecOf(mapValSpelling(bt)) }
+    return own("")
+}
+
+func tyStrMethodRet(_ name: String) using Alloc -> String {
+    if streq(name, "len") { return own("Int") }
+    if streq(name, "isEmpty") || streq(name, "contains") || streq(name, "startsWith")
+        || streq(name, "endsWith") { return own("Bool") }
+    if streq(name, "slice") { return own("Str") }
+    if streq(name, "byteAt") { return own("UInt8?") }
+    if streq(name, "find") || streq(name, "toInt") { return own("Int?") }
+    if streq(name, "charAt") { return own("Char?") }
+    if streq(name, "split") { return own("Vec[Str]") }
+    if streq(name, "chars") { return own("Vec[Char]") }
+    return own("")
+}
+
+func tyOptOf(_ t: Str) using Alloc -> String {
+    var s: String = own(t)
+    s.append("?")
+    return s
+}
+
+func tyVecOf(_ t: Str) using Alloc -> String {
+    var s: String = "Vec["
+    s.append(t)
+    s.append("]")
+    return s
 }
 
 func tyMethodRet(_ env: inout TyEnv, _ owner: String, _ name: String) using Alloc -> String {
@@ -5234,11 +5288,35 @@ func emitMatchBindingVal(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyS
     }
 }
 
-// An annotated binding's initializer coerces into a String annotation.
+// An annotated binding's initializer coerces into a String annotation. A
+// `<Type>.new()` initializer constructs the ANNOTATION's C++ type directly:
+// `var xs: Vec[Int32] = Vec.new()` -> `std::vector<std::int32_t> xs =
+// std::vector<std::int32_t>{};` (the bare `Vec` carries no element type).
 func emitBindingValue(_ env: inout TyEnv, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    if ty.len() > 0 && valIsNewCall(value) {
+        emitTypeBoxed(ty)
+        print("{}")
+        return
+    }
     let from = tyInferBoxed(env, value)
     let wrap = needsStrCoercion(from, tyAnnSpelling(ty))
     emitMaybeCoerced(env, wrap, value)
+}
+
+func valIsNewCall(_ v: Vec[Nd]) using Alloc -> Bool {
+    if v.len() == 0 { return false }
+    return match v.get(0) ?? Nd.wildcard {
+        case .call(let callee, let args): args.len() == 0 && calleeIsNew(callee)
+        default: false
+    }
+}
+
+func calleeIsNew(_ callee: Vec[Nd]) using Alloc -> Bool {
+    if callee.len() == 0 { return false }
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let name, let chain): !chain && streq(name, "new") && baseIsCapIdent(base)
+        default: false
+    }
 }
 
 func tyAddSymSpelling(_ env: inout TyEnv, _ name: String, _ sp: String) using Alloc {
@@ -6305,6 +6383,7 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     let fname = identBaseName(callee)
     if tryEmitPrint(env, fname, args) { return }
     if tryEmitBuiltin(env, fname, args) { return }
+    if tryEmitBuiltinMethod(env, callee, args) { return }
     let owner = calleeMethodOwner(env, callee)
     if !streq(owner, "") {
         emitBoxed(env, callee)
@@ -6337,6 +6416,276 @@ func calleeMemberName(_ callee: Vec[Nd]) using Alloc -> String {
         case .member(let base, let name, let chain): own(name)
         default: own("")
     }
+}
+
+// §18.5 builtin container / string / numeric methods, dispatched on the BASE
+// expression's inferred type spelling — Vec[...], HashMap[...], the string
+// kinds, Char, and the numeric scalars. A user struct can never carry these
+// spellings, so user methods are unaffected. Returns whether it emitted.
+func tryEmitBuiltinMethod(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if callee.len() == 0 { return false }
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let name, let chain): emitBuiltinMethodOn(env, base, name, chain, args)
+        default: false
+    }
+}
+
+func emitBuiltinMethodOn(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if chain { return false }
+    let bt = tyInferBoxed(env, base)
+    if tyStartsWith(bt, "Vec[") { return emitVecMethod(env, base, bt, name, args) }
+    if tyStartsWith(bt, "HashMap[") { return emitMapMethod(env, base, bt, name, args) }
+    if streq(bt, "String") || streq(bt, "Str") || streq(bt, "StrConst") {
+        return emitStrMethod(env, base, name, args, streq(bt, "String"))
+    }
+    if streq(bt, "Char") { return emitCharMethod(env, base, name, args) }
+    if tyIsNumericScalar(bt) && streq(name, "toString") && args.len() == 0 {
+        print("__vstr::to_string(")
+        emitBoxed(env, base)
+        print(")")
+        return true
+    }
+    return false
+}
+
+func tyIsNumericScalar(_ s: String) -> Bool {
+    return tyIsInt(s) || streq(s, "Float32") || streq(s, "Float64")
+}
+
+// One argument, coerced against a String-typed slot when needed (HashMap keys
+// and values, Vec elements — the bootstrap's resolver marks these).
+func emitSlotArg(_ env: inout TyEnv, _ to: Str, _ a: Nd) using Alloc, Log {
+    match a {
+        case .arg(let label, let isInout, let val): emitSlotArgVal(env, to, val)
+        default: noop()
+    }
+}
+
+func emitSlotArgVal(_ env: inout TyEnv, _ to: Str, _ val: Vec[Nd]) using Alloc, Log {
+    let from = tyInferBoxed(env, val)
+    emitMaybeCoerced(env, needsStrCoercion(from, to), val)
+}
+
+// `push(x)` -> .push_back; `len()` -> .size() as Int; `get(i)` / `pop()` ->
+// the __vstr optional-returning helpers; `set(i, v)` -> a size_t-cast
+// subscript assignment; `clear()` -> .clear().
+func emitVecMethod(_ env: inout TyEnv, _ base: Vec[Nd], _ bt: Str, _ name: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if streq(name, "push") && args.len() == 1 {
+        let elem = tyBracketInner(own(bt))
+        emitBoxed(env, base)
+        print(".push_back(")
+        emitSlotArg(env, elem, args.get(0) ?? Nd.wildcard)
+        print(")")
+        return true
+    }
+    if streq(name, "len") && args.len() == 0 {
+        print("static_cast<std::intptr_t>(")
+        emitBoxed(env, base)
+        print(".size())")
+        return true
+    }
+    if streq(name, "get") && args.len() == 1 {
+        print("__vstr::vec_get(")
+        emitBoxed(env, base)
+        print(", ")
+        emitArg(env, args.get(0) ?? Nd.wildcard)
+        print(")")
+        return true
+    }
+    if streq(name, "pop") && args.len() == 0 {
+        print("__vstr::vec_pop(")
+        emitBoxed(env, base)
+        print(")")
+        return true
+    }
+    if streq(name, "set") && args.len() == 2 {
+        let elem = tyBracketInner(own(bt))
+        emitBoxed(env, base)
+        print("[static_cast<std::size_t>(")
+        emitArg(env, args.get(0) ?? Nd.wildcard)
+        print(")] = ")
+        emitSlotArg(env, elem, args.get(1) ?? Nd.wildcard)
+        return true
+    }
+    if streq(name, "clear") && args.len() == 0 {
+        emitBoxed(env, base)
+        print(".clear()")
+        return true
+    }
+    return false
+}
+
+// `set(k, v)` -> .insert_or_assign; `get(k)` -> __vstr::map_get (optional V);
+// `contains(k)` -> .contains; `len()` -> .size() as Int; keys/values/entries
+// -> the owned-Vec __vstr helpers. Key / value arguments coerce against the
+// map's declared K / V.
+func emitMapMethod(_ env: inout TyEnv, _ base: Vec[Nd], _ bt: Str, _ name: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if streq(name, "set") && args.len() == 2 {
+        let k = mapKeySpelling(own(bt))
+        let v = mapValSpelling(own(bt))
+        emitBoxed(env, base)
+        print(".insert_or_assign(")
+        emitSlotArg(env, k, args.get(0) ?? Nd.wildcard)
+        print(", ")
+        emitSlotArg(env, v, args.get(1) ?? Nd.wildcard)
+        print(")")
+        return true
+    }
+    if streq(name, "get") && args.len() == 1 {
+        let k = mapKeySpelling(own(bt))
+        print("__vstr::map_get(")
+        emitBoxed(env, base)
+        print(", ")
+        emitSlotArg(env, k, args.get(0) ?? Nd.wildcard)
+        print(")")
+        return true
+    }
+    if streq(name, "contains") && args.len() == 1 {
+        let k = mapKeySpelling(own(bt))
+        emitBoxed(env, base)
+        print(".contains(")
+        emitSlotArg(env, k, args.get(0) ?? Nd.wildcard)
+        print(")")
+        return true
+    }
+    if streq(name, "len") && args.len() == 0 {
+        print("static_cast<std::intptr_t>(")
+        emitBoxed(env, base)
+        print(".size())")
+        return true
+    }
+    if streq(name, "keys") && args.len() == 0 { return emitMapIter(env, base, "__vstr::map_keys(") }
+    if streq(name, "values") && args.len() == 0 { return emitMapIter(env, base, "__vstr::map_values(") }
+    if streq(name, "entries") && args.len() == 0 { return emitMapIter(env, base, "__vstr::map_entries(") }
+    return false
+}
+
+func emitMapIter(_ env: inout TyEnv, _ base: Vec[Nd], _ fn: Str) using Alloc, Log -> Bool {
+    print(fn)
+    emitBoxed(env, base)
+    print(")")
+    return true
+}
+
+// "HashMap[K, V]" -> "K" / "V" (split at the first top-level ", "; nested
+// generic keys are out of scope for the coercion check).
+func mapKeySpelling(_ bt: String) using Alloc -> String {
+    let inner = tyBracketInner(bt)
+    var i: Int = 0
+    while i + 1 < inner.len() {
+        if (inner.byteAt(i) ?? 0) == 44 && (inner.byteAt(i + 1) ?? 0) == 32 { return own(inner.slice(0, i)) }
+        i = i + 1
+    }
+    return own("")
+}
+
+func mapValSpelling(_ bt: String) using Alloc -> String {
+    let inner = tyBracketInner(bt)
+    var i: Int = 0
+    while i + 1 < inner.len() {
+        if (inner.byteAt(i) ?? 0) == 44 && (inner.byteAt(i + 1) ?? 0) == 32 { return own(inner.slice(i + 2, inner.len())) }
+        i = i + 1
+    }
+    return own("")
+}
+
+// The String / Str / StrConst read queries share one lowering (the __vstr
+// helpers take a string_view; std::string converts implicitly); `append` is
+// the owned-String mutator.
+func emitStrMethod(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ args: Vec[Nd], _ owned: Bool) using Alloc, Log -> Bool {
+    if owned && streq(name, "append") && args.len() == 1 {
+        emitBoxed(env, base)
+        print(".append(")
+        emitArg(env, args.get(0) ?? Nd.wildcard)
+        print(")")
+        return true
+    }
+    if streq(name, "len") && args.len() == 0 {
+        print("static_cast<std::intptr_t>(")
+        emitBoxed(env, base)
+        print(".size())")
+        return true
+    }
+    if streq(name, "isEmpty") && args.len() == 0 {
+        emitBoxed(env, base)
+        print(".empty()")
+        return true
+    }
+    if streq(name, "slice") && args.len() == 2 {
+        print("__vstr::str_slice(")
+        emitBoxed(env, base)
+        print(", static_cast<std::intptr_t>(")
+        emitArg(env, args.get(0) ?? Nd.wildcard)
+        print("), static_cast<std::intptr_t>(")
+        emitArg(env, args.get(1) ?? Nd.wildcard)
+        print("))")
+        return true
+    }
+    if streq(name, "byteAt") && args.len() == 1 { return emitStrIdxHelper(env, base, "__vstr::str_byte_at(", args) }
+    if streq(name, "charAt") && args.len() == 1 { return emitStrIdxHelper(env, base, "__vstr::char_at(", args) }
+    if streq(name, "find") && args.len() == 1 { return emitStrArgHelper(env, base, "__vstr::str_find(", args) }
+    if streq(name, "split") && args.len() == 1 { return emitStrArgHelper(env, base, "__vstr::split(", args) }
+    if streq(name, "toInt") && args.len() == 0 {
+        print("__vstr::parse_int(")
+        emitBoxed(env, base)
+        print(")")
+        return true
+    }
+    if streq(name, "chars") && args.len() == 0 {
+        print("__vstr::chars(")
+        emitBoxed(env, base)
+        print(")")
+        return true
+    }
+    if streq(name, "contains") && args.len() == 1 { return emitStrMember(env, base, ".contains(", args) }
+    if streq(name, "startsWith") && args.len() == 1 { return emitStrMember(env, base, ".starts_with(", args) }
+    if streq(name, "endsWith") && args.len() == 1 { return emitStrMember(env, base, ".ends_with(", args) }
+    return false
+}
+
+// `<helper>(<base>, static_cast<std::intptr_t>(<arg>))` — the index-taking
+// string helpers.
+func emitStrIdxHelper(_ env: inout TyEnv, _ base: Vec[Nd], _ fn: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    print(fn)
+    emitBoxed(env, base)
+    print(", static_cast<std::intptr_t>(")
+    emitArg(env, args.get(0) ?? Nd.wildcard)
+    print("))")
+    return true
+}
+
+func emitStrArgHelper(_ env: inout TyEnv, _ base: Vec[Nd], _ fn: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    print(fn)
+    emitBoxed(env, base)
+    print(", ")
+    emitArg(env, args.get(0) ?? Nd.wildcard)
+    print(")")
+    return true
+}
+
+func emitStrMember(_ env: inout TyEnv, _ base: Vec[Nd], _ m: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    emitBoxed(env, base)
+    print(m)
+    emitArg(env, args.get(0) ?? Nd.wildcard)
+    print(")")
+    return true
+}
+
+// The four ASCII Char predicates -> the matching __vstr::is_* helper.
+func emitCharMethod(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if args.len() != 0 { return false }
+    if streq(name, "isDigit") { return emitCharPred(env, base, "__vstr::is_digit(") }
+    if streq(name, "isAlpha") { return emitCharPred(env, base, "__vstr::is_alpha(") }
+    if streq(name, "isAlnum") { return emitCharPred(env, base, "__vstr::is_alnum(") }
+    if streq(name, "isSpace") { return emitCharPred(env, base, "__vstr::is_space(") }
+    return false
+}
+
+func emitCharPred(_ env: inout TyEnv, _ base: Vec[Nd], _ fn: Str) using Alloc, Log -> Bool {
+    print(fn)
+    emitBoxed(env, base)
+    print(")")
+    return true
 }
 
 // The remaining §18 builtins, each lowering to its __vstr runtime shim.

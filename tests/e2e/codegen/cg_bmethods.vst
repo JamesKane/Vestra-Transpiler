@@ -1,0 +1,81 @@
+// §18.5 builtin container / string / numeric methods, dispatched on the base
+// expression's inferred type. Vec: push -> .push_back, len -> .size() as Int,
+// get/pop -> the __vstr optional helpers, set -> size_t-cast subscript
+// assignment, clear. HashMap: set -> .insert_or_assign, get -> __vstr::map_get,
+// contains, len, keys/values (String keys/values coerce). String/Str: append
+// (owned), len, isEmpty, slice/byteAt/charAt/find/toInt/split/chars via the
+// __vstr helpers, contains/startsWith/endsWith. Numeric toString and the Char
+// ASCII predicates. `Vec.new()` / `HashMap.new()` initializers construct the
+// annotation's C++ type directly. Builtin return types feed the inference so
+// chained calls (ps.len() on a split result) keep lowering.
+func vecOps() using Alloc -> Int {
+    var xs: Vec[Int32] = Vec.new()
+    xs.push(1)
+    xs.push(2)
+    xs.set(0, 5)
+    let n = xs.len()
+    let v = xs.get(0) ?? 9
+    let last = xs.pop()
+    xs.clear()
+    return n
+}
+
+func strOps(_ s: Str) using Alloc -> Int {
+    if s.isEmpty() { return 0 }
+    let sub = s.slice(1, 3)
+    let b = s.byteAt(0) ?? 0
+    if s.contains("x") { return 1 }
+    if s.startsWith("a") { return 2 }
+    if s.endsWith("z") { return 3 }
+    return s.len()
+}
+
+func strBuild(_ a: Str) using Alloc -> String {
+    var out: String = ""
+    out.append(a)
+    out.append("!")
+    return out
+}
+
+func numStr(_ n: Int32) using Alloc -> String {
+    return n.toString()
+}
+
+func charOps(_ c: Char) -> Bool {
+    if c.isDigit() { return true }
+    if c.isAlpha() { return true }
+    return c.isSpace()
+}
+
+func mapOps() using Alloc -> Int {
+    var m: HashMap[String, Int32] = HashMap.new()
+    m.set("a", 1)
+    if m.contains("a") { return m.len() }
+    let v = m.get("a") ?? 0
+    return v
+}
+
+func strFind(_ s: Str) using Alloc -> Int {
+    let i = s.find("x") ?? 0 - 1
+    let n = s.toInt() ?? 0
+    let c = s.charAt(0) ?? ' '
+    return i + n
+}
+
+func strSplit(_ s: Str) using Alloc -> Int {
+    let ps = s.split(",")
+    let cs = s.chars()
+    return ps.len() + cs.len()
+}
+
+func alnum(_ c: Char) -> Bool {
+    return c.isAlnum()
+}
+
+func mapIter() using Alloc -> Int {
+    var m: HashMap[String, Int32] = HashMap.new()
+    m.set("a", 1)
+    let ks = m.keys()
+    let vs = m.values()
+    return ks.len() + vs.len()
+}
