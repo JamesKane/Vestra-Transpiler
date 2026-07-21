@@ -878,7 +878,7 @@ enum Nd {
     case vecLit(Vec[Nd])                    // [e1, e2, ...] array/vector literal — prints /*?expr*/ (no C++ case), carries elements for sema
     case tupleLit(Vec[Nd])                  // (e1, e2, ...) tuple literal — prints /*?expr*/ (no C++ case), carries elements for sema
     case closureE(Vec[Nd], Vec[Nd])         // { params => body } — params (ident nodes) + body stmts; prints /*?expr*/ (no C++ case), carries both for sema
-    case interpE(Vec[Nd])                   // "...\(e)..." interpolated string — prints /*?expr*/ (no C++ case), carries the embedded exprs for sema
+    case interpE(Vec[String], Vec[Nd])      // "...\(e)..." interpolated string — prints /*?expr*/ (no C++ case), carries the embedded exprs for sema
     case throwE(Vec[Nd])                    // throw OPERAND — also prints /*?expr*/ (no C++ printer case), but carries the operand for sema
     case prefixE(String, Vec[Nd])           // copy / await / spawn / try (kw string), operand — printed fully
     case doCatchE(Vec[Nd], String, Vec[Nd], Vec[Nd]) // doBody, errName, errType?, catchBody
@@ -1985,10 +1985,11 @@ func skipBalancedBraces(_ p: inout Ps) {
 // it dumps /*?expr*/. We consume the sequence to stay token-aligned.
 func parseInterpString(_ p: inout Ps) using Alloc -> Nd {
     advP(&p)  // InterpStringBegin
+    var parts: Vec[String] = Vec.new()
     var exprs: Vec[Nd] = Vec.new()
     var go: Bool = true
     while go && !isKind(p, TokKind.interpEnd) && !atEndP(p) {
-        if isKind(p, TokKind.interpPart) { advP(&p) }
+        if isKind(p, TokKind.interpPart) { parts.push(curText(p)); advP(&p) }
         else if isKind(p, TokKind.lparen) {
             advP(&p)
             exprs.push(parseExpr(&p))
@@ -1996,7 +1997,7 @@ func parseInterpString(_ p: inout Ps) using Alloc -> Nd {
         } else { advP(&p) }
     }
     eatV(p, TokKind.interpEnd)
-    return Nd.interpE(exprs)
+    return Nd.interpE(parts, exprs)
 }
 
 // A `{ params => body }` closure (vs a block). The C++ printer has no ClosureExpr
@@ -3974,6 +3975,7 @@ func tyInfer(_ env: inout TyEnv, _ e: Nd) using Alloc -> String {
         case .index(let base, let idxs): tyInferIndex(env, base, idxs)
         case .vecLit(let elems): tyInferVecLit(env, elems)
         case .matchE(let scrut, let arms): tyInferMatch(env, scrut, arms)
+        case .interpE(let parts, let exprs): own("String")
         default: own("")
     }
 }
@@ -5990,8 +5992,46 @@ func emitExpr(_ env: inout TyEnv, _ e: Nd) using Alloc, Log {
         case .ifE(let ln, let li, let cond, let thenB, let els): emitIfE(env, ln, cond, thenB, els)
         case .vecLit(let elems): emitVecLitNoTy(env, elems)
         case .tupleLit(let elems): emitTupleLit(env, elems)
+        case .interpE(let parts, let exprs): emitInterp(env, parts, exprs)
         default: print("/*?expr*/")
     }
+}
+
+// `"a \(x) b"` -> `std::format("a {} b", x)`: each literal fragment joins the
+// format string (its `{` / `}` doubled — std::format escape), each splice
+// contributes a `{}` and one trailing argument. The lexer guarantees a
+// fragment before, between, and after splices (possibly empty), so a `{}`
+// precedes every fragment but the first.
+func emitInterp(_ env: inout TyEnv, _ parts: Vec[String], _ exprs: Vec[Nd]) using Alloc, Log {
+    print("std::format(\"")
+    var i: Int = 0
+    while i < parts.len() {
+        if i > 0 { print("{}") }
+        if let frag = parts.get(i) { print(fmtFragment(frag)) }
+        i = i + 1
+    }
+    print("\"")
+    var j: Int = 0
+    while j < exprs.len() {
+        print(", ")
+        emitExpr(env, exprs.get(j) ?? Nd.wildcard)
+        j = j + 1
+    }
+    print(")")
+}
+
+// A literal fragment with std::format's brace escaping applied.
+func fmtFragment(_ s: Str) using Alloc -> String {
+    var out: String = ""
+    var i: Int = 0
+    while i < s.len() {
+        let c = s.byteAt(i) ?? 0
+        if c == 123 { out.append("{{") }
+        else if c == 125 { out.append("}}") }
+        else { out.append(s.slice(i, i + 1)) }
+        i = i + 1
+    }
+    return out
 }
 
 // `(e0, e1, ...)` -> `std::tuple{<e0>, <e1>, ...}` — CTAD deduces the element

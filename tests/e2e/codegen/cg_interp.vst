@@ -1,0 +1,29 @@
+// String interpolation. `"a \(x) b"` lowers to std::format("a {} b", x): each
+// literal fragment joins the format string with `{`/`}` doubled (std::format's
+// escape), each splice contributes `{}` plus one trailing argument. The
+// interpE capture now carries the literal fragments alongside the splice
+// exprs (parts.len() == exprs.len() + 1, empty fragments included).
+func greet(_ name: Str) using Alloc -> String {
+    return "hello \(name)!"
+}
+
+func stats(_ n: Int32, _ f: Float64) using Alloc -> String {
+    return "n=\(n) f=\(f)"
+}
+
+func exprSplice(_ a: Int32, _ b: Int32) using Alloc -> String {
+    return "sum=\(a + b)"
+}
+
+func bindInterp(_ n: Int32) using Alloc -> String {
+    let s = "value: \(n)"
+    return s
+}
+
+func onlySplice(_ n: Int32) using Alloc -> String {
+    return "\(n)"
+}
+
+func braces(_ n: Int32) using Alloc -> String {
+    return "set {a} has \(n)"
+}

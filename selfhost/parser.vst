@@ -882,7 +882,7 @@ enum Nd {
     case vecLit(Vec[Nd])                    // [e1, e2, ...] array/vector literal — prints /*?expr*/ (no C++ case)
     case tupleLit(Vec[Nd])                  // (e1, e2, ...) tuple literal — prints /*?expr*/ (no C++ case)
     case closureE(Vec[Nd], Vec[Nd])         // { params => body } — prints /*?expr*/ (no C++ case)
-    case interpE(Vec[Nd])                   // "...\(e)..." interpolated string — prints /*?expr*/ (no C++ case)
+    case interpE(Vec[String], Vec[Nd])      // "...\(e)..." interpolated string — prints /*?expr*/ (no C++ case)
     case throwE(Vec[Nd])                    // throw OPERAND — also prints /*?expr*/ (no C++ printer case), but carries the operand
     case prefixE(String, Vec[Nd])           // copy / await / spawn / try (kw string), operand — printed fully
     case doCatchE(Vec[Nd], String, Vec[Nd], Vec[Nd]) // doBody, errName, errType?, catchBody
@@ -1979,10 +1979,11 @@ func skipBalancedBraces(_ p: inout Ps) {
 // it dumps /*?expr*/. We consume the sequence to stay token-aligned.
 func parseInterpString(_ p: inout Ps) using Alloc -> Nd {
     advP(&p)  // InterpStringBegin
+    var parts: Vec[String] = Vec.new()
     var exprs: Vec[Nd] = Vec.new()
     var go: Bool = true
     while go && !isKind(p, TokKind.interpEnd) && !atEndP(p) {
-        if isKind(p, TokKind.interpPart) { advP(&p) }
+        if isKind(p, TokKind.interpPart) { parts.push(curText(p)); advP(&p) }
         else if isKind(p, TokKind.lparen) {
             advP(&p)
             exprs.push(parseExpr(&p))
@@ -1990,7 +1991,7 @@ func parseInterpString(_ p: inout Ps) using Alloc -> Nd {
         } else { advP(&p) }
     }
     eatV(p, TokKind.interpEnd)
-    return Nd.interpE(exprs)
+    return Nd.interpE(parts, exprs)
 }
 
 // A `{ params => body }` closure (vs a block). The C++ printer has no ClosureExpr
