@@ -4831,6 +4831,22 @@ func emitFunc(_ env: inout TyEnv, _ name: Str, _ params: Vec[Nd], _ res: Vec[Nd]
 func tySetRetNode(_ env: inout TyEnv, _ res: Vec[Nd]) using Alloc {
     while env.curRetNode.len() > 0 { let _ = env.curRetNode.pop() }
     if res.len() > 0 { env.curRetNode.push(res.get(0) ?? Nd.wildcard) }
+    env.curRet = tyRetSpelling(res)
+}
+
+// §18.5 string-lattice coercion: a Str / StrConst-typed value flowing into a
+// String slot (return, annotated initializer, assignment, call argument,
+// struct-construction field) wraps in std::string(...) — the string_view ->
+// string constructor is explicit.
+func needsStrCoercion(_ from: Str, _ to: Str) -> Bool {
+    if !streq(to, "String") { return false }
+    return streq(from, "Str") || streq(from, "StrConst")
+}
+
+func emitMaybeCoerced(_ env: inout TyEnv, _ wrap: Bool, _ v: Vec[Nd]) using Alloc, Log {
+    if wrap { print("std::string(") }
+    emitBoxed(env, v)
+    if wrap { print(")") }
 }
 
 func emitRetType(_ res: Vec[Nd]) using Alloc, Log {
@@ -5106,7 +5122,7 @@ func emitBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd
         // The annotation's function type supplies the lambda's parameter types.
         emitClosureWithFnTy(env, ty, value)
     } else {
-        emitBoxed(env, value)
+        emitBindingValue(env, ty, value)
     }
     print(";\n")
     // Record the binding's type so later expressions can be inferred: an annotated
@@ -5216,6 +5232,13 @@ func emitMatchBindingVal(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyS
     }
 }
 
+// An annotated binding's initializer coerces into a String annotation.
+func emitBindingValue(_ env: inout TyEnv, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    let from = tyInferBoxed(env, value)
+    let wrap = needsStrCoercion(from, tyAnnSpelling(ty))
+    emitMaybeCoerced(env, wrap, value)
+}
+
 func tyAddSymSpelling(_ env: inout TyEnv, _ name: String, _ sp: String) using Alloc {
     if !streq(sp, "") {
         env.symName.push(name)
@@ -5229,7 +5252,9 @@ func emitAssign(_ env: inout TyEnv, _ indent: Str, _ op: Str, _ t: Vec[Nd], _ v:
     print(" ")
     print(op)
     print(" ")
-    emitBoxed(env, v)
+    let to = tyInferBoxed(env, t)
+    let from = tyInferBoxed(env, v)
+    emitMaybeCoerced(env, needsStrCoercion(from, to), v)
     print(";\n")
 }
 
@@ -5360,8 +5385,14 @@ func emitReturn(_ env: inout TyEnv, _ indent: Str, _ v: Vec[Nd]) using Alloc, Lo
     }
     print(indent)
     print("return")
-    if v.len() > 0 { print(" "); emitBoxed(env, v) }
+    if v.len() > 0 { print(" "); emitReturnValue(env, v) }
     print(";\n")
+}
+
+func emitReturnValue(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc, Log {
+    let from = tyInferBoxed(env, v)
+    let wrap = needsStrCoercion(from, env.curRet)
+    emitMaybeCoerced(env, wrap, v)
 }
 
 // A returned array literal threads the function's `[N]T` result type into the
@@ -6356,7 +6387,14 @@ func emitCallArgVal(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int, 
         let tn = callArgTypeNode(env, owner, fname, idx)
         if nodeIsFnTy(tn) { emitClosureArgTy(env, tn, val); return }
     }
-    emitBoxed(env, val)
+    let to = callArgTypeSpelling(env, owner, fname, idx)
+    let from = tyInferBoxed(env, val)
+    emitMaybeCoerced(env, needsStrCoercion(from, to), val)
+}
+
+func callArgTypeSpelling(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int) using Alloc -> String {
+    if !streq(owner, "") { return typeSpelling(tyMethodParamTypeNode(env, owner, fname, idx)) }
+    return tyParamType(env, own(fname), idx)
 }
 
 func callArgTypeNode(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int) using Alloc -> Nd {
@@ -6423,29 +6461,33 @@ func argHasLabel(_ a: Nd) using Alloc -> Bool {
 }
 
 func emitStructCtor(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
+    let sn = identBaseName(callee)
     emitBoxed(env, callee)
     print("{")
     var i: Int = 0
     while i < args.len() {
         if i > 0 { print(", ") }
-        emitCtorField(env, args.get(i) ?? Nd.wildcard)
+        emitCtorField(env, sn, args.get(i) ?? Nd.wildcard)
         i = i + 1
     }
     print("}")
 }
 
-func emitCtorField(_ env: inout TyEnv, _ a: Nd) using Alloc, Log {
+func emitCtorField(_ env: inout TyEnv, _ sn: Str, _ a: Nd) using Alloc, Log {
     match a {
-        case .arg(let label, let isInout, let val): emitCtorFieldParts(env, label, val)
+        case .arg(let label, let isInout, let val): emitCtorFieldParts(env, sn, label, val)
         default: noop()
     }
 }
 
-func emitCtorFieldParts(_ env: inout TyEnv, _ label: Str, _ val: Vec[Nd]) using Alloc, Log {
+// A field initializer coerces into a String-typed field.
+func emitCtorFieldParts(_ env: inout TyEnv, _ sn: Str, _ label: Str, _ val: Vec[Nd]) using Alloc, Log {
     print(".")
     print(label)
     print(" = ")
-    emitBoxed(env, val)
+    let to = tyFieldType(env, own(sn), own(label))
+    let from = tyInferBoxed(env, val)
+    emitMaybeCoerced(env, needsStrCoercion(from, to), val)
 }
 
 func emitArgList(_ env: inout TyEnv, _ args: Vec[Nd]) using Alloc, Log {

@@ -1,0 +1,44 @@
+// String-lattice coercion (§18.5): a Str / StrConst-typed value flowing into a
+// String slot wraps in std::string(...) — the string_view -> string ctor is
+// explicit. Covered slots: return value, annotated let/var initializer,
+// assignment, call argument, and struct-construction field; a String flowing
+// into String stays unwrapped.
+struct Named {
+    var name: String
+    var tag: Int32
+}
+
+func takeString(_ s: String) -> Int32 {
+    return 1
+}
+
+func retParam(_ s: Str) -> String {
+    return s
+}
+
+func retLit() -> String {
+    return "hello"
+}
+
+func retString(_ s: String) -> String {
+    return s
+}
+
+func bindAnn(_ s: Str) -> Int32 {
+    let t: String = s
+    return takeString(t)
+}
+
+func assignTo(_ s: Str) -> Int32 {
+    var u: String = "lit"
+    u = s
+    return takeString(u)
+}
+
+func viaArg(_ s: Str) -> Int32 {
+    return takeString(s)
+}
+
+func viaCtor(_ s: Str) -> Named {
+    return Named(name: s, tag: 1)
+}
