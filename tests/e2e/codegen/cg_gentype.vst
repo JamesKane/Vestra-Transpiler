@@ -1,0 +1,63 @@
+// Generic structs and enums. The definitions get `template <class T, ...>`
+// heads in the header; a type reference `Pair[Int32]` lowers to
+// `Pair<std::int32_t>`. Construction needs the INSTANTIATED name, recovered
+// from the expected type (binding annotation or result type): a labeled
+// struct construction becomes `Pair<std::int32_t>{.first = ...}`, an enum
+// case `Maybe<std::int32_t>{Maybe<std::int32_t>::just_t{n}}` (bare cases
+// included). A match over a generic enum prints the instantiated name in its
+// if-constexpr chain, with the payload-field lookup falling back to the
+// declaration's base name.
+struct Pair[T] {
+    var first: T
+    var second: T
+}
+
+struct KeyValue[K, V] {
+    var key: K
+    var value: V
+}
+
+enum Maybe[T] {
+    case nothing
+    case just(T)
+}
+
+func sumPair(_ p: Pair[Int32]) -> Int32 {
+    return p.first + p.second
+}
+
+func makePair(_ a: Int32, _ b: Int32) -> Pair[Int32] {
+    return Pair(first: a, second: b)
+}
+
+func annotatedPair() -> Int32 {
+    let p: Pair[Int32] = Pair(first: 10, second: 20)
+    return p.first + p.second
+}
+
+func makeEntry(_ k: Int32, _ v: Bool) -> KeyValue[Int32, Bool] {
+    return KeyValue(key: k, value: v)
+}
+
+func wrapJust(_ n: Int32) -> Maybe[Int32] {
+    return Maybe.just(n)
+}
+
+func orZero(_ m: Maybe[Int32]) -> Int32 {
+    return match m {
+        case .nothing: 0
+        case .just(let v): v
+    }
+}
+
+func none() -> Maybe[Int32] {
+    return Maybe.nothing
+}
+
+func bindCase(_ n: Int32) -> Int32 {
+    let m: Maybe[Int32] = Maybe.just(n)
+    return match m {
+        case .nothing: 0
+        case .just(let v): v
+    }
+}
