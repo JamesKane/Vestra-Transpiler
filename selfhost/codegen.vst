@@ -2932,6 +2932,10 @@ struct TyEnv {
     var symType: Vec[String]    // ... -> type spelling
     var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
     var curRetNode: Vec[Nd]     // per-function: the result TYPE node (for emitting the C++ return type, e.g. a match lambda)
+    var tryN: Int               // file-global `__vstr_t<N>` hoist counter (monotonic, never reset — matches the bootstrap)
+    var hoistName: Vec[String]  // per-statement: pending propagating-`try` hoist names, in collection order ...
+    var hoistExpr: Vec[Nd]      // ... -> the try's operand (the fallible call)
+    var hoistNext: Int          // per-statement: next hoist name a `try` use-site consumes
     var bad: Vec[String]
 }
 
@@ -4002,8 +4006,23 @@ func tyInfer(_ env: inout TyEnv, _ e: Nd) using Alloc -> String {
         case .vecLit(let elems): tyInferVecLit(env, elems)
         case .matchE(let scrut, let arms): tyInferMatch(env, scrut, arms)
         case .interpE(let parts, let exprs): own("String")
+        case .prefixE(let kw, let inner): tyInferPrefix(env, kw, inner)
         default: own("")
     }
+}
+
+// `try e` / `try! e` type as the operand's declared result — the hoist /
+// unwrap yields the success value of the std::expected. `try? e` wraps that
+// in an optional. Other prefixes stay unknown.
+func tyInferPrefix(_ env: inout TyEnv, _ kw: Str, _ inner: Vec[Nd]) using Alloc -> String {
+    if streq(kw, "try ") || streq(kw, "try! ") { return tyInferBoxed(env, inner) }
+    if streq(kw, "try? ") {
+        var t: String = tyInferBoxed(env, inner)
+        if streq(t, "") { return own("") }
+        t.append("?")
+        return t
+    }
+    return own("")
 }
 
 // A match expression types as its first known-typed arm body — the same baseline
@@ -4606,7 +4625,9 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     ecfEnum: Vec.new(), ecfCase: Vec.new(),
                     ecfIdx: Vec.new(), ecfName: Vec.new(),
                     symName: Vec.new(), symType: Vec.new(),
-                    curRet: own(""), curRetNode: Vec.new(), bad: Vec.new())
+                    curRet: own(""), curRetNode: Vec.new(),
+                    tryN: 0, hoistName: Vec.new(), hoistExpr: Vec.new(), hoistNext: 0,
+                    bad: Vec.new())
     var i: Int = 0
     while i < u.decls.len() {
         tyCollectDecl(&env, u.decls.get(i) ?? Nd.wildcard)
@@ -4631,16 +4652,16 @@ func emitUnit(_ u: NUnit, _ stem: Str) using Alloc, Log {
 func emitDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
-            emitFuncOrSkip(env, gens, name, params, res, body)
+            emitFuncOrSkip(env, gens, name, params, thr, res, body)
         default: noop()
     }
 }
 
 // A generic function emits nothing in the .cpp — its template definition
 // lives entirely in the header.
-func emitFuncOrSkip(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+func emitFuncOrSkip(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
     if gens.len() > 0 { return }
-    emitFunc(env, name, params, res, body)
+    emitFunc(env, name, params, thr, res, body)
 }
 
 // ----- header (`.hpp`) emission --------------------------------------------
@@ -4663,7 +4684,7 @@ func emitHpp(_ u: NUnit) using Alloc, Log {
 func emitHppDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
-            emitHppFunc(env, gens, name, params, res, body)
+            emitHppFunc(env, gens, name, params, thr, res, body)
         case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics):
             emitGenStructDef(env, generics, name, fields, methods)
         case .enumD(let vis, let name, let cases, let methods, let generics):
@@ -4917,18 +4938,18 @@ func emitFieldDef(_ name: Str, _ ty: Vec[Nd]) using Alloc, Log {
 // A non-generic function gets a forward declaration; a generic one is a full
 // template definition (C++ templates must be visible at the instantiation
 // site), in source position.
-func emitHppFunc(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
-    if gens.len() == 0 { emitFwdDecl(name, params, res); return }
-    emitTemplateFunc(env, gens, name, params, res, body)
+func emitHppFunc(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    if gens.len() == 0 { emitFwdDecl(name, params, thr, res); return }
+    emitTemplateFunc(env, gens, name, params, thr, res, body)
 }
 
 // `template <class T, class U>` then the same inline definition shape as a
 // .cpp function, with [[nodiscard]] under the forward-declaration rule (an
-// explicitly written result type).
-func emitTemplateFunc(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+// explicitly written result type or a throws clause).
+func emitTemplateFunc(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
     emitTemplateHead(gens)
-    if res.len() > 0 { print("[[nodiscard]] ") }
-    emitFunc(env, name, params, res, body)
+    if res.len() > 0 || thr.len() > 0 { print("[[nodiscard]] ") }
+    emitFunc(env, name, params, thr, res, body)
 }
 
 func genName(_ g: Nd) using Alloc -> String {
@@ -4940,11 +4961,12 @@ func genName(_ g: Nd) using Alloc -> String {
 }
 
 // A free-function forward declaration. `[[nodiscard]]` is emitted whenever the
-// return type is written explicitly (even `-> Unit`); an omitted return type
-// gets a bare `void`.
-func emitFwdDecl(_ name: Str, _ params: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
-    if res.len() > 0 { print("[[nodiscard]] ") }
-    emitRetType(res)
+// return type is written explicitly (even `-> Unit`) or the function carries a
+// throws clause (the fallible result must not be dropped); an omitted return
+// type gets a bare `void`.
+func emitFwdDecl(_ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
+    if res.len() > 0 || thr.len() > 0 { print("[[nodiscard]] ") }
+    emitExpectedRet(thr, res)
     print(" ")
     print(name)
     print("(")
@@ -4952,8 +4974,8 @@ func emitFwdDecl(_ name: Str, _ params: Vec[Nd], _ res: Vec[Nd]) using Alloc, Lo
     print(");\n")
 }
 
-func emitFunc(_ env: inout TyEnv, _ name: Str, _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
-    emitRetType(res)
+func emitFunc(_ env: inout TyEnv, _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    emitExpectedRet(thr, res)
     print(" ")
     print(name)
     print("(")
@@ -4993,6 +5015,18 @@ func emitMaybeCoerced(_ env: inout TyEnv, _ wrap: Bool, _ v: Vec[Nd]) using Allo
 func emitRetType(_ res: Vec[Nd]) using Alloc, Log {
     if res.len() == 0 { print("void"); return }
     emitTypeBoxed(res)
+}
+
+// §9: a `throws(E)` clause wraps the declared result in `std::expected<T, E>`
+// so callers see the fallible type (`void` for T when the result is omitted);
+// without a clause the plain return type is emitted.
+func emitExpectedRet(_ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
+    if thr.len() == 0 { emitRetType(res); return }
+    print("std::expected<")
+    if res.len() > 0 { emitTypeBoxed(res) } else { print("void") }
+    print(", ")
+    emitTypeBoxed(thr)
+    print(">")
 }
 
 func emitParams(_ params: Vec[Nd]) using Alloc, Log {
@@ -5210,7 +5244,152 @@ func emitStmtList(_ env: inout TyEnv, _ stmts: Vec[Nd], _ indent: Str) using All
     }
 }
 
+// ----- §9 propagating-`try` hoists ------------------------------------------
+// A `try f()` cannot stay mid-expression (its error path must exit the whole
+// function), so each statement first hoists every propagating try it evaluates
+// unconditionally into the canonical 3-line escape; the use-site then reads the
+// hoisted name. The collection walk mirrors the bootstrap's evaluation-order
+// traversal — post-order at a try, so an inner try's hoist precedes the outer
+// one that consumes it, and consumption order equals collection order. Tries
+// inside if/match branches (the bootstrap's conditional-hoist lambdas) and
+// do/catch are out of scope.
+func collectStmtHoists(_ env: inout TyEnv, _ s: Nd) using Alloc {
+    while env.hoistName.len() > 0 { let _ = env.hoistName.pop() }
+    while env.hoistExpr.len() > 0 { let _ = env.hoistExpr.pop() }
+    env.hoistNext = 0
+    match s {
+        case .letS(let pat, let ty, let value): collectTryList(env, value)
+        case .varS(let pat, let ty, let value): collectTryList(env, value)
+        case .exprS(let e): collectTryList(env, e)
+        case .retS(let v): collectTryList(env, v)
+        case .assignS(let op, let t, let v): collectAssignTries(env, t, v)
+        case .whileS(let cond, let body): collectTryList(env, cond)
+        case .forS(let pat, let iter, let body): collectTryList(env, iter)
+        default: noop()
+    }
+}
+
+func collectAssignTries(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    collectTryList(env, t)
+    collectTryList(env, v)
+}
+
+func collectTryList(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc {
+    if v.len() > 0 { collectTry(env, v.get(0) ?? Nd.wildcard) }
+}
+
+// Descends only into subexpressions the statement evaluates unconditionally:
+// if/match visit their condition/scrutinee but not their branches, `&&`/`||`
+// skip the right operand, and `try?` / `try!` operands are not walked (they
+// consume the error locally, no hoist needed).
+func collectTry(_ env: inout TyEnv, _ e: Nd) using Alloc {
+    match e {
+        case .prefixE(let kw, let inner): collectTryPrefix(env, kw, inner)
+        case .call(let callee, let args): collectTryCall(env, callee, args)
+        case .binary(let op, let l, let r): collectTryBinary(env, op, l, r)
+        case .unary(let op, let x): collectTryList(env, x)
+        case .member(let base, let name, let chain): collectTryList(env, base)
+        case .index(let base, let idxs): collectTryIndex(env, base, idxs)
+        case .paren(let inner): collectTryList(env, inner)
+        case .vecLit(let elems): collectTryEach(env, elems)
+        case .tupleLit(let elems): collectTryEach(env, elems)
+        case .interpE(let parts, let exprs): collectTryEach(env, exprs)
+        case .ifE(let ln, let li, let cond, let thenB, let els): collectTryIf(env, li, cond)
+        case .matchE(let scrut, let arms): collectTryList(env, scrut)
+        default: noop()
+    }
+}
+
+func collectTryPrefix(_ env: inout TyEnv, _ kw: Str, _ inner: Vec[Nd]) using Alloc {
+    if streq(kw, "try ") {
+        collectTryList(env, inner)
+        pushTryHoist(env, inner)
+        return
+    }
+    if streq(kw, "copy ") { collectTryList(env, inner) }
+}
+
+func pushTryHoist(_ env: inout TyEnv, _ inner: Vec[Nd]) using Alloc {
+    var nm: String = "__vstr_t"
+    nm.append(intToStr(env.tryN))
+    env.tryN = env.tryN + 1
+    env.hoistName.push(nm)
+    env.hoistExpr.push(inner.get(0) ?? Nd.wildcard)
+}
+
+func collectTryCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    collectTryList(env, callee)
+    var i: Int = 0
+    while i < args.len() {
+        collectTryArg(env, args.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func collectTryArg(_ env: inout TyEnv, _ a: Nd) using Alloc {
+    match a {
+        case .arg(let label, let isInout, let val): collectTryList(env, val)
+        default: noop()
+    }
+}
+
+func collectTryBinary(_ env: inout TyEnv, _ op: Str, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc {
+    collectTryList(env, l)
+    if streq(op, "&&") || streq(op, "||") { return }
+    collectTryList(env, r)
+}
+
+func collectTryIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc {
+    collectTryList(env, base)
+    collectTryEach(env, idxs)
+}
+
+func collectTryEach(_ env: inout TyEnv, _ list: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < list.len() {
+        collectTry(env, list.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func collectTryIf(_ env: inout TyEnv, _ li: Vec[Nd], _ cond: Vec[Nd]) using Alloc {
+    collectTryList(env, cond)
+    collectTryList(env, li)
+}
+
+// The canonical 3-line escape, one per collected hoist, at statement indent:
+// evaluate the fallible call into `<n>_r`, re-propagate its error with
+// `return std::unexpected{...}`, unwrap the success value into `<n>`.
+func emitStmtHoists(_ env: inout TyEnv, _ indent: Str) using Alloc, Log {
+    var i: Int = 0
+    while i < env.hoistName.len() {
+        let nm = env.hoistName.get(i) ?? own("")
+        let ex = env.hoistExpr.get(i) ?? Nd.wildcard
+        print(indent)
+        print("auto ")
+        print(nm)
+        print("_r = ")
+        emitExpr(env, ex)
+        print(";\n")
+        print(indent)
+        print("if (!")
+        print(nm)
+        print("_r.has_value()) { return std::unexpected{")
+        print(nm)
+        print("_r.error()}; }\n")
+        print(indent)
+        print("auto ")
+        print(nm)
+        print(" = *")
+        print(nm)
+        print("_r;\n")
+        i = i + 1
+    }
+}
+
 func emitStmt(_ env: inout TyEnv, _ s: Nd, _ indent: Str) using Alloc, Log {
+    collectStmtHoists(&env, s)
+    emitStmtHoists(&env, indent)
     match s {
         case .letS(let pat, let ty, let value): emitBinding(env, indent, pat, ty, value)
         case .varS(let pat, let ty, let value): emitBinding(env, indent, pat, ty, value)
@@ -5521,8 +5700,19 @@ func emitExprStmt(_ env: inout TyEnv, _ indent: Str, _ e: Vec[Nd]) using Alloc, 
     match e.get(0) ?? Nd.wildcard {
         case .ifE(let ln, let li, let cond, let thenB, let els): emitIfStmt(env, indent, ln, li, cond, thenB, els)
         case .matchE(let scrut, let arms): emitMatchStmt(env, indent, scrut, arms)
+        case .throwE(let inner): emitThrowStmt(env, indent, inner)
         default: emitPlainExprStmt(env, indent, e)
     }
+}
+
+// §9 `throw e` at statement position ends the enclosing `throws(E)` function
+// with the error value — the std::expected converting constructor does the
+// wrapping: `return std::unexpected{<e>};`.
+func emitThrowStmt(_ env: inout TyEnv, _ indent: Str, _ inner: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    print("return std::unexpected{")
+    emitBoxed(env, inner)
+    print("};\n")
 }
 
 // A statement-position match is the same immediately-invoked lambda with an
@@ -6269,8 +6459,46 @@ func emitExpr(_ env: inout TyEnv, _ e: Nd) using Alloc, Log {
         case .vecLit(let elems): emitVecLitNoTy(env, elems)
         case .tupleLit(let elems): emitTupleLit(env, elems)
         case .interpE(let parts, let exprs): emitInterp(env, parts, exprs)
+        case .prefixE(let kw, let inner): emitPrefixE(env, kw, inner)
         default: print("/*?expr*/")
     }
+}
+
+// §9 try forms in expression position. A propagating `try` consumes the next
+// hoisted name (the statement's hoist pass already emitted the 3-line escape);
+// with no hoist available it falls back to the `__vstr::unwrap_exp` panic —
+// the bootstrap's safety net for contexts its hoist walk doesn't reach.
+// `try!` always routes through the panic primitive; `try?` converts the
+// std::expected to a std::optional via an IIFE. Other prefixes (copy / await /
+// spawn) stay unlowered.
+func emitPrefixE(_ env: inout TyEnv, _ kw: Str, _ inner: Vec[Nd]) using Alloc, Log {
+    if streq(kw, "try ") {
+        let nm = takeHoistName(&env)
+        if !streq(nm, "") { print(nm); return }
+        emitUnwrapExp(env, inner)
+        return
+    }
+    if streq(kw, "try! ") { emitUnwrapExp(env, inner); return }
+    if streq(kw, "try? ") {
+        print("([&]{ auto __vstr_r = ")
+        emitBoxed(env, inner)
+        print("; return __vstr_r.has_value() ? std::optional{*__vstr_r} : std::nullopt; }())")
+        return
+    }
+    print("/*?expr*/")
+}
+
+func emitUnwrapExp(_ env: inout TyEnv, _ inner: Vec[Nd]) using Alloc, Log {
+    print("__vstr::unwrap_exp(")
+    emitBoxed(env, inner)
+    print(")")
+}
+
+func takeHoistName(_ env: inout TyEnv) using Alloc -> String {
+    if env.hoistNext >= env.hoistName.len() { return String.new() }
+    let nm = env.hoistName.get(env.hoistNext) ?? own("")
+    env.hoistNext = env.hoistNext + 1
+    return nm
 }
 
 // `"a \(x) b"` -> `std::format("a {} b", x)`: each literal fragment joins the

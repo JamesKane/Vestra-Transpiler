@@ -1,0 +1,54 @@
+// Codegen slice 43: `throws(E)` -> std::expected. Covers the signature
+// wrapping in both the .cpp definition and the .hpp forward declaration
+// (including the void-result `std::expected<void, E>` form), `throw` at
+// statement position, the propagating-`try` 3-line hoist at let-binding /
+// bare-statement / binary-operand / return positions (file-global counter),
+// `try!` -> __vstr::unwrap_exp, and `try?` -> the optional-converting IIFE.
+enum Err {
+    case bad
+    case worse
+}
+
+func mayFail(_ x: Int32) throws(Err) -> Int32 {
+    if x < 0 {
+        throw Err.bad
+    }
+    return x + 1
+}
+
+func check(_ b: Bool) throws(Err) {
+    if b {
+        throw Err.worse
+    }
+}
+
+func mk(_ x: Int32) throws(Err) -> String {
+    if x > 9 {
+        throw Err.bad
+    }
+    return "ok"
+}
+
+func chain(_ x: Int32) throws(Err) -> Int32 {
+    let y = try mayFail(x)
+    try check(false)
+    let z = (try mayFail(y)) + (try mayFail(y + 1))
+    while z > 100 {
+        let w = try mayFail(z)
+        return w
+    }
+    return try mayFail(z)
+}
+
+func force(_ x: Int32) -> Int32 {
+    return try! mayFail(x)
+}
+
+func softly(_ x: Int32) -> Int32 {
+    let m = try? mayFail(x)
+    return m ?? 0
+}
+
+func words(_ x: Int32) throws(Err) -> String {
+    return try mk(x)
+}
