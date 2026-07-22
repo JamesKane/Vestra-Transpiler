@@ -2907,6 +2907,7 @@ struct TyEnv {
     var pIdx: Vec[Int]          // ... parameter index ...
     var pType: Vec[String]      // ... -> parameter type spelling
     var pTyNode: Vec[Nd]        // ... -> parameter type NODE (wildcard if unannotated; for closure-arg lowering)
+    var pMode: Vec[String]      // ... -> parameter mode ("", "inout ", "sink " — parser spelling)
     var structs: Vec[String]    // global: struct names (construction yields that type)
     var genTypes: Vec[String]   // global: GENERIC struct/enum names (construction needs the instantiated C++ name)
     var sFldStruct: Vec[String] // global: per-field rows — owning struct ...
@@ -3207,7 +3208,7 @@ func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ resul
 
 func tyRecordParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ p: Nd) using Alloc {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyPushParam(env, name, idx, tyAnnSpelling(ty), tyAnnNode(ty))
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyPushParam(env, name, idx, tyAnnSpelling(ty), tyAnnNode(ty), md)
         default: noop()
     }
 }
@@ -3216,11 +3217,23 @@ func tyAnnNode(_ ty: Vec[Nd]) using Alloc -> Nd {
     return ty.get(0) ?? Nd.wildcard
 }
 
-func tyPushParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ sp: String, _ tn: Nd) using Alloc {
+func tyPushParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ sp: String, _ tn: Nd, _ md: String) using Alloc {
     env.pFn.push(name)
     env.pIdx.push(idx)
     env.pType.push(sp)
     env.pTyNode.push(tn)
+    env.pMode.push(md)
+}
+
+func tyParamMode(_ env: inout TyEnv, _ name: Str, _ idx: Int) using Alloc -> String {
+    var i: Int = 0
+    while i < env.pFn.len() {
+        if let n = env.pFn.get(i) {
+            if streq(n, name) && (env.pIdx.get(i) ?? -1) == idx { return env.pMode.get(i) ?? own("") }
+        }
+        i = i + 1
+    }
+    return own("")
 }
 
 func tyArity(_ env: inout TyEnv, _ name: String) -> Int {
@@ -4582,6 +4595,7 @@ func tyBodyMsg(_ name: String, _ ret: String, _ body: String) using Alloc -> Str
 func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
     var env = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(),
                     pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(), pTyNode: Vec.new(),
+                    pMode: Vec.new(),
                     structs: Vec.new(), genTypes: Vec.new(),
                     sFldStruct: Vec.new(), sFldName: Vec.new(),
                     sFldType: Vec.new(), mStruct: Vec.new(), mName: Vec.new(),
@@ -4992,9 +5006,28 @@ func emitParams(_ params: Vec[Nd]) using Alloc, Log {
 
 func emitParam(_ p: Nd) using Alloc, Log {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): emitReadParam(nm, ty)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): emitModeParam(md, nm, ty)
         default: noop()
     }
+}
+
+// Mode mapping: read -> `const T& n` (function-pointer declarator aside),
+// inout -> `T& n`, sink -> `T&& n`. (The parser stores the mode with its
+// trailing space, matching the AST print.)
+func emitModeParam(_ md: Str, _ nm: Str, _ ty: Vec[Nd]) using Alloc, Log {
+    if streq(md, "inout ") {
+        emitTypeBoxed(ty)
+        print("& ")
+        print(nm)
+        return
+    }
+    if streq(md, "sink ") {
+        emitTypeBoxed(ty)
+        print("&& ")
+        print(nm)
+        return
+    }
+    emitReadParam(nm, ty)
 }
 
 // Slice 1: read-mode parameter -> `const <type>& <name>`. A function-typed
@@ -7012,9 +7045,46 @@ func emitCallArgVal(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int, 
         let tn = callArgTypeNode(env, owner, fname, idx)
         if nodeIsFnTy(tn) { emitClosureArgTy(env, tn, val); return }
     }
+    // A move-only lvalue flowing into a SINK parameter moves: `consume(s)` ->
+    // `consume(std::move(s))`. (Prvalues — literals, calls, constructions —
+    // already bind as rvalues and are not wrapped.)
+    if streq(owner, "") && !streq(fname, "") {
+        let mode = tyParamMode(env, fname, idx)
+        if streq(mode, "sink ") && isMovableLvalue(env, val) {
+            print("std::move(")
+            emitBoxed(env, val)
+            print(")")
+            return
+        }
+    }
     let to = callArgTypeSpelling(env, owner, fname, idx)
     let from = tyInferBoxed(env, val)
     emitMaybeCoerced(env, needsStrCoercion(from, to), val)
+}
+
+func isMovableLvalue(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc -> Bool {
+    if !valIsLvalue(v) { return false }
+    let t = tyInferBoxed(env, v)
+    return isMoveOnlySpelling(t)
+}
+
+func valIsLvalue(_ v: Vec[Nd]) -> Bool {
+    if v.len() == 0 { return false }
+    return match v.get(0) ?? Nd.wildcard {
+        case .ident(let n): true
+        case .member(let b, let n, let c): true
+        case .index(let b, let idxs): true
+        default: false
+    }
+}
+
+// The owned containers and strings move; scalars, Str views, and unknown
+// types do not. (User nominals are conservatively NOT moved here — the
+// bootstrap's move-only tracking is finer-grained than the spellings vgen
+// carries.)
+func isMoveOnlySpelling(_ t: String) -> Bool {
+    if streq(t, "String") { return true }
+    return tyStartsWith(t, "Vec[") || tyStartsWith(t, "HashMap[") || tyStartsWith(t, "Box[")
 }
 
 func callArgTypeSpelling(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int) using Alloc -> String {

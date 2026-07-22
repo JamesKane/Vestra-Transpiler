@@ -1,0 +1,24 @@
+// Parameter modes. read stays `const T&`; `inout` lowers to `T&` (the call
+// site's `&x` marker drops — C++ references bind implicitly); `sink` lowers
+// to `T&&`, and a move-only lvalue argument (owned strings/containers) wraps
+// in std::move at the call site while prvalues bind as rvalues unwrapped.
+func bump(_ n: inout Int32) {
+    n = n + 1
+}
+
+func addTo(_ acc: inout Vec[Int32], _ v: Int32) using Alloc {
+    acc.push(v)
+}
+
+func consume(_ s: sink String) using Alloc -> Int {
+    return s.len()
+}
+
+func driver() using Alloc -> Int {
+    var n: Int32 = 1
+    bump(&n)
+    var xs: Vec[Int32] = Vec.new()
+    addTo(&xs, 4)
+    var s: String = "abc"
+    return consume(s)
+}
