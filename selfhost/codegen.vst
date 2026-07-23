@@ -7123,6 +7123,7 @@ func emitStr(_ s: Str) using Alloc, Log {
 func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
     if tryEmitPayloadCase(env, callee, args) { return }
     if tryEmitImportCall(env, callee, args) { return }
+    if tryEmitMapError(env, callee, args) { return }
     if isStructCtor(callee, args) { emitStructCtor(env, callee, args); return }
     let fname = identBaseName(callee)
     if tryEmitPrint(env, fname, args) { return }
@@ -7140,6 +7141,31 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     print("(")
     emitCallArgList(env, "", fname, args)
     print(")")
+}
+
+// §9 `.mapError(f)` on a fallible call lifts the error type between throws
+// functions: `(e).transform_error(f)` — one indirect call on the error path,
+// zero on success. Dispatched by member NAME (a Result carries no type
+// spelling on the vgen side); a user method named `mapError` is out of the
+// mirrored subset. Closure-literal arguments are out of scope (their param
+// types would need the error type, which vgen does not track).
+func tryEmitMapError(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if args.len() != 1 { return false }
+    if callee.len() == 0 { return false }
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let name, let chain): emitMapErrorOn(env, base, name, chain, args)
+        default: false
+    }
+}
+
+func emitMapErrorOn(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if chain || !streq(name, "mapError") { return false }
+    print("(")
+    emitBoxed(env, base)
+    print(").transform_error(")
+    emitArgList(env, args)
+    print(")")
+    return true
 }
 
 // §5 a call through an imported-module qualifier. A Capitalized member is a

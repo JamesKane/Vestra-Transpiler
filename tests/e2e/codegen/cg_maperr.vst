@@ -1,0 +1,38 @@
+// Codegen slice 48: `.mapError(f)` on a fallible call -> std::expected's
+// `(e).transform_error(f)`, composing with the propagating-try hoist: the
+// hoisted call becomes `(parseIt(s)).transform_error(toAppErr)` and the
+// escape/unwrap lines are unchanged. Named-function mapping only (a closure
+// argument would need the error type for its param, which vgen does not
+// track).
+enum ParseErr {
+    case negative
+    case overflow
+}
+
+enum AppErr {
+    case badInput
+    case internalFailure
+}
+
+func parseIt(_ s: Int32) throws(ParseErr) -> Int32 {
+    if s < 0 {
+        throw ParseErr.negative
+    }
+    return s
+}
+
+func toAppErr(_ e: ParseErr) -> AppErr {
+    return match e {
+        case .negative: AppErr.badInput
+        case .overflow: AppErr.internalFailure
+    }
+}
+
+func wrap(_ s: Int32) throws(AppErr) -> Int32 {
+    return try parseIt(s).mapError(toAppErr)
+}
+
+func wrapTwice(_ s: Int32) throws(AppErr) -> Int32 {
+    let a = try parseIt(s).mapError(toAppErr)
+    return a + 1
+}
