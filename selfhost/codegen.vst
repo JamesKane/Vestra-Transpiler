@@ -2937,6 +2937,7 @@ struct TyEnv {
     var hoistExpr: Vec[Nd]      // ... -> the try's operand (the fallible call)
     var hoistNext: Int          // per-statement: next hoist name a `try` use-site consumes
     var curAsync: Bool          // per-function: enclosing function is `async` (returns lower to co_return)
+    var imports: Vec[String]    // global: imported module paths (a member base naming one qualifies with `::`)
     var bad: Vec[String]
 }
 
@@ -4647,13 +4648,32 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     curRet: own(""), curRetNode: Vec.new(),
                     tryN: 0, hoistName: Vec.new(), hoistExpr: Vec.new(), hoistNext: 0,
                     curAsync: false,
+                    imports: Vec.new(),
                     bad: Vec.new())
     var i: Int = 0
     while i < u.decls.len() {
         tyCollectDecl(&env, u.decls.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    var m: Int = 0
+    while m < u.imports.len() {
+        tyRecordImport(&env, u.imports.get(m) ?? Nd.wildcard)
+        m = m + 1
+    }
     return env
+}
+
+func tyRecordImport(_ env: inout TyEnv, _ d: Nd) using Alloc {
+    match d {
+        case .importD(let isC, let payload): tyRecordImportParts(env, isC, payload)
+        default: noop()
+    }
+}
+
+func tyRecordImportParts(_ env: inout TyEnv, _ isC: Bool, _ payload: Str) using Alloc {
+    if isC { return }
+    if streq(payload, "") { return }
+    env.imports.push(own(payload))
 }
 
 func emitUnit(_ u: NUnit, _ stem: Str) using Alloc, Log {
@@ -4694,11 +4714,75 @@ func emitFuncOrSkip(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: St
 func emitHpp(_ u: NUnit) using Alloc, Log {
     var env = buildTyEnv(u)
     print("\n")
+    emitHppImports(u.imports)
     var i: Int = 0
     while i < u.decls.len() {
         emitHppDecl(&env, u.decls.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+}
+
+// §5 imports in the header: `import c "h"` lowers to `#include "h"` at global
+// scope ahead of the module includes; `import util.math` pulls in the imported
+// module's header by its path as a directory path (`util/math.hpp`). Each
+// group is followed by one blank line when non-empty; the `#include` alone
+// suffices (cross-module references emit fully qualified).
+func emitHppImports(_ imports: Vec[Nd]) using Alloc, Log {
+    var anyC: Bool = false
+    var i: Int = 0
+    while i < imports.len() {
+        if emitCImport(imports.get(i) ?? Nd.wildcard) { anyC = true }
+        i = i + 1
+    }
+    if anyC { print("\n") }
+    var anyM: Bool = false
+    var j: Int = 0
+    while j < imports.len() {
+        if emitModImport(imports.get(j) ?? Nd.wildcard) { anyM = true }
+        j = j + 1
+    }
+    if anyM { print("\n") }
+}
+
+func emitCImport(_ d: Nd) using Alloc, Log -> Bool {
+    return match d {
+        case .importD(let isC, let payload): emitCImportParts(isC, payload)
+        default: false
+    }
+}
+
+func emitCImportParts(_ isC: Bool, _ payload: Str) using Alloc, Log -> Bool {
+    if !isC || streq(payload, "") { return false }
+    print("#include \"")
+    print(payload)
+    print("\"\n")
+    return true
+}
+
+func emitModImport(_ d: Nd) using Alloc, Log -> Bool {
+    return match d {
+        case .importD(let isC, let payload): emitModImportParts(isC, payload)
+        default: false
+    }
+}
+
+func emitModImportParts(_ isC: Bool, _ payload: Str) using Alloc, Log -> Bool {
+    if isC || streq(payload, "") { return false }
+    print("#include \"")
+    print(dotsToSlashes(payload))
+    print(".hpp\"\n")
+    return true
+}
+
+func dotsToSlashes(_ s: Str) using Alloc -> String {
+    var out: String = ""
+    var i: Int = 0
+    while i < s.len() {
+        if (s.byteAt(i) ?? 0) == 46 { out.append("/") }
+        else { out.append(s.slice(i, i + 1)) }
+        i = i + 1
+    }
+    return out
 }
 
 func emitHppDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
@@ -6872,6 +6956,15 @@ func emitIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc
 // lowercase by convention, so instance access is unaffected.
 func emitMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool) using Alloc, Log {
     if chain { emitChainMember(env, base, name); return }
+    // §5 cross-module reference: a base naming an imported module qualifies
+    // with `::` (`helper.LIMIT` -> `helper::LIMIT`).
+    let mq = memberBaseImport(env, base)
+    if !streq(mq, "") {
+        print(mq)
+        print("::")
+        print(name)
+        return
+    }
     // A bare case of a payload-carrying enum constructs the variant:
     // `Shape.point` -> `Shape{Shape::point_t{}}`.
     let bn = identBaseName(base)
@@ -6984,6 +7077,7 @@ func emitStr(_ s: Str) using Alloc, Log {
 // member callee (not an identifier) and so never match.
 func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
     if tryEmitPayloadCase(env, callee, args) { return }
+    if tryEmitImportCall(env, callee, args) { return }
     if isStructCtor(callee, args) { emitStructCtor(env, callee, args); return }
     let fname = identBaseName(callee)
     if tryEmitPrint(env, fname, args) { return }
@@ -7001,6 +7095,81 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     print("(")
     emitCallArgList(env, "", fname, args)
     print(")")
+}
+
+// §5 a call through an imported-module qualifier. A Capitalized member is a
+// cross-module STRUCT CONSTRUCTION (`helper.Point(x: a)` ->
+// `helper::Point{.x = a}` — the import carries no field-type table, so no
+// string coercion); anything else is a plain qualified call.
+func tryEmitImportCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if callee.len() == 0 { return false }
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let name, let chain): emitImportCallOn(env, base, name, chain, args)
+        default: false
+    }
+}
+
+func emitImportCallOn(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if chain { return false }
+    let mq = memberBaseImport(env, base)
+    if streq(mq, "") { return false }
+    print(mq)
+    print("::")
+    print(name)
+    if nameIsCapital(name) {
+        emitImportCtorArgs(env, args)
+        return true
+    }
+    print("(")
+    emitArgList(env, args)
+    print(")")
+    return true
+}
+
+func emitImportCtorArgs(_ env: inout TyEnv, _ args: Vec[Nd]) using Alloc, Log {
+    print("{")
+    var i: Int = 0
+    while i < args.len() {
+        if i > 0 { print(", ") }
+        emitImportCtorField(env, args.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    print("}")
+}
+
+func emitImportCtorField(_ env: inout TyEnv, _ a: Nd) using Alloc, Log {
+    match a {
+        case .arg(let label, let isInout, let val): emitImportCtorFieldParts(env, label, val)
+        default: noop()
+    }
+}
+
+func emitImportCtorFieldParts(_ env: inout TyEnv, _ label: Str, _ val: Vec[Nd]) using Alloc, Log {
+    print(".")
+    print(label)
+    print(" = ")
+    emitBoxed(env, val)
+}
+
+func nameIsCapital(_ name: Str) -> Bool {
+    let c = name.byteAt(0) ?? 0
+    return c >= 65 && c <= 90
+}
+
+// The imported-module path a member BASE names — "" when the base is not a
+// plain identifier, carries a local symbol type (a binding shadows the module
+// qualifier), or matches no import.
+func memberBaseImport(_ env: inout TyEnv, _ base: Vec[Nd]) using Alloc -> String {
+    if base.len() == 0 { return own("") }
+    let bn = identName(base.get(0) ?? Nd.ident(""))
+    if streq(bn, "") { return own("") }
+    if !streq(tySymType(env, bn), "") { return own("") }
+    var i: Int = 0
+    while i < env.imports.len() {
+        if let m = env.imports.get(i) { if streq(m, bn) { return own(bn) } }
+        i = i + 1
+    }
+    return own("")
 }
 
 // The owner type of a method callee `base.name` — the base expression's inferred

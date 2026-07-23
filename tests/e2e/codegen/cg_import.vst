@@ -1,0 +1,22 @@
+// Codegen slice 45: import declarations. `import c "h"` lowers to
+// `#include "h"` in the header ahead of the module includes; `import m`
+// pulls in `m.hpp` (a dotted path becomes a directory path), each group
+// followed by a blank line. Cross-module references emit fully qualified:
+// `m.f(x)` -> `m::f(x)`, `m.CONST` -> `m::CONST`, and a Capitalized member
+// call is a cross-module struct construction `m.Point(x: a)` ->
+// `m::Point{.x = a}`. The .cpp is unchanged apart from the qualified refs.
+import c "stdio.h"
+import cghelp
+
+func useIt(_ n: Int32) -> Int32 {
+    let a = cghelp.inc(n)
+    let p = cghelp.Point(x: a, y: n)
+    if a < cghelp.LIMIT {
+        return p.x + p.y
+    }
+    return a
+}
+
+func two(_ n: Int32) -> Int32 {
+    return cghelp.inc(cghelp.inc(n))
+}

@@ -1,0 +1,13 @@
+// Importable helper module for cg_import.vst (resolved from disk as a
+// sibling; NOT itself a differential target — its module decl means
+// namespace-wrapped output, which vgen does not emit).
+module cghelp
+
+public struct Point {
+    var x: Int32
+    var y: Int32
+}
+
+public func inc(_ v: Int32) -> Int32 { return v + 1 }
+
+public const LIMIT: Int32 = 100

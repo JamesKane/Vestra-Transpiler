@@ -295,7 +295,7 @@ add_test(
             -o ${e2e_workdir}/vgen)
 set_tests_properties(e2e_selfhost_codegen_compile PROPERTIES DEPENDS e2e_selfhost_codegen_transpile)
 
-foreach(prog cg_func cg_expr cg_stmt cg_if cg_for cg_struct cg_index cgh_struct cgh_enum cgh_enumpl cg_enumcase cg_unwrap cg_match cg_enumctor cg_paymatch cg_matchdefault cg_matchguard cgh_enummethod cg_breakcont cgh_const cg_with cg_fnptr cg_closure cg_closurearg cg_matchpos cg_namedpl cg_print cg_mclosure cg_ifval cg_gpaymatch cg_builtins cg_lits cg_optchain cg_strco cg_interp cg_bmethods cg_genfunc cg_gentype cg_pmodes cg_throws cg_async)
+foreach(prog cg_func cg_expr cg_stmt cg_if cg_for cg_struct cg_index cgh_struct cgh_enum cgh_enumpl cg_enumcase cg_unwrap cg_match cg_enumctor cg_paymatch cg_matchdefault cg_matchguard cgh_enummethod cg_breakcont cgh_const cg_with cg_fnptr cg_closure cg_closurearg cg_matchpos cg_namedpl cg_print cg_mclosure cg_ifval cg_gpaymatch cg_builtins cg_lits cg_optchain cg_strco cg_interp cg_bmethods cg_genfunc cg_gentype cg_pmodes cg_throws cg_async cg_import)
     add_test(
         NAME    e2e_selfhost_codegen_diff_${prog}
         COMMAND sh -c "mkdir -p ${cg_workdir} && $<TARGET_FILE:vestra> build ${cg_dir}/${prog}.vst -o ${cg_workdir} >/dev/null 2>&1; ${e2e_workdir}/vgen ${cg_dir}/${prog}.vst > ${cg_workdir}/${prog}_got.cpp; diff ${cg_workdir}/${prog}.cpp ${cg_workdir}/${prog}_got.cpp")
@@ -308,7 +308,7 @@ endforeach()
 # `#endif // VESTRA_RUNTIME_PRELUDE` marker stripped (literal-substring awk match).
 # Restricted to declaration sets vgen can already emit (free-function forward
 # declarations); struct / enum definition emission grows this list.
-foreach(prog cg_func cg_expr cg_stmt cg_if cg_for cg_index cgh_struct cgh_enum cgh_enumpl cg_enumcase cg_unwrap cg_match cg_enumctor cg_paymatch cg_matchdefault cg_matchguard cgh_enummethod cg_breakcont cgh_const cg_with cg_fnptr cg_closure cg_closurearg cg_matchpos cg_namedpl cg_print cg_mclosure cg_ifval cg_gpaymatch cg_builtins cg_lits cg_optchain cg_strco cg_interp cg_bmethods cg_genfunc cg_gentype cg_pmodes cg_throws cg_async)
+foreach(prog cg_func cg_expr cg_stmt cg_if cg_for cg_index cgh_struct cgh_enum cgh_enumpl cg_enumcase cg_unwrap cg_match cg_enumctor cg_paymatch cg_matchdefault cg_matchguard cgh_enummethod cg_breakcont cgh_const cg_with cg_fnptr cg_closure cg_closurearg cg_matchpos cg_namedpl cg_print cg_mclosure cg_ifval cg_gpaymatch cg_builtins cg_lits cg_optchain cg_strco cg_interp cg_bmethods cg_genfunc cg_gentype cg_pmodes cg_throws cg_async cg_import)
     add_test(
         NAME    e2e_selfhost_codegen_hpp_${prog}
         COMMAND sh -c "mkdir -p ${cg_workdir} && $<TARGET_FILE:vestra> build ${cg_dir}/${prog}.vst -o ${cg_workdir} >/dev/null 2>&1; awk 'f{print} index(\$0, \"#endif  // VESTRA_RUNTIME_PRELUDE\"){f=1}' ${cg_workdir}/${prog}.hpp > ${cg_workdir}/${prog}_href.txt; ${e2e_workdir}/vgen --hpp ${cg_dir}/${prog}.vst > ${cg_workdir}/${prog}_hgot.txt; diff ${cg_workdir}/${prog}_href.txt ${cg_workdir}/${prog}_hgot.txt")
