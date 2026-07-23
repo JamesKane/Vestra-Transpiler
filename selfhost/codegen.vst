@@ -2936,6 +2936,7 @@ struct TyEnv {
     var hoistName: Vec[String]  // per-statement: pending propagating-`try` hoist names, in collection order ...
     var hoistExpr: Vec[Nd]      // ... -> the try's operand (the fallible call)
     var hoistNext: Int          // per-statement: next hoist name a `try` use-site consumes
+    var curAsync: Bool          // per-function: enclosing function is `async` (returns lower to co_return)
     var bad: Vec[String]
 }
 
@@ -4013,7 +4014,10 @@ func tyInfer(_ env: inout TyEnv, _ e: Nd) using Alloc -> String {
 
 // `try e` / `try! e` type as the operand's declared result — the hoist /
 // unwrap yields the success value of the std::expected. `try? e` wraps that
-// in an optional. Other prefixes stay unknown.
+// in an optional. `spawn e` yields a Future over the operand's result and
+// `await e` strips it (awaiting an async call passes the declared result
+// through — funcRet never carries the Task wrapper). Other prefixes stay
+// unknown.
 func tyInferPrefix(_ env: inout TyEnv, _ kw: Str, _ inner: Vec[Nd]) using Alloc -> String {
     if streq(kw, "try ") || streq(kw, "try! ") { return tyInferBoxed(env, inner) }
     if streq(kw, "try? ") {
@@ -4022,7 +4026,22 @@ func tyInferPrefix(_ env: inout TyEnv, _ kw: Str, _ inner: Vec[Nd]) using Alloc 
         t.append("?")
         return t
     }
+    if streq(kw, "await ") { return tyAwaitOf(tyInferBoxed(env, inner)) }
+    if streq(kw, "spawn ") { return tySpawnOf(tyInferBoxed(env, inner)) }
     return own("")
+}
+
+func tySpawnOf(_ t: String) using Alloc -> String {
+    if streq(t, "") { return own("") }
+    var s: String = "Future["
+    s.append(t)
+    s.append("]")
+    return s
+}
+
+func tyAwaitOf(_ t: String) using Alloc -> String {
+    if tyStartsWith(t, "Future[") { return tyBracketInner(t) }
+    return t
 }
 
 // A match expression types as its first known-typed arm body — the same baseline
@@ -4627,6 +4646,7 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     symName: Vec.new(), symType: Vec.new(),
                     curRet: own(""), curRetNode: Vec.new(),
                     tryN: 0, hoistName: Vec.new(), hoistExpr: Vec.new(), hoistNext: 0,
+                    curAsync: false,
                     bad: Vec.new())
     var i: Int = 0
     while i < u.decls.len() {
@@ -4652,16 +4672,16 @@ func emitUnit(_ u: NUnit, _ stem: Str) using Alloc, Log {
 func emitDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
-            emitFuncOrSkip(env, gens, name, params, thr, res, body)
+            emitFuncOrSkip(env, mods, gens, name, params, thr, res, body)
         default: noop()
     }
 }
 
 // A generic function emits nothing in the .cpp — its template definition
 // lives entirely in the header.
-func emitFuncOrSkip(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+func emitFuncOrSkip(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
     if gens.len() > 0 { return }
-    emitFunc(env, name, params, thr, res, body)
+    emitFunc(env, mods, name, params, thr, res, body)
 }
 
 // ----- header (`.hpp`) emission --------------------------------------------
@@ -4684,7 +4704,7 @@ func emitHpp(_ u: NUnit) using Alloc, Log {
 func emitHppDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
-            emitHppFunc(env, gens, name, params, thr, res, body)
+            emitHppFunc(env, mods, gens, name, params, thr, res, body)
         case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics):
             emitGenStructDef(env, generics, name, fields, methods)
         case .enumD(let vis, let name, let cases, let methods, let generics):
@@ -4916,6 +4936,7 @@ func emitMethodDef(_ env: inout TyEnv, _ name: Str, _ params: Vec[Nd], _ res: Ve
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
     tySetRetNode(&env, res)
+    env.curAsync = false
     if body.len() > 0 { emitBlockStmts(env, body.get(0) ?? Nd.wildcard, "        ") }
     print("    }\n")
 }
@@ -4938,18 +4959,18 @@ func emitFieldDef(_ name: Str, _ ty: Vec[Nd]) using Alloc, Log {
 // A non-generic function gets a forward declaration; a generic one is a full
 // template definition (C++ templates must be visible at the instantiation
 // site), in source position.
-func emitHppFunc(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
-    if gens.len() == 0 { emitFwdDecl(name, params, thr, res); return }
-    emitTemplateFunc(env, gens, name, params, thr, res, body)
+func emitHppFunc(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    if gens.len() == 0 { emitFwdDecl(mods, name, params, thr, res); return }
+    emitTemplateFunc(env, mods, gens, name, params, thr, res, body)
 }
 
 // `template <class T, class U>` then the same inline definition shape as a
 // .cpp function, with [[nodiscard]] under the forward-declaration rule (an
 // explicitly written result type or a throws clause).
-func emitTemplateFunc(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+func emitTemplateFunc(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
     emitTemplateHead(gens)
     if res.len() > 0 || thr.len() > 0 { print("[[nodiscard]] ") }
-    emitFunc(env, name, params, thr, res, body)
+    emitFunc(env, mods, name, params, thr, res, body)
 }
 
 func genName(_ g: Nd) using Alloc -> String {
@@ -4964,28 +4985,56 @@ func genName(_ g: Nd) using Alloc -> String {
 // return type is written explicitly (even `-> Unit`) or the function carries a
 // throws clause (the fallible result must not be dropped); an omitted return
 // type gets a bare `void`.
-func emitFwdDecl(_ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
+func emitFwdDecl(_ mods: Str, _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
     if res.len() > 0 || thr.len() > 0 { print("[[nodiscard]] ") }
-    emitExpectedRet(thr, res)
+    emitTaskRet(isAsyncMods(mods), thr, res)
     print(" ")
     print(name)
     print("(")
-    emitParams(params)
+    emitParamsMode(params, isAsyncMods(mods))
     print(");\n")
 }
 
-func emitFunc(_ env: inout TyEnv, _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
-    emitExpectedRet(thr, res)
+func emitFunc(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    let isA = isAsyncMods(mods)
+    emitTaskRet(isA, thr, res)
     print(" ")
     print(name)
     print("(")
-    emitParams(params)
+    emitParamsMode(params, isA)
     print(") {\n")
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
     tySetRetNode(&env, res)
+    env.curAsync = isA
     emitBody(env, body)
+    if isA && res.len() == 0 && !blockEndsInReturn(body) { print("    co_return;\n") }
     print("}\n\n")
+}
+
+// The modifier string is the parser's spelling ("async " / "comptime async "
+// etc.), so detect `async` by substring.
+func isAsyncMods(_ mods: Str) using Alloc -> Bool {
+    return containsSub(own(mods), "async")
+}
+
+// §11: a coroutine must still contain a coroutine keyword; a void async body
+// that doesn't already end in a `return` (lowered to co_return) gets a
+// trailing `co_return;` appended.
+func blockEndsInReturn(_ body: Vec[Nd]) -> Bool {
+    if body.len() == 0 { return false }
+    return match body.get(0) ?? Nd.wildcard {
+        case .block(let stmts): stmtsEndInReturn(stmts)
+        default: false
+    }
+}
+
+func stmtsEndInReturn(_ stmts: Vec[Nd]) -> Bool {
+    if stmts.len() == 0 { return false }
+    return match stmts.get(stmts.len() - 1) ?? Nd.wildcard {
+        case .retS(let v): true
+        default: false
+    }
 }
 
 // Record the enclosing function's result type node (used when an emitted match
@@ -5017,6 +5066,16 @@ func emitRetType(_ res: Vec[Nd]) using Alloc, Log {
     emitTypeBoxed(res)
 }
 
+// §11: an `async func` lowers to a C++20 coroutine returning `__vstr::Task<R>`,
+// where R is the (possibly expected-wrapped) declared result — an async
+// `throws(E)` nests as `Task<std::expected<T, E>>`.
+func emitTaskRet(_ isAsync: Bool, _ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
+    if !isAsync { emitExpectedRet(thr, res); return }
+    print("__vstr::Task<")
+    emitExpectedRet(thr, res)
+    print(">")
+}
+
 // §9: a `throws(E)` clause wraps the declared result in `std::expected<T, E>`
 // so callers see the fallible type (`void` for T when the result is omitted);
 // without a clause the plain return type is emitted.
@@ -5036,6 +5095,32 @@ func emitParams(_ params: Vec[Nd]) using Alloc, Log {
         emitParam(params.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+}
+
+// §11: an async function's read params pass BY VALUE (`T n`) — the coroutine
+// frame does not copy by-reference params, so a `const T&` bound to a caller
+// temporary would dangle across a suspension point.
+func emitParamsMode(_ params: Vec[Nd], _ isAsync: Bool) using Alloc, Log {
+    if !isAsync { emitParams(params); return }
+    var i: Int = 0
+    while i < params.len() {
+        if i > 0 { print(", ") }
+        emitValueParam(params.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func emitValueParam(_ p: Nd) using Alloc, Log {
+    match p {
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): emitValueParamParts(nm, ty)
+        default: noop()
+    }
+}
+
+func emitValueParamParts(_ nm: Str, _ ty: Vec[Nd]) using Alloc, Log {
+    emitTypeBoxed(ty)
+    print(" ")
+    print(nm)
 }
 
 func emitParam(_ p: Nd) using Alloc, Log {
@@ -5374,7 +5459,9 @@ func emitStmtHoists(_ env: inout TyEnv, _ indent: Str) using Alloc, Log {
         print(indent)
         print("if (!")
         print(nm)
-        print("_r.has_value()) { return std::unexpected{")
+        print("_r.has_value()) { ")
+        emitRetKw(env)
+        print(" std::unexpected{")
         print(nm)
         print("_r.error()}; }\n")
         print(indent)
@@ -5710,7 +5797,8 @@ func emitExprStmt(_ env: inout TyEnv, _ indent: Str, _ e: Vec[Nd]) using Alloc, 
 // wrapping: `return std::unexpected{<e>};`.
 func emitThrowStmt(_ env: inout TyEnv, _ indent: Str, _ inner: Vec[Nd]) using Alloc, Log {
     print(indent)
-    print("return std::unexpected{")
+    emitRetKw(env)
+    print(" std::unexpected{")
     emitBoxed(env, inner)
     print("};\n")
 }
@@ -5771,9 +5859,17 @@ func emitReturn(_ env: inout TyEnv, _ indent: Str, _ v: Vec[Nd]) using Alloc, Lo
         return
     }
     print(indent)
-    print("return")
+    emitRetKw(env)
     if v.len() > 0 { print(" "); emitReturnValue(env, v) }
     print(";\n")
+}
+
+// §11 the function-level return keyword: `co_return` inside an async
+// coroutine body, `return` otherwise. Lambda-internal returns (match / if
+// value lambdas) print literally and are unaffected.
+func emitRetKw(_ env: inout TyEnv) using Alloc, Log {
+    if env.curAsync { print("co_return"); return }
+    print("return")
 }
 
 func emitReturnValue(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc, Log {
@@ -6483,6 +6579,18 @@ func emitPrefixE(_ env: inout TyEnv, _ kw: Str, _ inner: Vec[Nd]) using Alloc, L
         print("([&]{ auto __vstr_r = ")
         emitBoxed(env, inner)
         print("; return __vstr_r.has_value() ? std::optional{*__vstr_r} : std::nullopt; }())")
+        return
+    }
+    if streq(kw, "await ") {
+        print("co_await (")
+        emitBoxed(env, inner)
+        print(")")
+        return
+    }
+    if streq(kw, "spawn ") {
+        print("__vstr::spawn_future(")
+        emitBoxed(env, inner)
+        print(")")
         return
     }
     print("/*?expr*/")

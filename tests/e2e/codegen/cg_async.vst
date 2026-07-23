@@ -1,0 +1,64 @@
+// Codegen slice 44: async -> C++20 coroutines. An `async func` returns
+// `__vstr::Task<R>` (`Task<void>` when the result is omitted; an async
+// `throws(E)` nests as `Task<std::expected<T, E>>`), its read params pass
+// BY VALUE (the coroutine frame must own copies across suspension), each
+// `return` lowers to `co_return` (a void async body not ending in a return
+// gets a trailing `co_return;`), `await e` -> `co_await (e)`, and
+// `spawn e` -> `__vstr::spawn_future(e)`. The try-hoist escape and `throw`
+// also switch to `co_return std::unexpected{...}` inside a coroutine.
+enum Err {
+    case bad
+}
+
+async func increment(_ x: Int32) -> Int32 {
+    return x + 1
+}
+
+async func sumTwo(_ a: Int32, _ b: Int32) -> Int32 {
+    let x = await increment(a)
+    let y = await increment(b)
+    return x + y
+}
+
+async func twice(_ x: Int32) -> Int32 {
+    return await increment(await increment(x))
+}
+
+async func touch(_ x: Int32) {
+    await increment(x)
+}
+
+async func stop(_ x: Int32) {
+    if x > 0 {
+        return
+    }
+    return
+}
+
+async func label(_ s: String, _ n: Int32) -> String {
+    return s
+}
+
+async func awaitVoidSpawn(_ x: Int32) -> Int32 {
+    let f = spawn touch(x)
+    await f
+    return x + 1
+}
+
+async func sumSpawned(_ a: Int32, _ b: Int32) -> Int32 {
+    let fa = spawn increment(a)
+    let fb = spawn increment(b)
+    return await fa + await fb
+}
+
+async func checkedInc(_ x: Int32) throws(Err) -> Int32 {
+    if x < 0 {
+        throw Err.bad
+    }
+    return x + 1
+}
+
+async func chain(_ x: Int32) throws(Err) -> Int32 {
+    let y = try await checkedInc(x)
+    return y + 1
+}
