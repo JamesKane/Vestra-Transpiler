@@ -1,0 +1,20 @@
+// Codegen slice 47: module-qualified TYPE annotations. A dotted type path
+// (`cghelp.Point`) spells with `::` in every type slot — binding annotation,
+// return type, and read param (`const cghelp::Point&`). Dots appear in type
+// paths only as module qualifiers, so the mapping is context-free
+// (cppNamed's fallback). Uses the cghelp sibling module from slice 45.
+import cghelp
+
+func mk(_ n: Int32) -> cghelp.Point {
+    let p: cghelp.Point = cghelp.Point(x: n, y: n)
+    return p
+}
+
+func flip(_ p: cghelp.Point) -> Int32 {
+    return p.y
+}
+
+func viaLocal(_ n: Int32) -> Int32 {
+    var q: cghelp.Point = mk(n)
+    return q.x + flip(q)
+}

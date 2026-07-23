@@ -5422,7 +5422,19 @@ func cppNamed(_ path: Str) using Alloc -> String {
     if streq(path, "String") { return own("std::string") }
     if streq(path, "Str") { return own("std::string_view") }
     if streq(path, "StrConst") { return own("std::string_view") }
+    // §5 a module-qualified type (`helper.Point`) spells with `::` — dots
+    // only appear in type paths as module qualifiers.
+    if pathHasDot(path) { return dotsToColons(path) }
     return own(path)
+}
+
+func pathHasDot(_ s: Str) -> Bool {
+    var i: Int = 0
+    while i < s.len() {
+        if (s.byteAt(i) ?? 0) == 46 { return true }
+        i = i + 1
+    }
+    return false
 }
 
 // A function body is a single boxed block; emit its statements one level in.
