@@ -2939,6 +2939,7 @@ struct TyEnv {
     var hoistNext: Int          // per-statement: next hoist name a `try` use-site consumes
     var condUse: String         // per-statement: the cond-hoist name the statement's use-site reads via `(*name)` ("" if none)
     var condTy: Vec[Nd]         // per-statement: the cond-hoist lambda's success-type node (empty box = void)
+    var condTyStr: String       // per-statement: C++ success-type SPELLING when no node exists (a statement-position match types as its arms)
     var curThrowsNode: Vec[Nd]  // per-function: the `throws(E)` type node (empty when the function does not throw)
     var curAsync: Bool          // per-function: enclosing function is `async` (returns lower to co_return)
     var imports: Vec[String]    // global: imported module paths (a member base naming one qualifies with `::`)
@@ -4652,7 +4653,8 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     curRet: own(""), curRetNode: Vec.new(),
                     tryN: 0, hoistName: Vec.new(), hoistExpr: Vec.new(),
                     hoistKind: Vec.new(), hoistNext: 0,
-                    condUse: own(""), condTy: Vec.new(), curThrowsNode: Vec.new(),
+                    condUse: own(""), condTy: Vec.new(), condTyStr: own(""),
+                    curThrowsNode: Vec.new(),
                     curAsync: false,
                     imports: Vec.new(),
                     bad: Vec.new())
@@ -5490,6 +5492,7 @@ func collectStmtHoists(_ env: inout TyEnv, _ s: Nd) using Alloc {
     while env.condTy.len() > 0 { let _ = env.condTy.pop() }
     env.hoistNext = 0
     env.condUse = own("")
+    env.condTyStr = own("")
     match s {
         case .letS(let pat, let ty, let value): collectBindHoists(env, ty, value)
         case .varS(let pat, let ty, let value): collectBindHoists(env, ty, value)
@@ -5512,8 +5515,27 @@ func collectStmtHoists(_ env: inout TyEnv, _ s: Nd) using Alloc {
 // branch tries fall back to the unwrap_exp safety net.
 func collectExprHoists(_ env: inout TyEnv, _ e: Vec[Nd]) using Alloc {
     let noTy: Vec[Nd] = Vec.new()
-    if collectStmtCond(env, e, noTy) { return }
+    if collectStmtCond(env, e, noTy) {
+        setCondStmtTyStr(env, e)
+        return
+    }
     collectTryList(env, e)
+}
+
+// A statement-position MATCH still types its cond-hoist lambda by the match's
+// own value (the bootstrap reads the resolver's type_of on the node): infer
+// it from the arms. A statement-position IF stays void (+ `return {};`).
+func setCondStmtTyStr(_ env: inout TyEnv, _ e: Vec[Nd]) using Alloc {
+    match e.get(0) ?? Nd.wildcard {
+        case .matchE(let scrut, let arms): setCondMatchTyStr(env, scrut, arms)
+        default: noop()
+    }
+}
+
+func setCondMatchTyStr(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc {
+    let sp = tyInferMatch(env, scrut, arms)
+    if streq(sp, "") || streq(sp, "Unit") { return }
+    env.condTyStr = cppOfSpelling(sp)
 }
 
 func collectRetHoists(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc {
@@ -5537,10 +5559,40 @@ func collectBindHoists(_ env: inout TyEnv, _ ty: Vec[Nd], _ value: Vec[Nd]) usin
 func collectStmtCond(_ env: inout TyEnv, _ v: Vec[Nd], _ tyB: Vec[Nd]) using Alloc -> Bool {
     if env.curThrowsNode.len() == 0 { return false }
     if v.len() == 0 { return false }
-    if !ifWithBranchTry(v.get(0) ?? Nd.wildcard) { return false }
-    collectCondPieces(env, v.get(0) ?? Nd.wildcard)
-    pushCondHoist(env, v.get(0) ?? Nd.wildcard, tyB)
-    return true
+    if ifWithBranchTry(v.get(0) ?? Nd.wildcard) {
+        collectCondPieces(env, v.get(0) ?? Nd.wildcard)
+        pushCondHoist(env, v.get(0) ?? Nd.wildcard, tyB)
+        return true
+    }
+    if matchWithArmTry(v.get(0) ?? Nd.wildcard) {
+        collectCondPieces(env, v.get(0) ?? Nd.wildcard)
+        pushCondHoist(env, v.get(0) ?? Nd.wildcard, tyB)
+        return true
+    }
+    return false
+}
+
+func matchWithArmTry(_ e: Nd) -> Bool {
+    return match e {
+        case .matchE(let scrut, let arms): armsHaveTry(arms)
+        default: false
+    }
+}
+
+func armsHaveTry(_ arms: Vec[Nd]) -> Bool {
+    var i: Int = 0
+    while i < arms.len() {
+        if armHasTry(arms.get(i) ?? Nd.wildcard) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func armHasTry(_ a: Nd) -> Bool {
+    return match a {
+        case .matchArm(let isDef, let pat, let guard, let body): boxHasTry(guard) || boxHasTry(body)
+        default: false
+    }
 }
 
 func ifWithBranchTry(_ e: Nd) -> Bool {
@@ -5553,6 +5605,7 @@ func ifWithBranchTry(_ e: Nd) -> Bool {
 func collectCondPieces(_ env: inout TyEnv, _ e: Nd) using Alloc {
     match e {
         case .ifE(let ln, let li, let cond, let thenB, let els): collectTryIf(env, li, cond)
+        case .matchE(let scrut, let arms): collectTryList(env, scrut)
         default: noop()
     }
 }
@@ -5738,12 +5791,13 @@ func emitStmtHoists(_ env: inout TyEnv, _ indent: Str) using Alloc, Log {
         i = i + 1
     }
     let condT = elemBoxCopy(env.condTy)
+    let condTS = own(env.condTyStr)
     var j: Int = 0
     while j < names.len() {
         let nm = names.get(j) ?? own("")
         let ex = exprs.get(j) ?? Nd.wildcard
         if kinds.get(j) ?? false {
-            emitCondHoistEntry(env, indent, nm, ex, condT)
+            emitCondHoistEntry(env, indent, nm, ex, condT, condTS)
         } else {
             emitTryHoistEntry(env, indent, nm, ex)
         }
@@ -5785,17 +5839,19 @@ func emitTryHoistEntry(_ env: inout TyEnv, _ indent: Str, _ nm: Str, _ ex: Nd) u
 // inline escape with the fixed name __vstr_r. The outer scope re-propagates
 // with the same 1-line escape shape as a plain hoist (no `_r` suffix — the
 // lambda's result IS the expected).
-func emitCondHoistEntry(_ env: inout TyEnv, _ indent: Str, _ nm: Str, _ node: Nd, _ condT: Vec[Nd]) using Alloc, Log {
+func emitCondHoistEntry(_ env: inout TyEnv, _ indent: Str, _ nm: Str, _ node: Nd, _ condT: Vec[Nd], _ condTS: Str) using Alloc, Log {
     print(indent)
     print("auto ")
     print(nm)
     print(" = [&]() -> std::expected<")
-    if condT.len() > 0 { emitTypeBoxed(condT) } else { print("void") }
+    if condT.len() > 0 { emitTypeBoxed(condT) }
+    else if !streq(condTS, "") { print(condTS) }
+    else { print("void") }
     print(", ")
     emitTypeBoxed(env.curThrowsNode)
     print("> {\n")
-    emitReturnIfNode(env, deeper(indent), node)
-    if condT.len() == 0 {
+    emitCondHoistBody(env, deeper(indent), node)
+    if condT.len() == 0 && streq(condTS, "") {
         print(deeper(indent))
         print("return {};\n")
     }
@@ -5809,6 +5865,226 @@ func emitCondHoistEntry(_ env: inout TyEnv, _ indent: Str, _ nm: Str, _ node: Nd
     print(" std::unexpected{")
     print(nm)
     print(".error()}; }\n")
+}
+
+func emitCondHoistBody(_ env: inout TyEnv, _ ind: Str, _ node: Nd) using Alloc, Log {
+    match node {
+        case .ifE(let ln, let li, let cond, let thenB, let els): emitReturnIf(env, ind, cond, thenB, els)
+        case .matchE(let scrut, let arms): emitMatchInLambda(env, ind, scrut, arms)
+        default: noop()
+    }
+}
+
+// §9 statement-form match for the cond-hoist lambda body (the bootstrap's
+// emit_match_in_lambda). The std::visit shape cannot be reused — a
+// `return std::unexpected{...}` inside visit's callable would return from
+// the WRONG scope — so: a payloaded enum lowers to a
+// std::holds_alternative / std::get if-chain, a bare enum to a switch with
+// braced cases, and a value scrutinee to an if/else-if chain over a
+// `__vstr_mh` handle. Every arm body emits in return form (a `try` tail
+// takes the braced inline escape).
+func emitMatchInLambda(_ env: inout TyEnv, _ ind: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    let sp = tyInferBoxed(env, scrut)
+    let bn = genBaseOf(sp)
+    if isPayloadEnum(env, sp) { emitPayMatchLambda(env, ind, sp, scrut, arms); return }
+    if tyIsEnum(env, bn) { emitBareMatchLambda(env, ind, sp, scrut, arms); return }
+    emitValMatchLambda(env, ind, scrut, arms)
+}
+
+func emitBareMatchLambda(_ env: inout TyEnv, _ ind: Str, _ en: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    print(ind)
+    print("switch (")
+    emitBoxed(env, scrut)
+    print(") {\n")
+    let i12 = deeper(ind)
+    var di: Int = 0 - 1
+    var i: Int = 0
+    while i < arms.len() {
+        if armIsDefault(arms.get(i) ?? Nd.wildcard) { di = i }
+        else { emitBareLambdaArm(env, ind, i12, en, arms.get(i) ?? Nd.wildcard) }
+        i = i + 1
+    }
+    print(ind)
+    if di >= 0 {
+        print("default: {\n")
+        emitLambdaArmBody(env, i12, arms.get(di) ?? Nd.wildcard)
+        print(ind)
+        print("}\n")
+    } else {
+        print("default: std::unreachable();\n")
+    }
+    print(ind)
+    print("}\n")
+}
+
+func emitBareLambdaArm(_ env: inout TyEnv, _ ind: Str, _ i12: Str, _ en: Str, _ arm: Nd) using Alloc, Log {
+    match arm {
+        case .matchArm(let isDef, let pat, let guard, let body): emitBareLambdaArmParts(env, ind, i12, en, pat, body)
+        default: noop()
+    }
+}
+
+func emitBareLambdaArmParts(_ env: inout TyEnv, _ ind: Str, _ i12: Str, _ en: Str, _ pat: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    print(ind)
+    print("case ")
+    print(en)
+    print("::")
+    print(armCaseName(pat))
+    print(": {\n")
+    print(i12)
+    emitRetTailExpr(env, body)
+    print(ind)
+    print("}\n")
+}
+
+func emitPayMatchLambda(_ env: inout TyEnv, _ ind: Str, _ en: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    print(ind)
+    print("auto&& __vstr_alt_ref = (")
+    emitBoxed(env, scrut)
+    print(").value;\n")
+    let i12 = deeper(ind)
+    var di: Int = 0 - 1
+    var k: Int = 0
+    var i: Int = 0
+    while i < arms.len() {
+        if armIsDefault(arms.get(i) ?? Nd.wildcard) { di = i }
+        else {
+            emitPayLambdaArm(env, ind, i12, en, arms.get(i) ?? Nd.wildcard, k)
+            k = k + 1
+        }
+        i = i + 1
+    }
+    print(ind)
+    if di >= 0 {
+        print("else {\n")
+        emitLambdaArmBody(env, i12, arms.get(di) ?? Nd.wildcard)
+        print(ind)
+        print("}\n")
+    } else {
+        print("else { std::unreachable(); }\n")
+    }
+}
+
+func emitPayLambdaArm(_ env: inout TyEnv, _ ind: Str, _ i12: Str, _ en: Str, _ arm: Nd, _ k: Int) using Alloc, Log {
+    match arm {
+        case .matchArm(let isDef, let pat, let guard, let body): emitPayLambdaArmParts(env, ind, i12, en, pat, body, k)
+        default: noop()
+    }
+}
+
+func emitPayLambdaArmParts(_ env: inout TyEnv, _ ind: Str, _ i12: Str, _ en: Str, _ pat: Vec[Nd], _ body: Vec[Nd], _ k: Int) using Alloc, Log {
+    print(ind)
+    if k == 0 { print("if") } else { print("else if") }
+    print(" (std::holds_alternative<")
+    print(en)
+    print("::")
+    let cn = armCaseName(pat)
+    print(cn)
+    print("_t>(__vstr_alt_ref)) {\n")
+    if patHasBinding(pat) {
+        print(i12)
+        print("auto&& __vstr_alt = std::get<")
+        print(en)
+        print("::")
+        print(cn)
+        print("_t>(__vstr_alt_ref);\n")
+        emitPayloadBindings(env, i12, en, pat)
+    }
+    print(i12)
+    emitRetTailExpr(env, body)
+    print(ind)
+    print("}\n")
+}
+
+func patHasBinding(_ pat: Vec[Nd]) using Alloc -> Bool {
+    if pat.len() == 0 { return false }
+    return match pat.get(0) ?? Nd.wildcard {
+        case .enumP(let cname, let children): childrenHaveBinding(children)
+        default: false
+    }
+}
+
+func childrenHaveBinding(_ children: Vec[Nd]) using Alloc -> Bool {
+    var i: Int = 0
+    while i < children.len() {
+        if !streq(patNameOf(children.get(i) ?? Nd.wildcard), "") { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func emitValMatchLambda(_ env: inout TyEnv, _ ind: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    print(ind)
+    print("auto&& __vstr_mh = ")
+    emitBoxed(env, scrut)
+    print(";\n")
+    let i12 = deeper(ind)
+    var di: Int = 0 - 1
+    var k: Int = 0
+    var i: Int = 0
+    while i < arms.len() {
+        if armIsDefault(arms.get(i) ?? Nd.wildcard) { di = i }
+        else {
+            emitValLambdaArm(env, ind, i12, arms.get(i) ?? Nd.wildcard, k)
+            k = k + 1
+        }
+        i = i + 1
+    }
+    print(ind)
+    if di >= 0 {
+        print("else {\n")
+        emitLambdaArmBody(env, i12, arms.get(di) ?? Nd.wildcard)
+        print(ind)
+        print("}\n")
+    } else {
+        print("else { std::unreachable(); }\n")
+    }
+}
+
+func emitValLambdaArm(_ env: inout TyEnv, _ ind: Str, _ i12: Str, _ arm: Nd, _ k: Int) using Alloc, Log {
+    match arm {
+        case .matchArm(let isDef, let pat, let guard, let body): emitValLambdaArmParts(env, ind, i12, pat, guard, body, k)
+        default: noop()
+    }
+}
+
+func emitValLambdaArmParts(_ env: inout TyEnv, _ ind: Str, _ i12: Str, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd], _ k: Int) using Alloc, Log {
+    print(ind)
+    if k == 0 { print("if (") } else { print("else if (") }
+    print("(__vstr_mh == ")
+    emitLitPat(env, pat)
+    print(")")
+    if guard.len() > 0 {
+        print(" && (")
+        emitBoxed(env, guard)
+        print(")")
+    }
+    print(") {\n")
+    print(i12)
+    emitRetTailExpr(env, body)
+    print(ind)
+    print("}\n")
+}
+
+// A literal pattern (`case 0:`) compares the handle against its boxed
+// literal expression.
+func emitLitPat(_ env: inout TyEnv, _ pat: Vec[Nd]) using Alloc, Log {
+    match pat.get(0) ?? Nd.wildcard {
+        case .litP(let inner): emitBoxed(env, inner)
+        default: emitBoxed(env, pat)
+    }
+}
+
+func emitLambdaArmBody(_ env: inout TyEnv, _ i12: Str, _ arm: Nd) using Alloc, Log {
+    match arm {
+        case .matchArm(let isDef, let pat, let guard, let body): emitLambdaArmBodyParts(env, i12, body)
+        default: noop()
+    }
+}
+
+func emitLambdaArmBodyParts(_ env: inout TyEnv, _ i12: Str, _ body: Vec[Nd]) using Alloc, Log {
+    print(i12)
+    emitRetTailExpr(env, body)
 }
 
 func emitStmt(_ env: inout TyEnv, _ s: Nd, _ indent: Str) using Alloc, Log {

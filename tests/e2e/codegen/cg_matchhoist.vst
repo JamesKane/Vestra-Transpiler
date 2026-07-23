@@ -1,0 +1,65 @@
+// Codegen slice 50: match-arm conditional hoists (the bootstrap's
+// emit_match_in_lambda). A top-level match whose ARMS carry a propagating
+// `try` lifts to the same __vstr_cN expected-returning lambda as slice 49,
+// but the body is a STATEMENT-FORM match: a payloaded enum lowers to a
+// std::holds_alternative / std::get if-chain (std::visit would root the
+// error-escape `return` in the wrong scope), a bare enum to a switch with
+// braced cases (+ `default: std::unreachable();`), and a value scrutinee to
+// an if/else-if chain over `auto&& __vstr_mh`. Arm bodies emit in return
+// form (try tails inline via the fixed __vstr_r escape). Unlike a
+// statement-position if (void + `return {};`), a statement-position match
+// types its lambda by the match's own arm type.
+enum Err {
+    case bad
+}
+
+enum Color {
+    case red
+    case green
+}
+
+enum Shape {
+    case dot
+    case line(len: Int32)
+}
+
+func f(_ x: Int32) throws(Err) -> Int32 {
+    return x
+}
+
+func mBare(_ c: Color, _ x: Int32) throws(Err) -> Int32 {
+    return match c {
+        case .red: try f(x)
+        case .green: 0
+    }
+}
+
+func mPay(_ s: Shape, _ x: Int32) throws(Err) -> Int32 {
+    return match s {
+        case .dot: 0
+        case .line(let n): try f(n + x)
+    }
+}
+
+func mVal(_ v: Int32) throws(Err) -> Int32 {
+    return match v {
+        case 0: try f(v)
+        default: v
+    }
+}
+
+func mBind(_ c: Color, _ x: Int32) throws(Err) -> Int32 {
+    let r: Int32 = match c {
+        case .red: try f(x)
+        case .green: 1
+    }
+    return r
+}
+
+func mStmt(_ c: Color, _ x: Int32) throws(Err) -> Int32 {
+    match c {
+        case .red: try f(x)
+        case .green: x
+    }
+    return x
+}
