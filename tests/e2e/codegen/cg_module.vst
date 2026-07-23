@@ -1,0 +1,39 @@
+// Codegen slice 46: a `module a.b` declaration wraps the unit's output in a
+// C++ nested namespace — `namespace a::b {` + blank line before the
+// declarations and a `}  // namespace a::b` trailer after them, in BOTH the
+// .cpp definitions and the .hpp tail (where the wrap sits after the import
+// includes). Everything inside lowers exactly as in an unwrapped unit.
+module util.math
+
+public struct Point {
+    var x: Int32
+    var y: Int32
+
+    func sum() -> Int32 {
+        return self.x + self.y
+    }
+}
+
+public enum Sign {
+    case neg
+    case zero
+    case pos
+}
+
+public func inc(_ v: Int32) -> Int32 { return v + 1 }
+
+public const LIMIT: Int32 = 100
+
+func classify(_ v: Int32) -> Int32 {
+    let s: Sign = if v < 0 { Sign.neg } else { Sign.pos }
+    return match s {
+        case .neg: 0 - inc(v)
+        case .zero: 0
+        case .pos: inc(v)
+    }
+}
+
+func measure(_ v: Int32) -> Int32 {
+    var p = Point(x: v, y: LIMIT)
+    return p.sum()
+}

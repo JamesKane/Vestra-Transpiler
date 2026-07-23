@@ -4682,11 +4682,42 @@ func emitUnit(_ u: NUnit, _ stem: Str) using Alloc, Log {
     print("#include \"")
     print(stem)
     print(".hpp\"\n\n")
+    emitNsOpen(u.hasMod, u.modPath)
     var i: Int = 0
     while i < u.decls.len() {
         emitDecl(&env, u.decls.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    emitNsClose(u.hasMod, u.modPath)
+}
+
+// §5: a `module a.b` declaration wraps the unit's declarations in a C++
+// nested namespace — `namespace a::b {` + blank line, and a
+// `\n}  // namespace a::b` trailer — in both the .cpp and the .hpp tail
+// (the header's wrap sits after the import includes).
+func emitNsOpen(_ hasMod: Bool, _ path: Str) using Alloc, Log {
+    if !hasMod { return }
+    print("namespace ")
+    print(dotsToColons(path))
+    print(" {\n\n")
+}
+
+func emitNsClose(_ hasMod: Bool, _ path: Str) using Alloc, Log {
+    if !hasMod { return }
+    print("\n}  // namespace ")
+    print(dotsToColons(path))
+    print("\n")
+}
+
+func dotsToColons(_ s: Str) using Alloc -> String {
+    var out: String = ""
+    var i: Int = 0
+    while i < s.len() {
+        if (s.byteAt(i) ?? 0) == 46 { out.append("::") }
+        else { out.append(s.slice(i, i + 1)) }
+        i = i + 1
+    }
+    return out
 }
 
 func emitDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
@@ -4715,11 +4746,13 @@ func emitHpp(_ u: NUnit) using Alloc, Log {
     var env = buildTyEnv(u)
     print("\n")
     emitHppImports(u.imports)
+    emitNsOpen(u.hasMod, u.modPath)
     var i: Int = 0
     while i < u.decls.len() {
         emitHppDecl(&env, u.decls.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    emitNsClose(u.hasMod, u.modPath)
 }
 
 // §5 imports in the header: `import c "h"` lowers to `#include "h"` at global
