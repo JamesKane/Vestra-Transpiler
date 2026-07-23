@@ -1,0 +1,46 @@
+// Codegen slice 49: conditional hoists — a top-level `if` whose BRANCHES
+// carry a propagating `try` lifts to an immediately-invoked lambda returning
+// std::expected<T, E> (`__vstr_cN`, same file-global counter as the plain
+// hoists), whose body is the statement-form if with returning tails: a `try`
+// TAIL emits the braced inline escape with the fixed name __vstr_r, while
+// branch STATEMENTS re-enter the normal per-statement hoist machinery. T is
+// void at statement position (plus a `return {};` fallthrough), the function
+// result at return position, and the annotation at a binding (an unannotated
+// binding is out of the mirrored subset — vgen does not infer
+// if-expressions). The outer scope re-propagates with the 1-line escape and
+// the use-site reads `(*__vstr_cN)`.
+enum Err {
+    case bad
+}
+
+func f(_ x: Int32) throws(Err) -> Int32 {
+    return x
+}
+
+func stmtIf(_ x: Int32) throws(Err) -> Int32 {
+    if x > 0 {
+        let y = try f(x)
+        return y
+    }
+    return 0
+}
+
+func annIf(_ x: Int32) throws(Err) -> Int32 {
+    let r: Int32 = if x > 0 { try f(x) } else { 0 }
+    return r
+}
+
+func elseTry(_ x: Int32) throws(Err) -> Int32 {
+    return if x > 0 { x } else { try f(x) }
+}
+
+func bothTry(_ x: Int32) throws(Err) -> Int32 {
+    return if x > 0 { try f(x) } else { try f(x - 1) }
+}
+
+func multiStmt(_ x: Int32) throws(Err) -> Int32 {
+    return if x > 0 {
+        let y = try f(x)
+        y + 1
+    } else { 0 }
+}

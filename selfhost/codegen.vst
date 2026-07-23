@@ -2932,10 +2932,14 @@ struct TyEnv {
     var symType: Vec[String]    // ... -> type spelling
     var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
     var curRetNode: Vec[Nd]     // per-function: the result TYPE node (for emitting the C++ return type, e.g. a match lambda)
-    var tryN: Int               // file-global `__vstr_t<N>` hoist counter (monotonic, never reset — matches the bootstrap)
+    var tryN: Int               // file-global `__vstr_t<N>` / `__vstr_c<N>` hoist counter (monotonic, never reset — matches the bootstrap)
     var hoistName: Vec[String]  // per-statement: pending propagating-`try` hoist names, in collection order ...
-    var hoistExpr: Vec[Nd]      // ... -> the try's operand (the fallible call)
+    var hoistExpr: Vec[Nd]      // ... -> the try's operand (the fallible call), or the whole if for a cond hoist
+    var hoistKind: Vec[Bool]    // ... -> true for a conditional hoist (expected-returning lambda), false for the 3-line escape
     var hoistNext: Int          // per-statement: next hoist name a `try` use-site consumes
+    var condUse: String         // per-statement: the cond-hoist name the statement's use-site reads via `(*name)` ("" if none)
+    var condTy: Vec[Nd]         // per-statement: the cond-hoist lambda's success-type node (empty box = void)
+    var curThrowsNode: Vec[Nd]  // per-function: the `throws(E)` type node (empty when the function does not throw)
     var curAsync: Bool          // per-function: enclosing function is `async` (returns lower to co_return)
     var imports: Vec[String]    // global: imported module paths (a member base naming one qualifies with `::`)
     var bad: Vec[String]
@@ -4646,7 +4650,9 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     ecfIdx: Vec.new(), ecfName: Vec.new(),
                     symName: Vec.new(), symType: Vec.new(),
                     curRet: own(""), curRetNode: Vec.new(),
-                    tryN: 0, hoistName: Vec.new(), hoistExpr: Vec.new(), hoistNext: 0,
+                    tryN: 0, hoistName: Vec.new(), hoistExpr: Vec.new(),
+                    hoistKind: Vec.new(), hoistNext: 0,
+                    condUse: own(""), condTy: Vec.new(), curThrowsNode: Vec.new(),
                     curAsync: false,
                     imports: Vec.new(),
                     bad: Vec.new())
@@ -5053,6 +5059,8 @@ func emitMethodDef(_ env: inout TyEnv, _ name: Str, _ params: Vec[Nd], _ res: Ve
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
     tySetRetNode(&env, res)
+    let noThrows: Vec[Nd] = Vec.new()
+    tySetThrowsNode(&env, noThrows)
     env.curAsync = false
     if body.len() > 0 { emitBlockStmts(env, body.get(0) ?? Nd.wildcard, "        ") }
     print("    }\n")
@@ -5123,6 +5131,7 @@ func emitFunc(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd], _
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
     tySetRetNode(&env, res)
+    tySetThrowsNode(&env, thr)
     env.curAsync = isA
     emitBody(env, body)
     if isA && res.len() == 0 && !blockEndsInReturn(body) { print("    co_return;\n") }
@@ -5152,6 +5161,13 @@ func stmtsEndInReturn(_ stmts: Vec[Nd]) -> Bool {
         case .retS(let v): true
         default: false
     }
+}
+
+// Record the enclosing function's throws-type node (the E of a cond-hoist
+// lambda's std::expected<T, E>). Empty when the function does not throw.
+func tySetThrowsNode(_ env: inout TyEnv, _ thr: Vec[Nd]) using Alloc {
+    while env.curThrowsNode.len() > 0 { let _ = env.curThrowsNode.pop() }
+    if thr.len() > 0 { env.curThrowsNode.push(thr.get(0) ?? Nd.wildcard) }
 }
 
 // Record the enclosing function's result type node (used when an emitted match
@@ -5470,16 +5486,149 @@ func emitStmtList(_ env: inout TyEnv, _ stmts: Vec[Nd], _ indent: Str) using All
 func collectStmtHoists(_ env: inout TyEnv, _ s: Nd) using Alloc {
     while env.hoistName.len() > 0 { let _ = env.hoistName.pop() }
     while env.hoistExpr.len() > 0 { let _ = env.hoistExpr.pop() }
+    while env.hoistKind.len() > 0 { let _ = env.hoistKind.pop() }
+    while env.condTy.len() > 0 { let _ = env.condTy.pop() }
     env.hoistNext = 0
+    env.condUse = own("")
     match s {
-        case .letS(let pat, let ty, let value): collectTryList(env, value)
-        case .varS(let pat, let ty, let value): collectTryList(env, value)
-        case .exprS(let e): collectTryList(env, e)
-        case .retS(let v): collectTryList(env, v)
+        case .letS(let pat, let ty, let value): collectBindHoists(env, ty, value)
+        case .varS(let pat, let ty, let value): collectBindHoists(env, ty, value)
+        case .exprS(let e): collectExprHoists(env, e)
+        case .retS(let v): collectRetHoists(env, v)
         case .assignS(let op, let t, let v): collectAssignTries(env, t, v)
         case .whileS(let cond, let body): collectTryList(env, cond)
         case .forS(let pat, let iter, let body): collectTryList(env, iter)
         default: noop()
+    }
+}
+
+// §9 conditional hoists: a TOP-LEVEL if whose branches carry a propagating
+// `try` lifts to an expected-returning lambda (the branch tries cannot escape
+// the enclosing function from inside a branch that may not run). The lambda's
+// success type T comes from the statement context — void at statement
+// position, the function result at return position, the annotation at a
+// binding. An UNANNOTATED binding stays unregistered (vgen does not infer
+// if-expressions), as does an if nested deeper in an expression — those
+// branch tries fall back to the unwrap_exp safety net.
+func collectExprHoists(_ env: inout TyEnv, _ e: Vec[Nd]) using Alloc {
+    let noTy: Vec[Nd] = Vec.new()
+    if collectStmtCond(env, e, noTy) { return }
+    collectTryList(env, e)
+}
+
+func collectRetHoists(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc {
+    let tyB = elemBoxCopy(env.curRetNode)
+    if collectStmtCond(env, v, tyB) { return }
+    collectTryList(env, v)
+}
+
+func collectBindHoists(_ env: inout TyEnv, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc {
+    if ty.len() > 0 {
+        let tyB = elemBoxCopy(ty)
+        if collectStmtCond(env, value, tyB) { return }
+    }
+    collectTryList(env, value)
+}
+
+// Register the cond hoist when the boxed value is an if with branch tries and
+// the enclosing function throws; walks the unconditionally-evaluated cond /
+// let-init for plain hoists first (they precede the lambda), then pushes the
+// `__vstr_c<N>` entry. tyB is the boxed success type (empty = void).
+func collectStmtCond(_ env: inout TyEnv, _ v: Vec[Nd], _ tyB: Vec[Nd]) using Alloc -> Bool {
+    if env.curThrowsNode.len() == 0 { return false }
+    if v.len() == 0 { return false }
+    if !ifWithBranchTry(v.get(0) ?? Nd.wildcard) { return false }
+    collectCondPieces(env, v.get(0) ?? Nd.wildcard)
+    pushCondHoist(env, v.get(0) ?? Nd.wildcard, tyB)
+    return true
+}
+
+func ifWithBranchTry(_ e: Nd) -> Bool {
+    return match e {
+        case .ifE(let ln, let li, let cond, let thenB, let els): boxHasTry(thenB) || boxHasTry(els)
+        default: false
+    }
+}
+
+func collectCondPieces(_ env: inout TyEnv, _ e: Nd) using Alloc {
+    match e {
+        case .ifE(let ln, let li, let cond, let thenB, let els): collectTryIf(env, li, cond)
+        default: noop()
+    }
+}
+
+func pushCondHoist(_ env: inout TyEnv, _ node: Nd, _ tyB: Vec[Nd]) using Alloc {
+    var nm: String = "__vstr_c"
+    nm.append(intToStr(env.tryN))
+    env.tryN = env.tryN + 1
+    env.condUse = own(nm)
+    env.hoistName.push(nm)
+    env.hoistExpr.push(node)
+    env.hoistKind.push(true)
+    while env.condTy.len() > 0 { let _ = env.condTy.pop() }
+    if tyB.len() > 0 { env.condTy.push(tyB.get(0) ?? Nd.wildcard) }
+}
+
+// ----- does-it-contain-a-propagating-try walkers (bootstrap's
+// expr_contains_propagating_try / stmt_contains_propagating_try) ------------
+func boxHasTry(_ v: Vec[Nd]) -> Bool {
+    if v.len() == 0 { return false }
+    return exprHasTry(v.get(0) ?? Nd.wildcard)
+}
+
+func exprHasTry(_ e: Nd) -> Bool {
+    return match e {
+        case .prefixE(let kw, let inner): prefixHasTry(kw, inner)
+        case .paren(let inner): boxHasTry(inner)
+        case .unary(let op, let x): boxHasTry(x)
+        case .binary(let op, let l, let r): boxHasTry(l) || boxHasTry(r)
+        case .call(let callee, let args): boxHasTry(callee) || listHasTry(args)
+        case .arg(let label, let isInout, let val): boxHasTry(val)
+        case .member(let base, let name, let chain): boxHasTry(base)
+        case .index(let base, let idxs): boxHasTry(base) || listHasTry(idxs)
+        case .vecLit(let elems): listHasTry(elems)
+        case .tupleLit(let elems): listHasTry(elems)
+        case .interpE(let parts, let exprs): listHasTry(exprs)
+        case .ifE(let ln, let li, let cond, let thenB, let els): boxHasTry(cond) || boxHasTry(li) || boxHasTry(thenB) || boxHasTry(els)
+        case .matchE(let scrut, let arms): boxHasTry(scrut) || listHasTry(arms)
+        case .matchArm(let isDef, let pat, let guard, let body): boxHasTry(guard) || boxHasTry(body)
+        case .block(let stmts): stmtsHaveTry(stmts)
+        default: false
+    }
+}
+
+func prefixHasTry(_ kw: Str, _ inner: Vec[Nd]) -> Bool {
+    if streq(kw, "try ") { return true }
+    if streq(kw, "copy ") { return boxHasTry(inner) }
+    return false
+}
+
+func listHasTry(_ list: Vec[Nd]) -> Bool {
+    var i: Int = 0
+    while i < list.len() {
+        if exprHasTry(list.get(i) ?? Nd.wildcard) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func stmtsHaveTry(_ stmts: Vec[Nd]) -> Bool {
+    var i: Int = 0
+    while i < stmts.len() {
+        if stmtHasTry(stmts.get(i) ?? Nd.wildcard) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func stmtHasTry(_ s: Nd) -> Bool {
+    return match s {
+        case .letS(let pat, let ty, let value): boxHasTry(value)
+        case .varS(let pat, let ty, let value): boxHasTry(value)
+        case .exprS(let e): boxHasTry(e)
+        case .retS(let v): boxHasTry(v)
+        case .assignS(let op, let t, let v): boxHasTry(t) || boxHasTry(v)
+        default: false
     }
 }
 
@@ -5529,6 +5678,7 @@ func pushTryHoist(_ env: inout TyEnv, _ inner: Vec[Nd]) using Alloc {
     env.tryN = env.tryN + 1
     env.hoistName.push(nm)
     env.hoistExpr.push(inner.get(0) ?? Nd.wildcard)
+    env.hoistKind.push(false)
 }
 
 func collectTryCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
@@ -5571,41 +5721,101 @@ func collectTryIf(_ env: inout TyEnv, _ li: Vec[Nd], _ cond: Vec[Nd]) using Allo
     collectTryList(env, li)
 }
 
-// The canonical 3-line escape, one per collected hoist, at statement indent:
-// evaluate the fallible call into `<n>_r`, re-propagate its error with
-// `return std::unexpected{...}`, unwrap the success value into `<n>`.
+// One emission per collected hoist, at statement indent. A plain try entry
+// prints the canonical 3-line escape; a cond entry prints the
+// expected-returning lambda. The queue and the cond state are SNAPSHOTTED
+// first — a cond entry's lambda body re-enters emitStmt for the branch
+// statements, which resets the per-statement collector state mid-iteration.
 func emitStmtHoists(_ env: inout TyEnv, _ indent: Str) using Alloc, Log {
+    var names: Vec[String] = Vec.new()
+    var exprs: Vec[Nd] = Vec.new()
+    var kinds: Vec[Bool] = Vec.new()
     var i: Int = 0
     while i < env.hoistName.len() {
-        let nm = env.hoistName.get(i) ?? own("")
-        let ex = env.hoistExpr.get(i) ?? Nd.wildcard
-        print(indent)
-        print("auto ")
-        print(nm)
-        print("_r = ")
-        emitExpr(env, ex)
-        print(";\n")
-        print(indent)
-        print("if (!")
-        print(nm)
-        print("_r.has_value()) { ")
-        emitRetKw(env)
-        print(" std::unexpected{")
-        print(nm)
-        print("_r.error()}; }\n")
-        print(indent)
-        print("auto ")
-        print(nm)
-        print(" = *")
-        print(nm)
-        print("_r;\n")
+        names.push(env.hoistName.get(i) ?? own(""))
+        exprs.push(env.hoistExpr.get(i) ?? Nd.wildcard)
+        kinds.push(env.hoistKind.get(i) ?? false)
         i = i + 1
     }
+    let condT = elemBoxCopy(env.condTy)
+    var j: Int = 0
+    while j < names.len() {
+        let nm = names.get(j) ?? own("")
+        let ex = exprs.get(j) ?? Nd.wildcard
+        if kinds.get(j) ?? false {
+            emitCondHoistEntry(env, indent, nm, ex, condT)
+        } else {
+            emitTryHoistEntry(env, indent, nm, ex)
+        }
+        j = j + 1
+    }
+}
+
+// The canonical 3-line escape: evaluate the fallible call into `<n>_r`,
+// re-propagate its error, unwrap the success value into `<n>`.
+func emitTryHoistEntry(_ env: inout TyEnv, _ indent: Str, _ nm: Str, _ ex: Nd) using Alloc, Log {
+    print(indent)
+    print("auto ")
+    print(nm)
+    print("_r = ")
+    emitExpr(env, ex)
+    print(";\n")
+    print(indent)
+    print("if (!")
+    print(nm)
+    print("_r.has_value()) { ")
+    emitRetKw(env)
+    print(" std::unexpected{")
+    print(nm)
+    print("_r.error()}; }\n")
+    print(indent)
+    print("auto ")
+    print(nm)
+    print(" = *")
+    print(nm)
+    print("_r;\n")
+}
+
+// §9 the conditional hoist: the if lifts to an immediately-invoked lambda
+// returning std::expected<T, E> (T = the statement-context success type,
+// void at statement position — which also owes a `return {};` fallthrough;
+// E = the enclosing throws type). The body is the statement-form if with
+// returning tails; branch statements re-enter the normal per-statement hoist
+// machinery (sharing the global counter), and a `try` TAIL emits the braced
+// inline escape with the fixed name __vstr_r. The outer scope re-propagates
+// with the same 1-line escape shape as a plain hoist (no `_r` suffix — the
+// lambda's result IS the expected).
+func emitCondHoistEntry(_ env: inout TyEnv, _ indent: Str, _ nm: Str, _ node: Nd, _ condT: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    print("auto ")
+    print(nm)
+    print(" = [&]() -> std::expected<")
+    if condT.len() > 0 { emitTypeBoxed(condT) } else { print("void") }
+    print(", ")
+    emitTypeBoxed(env.curThrowsNode)
+    print("> {\n")
+    emitReturnIfNode(env, deeper(indent), node)
+    if condT.len() == 0 {
+        print(deeper(indent))
+        print("return {};\n")
+    }
+    print(indent)
+    print("}();\n")
+    print(indent)
+    print("if (!")
+    print(nm)
+    print(".has_value()) { ")
+    emitRetKw(env)
+    print(" std::unexpected{")
+    print(nm)
+    print(".error()}; }\n")
 }
 
 func emitStmt(_ env: inout TyEnv, _ s: Nd, _ indent: Str) using Alloc, Log {
     collectStmtHoists(&env, s)
+    let cn = own(env.condUse)
     emitStmtHoists(&env, indent)
+    if !streq(cn, "") { emitCondUse(&env, s, indent, cn); return }
     match s {
         case .letS(let pat, let ty, let value): emitBinding(env, indent, pat, ty, value)
         case .varS(let pat, let ty, let value): emitBinding(env, indent, pat, ty, value)
@@ -5619,6 +5829,46 @@ func emitStmt(_ env: inout TyEnv, _ s: Nd, _ indent: Str) using Alloc, Log {
         case .withS(let caps, let names, let vals, let body): emitWith(env, indent, names, vals, body)
         default: noop()
     }
+}
+
+// §9 the statement whose value was lifted into a cond hoist reads the
+// unwrapped lambda result: `(*__vstr_cN);` at statement position,
+// `return (*__vstr_cN);` at return position, `<type> <name> = (*__vstr_cN);`
+// at an (annotated) binding.
+func emitCondUse(_ env: inout TyEnv, _ s: Nd, _ indent: Str, _ cn: Str) using Alloc, Log {
+    match s {
+        case .exprS(let e): emitCondUseStmt(indent, cn)
+        case .retS(let v): emitCondUseRet(env, indent, cn)
+        case .letS(let pat, let ty, let value): emitCondUseBind(env, indent, pat, ty, cn)
+        case .varS(let pat, let ty, let value): emitCondUseBind(env, indent, pat, ty, cn)
+        default: noop()
+    }
+}
+
+func emitCondUseStmt(_ indent: Str, _ cn: Str) using Alloc, Log {
+    print(indent)
+    print("(*")
+    print(cn)
+    print(");\n")
+}
+
+func emitCondUseRet(_ env: inout TyEnv, _ indent: Str, _ cn: Str) using Alloc, Log {
+    print(indent)
+    emitRetKw(env)
+    print(" (*")
+    print(cn)
+    print(");\n")
+}
+
+func emitCondUseBind(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd], _ cn: Str) using Alloc, Log {
+    print(indent)
+    emitTypeBoxed(ty)
+    print(" ")
+    print(patName(pat))
+    print(" = (*")
+    print(cn)
+    print(");\n")
+    tyRegisterPat(&env, pat, ty)
 }
 
 // `with ... { body }` lowers to a bare nested block `{ ... }` at the current
@@ -6184,9 +6434,29 @@ func emitRetTail(_ env: inout TyEnv, _ s: Nd) using Alloc, Log {
 }
 
 func emitRetTailExpr(_ env: inout TyEnv, _ e: Vec[Nd]) using Alloc, Log {
+    if emitTryTail(env, e) { return }
     print("return ")
     emitBoxed(env, e)
     print(";\n")
+}
+
+// §9 a `try` in a returning-tail position (inside a cond-hoist lambda) emits
+// the braced inline escape with the FIXED name __vstr_r — the whole escape is
+// its own scope, so the name cannot collide across branches.
+func emitTryTail(_ env: inout TyEnv, _ e: Vec[Nd]) using Alloc, Log -> Bool {
+    if e.len() == 0 { return false }
+    return match e.get(0) ?? Nd.wildcard {
+        case .prefixE(let kw, let inner): emitTryTailParts(env, kw, inner)
+        default: false
+    }
+}
+
+func emitTryTailParts(_ env: inout TyEnv, _ kw: Str, _ inner: Vec[Nd]) using Alloc, Log -> Bool {
+    if !streq(kw, "try ") { return false }
+    print("{ auto __vstr_r = ")
+    emitBoxed(env, inner)
+    print("; if (!__vstr_r.has_value()) { return std::unexpected{__vstr_r.error()}; } return *__vstr_r; }\n")
+    return true
 }
 
 func emitRetElse(_ env: inout TyEnv, _ els: Vec[Nd]) using Alloc, Log {
