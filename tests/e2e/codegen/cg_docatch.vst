@@ -1,0 +1,44 @@
+// Codegen slice 51: `do { body } catch (NAME: E) { handler }` in value
+// position — a pair of nested IIFEs. The inner lambda returns
+// std::expected<T, E> so the body's tries propagate via std::unexpected
+// (hoists print at column 0, inline in the statement, on the file-global
+// counter); the outer dispatches has_value to `*__vstr_do` or runs the
+// handler with NAME bound to the error (`[[maybe_unused]] auto e = ...`),
+// the handler block lowering to its own `[&]{ return ...; }()`. T comes
+// from the use-site (function result / binding annotation), E from the
+// catch annotation. Bare `catch e`, multi-statement bodies, and the
+// where-guard form are out of the mirrored subset.
+enum ParseErr {
+    case negative
+    case overflow
+}
+
+func parseIt(_ s: Int32) throws(ParseErr) -> Int32 {
+    if s < 0 { throw ParseErr.negative }
+    return s
+}
+
+func safeParse(_ x: Int32) -> Int32 {
+    return do {
+        try parseIt(x)
+    } catch (e: ParseErr) {
+        0 - 1
+    }
+}
+
+func sumTwo(_ a: Int32, _ b: Int32) -> Int32 {
+    return do {
+        (try parseIt(a)) + (try parseIt(b))
+    } catch (e: ParseErr) {
+        0
+    }
+}
+
+func bindPos(_ x: Int32) -> Int32 {
+    let r: Int32 = do {
+        try parseIt(x)
+    } catch (e: ParseErr) {
+        0 - 2
+    }
+    return r
+}

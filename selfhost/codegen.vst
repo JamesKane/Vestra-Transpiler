@@ -5486,11 +5486,8 @@ func emitStmtList(_ env: inout TyEnv, _ stmts: Vec[Nd], _ indent: Str) using All
 // inside if/match branches (the bootstrap's conditional-hoist lambdas) and
 // do/catch are out of scope.
 func collectStmtHoists(_ env: inout TyEnv, _ s: Nd) using Alloc {
-    while env.hoistName.len() > 0 { let _ = env.hoistName.pop() }
-    while env.hoistExpr.len() > 0 { let _ = env.hoistExpr.pop() }
-    while env.hoistKind.len() > 0 { let _ = env.hoistKind.pop() }
+    clearHoists(&env)
     while env.condTy.len() > 0 { let _ = env.condTy.pop() }
-    env.hoistNext = 0
     env.condUse = own("")
     env.condTyStr = own("")
     match s {
@@ -5520,6 +5517,13 @@ func collectExprHoists(_ env: inout TyEnv, _ e: Vec[Nd]) using Alloc {
         return
     }
     collectTryList(env, e)
+}
+
+func clearHoists(_ env: inout TyEnv) using Alloc {
+    while env.hoistName.len() > 0 { let _ = env.hoistName.pop() }
+    while env.hoistExpr.len() > 0 { let _ = env.hoistExpr.pop() }
+    while env.hoistKind.len() > 0 { let _ = env.hoistKind.pop() }
+    env.hoistNext = 0
 }
 
 // A statement-position MATCH still types its cond-hoist lambda by the match's
@@ -6147,6 +6151,78 @@ func emitCondUseBind(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Ve
     tyRegisterPat(&env, pat, ty)
 }
 
+// §9 `do { body } catch (NAME: E) { handler }` in value position: a pair of
+// nested IIFEs, mirroring the bootstrap's DoCatchExpr lowering. The inner
+// lambda returns std::expected<T, E>, so the body's tries propagate via
+// std::unexpected — its hoists print at column 0, inline in the statement.
+// The outer lambda dispatches has_value to the unwrapped body value or to
+// the handler with NAME bound to the error (the handler block lowers to its
+// own `[&]{ return ...; }()` IIFE). T comes from the use-site context (the
+// function result at return position, the annotation at a binding), E from
+// the catch ANNOTATION — the bare `catch e` form needs sema's inferred
+// error type and stays out of the mirrored subset, as do multi-statement
+// do/handler bodies and the where-guard form.
+func valIsDoCatch(_ v: Vec[Nd]) -> Bool {
+    if v.len() == 0 { return false }
+    return match v.get(0) ?? Nd.wildcard {
+        case .doCatchE(let db, let en, let et, let cb): et.len() > 0
+        default: false
+    }
+}
+
+func emitDoCatchValue(_ env: inout TyEnv, _ tyB: Vec[Nd], _ v: Vec[Nd]) using Alloc, Log {
+    match v.get(0) ?? Nd.wildcard {
+        case .doCatchE(let db, let en, let et, let cb): emitDoCatchParts(env, tyB, db, en, et, cb)
+        default: noop()
+    }
+}
+
+func emitDoCatchParts(_ env: inout TyEnv, _ tyB: Vec[Nd], _ db: Vec[Nd], _ en: Str, _ et: Vec[Nd], _ cb: Vec[Nd]) using Alloc, Log {
+    print("([&]() -> ")
+    emitTypeBoxed(tyB)
+    print(" { auto __vstr_do = [&]() -> std::expected<")
+    emitTypeBoxed(tyB)
+    print(", ")
+    emitTypeBoxed(et)
+    print("> { ")
+    let tr = blockTrailing(db)
+    clearHoists(&env)
+    collectTryList(env, tr)
+    emitStmtHoists(&env, "")
+    print("return ")
+    emitBoxed(env, tr)
+    print(";\n }(); if (__vstr_do.has_value()) { return *__vstr_do; } [[maybe_unused]] auto ")
+    print(en)
+    print(" = __vstr_do.error(); return ")
+    emitCatchTail(env, cb)
+    print("; }())")
+}
+
+func emitCatchTail(_ env: inout TyEnv, _ cb: Vec[Nd]) using Alloc, Log {
+    print("[&]{ return ")
+    let tr = blockTrailing(cb)
+    emitBoxed(env, tr)
+    print("; }()")
+}
+
+// The (boxed) trailing expression of a block — empty when the block does not
+// end in an expression statement.
+func blockTrailing(_ b: Vec[Nd]) using Alloc -> Vec[Nd] {
+    if b.len() == 0 { return Vec.new() }
+    return match b.get(0) ?? Nd.wildcard {
+        case .block(let stmts): stmtsTrailing(stmts)
+        default: Vec.new()
+    }
+}
+
+func stmtsTrailing(_ stmts: Vec[Nd]) using Alloc -> Vec[Nd] {
+    if stmts.len() == 0 { return Vec.new() }
+    return match stmts.get(stmts.len() - 1) ?? Nd.wildcard {
+        case .exprS(let e): elemBoxCopy(e)
+        default: Vec.new()
+    }
+}
+
 // `with ... { body }` lowers to a bare nested block `{ ... }` at the current
 // statement indent. Grant-only capabilities (`with Cap`) are erased. A value
 // binding (`with x = e`) emits `auto&& x = e;`; a capability instance
@@ -6327,6 +6403,11 @@ func emitMatchBindingVal(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyS
 // `var xs: Vec[Int32] = Vec.new()` -> `std::vector<std::int32_t> xs =
 // std::vector<std::int32_t>{};` (the bare `Vec` carries no element type).
 func emitBindingValue(_ env: inout TyEnv, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    if ty.len() > 0 && valIsDoCatch(value) {
+        let tb = elemBoxCopy(ty)
+        emitDoCatchValue(env, tb, value)
+        return
+    }
     if ty.len() > 0 && valIsNewCall(value) {
         emitTypeBoxed(ty)
         print("{}")
@@ -6528,6 +6609,11 @@ func emitRetKw(_ env: inout TyEnv) using Alloc, Log {
 }
 
 func emitReturnValue(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc, Log {
+    if valIsDoCatch(v) {
+        let tb = elemBoxCopy(env.curRetNode)
+        emitDoCatchValue(env, tb, v)
+        return
+    }
     if isGenericCtor(env, v) {
         let tb = elemBoxCopy(env.curRetNode)
         emitGenericCtor(env, tb, v)
