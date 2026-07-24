@@ -1,0 +1,18 @@
+// Codegen slice 53: async METHODS. The bootstrap's method emitter keeps
+// the plain non-coroutine shape for an `async func` on a struct — no
+// __vstr::Task wrapper, `return` stays `return` — but its read params pass
+// BY VALUE (`std::int32_t d`, not `const std::int32_t& d`), the same
+// dangling-reference precaution the free-function coroutine takes. Await
+// at the call site lowers normally (`co_await (v.bump(2))`).
+struct Counter {
+    var n: Int32
+
+    async func bump(_ d: Int32) -> Int32 {
+        return self.n + d
+    }
+}
+
+async func useIt(_ c: Counter) -> Int32 {
+    var v = c
+    return await v.bump(2)
+}

@@ -5062,7 +5062,7 @@ func emitStructDef(_ env: inout TyEnv, _ name: Str, _ fields: Vec[Nd], _ methods
 func emitMethod(_ env: inout TyEnv, _ owner: Str, _ d: Nd) using Alloc, Log {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
-            emitMethodDef(env, owner, name, params, res, body)
+            emitMethodDef(env, owner, mods, name, params, res, body)
         default: noop()
     }
 }
@@ -5071,14 +5071,16 @@ func emitMethod(_ env: inout TyEnv, _ owner: Str, _ d: Nd) using Alloc, Log {
 // `[[nodiscard]]` (even an omitted / Unit return), unlike a free function. Its
 // body sits two levels in; `self.x` lowers to `(*this).x`, and `self` types
 // as the owning struct so field accesses infer (array fields index plainly,
-// string fields coerce).
-func emitMethodDef(_ env: inout TyEnv, _ owner: Str, _ name: Str, _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+// string fields coerce). An ASYNC method keeps the plain (non-coroutine)
+// shape — no Task wrapper, `return` stays `return` — but its read params
+// pass BY VALUE, mirroring the bootstrap's method emitter.
+func emitMethodDef(_ env: inout TyEnv, _ owner: Str, _ mods: Str, _ name: Str, _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
     print("    [[nodiscard]] ")
     emitRetType(res)
     print(" ")
     print(name)
     print("(")
-    emitParams(params)
+    emitParamsMode(params, isAsyncMods(mods))
     print(") {\n")
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
