@@ -37,12 +37,12 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 
 ## Current state
 
-- **1504 / 1504 tests pass** (`ctest --test-dir build/debug`), Debug build,
-  format-check clean. Of these, **214 are `e2e_selfhost`** (4 lexer, 11 parser,
-  74 sema, 121 codegen, 4 end-to-end demo).
-- Tip commit: `8ede5d4` (codegen slice 62, leading-dot cases — corpus
-  burndown 8). Slice 31's probe also produced `62b747b`, a **bootstrap emitter
-  fix the differential found** (see below). 104 commits carry the `selfhost:`
+- **1506 / 1506 tests pass** (`ctest --test-dir build/debug`), Debug build,
+  format-check clean. Of these, **216 are `e2e_selfhost`** (4 lexer, 11 parser,
+  74 sema, 123 codegen, 4 end-to-end demo).
+- Tip commit: `1c70282` (codegen slice 63, value-scrutinee match — corpus
+  burndown 9). Slice 31's probe also produced `62b747b`, a **bootstrap emitter
+  fix the differential found** (see below). 105 commits carry the `selfhost:`
   prefix.
 - Phase status:
   - **Lexer: done.** Token stream byte-identical on the sample corpus and on
@@ -58,7 +58,7 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
     generics tracking (unknown-type, is-not-generic), all match families
     (guard-Bool, exhaustiveness, arm-type, pattern checks), and multi-file
     modules (import resolution, qualified member + type).
-  - **Codegen: 62 slices; the close-out roadmap is complete and the corpus
+  - **Codegen: 63 slices; the close-out roadmap is complete and the corpus
     burndown is active.** See "Where to pick up" below.
 
 ## Where to pick up: codegen
@@ -266,16 +266,16 @@ slice per commit:
 Closures against **generic** callees (`map`/`filter`) stay out of reach: their
 param types need full generic instantiation, not recoverable structurally.
 
-**The corpus burndown is ACTIVE (slices 55+): 22 of 150 examples
+**The corpus burndown is ACTIVE (slices 55+): 23 of 150 examples
 byte-identical** (baseline was 11), and **total divergence across the corpus
-is down from 23394 lines to 11149** (both under the minimal-diff count the
+is down from 23394 lines to 5186 — a 78% cut** (both under the minimal-diff count the
 sweep now uses; see the metric note below). Landed: 55 entry main (`argc/argv` +
 `args_init`, non-module files only — module-form mains already worked), 56
 nil + statement if-let (62 example files use if-let), 57 scalar-conversion
 casts (`Int32(x)` → `static_cast<...>`) + the iterator-protocol for-loop
 (known-struct iterables), 58 tuple wildcard bindings (`__vstr_tp_unused_N`),
 59 match payload binding TYPES, 60 nested match expressions, 61 tuple
-for-loop patterns, 62 leading-dot case references.
+for-loop patterns, 62 leading-dot case references, 63 value-scrutinee match.
 
 Slices 59–60 are one arc and were measured together. **59** gave a payload
 arm's binding the case's declared field type (a new `ecfTy` column beside
@@ -309,6 +309,21 @@ the sum-type variant wrap (instantiated name when generic), then the plain
 scoped reference. It moved the example count for the first time in four
 slices.
 
+Slice **63** was the largest single slice of the burndown, cutting
+divergence 53% on its own. A Str, number, Bool or tuple scrutinee has no
+cases to switch on, so the bootstrap binds it once and walks an if/else-if
+chain of per-arm PREDICATES; vgen assumed an enum unconditionally and
+emitted the nonsense `case Str:::` — the shape every interpreter demo's
+keyword lookup is built from. `emitPatPredicate` covers all five pattern
+shapes (literal equality, both range spellings, `||`-joined alternatives,
+tuple elements through `std::get<i>`, and always-match as plain `true` with
+the binding emitted separately). Dispatch mirrors the bootstrap: anything
+whose scrutinee does not name a declared enum takes this path, INCLUDING one
+vgen failed to infer. That surfaced a real gap the sweep caught as a
+regression — a do/catch catch binding was never registered, so `match e`
+over an error enum inferred nothing and fell to the value path; it now takes
+the declared error type from the catch clause.
+
 **Two notes on the metric.** First, the identical-example count held at 21
 across slices 59–61 even as ~9800 divergent lines disappeared: the
 interpreter demos each carry several remaining families, so line count is
@@ -330,19 +345,21 @@ stopped being identical. Run it before and after every burndown slice —
 ./scripts/sweep_codegen_corpus.sh --build --compare build/sweep/before.txt
 ```
 
-**Next families, ranked by the post-slice-62 sweep:**
-(1) MATCH ON A NON-ENUM SCRUTINEE (a `Str` or numeric matched against
-LITERAL patterns) — the bootstrap lowers it to an equality if/else chain
-over `auto&& __vstr_m = <scrut>;` (`__vstr_m == std::string_view("fn")`),
-where vgen assumes an enum and emits the broken `case Str:::`. It gates the
-big keyword-dispatch functions in every `interp_*` demo, and the arm bodies
-inside it are leading dots that already work. (2) OR-PATTERNS
-(`case .a(n) | .b(n):`) — one if-constexpr
-branch per alternative sharing the arm body (see examples/match.vst;
-`armCaseName` on an `orP` currently yields the broken `Enum::_t`). Smaller
-but cheap: `[[gnu::*]]` attribute passthrough (7 examples), derive-generated
-methods `clone`/`operator==`/`default` in the `.hpp` (6), `requires`-clause
-bounds (1). After those, re-sweep and re-rank.
+**Next families, ranked by the post-slice-63 sweep.** The corpus is now
+long-tailed — no family dominates, and the largest single divergent example
+is 368 lines. (1) NESTED STATEMENT if/else — vgen emits `} else { if (c) {`
+where the reference emits `} else if (c) {`; it is the whole remaining
+divergence in most `interp_*` demos (80 lines each, ~40 files) and looks
+purely structural. (2) OR-PATTERNS over an ENUM (`case .a(n) | .b(n):`) —
+one if-constexpr branch per alternative sharing the arm body (see
+examples/match.vst; `armCaseName` on an `orP` yields the broken `Enum::_t`).
+Note slice 63 already handles or-patterns on a VALUE scrutinee. (3) The
+cheap tail: `[[gnu::*]]` attribute passthrough (7 examples),
+derive-generated `clone`/`operator==`/`default` in the `.hpp` (6),
+`requires`-clause bounds (1). Parked-by-design and expected to stay
+divergent: `quote_demo` (368, comptime/quote), `channel_select_demo` (118,
+select), `atomics` (86, the atomics method surface). After those, re-sweep
+and re-rank.
 
 **The original burndown proposal (measured 2026-07-24), kept for the
 metric's definition:** With the
