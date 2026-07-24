@@ -2941,6 +2941,7 @@ struct TyEnv {
     var condUse: String         // per-statement: the cond-hoist name the statement's use-site reads via `(*name)` ("" if none)
     var condTy: Vec[Nd]         // per-statement: the cond-hoist lambda's success-type node (empty box = void)
     var condTyStr: String       // per-statement: C++ success-type SPELLING when no node exists (a statement-position match types as its arms)
+    var armTo: String           // per-match: Vestra type SPELLING an arm body flows into ("" if none) — resolves a leading-dot case in an arm
     var curThrowsNode: Vec[Nd]  // per-function: the `throws(E)` type node (empty when the function does not throw)
     var curAsync: Bool          // per-function: enclosing function is `async` (returns lower to co_return)
     var imports: Vec[String]    // global: imported module paths (a member base naming one qualifies with `::`)
@@ -4720,7 +4721,7 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     curRet: own(""), curRetNode: Vec.new(),
                     tryN: 0, hoistName: Vec.new(), hoistExpr: Vec.new(),
                     hoistKind: Vec.new(), hoistNext: 0,
-                    condUse: own(""), condTy: Vec.new(), condTyStr: own(""),
+                    condUse: own(""), condTy: Vec.new(), condTyStr: own(""), armTo: own(""),
                     curThrowsNode: Vec.new(),
                     curAsync: false,
                     imports: Vec.new(),
@@ -5547,6 +5548,10 @@ func cppNamed(_ path: Str) using Alloc -> String {
     if streq(path, "String") { return own("std::string") }
     if streq(path, "Str") { return own("std::string_view") }
     if streq(path, "StrConst") { return own("std::string_view") }
+    // §A4 (§14.9.1) the atomics memory order — a builtin enum whose cases are
+    // the `std::memory_order_*` literals (see emitMemoryOrder), so the type
+    // itself is `std::memory_order`.
+    if streq(path, "Ordering") { return own("std::memory_order") }
     // §5 a module-qualified type (`helper.Point`) spells with `::` — dots
     // only appear in type paths as module qualifiers.
     if pathHasDot(path) { return dotsToColons(path) }
@@ -6533,8 +6538,10 @@ func emitBindingValue(_ env: inout TyEnv, _ ty: Vec[Nd], _ value: Vec[Nd]) using
         emitGenericCtor(env, ty, value)
         return
     }
+    let to = tyAnnSpelling(ty)
+    if tryEmitLeadingDot(env, to, value) { return }
     let from = tyInferBoxed(env, value)
-    let wrap = needsStrCoercion(from, tyAnnSpelling(ty))
+    let wrap = needsStrCoercion(from, to)
     emitMaybeCoerced(env, wrap, value)
 }
 
@@ -6568,8 +6575,10 @@ func emitAssign(_ env: inout TyEnv, _ indent: Str, _ op: Str, _ t: Vec[Nd], _ v:
     print(op)
     print(" ")
     let to = tyInferBoxed(env, t)
-    let from = tyInferBoxed(env, v)
-    emitMaybeCoerced(env, needsStrCoercion(from, to), v)
+    if !tryEmitLeadingDot(env, to, v) {
+        let from = tyInferBoxed(env, v)
+        emitMaybeCoerced(env, needsStrCoercion(from, to), v)
+    }
     print(";\n")
 }
 
@@ -6798,8 +6807,10 @@ func emitReturnValue(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc, Log {
         emitGenericCtor(env, tb, v)
         return
     }
+    let to = own(env.curRet)
+    if tryEmitLeadingDot(env, to, v) { return }
     let from = tyInferBoxed(env, v)
-    let wrap = needsStrCoercion(from, env.curRet)
+    let wrap = needsStrCoercion(from, to)
     emitMaybeCoerced(env, wrap, v)
 }
 
@@ -7082,6 +7093,38 @@ func nestedMatchTyStr(_ sp: Str) using Alloc -> String {
 // still shapes the inner lines and closing brace, which sit at statement level
 // in every position.
 func emitMatchValue(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyStr: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    // Publish the slot every ARM BODY flows into for the duration of this
+    // lowering, so a leading-dot case in an arm can resolve against it. Saved
+    // and restored around the emit: a nested match re-enters here and must not
+    // leak its own arm slot back to the enclosing one.
+    let prev = own(env.armTo)
+    let slot = matchArmSlot(env, ty, tyStr)
+    env.armTo = slot
+    emitMatchValueParts(env, indent, ty, tyStr, scrut, arms)
+    env.armTo = prev
+}
+
+// The Vestra type spelling an arm body flows into. A binding annotation gives
+// it directly; in RETURN position (no annotation and no pre-computed C++
+// spelling) it is the enclosing function's result. A statement-position match
+// (`auto`) or one already typed from a C++ spelling — a nested match, which
+// infers its own — has no Vestra spelling to offer, so arms there keep the
+// untyped fallback.
+func matchArmSlot(_ env: inout TyEnv, _ ty: Vec[Nd], _ tyStr: Str) using Alloc -> String {
+    if ty.len() > 0 { return tyAnnSpelling(ty) }
+    if streq(tyStr, "") { return own(env.curRet) }
+    return own("")
+}
+
+// An arm body resolves a leading-dot case against the match's slot, then falls
+// back to the ordinary expression emit.
+func emitArmBody(_ env: inout TyEnv, _ body: Vec[Nd]) using Alloc, Log {
+    let to = own(env.armTo)
+    if tryEmitLeadingDot(env, to, body) { return }
+    emitBoxed(env, body)
+}
+
+func emitMatchValueParts(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyStr: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
     let enumName = tyInferBoxed(env, scrut)
     // A guarded payload-free match cannot be a switch (a guard is a runtime
     // condition); it lowers to an if/else-if chain over the scrutinee.
@@ -7196,7 +7239,7 @@ func emitGuardArmParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ enumName: St
     print(") {\n")
     print(i12)
     print("return ")
-    emitBoxed(env, body)
+    emitArmBody(env, body)
     print(";\n")
     print(i8)
     print("}\n")
@@ -7212,7 +7255,7 @@ func emitGuardDefault(_ env: inout TyEnv, _ i8: Str, _ arm: Nd) using Alloc, Log
 func emitGuardDefaultParts(_ env: inout TyEnv, _ i8: Str, _ body: Vec[Nd]) using Alloc, Log {
     print(i8)
     print("else { return ")
-    emitBoxed(env, body)
+    emitArmBody(env, body)
     print("; }\n")
 }
 
@@ -7238,7 +7281,7 @@ func emitMatchArmParts(_ env: inout TyEnv, _ armIndent: Str, _ enumName: Str, _ 
     }
     print(deeper(armIndent))
     print("return ")
-    emitBoxed(env, body)
+    emitArmBody(env, body)
     print(";\n")
 }
 
@@ -7380,14 +7423,14 @@ func emitVisitScopeParts(_ env: inout TyEnv, _ i12: Str, _ i16: Str, _ enumName:
         print(") {\n")
         print(deeper(i16))
         print("return ")
-        emitBoxed(env, body)
+        emitArmBody(env, body)
         print(";\n")
         print(i16)
         print("}\n")
     } else {
         print(i16)
         print("return ")
-        emitBoxed(env, body)
+        emitArmBody(env, body)
         print(";\n")
     }
     print(i12)
@@ -7404,7 +7447,7 @@ func emitVisitFallback(_ env: inout TyEnv, _ i12: Str, _ arm: Nd) using Alloc, L
 func emitVisitFallbackBody(_ env: inout TyEnv, _ i12: Str, _ body: Vec[Nd]) using Alloc, Log {
     print(i12)
     print("return ")
-    emitBoxed(env, body)
+    emitArmBody(env, body)
     print(";\n")
 }
 
@@ -7429,7 +7472,7 @@ func emitVisitDefaultParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ body: Ve
     print("} else {\n")
     print(i12)
     print("return ")
-    emitBoxed(env, body)
+    emitArmBody(env, body)
     print(";\n")
     print(i8)
     print("}\n")
@@ -7922,6 +7965,76 @@ func identBaseName(_ base: Vec[Nd]) using Alloc -> String {
     }
 }
 
+// §7 a LEADING-DOT case reference — `.plus`, or `.just(v)` in the call form —
+// names no enum of its own. The bootstrap recovers one from the expression's
+// RESOLVED type; vgen recovers it from the SLOT the value flows into, so `to`
+// is that slot's Vestra type spelling. Returns false when there is nothing to
+// key off (an unknown slot leaves the existing fallback in place) — every
+// caller is a `tryEmit…` guard, never a commitment.
+func tryEmitLeadingDot(_ env: inout TyEnv, _ to: Str, _ v: Vec[Nd]) using Alloc, Log -> Bool {
+    if v.len() == 0 { return false }
+    if streq(to, "") { return false }
+    return match v.get(0) ?? Nd.wildcard {
+        case .leadingDot(let n): tryEmitLeadingDotBare(env, to, n)
+        case .call(let callee, let args): tryEmitLeadingDotCall(env, to, callee, args)
+        default: false
+    }
+}
+
+func tryEmitLeadingDotBare(_ env: inout TyEnv, _ to: Str, _ n: Str) using Alloc, Log -> Bool {
+    let noArgs: Vec[Nd] = Vec.new()
+    return tryEmitLeadingDotCase(env, to, n, noArgs)
+}
+
+func tryEmitLeadingDotCall(_ env: inout TyEnv, _ to: Str, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if callee.len() == 0 { return false }
+    return match callee.get(0) ?? Nd.wildcard {
+        case .leadingDot(let n): tryEmitLeadingDotCase(env, to, n, args)
+        default: false
+    }
+}
+
+// The three shapes, in the bootstrap's order (cpp_emitter.cpp ~5058):
+//   * §A4 (§14.9.1) `Ordering` is not a user enum at all — its cases ARE the
+//     `std::memory_order_*` literals, two of them snake_cased. Checked first,
+//     since no declaration exists to look up.
+//   * a payload-carrying (sum-type) enum takes the variant wrap, spelled with
+//     the INSTANTIATED name when the slot carries generic arguments.
+//   * a payload-free enum is a plain scoped reference off the DECLARED name.
+func tryEmitLeadingDotCase(_ env: inout TyEnv, _ to: Str, _ n: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    let base = genBaseOf(to)
+    if streq(base, "Ordering") { emitMemoryOrder(n); return true }
+    if !tyIsEnumName(env, base) { return false }
+    if isPayloadEnum(env, base) {
+        let nm = cppOfSpelling(own(to))
+        emitPayloadCase(env, nm, n, args)
+        return true
+    }
+    print(base)
+    print("::")
+    print(n)
+    return true
+}
+
+func emitMemoryOrder(_ n: Str) using Alloc, Log {
+    print("std::memory_order_")
+    if streq(n, "acqRel") { print("acq_rel"); return }
+    if streq(n, "seqCst") { print("seq_cst"); return }
+    print(n)   // relaxed / acquire / release spell identically
+}
+
+// Whether <name> names an enum declared in this unit (generic instantiations
+// match by base name).
+func tyIsEnumName(_ env: inout TyEnv, _ name: Str) using Alloc -> Bool {
+    let bn = genBaseOf(name)
+    var k: Int = 0
+    while k < env.eName.len() {
+        if let e = env.eName.get(k) { if streq(e, bn) { return true } }
+        k = k + 1
+    }
+    return false
+}
+
 // `Enum{Enum::case_t{<args>}}` — variant construction for a payload-enum case
 // (a bare case passes an empty argument list, yielding `{}`).
 func emitPayloadCase(_ env: inout TyEnv, _ enumName: Str, _ caseName: Str, _ args: Vec[Nd]) using Alloc, Log {
@@ -8175,6 +8288,7 @@ func emitSlotArg(_ env: inout TyEnv, _ to: Str, _ a: Nd) using Alloc, Log {
 }
 
 func emitSlotArgVal(_ env: inout TyEnv, _ to: Str, _ val: Vec[Nd]) using Alloc, Log {
+    if tryEmitLeadingDot(env, to, val) { return }
     let from = tyInferBoxed(env, val)
     emitMaybeCoerced(env, needsStrCoercion(from, to), val)
 }
@@ -8514,6 +8628,7 @@ func emitCallArgVal(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int, 
         }
     }
     let to = callArgTypeSpelling(env, owner, fname, idx)
+    if tryEmitLeadingDot(env, to, val) { return }
     let from = tyInferBoxed(env, val)
     emitMaybeCoerced(env, needsStrCoercion(from, to), val)
 }
@@ -8644,6 +8759,7 @@ func emitCtorFieldParts(_ env: inout TyEnv, _ sn: Str, _ label: Str, _ val: Vec[
     print(label)
     print(" = ")
     let to = tyFieldType(env, own(sn), own(label))
+    if tryEmitLeadingDot(env, to, val) { return }
     let from = tyInferBoxed(env, val)
     emitMaybeCoerced(env, needsStrCoercion(from, to), val)
 }

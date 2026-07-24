@@ -1,0 +1,121 @@
+// Codegen slice 62 (corpus burndown 8): LEADING-DOT case references. `.plus`
+// names no enum of its own — the bootstrap recovers one from the expression's
+// resolved type, and vgen recovers it from the SLOT the value flows into.
+// Covers the five coercion slots (return, annotated binding, assignment, call
+// argument, struct-construction field) plus match ARM BODIES, and all three
+// lowering shapes: plain scoped reference, sum-type variant wrap, and the
+// builtin `Ordering` whose cases ARE the std::memory_order_* literals.
+
+enum Color {
+    case red
+    case green
+}
+
+enum Shape {
+    case dot
+    case circle(Float64)
+    case label(text: Str)
+}
+
+enum Maybe[T] {
+    case nothing
+    case just(T)
+}
+
+struct Painted {
+    var tint: Color
+    var form: Shape
+}
+
+func takeColor(_ c: Color) -> Int32 {
+    return 1
+}
+
+// Return slot, both shapes: a payload-free enum is a scoped reference, a
+// payload-carrying one takes the variant wrap.
+func defaultColor() -> Color {
+    return .green
+}
+
+func defaultShape() -> Shape {
+    return .dot
+}
+
+// The CALL form carries payload arguments into the variant, positional or
+// labelled.
+func roundShape() -> Shape {
+    return .circle(2.5)
+}
+
+func namedShape() -> Shape {
+    return .label(text: "hi")
+}
+
+// A generic enum spells the INSTANTIATED name on both sides of the wrap.
+func nothingInt() -> Maybe[Int32] {
+    return .nothing
+}
+
+func justInt(_ n: Int32) -> Maybe[Int32] {
+    return .just(n)
+}
+
+// Annotated binding, assignment, call argument, and struct-construction field.
+func viaBinding() -> Int32 {
+    let c: Color = .red
+    return takeColor(c)
+}
+
+func viaAssign() -> Int32 {
+    var c: Color = .red
+    c = .green
+    return takeColor(c)
+}
+
+func viaArg() -> Int32 {
+    return takeColor(.green)
+}
+
+func viaCtor() -> Painted {
+    return Painted(tint: .red, form: .dot)
+}
+
+// Match ARM BODIES resolve against the match's own slot — here the enclosing
+// function's result, since a return-position match carries no annotation.
+func flip(_ c: Color) -> Color {
+    return match c {
+        case .red: .green
+        case .green: .red
+    }
+}
+
+func shapeFor(_ c: Color) -> Shape {
+    return match c {
+        case .red: .circle(1.0)
+        case .green: .dot
+    }
+}
+
+// An arm body of a PAYLOAD match (the std::visit lowering) resolves the same
+// way, and an annotated binding supplies the slot when there is no result type
+// to fall back on.
+func describe(_ s: Shape) -> Color {
+    let c: Color = match s {
+        case .circle(let r): .red
+        default: .green
+    }
+    return c
+}
+
+// §A4 the builtin Ordering: two of the five cases need snake_case.
+func seqOrder() -> Ordering {
+    return .seqCst
+}
+
+func acqRelOrder() -> Ordering {
+    return .acqRel
+}
+
+func relaxedOrder() -> Ordering {
+    return .relaxed
+}
