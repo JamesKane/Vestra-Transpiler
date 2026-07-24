@@ -1,0 +1,18 @@
+// Codegen slice 58 (corpus burndown 4): tuple WILDCARD bindings. A `_`
+// element of a tuple pattern still owes a C++ structured-binding name and
+// mints `__vstr_tp_unused_<N>` on a file-global monotonic counter,
+// mirroring the bootstrap's tuple_pat_counter_. Nested sub-tuple patterns
+// (placeholder + follow-on unpack) stay out of the mirrored subset.
+func divMod(_ a: Int32, _ b: Int32) -> (Int32, Int32) {
+    return (a / b, a - (a / b) * b)
+}
+
+func quotOnly(_ a: Int32, _ b: Int32) -> Int32 {
+    let (q, _) = divMod(a, b)
+    return q
+}
+
+func remOnly(_ a: Int32, _ b: Int32) -> Int32 {
+    let (_, r) = divMod(a, b)
+    return r
+}

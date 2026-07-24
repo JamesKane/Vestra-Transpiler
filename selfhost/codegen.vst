@@ -2944,6 +2944,7 @@ struct TyEnv {
     var curAsync: Bool          // per-function: enclosing function is `async` (returns lower to co_return)
     var imports: Vec[String]    // global: imported module paths (a member base naming one qualifies with `::`)
     var hasModule: Bool         // global: unit declares `module ...` (an entry `main` only exists OUTSIDE a module)
+    var tpN: Int                // file-global `__vstr_tp_unused_<N>` tuple-wildcard counter (monotonic, matches the bootstrap)
     var bad: Vec[String]
 }
 
@@ -4661,6 +4662,7 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     curAsync: false,
                     imports: Vec.new(),
                     hasModule: u.hasMod,
+                    tpN: 0,
                     bad: Vec.new())
     var i: Int = 0
     while i < u.decls.len() {
@@ -6356,27 +6358,36 @@ func patIsTuple(_ pat: Vec[Nd]) -> Bool {
 }
 
 // `let (a, b) = <expr>` lowers to a C++ structured binding: `auto [a, b] = <expr>;`.
+// A wildcard element still owes a C++ binding name and mints
+// `__vstr_tp_unused_<N>` on the file-global counter.
 func emitTupleBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
     print(indent)
     print("auto [")
-    emitTuplePatNames(pat.get(0) ?? Nd.wildcard)
+    emitTuplePatNames(env, pat.get(0) ?? Nd.wildcard)
     print("] = ")
     emitBoxed(env, value)
     print(";\n")
 }
 
-func emitTuplePatNames(_ p: Nd) using Alloc, Log {
+func emitTuplePatNames(_ env: inout TyEnv, _ p: Nd) using Alloc, Log {
     match p {
-        case .tupleP(let elems): emitPatNameList(elems)
+        case .tupleP(let elems): emitPatNameList(env, elems)
         default: noop()
     }
 }
 
-func emitPatNameList(_ elems: Vec[Nd]) using Alloc, Log {
+func emitPatNameList(_ env: inout TyEnv, _ elems: Vec[Nd]) using Alloc, Log {
     var i: Int = 0
     while i < elems.len() {
         if i > 0 { print(", ") }
-        print(patNameOf(elems.get(i) ?? Nd.wildcard))
+        let nm = patNameOf(elems.get(i) ?? Nd.wildcard)
+        if streq(nm, "") {
+            print("__vstr_tp_unused_")
+            print(intToStr(env.tpN))
+            env.tpN = env.tpN + 1
+        } else {
+            print(nm)
+        }
         i = i + 1
     }
 }
