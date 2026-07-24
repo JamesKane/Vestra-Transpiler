@@ -1,0 +1,18 @@
+// Codegen slice 55 (corpus burndown): the entry `main`. A `func main`
+// OUTSIDE any module declaration captures the process arguments —
+// `(int argc, char** argv)` in both the definition and the forward
+// declaration, plus a leading `__vstr::args_init(argc, argv);` so `args()`
+// can read them. A `main` inside a module is an ordinary function (already
+// covered by cg_module). The [[nodiscard]] and return-type rules are the
+// normal ones.
+func helper(_ x: Int32) -> Int32 {
+    return x + 1
+}
+
+func main() -> Int32 {
+    let a = helper(1)
+    if a > 0 {
+        return a
+    }
+    return 0
+}

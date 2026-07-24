@@ -2943,6 +2943,7 @@ struct TyEnv {
     var curThrowsNode: Vec[Nd]  // per-function: the `throws(E)` type node (empty when the function does not throw)
     var curAsync: Bool          // per-function: enclosing function is `async` (returns lower to co_return)
     var imports: Vec[String]    // global: imported module paths (a member base naming one qualifies with `::`)
+    var hasModule: Bool         // global: unit declares `module ...` (an entry `main` only exists OUTSIDE a module)
     var bad: Vec[String]
 }
 
@@ -4658,6 +4659,7 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     curThrowsNode: Vec.new(),
                     curAsync: false,
                     imports: Vec.new(),
+                    hasModule: u.hasMod,
                     bad: Vec.new())
     var i: Int = 0
     while i < u.decls.len() {
@@ -5112,7 +5114,7 @@ func emitFieldDef(_ name: Str, _ ty: Vec[Nd]) using Alloc, Log {
 // template definition (C++ templates must be visible at the instantiation
 // site), in source position.
 func emitHppFunc(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
-    if gens.len() == 0 { emitFwdDecl(mods, name, params, thr, res); return }
+    if gens.len() == 0 { emitFwdDecl(env, mods, name, params, thr, res); return }
     emitTemplateFunc(env, mods, gens, name, params, thr, res, body)
 }
 
@@ -5137,14 +5139,24 @@ func genName(_ g: Nd) using Alloc -> String {
 // return type is written explicitly (even `-> Unit`) or the function carries a
 // throws clause (the fallible result must not be dropped); an omitted return
 // type gets a bare `void`.
-func emitFwdDecl(_ mods: Str, _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
+func emitFwdDecl(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
     if res.len() > 0 || thr.len() > 0 { print("[[nodiscard]] ") }
     emitTaskRet(isAsyncMods(mods), thr, res)
     print(" ")
     print(name)
     print("(")
-    emitParamsMode(params, isAsyncMods(mods))
+    if isEntryMain(env, name) { print("int argc, char** argv") }
+    else { emitParamsMode(params, isAsyncMods(mods)) }
     print(");\n")
+}
+
+// The entry `main` (a `func main` OUTSIDE any module declaration) captures the
+// process arguments: `(int argc, char** argv)` plus a leading
+// `__vstr::args_init(argc, argv);` so `args()` can read them. A `main` inside
+// a module is an ordinary function.
+func isEntryMain(_ env: inout TyEnv, _ name: Str) -> Bool {
+    if env.hasModule { return false }
+    return streq(name, "main")
 }
 
 func emitFunc(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
@@ -5153,13 +5165,15 @@ func emitFunc(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd], _
     print(" ")
     print(name)
     print("(")
-    emitParamsMode(params, isA)
+    if isEntryMain(env, name) { print("int argc, char** argv") }
+    else { emitParamsMode(params, isA) }
     print(") {\n")
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
     tySetRetNode(&env, res)
     tySetThrowsNode(&env, thr)
     env.curAsync = isA
+    if isEntryMain(env, name) { print("    __vstr::args_init(argc, argv);\n") }
     emitBody(env, body)
     if isA && res.len() == 0 && !blockEndsInReturn(body) { print("    co_return;\n") }
     print("}\n\n")
