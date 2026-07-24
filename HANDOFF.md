@@ -37,12 +37,13 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 
 ## Current state
 
-- **1500 / 1500 tests pass** (`ctest --test-dir build/debug`), Debug build,
-  format-check clean. Of these, **210 are `e2e_selfhost`** (4 lexer, 11 parser,
-  74 sema, 117 codegen, 4 end-to-end demo).
-- Tip commit: `5c49e30` (codegen slice 60, nested match — corpus burndown
-  6). Slice 31's probe also produced `62b747b`, a **bootstrap emitter fix the
-  differential found** (see below). 102 commits carry the `selfhost:` prefix.
+- **1502 / 1502 tests pass** (`ctest --test-dir build/debug`), Debug build,
+  format-check clean. Of these, **212 are `e2e_selfhost`** (4 lexer, 11 parser,
+  74 sema, 119 codegen, 4 end-to-end demo).
+- Tip commit: `f13b4eb` (codegen slice 61, tuple for-patterns — corpus
+  burndown 7). Slice 31's probe also produced `62b747b`, a **bootstrap emitter
+  fix the differential found** (see below). 103 commits carry the `selfhost:`
+  prefix.
 - Phase status:
   - **Lexer: done.** Token stream byte-identical on the sample corpus and on
     the self-hosted lexer source itself.
@@ -57,7 +58,7 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
     generics tracking (unknown-type, is-not-generic), all match families
     (guard-Bool, exhaustiveness, arm-type, pattern checks), and multi-file
     modules (import resolution, qualified member + type).
-  - **Codegen: 60 slices; the close-out roadmap is complete and the corpus
+  - **Codegen: 61 slices; the close-out roadmap is complete and the corpus
     burndown is active.** See "Where to pick up" below.
 
 ## Where to pick up: codegen
@@ -267,12 +268,14 @@ param types need full generic instantiation, not recoverable structurally.
 
 **The corpus burndown is ACTIVE (slices 55+): 21 of 150 examples
 byte-identical** (baseline was 11), and **total divergence across the corpus
-is down 41%, 23394 → 13825 lines**. Landed: 55 entry main (`argc/argv` +
+is down from 23394 lines to 13559** (both under the minimal-diff count the
+sweep now uses; see the metric note below). Landed: 55 entry main (`argc/argv` +
 `args_init`, non-module files only — module-form mains already worked), 56
 nil + statement if-let (62 example files use if-let), 57 scalar-conversion
 casts (`Int32(x)` → `static_cast<...>`) + the iterator-protocol for-loop
 (known-struct iterables), 58 tuple wildcard bindings (`__vstr_tp_unused_N`),
-59 match payload binding TYPES, 60 nested match expressions.
+59 match payload binding TYPES, 60 nested match expressions, 61 tuple
+for-loop patterns.
 
 Slices 59–60 are one arc and were measured together. **59** gave a payload
 arm's binding the case's declared field type (a new `ecfTy` column beside
@@ -290,10 +293,22 @@ fix in `tyInferMatch`, which ran before the emitter registered arm bindings
 and so typed `x + y` over two payload names as `Int` rather than `Int32`;
 it now registers each arm's bindings before typing that arm.
 
-**Note on the metric:** the identical-example count held at 21 across both
-slices even as 9569 divergent lines disappeared. The interpreter demos each
-carry several remaining families, so line count is the finer-grained signal
-mid-arc; example count only moves when a file's LAST family closes.
+Slice **61** made a tuple for-pattern a C++ structured binding —
+`for (k, v) in m.entries()` had been flattening to a single name and
+emitting `for (auto&& : …)`, invalid C++, in 26 examples. `emitForHead` and
+friends now take the PATTERN rather than a pre-flattened name, reusing slice
+58's name list so a `_` element still mints `__vstr_tp_unused_<N>`.
+
+**Two notes on the metric.** First, the identical-example count held at 21
+across slices 59–61 even as ~9800 divergent lines disappeared: the
+interpreter demos each carry several remaining families, so line count is
+the finer-grained signal mid-arc and example count only moves when a file's
+LAST family closes. Second, line counts MUST come from minimal diffs
+(`diff -d`, which the sweep now uses). Plain diff picks a non-minimal edit
+script whose size depends on how surrounding text aligns, so repairing one
+hunk can inflate the count elsewhere — slice 61 was falsely reported as a
+regression that way. Reports produced before that fix read a few lines high
+and are not comparable.
 
 The sweep itself is [`scripts/sweep_codegen_corpus.sh`](scripts/sweep_codegen_corpus.sh):
 `--build` rebuilds `vgen` first, and `--compare <earlier-report>` prints the
@@ -305,15 +320,13 @@ stopped being identical. Run it before and after every burndown slice —
 ./scripts/sweep_codegen_corpus.sh --build --compare build/sweep/before.txt
 ```
 
-**Next families, ranked by the post-slice-60 sweep:**
-(1) HASHMAP/VEC ENTRY DESTRUCTURING in for-loops — vgen emits
-`for (auto&&  : __vstr::map_entries(m))` with the binding list dropped
-entirely, which is both a divergence and invalid C++. (2) LEADING-DOT
+**Next families, ranked by the post-slice-61 sweep:**
+(1) LEADING-DOT
 `.case` in typed slots (`return .plus` → `Tok::plus`) — needs expected-type
 threading at the five coercion slots, plus the `Ordering` →
 `std::memory_order_*` snake-case rule and the payload-enum variant wrap (see
 the bootstrap's LeadingDotExpr case, cpp_emitter.cpp ~5058, and the call
-form at ~4614). (3) OR-PATTERNS (`case .a(n) | .b(n):`) — one if-constexpr
+form at ~4614). (2) OR-PATTERNS (`case .a(n) | .b(n):`) — one if-constexpr
 branch per alternative sharing the arm body (see examples/match.vst;
 `armCaseName` on an `orP` currently yields the broken `Enum::_t`). Smaller
 but cheap: `[[gnu::*]]` attribute passthrough (7 examples), derive-generated
