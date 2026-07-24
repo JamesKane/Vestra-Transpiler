@@ -1,0 +1,58 @@
+// Codegen slice 52: the generics tail. (a) A const-generic param
+// (`[const N: Int32]`) heads its template as `template <std::size_t N>` —
+// size_t regardless of the declared integer type — and a `[N]T` field
+// spells `std::array<T, N>`, indexing PLAINLY inside methods (`self` now
+// types as the owning struct, so field accesses infer). (b) A bound
+// (`[T: Ord]`) erases to plain `class T`, as the bootstrap drops bounds
+// too. (c) A generic construction in ARGUMENT position recovers its
+// instantiated name from the callee's parameter type node. (d) A method
+// with its OWN generic params emits with NO template head — a shared
+// bootstrap gap (like the closure->fn-ptr lowering, this output does not
+// C++-compile; the differential is textual).
+struct Buffer[const N: Int32] {
+    var data: [N]Int32
+
+    func first() -> Int32 {
+        return self.data[0]
+    }
+}
+
+func bounded[T: Ord](_ a: T, _ b: T) -> T {
+    if a < b {
+        return b
+    }
+    return a
+}
+
+struct Pair[T] {
+    var first: T
+    var second: T
+}
+
+func mkPair(_ x: Int32) -> Pair[Int32] {
+    return Pair(first: x, second: x + 1)
+}
+
+func consume(_ p: Pair[Int32]) -> Int32 {
+    return p.first
+}
+
+func viaArg(_ x: Int32) -> Int32 {
+    return consume(Pair(first: x, second: x))
+}
+
+struct Holder {
+    var n: Int32
+
+    func pick[T](_ a: T, _ b: T) -> T {
+        if self.n > 0 {
+            return a
+        }
+        return b
+    }
+}
+
+func usePick(_ h: Holder) -> Int32 {
+    var v = h
+    return v.pick(1, 2)
+}
