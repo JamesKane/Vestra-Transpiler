@@ -1,0 +1,68 @@
+// Codegen slice 59 (corpus burndown 5): a match in nested EXPRESSION position.
+// A match arm's body is a single expression, so a match on a second scrutinee
+// can only appear AS that body — the shape every interpreter demo uses to
+// dispatch on a pair of tagged values. Two details the reference pins down:
+// the nested lowering lays out at the FIXED statement indent rather than the
+// arm's column (the bootstrap indents absolutely), and its lambda takes the
+// nested match's OWN result type, not the enclosing function's.
+
+enum Value {
+    case int(Int32)
+    case flag(Bool)
+}
+
+enum Tag {
+    case lo
+    case hi
+}
+
+// Payload match (std::visit) nested inside a payload match — the result type
+// here happens to equal the function's, the common interpreter shape.
+func addInts(_ a: Value, _ b: Value) -> Int32 {
+    return match a {
+        case .int(let x): match b {
+            case .int(let y): x + y
+            default: 0
+        }
+        default: 0
+    }
+}
+
+// The nested match's type DIVERGES from the enclosing function's result, so a
+// `curRetNode` fallback would emit the wrong lambda return type.
+func describe(_ a: Value, _ b: Value) -> Int32 {
+    return match a {
+        case .flag(let f): boolToInt(match b {
+            case .flag(let g): f && g
+            default: false
+        })
+        default: 0
+    }
+}
+
+func boolToInt(_ b: Bool) -> Int32 {
+    if b { return 1 }
+    return 0
+}
+
+// A payload-free (switch) match nested in a payload arm, and the mirror case —
+// both non-visit lowerings still reset to the statement indent.
+func scale(_ v: Value, _ t: Tag) -> Int32 {
+    return match v {
+        case .int(let x): match t {
+            case .lo: x
+            case .hi: x * 10
+        }
+        default: 0
+    }
+}
+
+func pick(_ t: Tag, _ v: Value) -> Int32 {
+    return match t {
+        case .lo: match v {
+            case .int(let x): x
+            default: 0
+        }
+        case .hi: 100
+    }
+}

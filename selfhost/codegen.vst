@@ -4079,17 +4079,55 @@ func tyAwaitOf(_ t: String) using Alloc -> String {
 }
 
 // A match expression types as its first known-typed arm body — the same baseline
-// tyCheckArmTypes unifies the remaining arms against. Pattern-bound payload
-// names are unknown to the symbol table, so a payload arm's body may stay
-// unknown; an annotated binding supplies the type in that case.
+// tyCheckArmTypes unifies the remaining arms against. Each arm's payload
+// bindings are registered before its body is typed: the emitter adds the same
+// rows when it writes the `auto&& <bind> = __vstr_alt.<field>;` lines, but
+// inference runs FIRST (a match is asked for its own result type before its
+// scopes are emitted), so a body like `x + y` over two payload names would
+// otherwise type against an empty symbol table.
 func tyInferMatch(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc -> String {
+    let enumName = tyInferBoxed(env, scrut)
     var i: Int = 0
     while i < arms.len() {
-        let t = tyArmBodyType(env, arms.get(i) ?? Nd.wildcard)
+        let a = arms.get(i) ?? Nd.wildcard
+        tyRegisterArmPayload(env, enumName, a)
+        let t = tyArmBodyType(env, a)
         if !streq(t, "") { return t }
         i = i + 1
     }
     return own("")
+}
+
+// Give one arm's payload bindings their declared field types. Re-registering a
+// name is harmless — `tySymType` returns the first row, and the emitter pushes
+// the identical spelling.
+func tyRegisterArmPayload(_ env: inout TyEnv, _ enumName: Str, _ a: Nd) using Alloc {
+    match a {
+        case .matchArm(let isDef, let pat, let guard, let body): tyRegisterPatPayload(env, enumName, pat)
+        default: noop()
+    }
+}
+
+func tyRegisterPatPayload(_ env: inout TyEnv, _ enumName: Str, _ pat: Vec[Nd]) using Alloc {
+    match pat.get(0) ?? Nd.wildcard {
+        case .enumP(let cname, let children): tyRegisterPayList(env, enumName, cname, children)
+        default: noop()
+    }
+}
+
+func tyRegisterPayList(_ env: inout TyEnv, _ enumName: Str, _ cname: Str, _ children: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < children.len() {
+        tyRegisterPayOne(env, enumName, cname, children.get(i) ?? Nd.wildcard, i)
+        i = i + 1
+    }
+}
+
+func tyRegisterPayOne(_ env: inout TyEnv, _ enumName: Str, _ cname: Str, _ child: Nd, _ idx: Int) using Alloc {
+    let bn = patNameOf(child)
+    if streq(bn, "") { return }
+    let fty = tyPayFieldTy(env, enumName, cname, idx)
+    tyAddSymSpelling(&env, own(bn), fty)
 }
 
 // An array literal `[e1, ...]` types as `[N]T`, where N is the element count and
@@ -6993,6 +7031,33 @@ func emitReturnMatchParts(_ env: inout TyEnv, _ indent: Str, _ scrut: Vec[Nd], _
     print(";\n")
 }
 
+// A match in a nested EXPRESSION position — most often the body of an
+// enclosing match arm (`case .str(let h): match needle { ... }`), since an arm
+// body is a single expression. Two things differ from the statement-level
+// positions above:
+//
+//   * The indent is the FIXED statement level, not the arm's column. The
+//     bootstrap shapes the lowering with absolute `write_indent` calls, so a
+//     match nested three scopes deep still lays its `using` / `if constexpr` /
+//     closing `}, <scrut>.value)` lines out at the same columns a top-level one
+//     would. Passing the enclosing indent down would drift from the reference.
+//   * The lambda's result type is the nested match's OWN type (the bootstrap
+//     reads `type_of(&m)`), not the enclosing function's result — so infer it
+//     here rather than letting `emitMatchRetTy` fall back to `curRetNode`.
+func emitNestedMatch(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    let sp = tyInferMatch(env, scrut, arms)
+    let tyStr = nestedMatchTyStr(sp)
+    let noTy: Vec[Nd] = Vec.new()
+    emitMatchValue(env, "    ", noTy, tyStr, scrut, arms)
+}
+
+// A match with no inferable type (or a Unit one) types its lambda `auto`, the
+// same fallback the bootstrap's `emit_match_result_type` takes.
+func nestedMatchTyStr(_ sp: Str) using Alloc -> String {
+    if streq(sp, "") || streq(sp, "Unit") { return own("auto") }
+    return cppOfSpelling(own(sp))
+}
+
 // The lambda-expression core of a match lowering, shared by every position
 // (return value, binding initializer, bare statement). Emits from `[&](` or
 // `std::visit(` through the closing `()` — the caller prints whatever precedes
@@ -7450,6 +7515,7 @@ func emitExpr(_ env: inout TyEnv, _ e: Nd) using Alloc, Log {
         case .tupleLit(let elems): emitTupleLit(env, elems)
         case .interpE(let parts, let exprs): emitInterp(env, parts, exprs)
         case .prefixE(let kw, let inner): emitPrefixE(env, kw, inner)
+        case .matchE(let scrut, let arms): emitNestedMatch(env, scrut, arms)
         default: print("/*?expr*/")
     }
 }
