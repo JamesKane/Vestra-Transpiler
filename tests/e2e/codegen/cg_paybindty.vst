@@ -1,0 +1,65 @@
+// Codegen slice 59 (corpus burndown 5): TYPES for match payload bindings.
+// A payload arm binds `auto&& s = __vstr_alt._0;` — until now with no entry in
+// the symbol table, so every type-directed lowering went blind inside the arm.
+// Giving the binding the case's DECLARED field type restores them all:
+// §18.5 builtin-method dispatch (which keys off the base's type spelling),
+// Str -> String coercion, and the return-type inference chained calls need.
+
+enum Value {
+    case str(Str)
+    case count(Int32)
+    case items(Vec[Int32])
+}
+
+func mkString(_ s: Str) using Alloc -> String {
+    let t: String = s
+    return t
+}
+
+func takeString(_ s: String) -> Int32 {
+    return 1
+}
+
+// Builtin methods dispatch off the binding's type: a Str base lowers `len` to
+// `.size()` (cast to Int), a Vec base to its own `.size()`.
+func widthOf(_ v: Value) -> Int {
+    return match v {
+        case .str(let s): s.len()
+        case .items(let xs): xs.len()
+        default: 0
+    }
+}
+
+// A Str binding reaches the whole string surface — and the optional-returning
+// members still compose with `??`.
+func firstByte(_ v: Value) -> UInt8 {
+    return match v {
+        case .str(let s): s.byteAt(0) ?? 0
+        default: 0
+    }
+}
+
+func hasNeedle(_ v: Value, _ needle: Str) -> Bool {
+    return match v {
+        case .str(let s): s.contains(needle)
+        default: false
+    }
+}
+
+// A numeric binding's `toString` is the __vstr free function; its String result
+// meets the other arm's String without a re-wrap.
+func render(_ v: Value) using Alloc -> String {
+    return match v {
+        case .count(let n): n.toString()
+        default: mkString("none")
+    }
+}
+
+// Str -> String coercion fires on a payload binding the same as on a `let` —
+// here at the call-argument slot.
+func owned(_ v: Value) -> Int32 {
+    return match v {
+        case .str(let s): takeString(s)
+        default: 0
+    }
+}

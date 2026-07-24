@@ -2928,6 +2928,7 @@ struct TyEnv {
     var ecfCase: Vec[String]    // ... case name ...
     var ecfIdx: Vec[Int]        // ... field index ...
     var ecfName: Vec[String]    // ... -> declared field label ("" if positional)
+    var ecfTy: Vec[String]      // ... -> declared field TYPE spelling (for typing a match arm's payload binding)
     var symName: Vec[String]    // per-function: binding name ...
     var symType: Vec[String]    // ... -> type spelling
     var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
@@ -3001,16 +3002,22 @@ func tyPushCaseFields(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ pa
 
 func tyPushCaseField(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ idx: Int, _ pe: Nd) using Alloc {
     match pe {
-        case .payElem(let label, let ty): tyPushCaseFieldRow(env, enumName, cn, idx, label)
+        case .payElem(let label, let ty): tyPushCaseFieldTyped(env, enumName, cn, idx, label, ty)
         default: noop()
     }
 }
 
-func tyPushCaseFieldRow(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ idx: Int, _ label: String) using Alloc {
+func tyPushCaseFieldTyped(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ idx: Int, _ label: String, _ ty: Vec[Nd]) using Alloc {
+    let sp = tyAnnSpelling(ty)
+    tyPushCaseFieldRow(env, enumName, cn, idx, label, sp)
+}
+
+func tyPushCaseFieldRow(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ idx: Int, _ label: String, _ sp: String) using Alloc {
     env.ecfEnum.push(enumName)
     env.ecfCase.push(cn)
     env.ecfIdx.push(idx)
     env.ecfName.push(label)
+    env.ecfTy.push(sp)
 }
 
 func tyPushCase(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ arity: Int) using Alloc {
@@ -3029,6 +3036,24 @@ func tyPayFieldName(_ env: inout TyEnv, _ enumName: Str, _ cn: Str, _ idx: Int) 
             if streq(e, bn) && (env.ecfIdx.get(i) ?? -1) == idx {
                 if let c = env.ecfCase.get(i) {
                     if streq(c, cn) { return env.ecfName.get(i) ?? own("") }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return own("")
+}
+
+// The declared TYPE spelling of payload field <idx> of <enum>.<case> — "" when
+// the case is unknown. Companion of `tyPayFieldName` over the same rows.
+func tyPayFieldTy(_ env: inout TyEnv, _ enumName: Str, _ cn: Str, _ idx: Int) using Alloc -> String {
+    let bn = genBaseOf(enumName)
+    var i: Int = 0
+    while i < env.ecfEnum.len() {
+        if let e = env.ecfEnum.get(i) {
+            if streq(e, bn) && (env.ecfIdx.get(i) ?? -1) == idx {
+                if let c = env.ecfCase.get(i) {
+                    if streq(c, cn) { return env.ecfTy.get(i) ?? own("") }
                 }
             }
         }
@@ -4652,7 +4677,7 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     eName: Vec.new(), ecEnum: Vec.new(),
                     ecName: Vec.new(), ecArity: Vec.new(),
                     ecfEnum: Vec.new(), ecfCase: Vec.new(),
-                    ecfIdx: Vec.new(), ecfName: Vec.new(),
+                    ecfIdx: Vec.new(), ecfName: Vec.new(), ecfTy: Vec.new(),
                     symName: Vec.new(), symType: Vec.new(),
                     curRet: own(""), curRetNode: Vec.new(),
                     tryN: 0, hoistName: Vec.new(), hoistExpr: Vec.new(),
@@ -7349,6 +7374,14 @@ func emitBindingList(_ env: inout TyEnv, _ i16: Str, _ enumName: Str, _ cname: S
 func emitOneBinding(_ env: inout TyEnv, _ i16: Str, _ enumName: Str, _ cname: Str, _ child: Nd, _ idx: Int) using Alloc, Log {
     let bn = patNameOf(child)
     if streq(bn, "") { return }
+    // The binding takes the case's DECLARED field type, so everything typed on
+    // a symbol's spelling — builtin-method dispatch (`s.len()` only lowers to
+    // `.size()` once `s` is known to be a Str), String coercion, chained-call
+    // inference — works on payload bindings the same as on a `let`. Registered
+    // per function like every other symbol row; arm scopes are not modelled, so
+    // a name reused across arms with different payload types would collide.
+    let fty = tyPayFieldTy(env, enumName, cname, idx)
+    tyAddSymSpelling(&env, own(bn), fty)
     print(i16)
     print("auto&& ")
     print(bn)
