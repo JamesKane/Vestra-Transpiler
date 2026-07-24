@@ -6306,6 +6306,12 @@ func emitDoCatchParts(_ env: inout TyEnv, _ tyB: Vec[Nd], _ db: Vec[Nd], _ en: S
     print(";\n }(); if (__vstr_do.has_value()) { return *__vstr_do; } [[maybe_unused]] auto ")
     print(en)
     print(" = __vstr_do.error(); return ")
+    // The catch binding carries the declared error type. Registering it lets
+    // the catch body type-dispatch on `e` — most visibly, a `match e` over an
+    // error ENUM has to reach the switch lowering rather than being taken for
+    // a value scrutinee.
+    let esp = tyAnnSpelling(et)
+    tyAddSymSpelling(&env, own(en), esp)
     emitCatchTail(env, cb)
     print("; }())")
 }
@@ -7124,8 +7130,208 @@ func emitArmBody(_ env: inout TyEnv, _ body: Vec[Nd]) using Alloc, Log {
     emitBoxed(env, body)
 }
 
+// A match on a NON-ENUM scrutinee — a Str, a number, a Bool, a tuple — cannot
+// dispatch on cases, so the bootstrap lowers it to an IIFE that binds the
+// scrutinee ONCE and walks an if/else-if chain of per-arm PREDICATES
+// (cpp_emitter_match.cpp emit_match_value_scrutinee). vgen used to assume an
+// enum unconditionally and emit `case <spelling>::<case>`, which for a Str
+// scrutinee came out as the nonsense `case Str:::`.
+//
+// The dispatch mirrors the bootstrap's: anything whose scrutinee does not name
+// a declared enum takes this path. That includes a scrutinee vgen FAILED to
+// infer — the same fallback the bootstrap takes for an unresolved type, and
+// better than the broken switch it produced before.
+func emitValueMatch(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyStr: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    print("[&]() -> ")
+    emitMatchRetTy(env, ty, tyStr)
+    print(" {\n")
+    let i8 = deeper(indent)
+    print(i8)
+    print("auto&& __vstr_m = ")
+    emitBoxed(env, scrut)
+    print(";\n")
+    let i12 = deeper(i8)
+    // A default / wildcard arm is pulled out to the tail wherever it sits; the
+    // arms after it still join the chain, matching the bootstrap's walk.
+    var di: Int = 0 - 1
+    var k: Int = 0
+    var j: Int = 0
+    while j < arms.len() {
+        if armIsDefault(arms.get(j) ?? Nd.wildcard) {
+            di = j
+        } else {
+            emitValueArm(env, i8, i12, arms.get(j) ?? Nd.wildcard, k)
+            k = k + 1
+        }
+        j = j + 1
+    }
+    if di >= 0 {
+        emitValueDefault(env, i8, arms.get(di) ?? Nd.wildcard, k)
+    } else {
+        print(i8)
+        if k == 0 { print("std::unreachable();\n") } else { print("else { std::unreachable(); }\n") }
+    }
+    print(indent)
+    print("}()")
+}
+
+func emitValueArm(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ arm: Nd, _ k: Int) using Alloc, Log {
+    match arm {
+        case .matchArm(let isDef, let pat, let guard, let body): emitValueArmParts(env, i8, i12, pat, guard, body, k)
+        default: noop()
+    }
+}
+
+func emitValueArmParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd], _ k: Int) using Alloc, Log {
+    print(i8)
+    if k == 0 { print("if (") } else { print("else if (") }
+    emitPatPredicate(env, pat, "__vstr_m")
+    if guard.len() > 0 {
+        print(" && (")
+        emitBoxed(env, guard)
+        print(")")
+    }
+    print(") {\n")
+    emitPatBindings(env, pat, "__vstr_m", i12)
+    print(i12)
+    print("return ")
+    emitArmBody(env, body)
+    print(";\n")
+    print(i8)
+    print("}\n")
+}
+
+// The trailing default. With no predicate arm ahead of it the chain never
+// opened, so it emits a bare brace rather than `else`.
+func emitValueDefault(_ env: inout TyEnv, _ i8: Str, _ arm: Nd, _ k: Int) using Alloc, Log {
+    match arm {
+        case .matchArm(let isDef, let pat, let guard, let body): emitValueDefaultParts(env, i8, body, k)
+        default: noop()
+    }
+}
+
+func emitValueDefaultParts(_ env: inout TyEnv, _ i8: Str, _ body: Vec[Nd], _ k: Int) using Alloc, Log {
+    print(i8)
+    if k == 0 { print("{ ") } else { print("else { ") }
+    print("return ")
+    emitArmBody(env, body)
+    print("; }\n")
+}
+
+// The boolean test an arm's pattern makes against <base>. Always-match patterns
+// (wildcard, plain binding) are `true`; the binding itself is emitted separately
+// by emitPatBindings.
+func emitPatPredicate(_ env: inout TyEnv, _ pat: Vec[Nd], _ base: Str) using Alloc, Log {
+    if pat.len() == 0 { print("true"); return }
+    emitPatPredicateNode(env, pat.get(0) ?? Nd.wildcard, base)
+}
+
+func emitPatPredicateNode(_ env: inout TyEnv, _ p: Nd, _ base: Str) using Alloc, Log {
+    match p {
+        case .litP(let lit): emitLitPred(env, base, lit)
+        case .rangeP(let lo, let hi, let incl): emitRangePred(env, base, lo, hi, incl)
+        case .orP(let alts): emitOrPred(env, base, alts)
+        case .tupleP(let elems): emitTuplePred(env, base, elems)
+        default: print("true")
+    }
+}
+
+func emitLitPred(_ env: inout TyEnv, _ base: Str, _ lit: Vec[Nd]) using Alloc, Log {
+    print("(")
+    print(base)
+    print(" == ")
+    emitBoxed(env, lit)
+    print(")")
+}
+
+func emitRangePred(_ env: inout TyEnv, _ base: Str, _ lo: Vec[Nd], _ hi: Vec[Nd], _ incl: Bool) using Alloc, Log {
+    print("(")
+    emitBoxed(env, lo)
+    print(" <= ")
+    print(base)
+    print(" && ")
+    print(base)
+    if incl { print(" <= ") } else { print(" < ") }
+    emitBoxed(env, hi)
+    print(")")
+}
+
+func emitOrPred(_ env: inout TyEnv, _ base: Str, _ alts: Vec[Nd]) using Alloc, Log {
+    print("(")
+    var i: Int = 0
+    while i < alts.len() {
+        if i > 0 { print(" || ") }
+        emitPatPredicateNode(env, alts.get(i) ?? Nd.wildcard, base)
+        i = i + 1
+    }
+    print(")")
+}
+
+// Each element tests against `std::get<i>(<base>)`; an element-less tuple
+// pattern degenerates to `(true)`.
+func emitTuplePred(_ env: inout TyEnv, _ base: Str, _ elems: Vec[Nd]) using Alloc, Log {
+    print("(")
+    var i: Int = 0
+    while i < elems.len() {
+        if i > 0 { print(" && ") }
+        let sub = tupleSubBase(base, i)
+        emitPatPredicateNode(env, elems.get(i) ?? Nd.wildcard, sub)
+        i = i + 1
+    }
+    if elems.len() == 0 { print("true") }
+    print(")")
+}
+
+func tupleSubBase(_ base: Str, _ i: Int) using Alloc -> String {
+    var s: String = "std::get<"
+    s.append(intToStr(i))
+    s.append(">(")
+    s.append(base)
+    s.append(")")
+    return s
+}
+
+// `auto&& <name> = <base>;` for every name the pattern introduces. Literal,
+// range, or, and wildcard patterns introduce none; a tuple recurses into its
+// elements at the SAME indent.
+func emitPatBindings(_ env: inout TyEnv, _ pat: Vec[Nd], _ base: Str, _ ind: Str) using Alloc, Log {
+    if pat.len() == 0 { return }
+    emitPatBindingsNode(env, pat.get(0) ?? Nd.wildcard, base, ind)
+}
+
+func emitPatBindingsNode(_ env: inout TyEnv, _ p: Nd, _ base: Str, _ ind: Str) using Alloc, Log {
+    match p {
+        case .identP(let n): emitOnePatBinding(ind, n, base)
+        case .bindP(let n): emitOnePatBinding(ind, n, base)
+        case .tupleP(let elems): emitTupleBindings(env, elems, base, ind)
+        default: noop()
+    }
+}
+
+func emitTupleBindings(_ env: inout TyEnv, _ elems: Vec[Nd], _ base: Str, _ ind: Str) using Alloc, Log {
+    var i: Int = 0
+    while i < elems.len() {
+        let sub = tupleSubBase(base, i)
+        emitPatBindingsNode(env, elems.get(i) ?? Nd.wildcard, sub, ind)
+        i = i + 1
+    }
+}
+
+func emitOnePatBinding(_ ind: Str, _ n: Str, _ base: Str) using Alloc, Log {
+    print(ind)
+    print("auto&& ")
+    print(n)
+    print(" = ")
+    print(base)
+    print(";\n")
+}
+
 func emitMatchValueParts(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyStr: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
     let enumName = tyInferBoxed(env, scrut)
+    if !tyIsEnumName(env, enumName) {
+        emitValueMatch(env, indent, ty, tyStr, scrut, arms)
+        return
+    }
     // A guarded payload-free match cannot be a switch (a guard is a runtime
     // condition); it lowers to an if/else-if chain over the scrutinee.
     if !isPayloadEnum(env, enumName) && anyArmGuarded(arms) {

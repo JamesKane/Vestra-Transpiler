@@ -1,0 +1,78 @@
+// Codegen slice 63 (corpus burndown 9): match on a NON-ENUM scrutinee. A Str,
+// number, Bool or tuple has no cases to switch on, so the bootstrap binds the
+// scrutinee once and walks an if/else-if chain of per-arm PREDICATES. vgen
+// used to assume an enum unconditionally, emitting the nonsense `case Str:::`
+// for a string dispatch — the shape every interpreter demo's keyword lookup
+// is built from.
+
+enum Tok {
+    case kwFn
+    case kwIf
+    case word
+}
+
+// Literal patterns over a Str: the predicate is an equality test, and the
+// default becomes the trailing `else`.
+func wordKind(_ nm: Str) -> Tok {
+    return match nm {
+        case "fn": .kwFn
+        case "if": .kwIf
+        default: .word
+    }
+}
+
+// Integer literals, plus a RANGE pattern in both spellings and an OR pattern.
+func band(_ n: Int32) -> Int32 {
+    return match n {
+        case 0: 100
+        case 1..<10: 200
+        case 10..20: 300
+        case 21 | 22 | 23: 400
+        default: 0
+    }
+}
+
+// A guard rides on the arm's predicate.
+func guarded(_ n: Int32) -> Int32 {
+    return match n {
+        case 5 where n > 0: 1
+        case 5: 2
+        default: 0
+    }
+}
+
+// An identifier pattern always matches and introduces a binding, so the
+// predicate is `true` and the body sees `auto&& v = __vstr_m;`.
+func viaBinding(_ n: Int32) -> Int32 {
+    return match n {
+        case 0: 0
+        case v: v + 1
+    }
+}
+
+// A Bool scrutinee is a value scrutinee too.
+func fromBool(_ b: Bool) -> Int32 {
+    return match b {
+        case true: 1
+        default: 0
+    }
+}
+
+// A tuple scrutinee tests each element against `std::get<i>(...)` and binds
+// through the same path.
+func pair(_ p: (Int32, Int32)) -> Int32 {
+    return match p {
+        case (0, 0): 0
+        case (0, let y): y
+        case (let x, 0): x
+        default: 99
+    }
+}
+
+// With no default arm the chain ends in std::unreachable().
+func noDefault(_ n: Int32) -> Int32 {
+    return match n {
+        case 1: 10
+        case _: 20
+    }
+}
