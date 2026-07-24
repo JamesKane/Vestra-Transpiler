@@ -1,0 +1,39 @@
+// Codegen slice 57 (corpus burndown 3): two for-loop-adjacent families.
+// (a) Conversion calls: a bare NUMERIC primitive name in callee position
+// with one argument is a scalar cast — `Int32(0)` -> `static_cast<
+// std::int32_t>(0)` — and types as that primitive (Bool/Char/Unit and the
+// string kinds excluded, matching the bootstrap's primitive_map filter).
+// (b) The iterator protocol: `for v in it` over a KNOWN user struct (not a
+// range, not a container) captures the iterable as a mutable local and
+// drives while-true / .next() / break-on-nullopt with a std::move'd bind;
+// unknown-typed iterables keep the range-based lowering.
+struct CountDown {
+    var n: Int32
+
+    func next() -> Int32? {
+        if self.n <= 0 {
+            return nil
+        }
+        self.n = self.n - 1
+        return self.n
+    }
+}
+
+func sumRange() -> Int32 {
+    var total: Int32 = 0
+    for i in Int32(0)..Int32(10) {
+        total = total + i
+    }
+    for i in Int32(0)..<Int32(10) {
+        total = total + i
+    }
+    return total
+}
+
+func drain(_ cd: CountDown) -> Int32 {
+    var total: Int32 = 0
+    for v in cd {
+        total = total + v
+    }
+    return total
+}

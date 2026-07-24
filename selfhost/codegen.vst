@@ -4353,7 +4353,8 @@ func tyInferPlainCall(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> Stri
     if !streq(r, "") { return r }
     let b = tyBuiltinRet(nm)
     if !streq(b, "") { return b }
-    if tyIsStruct(env, nm) { return nm }
+    // §17.x a conversion call types as its primitive: `Int32(x)` -> Int32.
+    if tyIsStruct(env, nm) || tyIsNumeric(nm) { return nm }
     return own("")
 }
 
@@ -6515,6 +6516,10 @@ func emitWhile(_ env: inout TyEnv, _ indent: Str, _ cond: Vec[Nd], _ body: Vec[N
 // C-style loop with a hoisted `__vstr_end` bound (`<` exclusive, `<=` inclusive),
 // and any other iterable becomes a range-based `for (auto&& v : <iter>)`.
 func emitFor(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ iter: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    if forIsIterProto(env, iter) && !patIsTuple(pat) {
+        emitIterProtoFor(env, indent, patName(pat), iter, body)
+        return
+    }
     print(indent)
     print("for (")
     emitForHead(env, patName(pat), iter)
@@ -6522,6 +6527,35 @@ func emitFor(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ iter: Vec[Nd],
     if body.len() > 0 { emitBlockStmts(env, body.get(0) ?? Nd.wildcard, deeper(indent)) }
     print(indent)
     print("}\n")
+}
+
+// §18.5 the iterator protocol: `for v in it` over a USER type (not a range,
+// not a Vec/Span container) captures the iterable as a mutable local and
+// drives while-true / .next() / break-on-nullopt. Only a KNOWN struct type
+// takes this form on the vgen side — an unknown-typed iterable keeps the
+// range-based lowering (the bootstrap resolves every type; vgen's spelling
+// inference does not).
+func forIsIterProto(_ env: inout TyEnv, _ iter: Vec[Nd]) using Alloc -> Bool {
+    if iter.len() == 0 { return false }
+    let isRange = match iter.get(0) ?? Nd.wildcard {
+        case .binary(let op, let lo, let hi): streq(op, "..") || streq(op, "..<")
+        default: false
+    }
+    if isRange { return false }
+    let t = tyInferBoxed(env, iter)
+    return tyIsStruct(env, t)
+}
+
+func emitIterProtoFor(_ env: inout TyEnv, _ indent: Str, _ v: Str, _ iter: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    print("{ auto __vstr_iter = ")
+    emitBoxed(env, iter)
+    print("; while (true) { auto __vstr_o = __vstr_iter.next(); if (!__vstr_o.has_value()) { break; } auto ")
+    print(v)
+    print(" = std::move(*__vstr_o); {\n")
+    if body.len() > 0 { emitBlockStmts(env, body.get(0) ?? Nd.wildcard, deeper(indent)) }
+    print(indent)
+    print("} } }\n")
 }
 
 func emitForHead(_ env: inout TyEnv, _ v: Str, _ iter: Vec[Nd]) using Alloc, Log {
@@ -7813,6 +7847,7 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     if tryEmitPayloadCase(env, callee, args) { return }
     if tryEmitImportCall(env, callee, args) { return }
     if tryEmitMapError(env, callee, args) { return }
+    if tryEmitScalarCast(env, callee, args) { return }
     if isStructCtor(callee, args) { emitStructCtor(env, callee, args); return }
     let fname = identBaseName(callee)
     if tryEmitPrint(env, fname, args) { return }
@@ -7830,6 +7865,23 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     print("(")
     emitCallArgList(env, "", fname, args)
     print(")")
+}
+
+// §17.x conversion call: `Float64(i)` -> `static_cast<double>(i)` — a bare
+// NUMERIC primitive name in callee position with exactly one argument
+// (Bool/Char/Unit and the string kinds are excluded, matching the
+// bootstrap's primitive_map filter; the primitive names are reserved, so no
+// user function can shadow them).
+func tryEmitScalarCast(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if args.len() != 1 { return false }
+    let nm = identBaseName(callee)
+    if !tyIsNumeric(nm) { return false }
+    print("static_cast<")
+    print(cppNamed(nm))
+    print(">(")
+    emitArgList(env, args)
+    print(")")
+    return true
 }
 
 // §9 `.mapError(f)` on a fallible call lifts the error type between throws
