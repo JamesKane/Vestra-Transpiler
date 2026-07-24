@@ -1,0 +1,59 @@
+// Codegen slice 61 (corpus burndown 7): tuple for-loop patterns. A
+// `for (k, v) in m.entries()` binds each element by destructuring, so the
+// loop variable is a C++ STRUCTURED BINDING — `for (auto&& [k, v] : ...)`.
+// vgen previously threaded only a single NAME into the loop head, so the
+// tuple pattern flattened to the empty string and emitted `for (auto&&  : )`,
+// which is both a divergence and invalid C++. The name list is the same one
+// `let (a, b) = ...` builds, wildcards included.
+
+func sumValues(_ m: HashMap[String, Int32]) using Alloc -> Int32 {
+    var total: Int32 = 0
+    for (k, v) in m.entries() {
+        total = total + v
+    }
+    return total
+}
+
+// A wildcard element still owes a C++ name and mints __vstr_tp_unused_<N> off
+// the same file-global counter the `let` form uses.
+func countKeys(_ m: HashMap[String, Int32]) using Alloc -> Int32 {
+    var n: Int32 = 0
+    for (k, _) in m.entries() {
+        n = n + 1
+    }
+    return n
+}
+
+func countVals(_ m: HashMap[String, Int32]) using Alloc -> Int32 {
+    var n: Int32 = 0
+    for (_, v) in m.entries() {
+        n = n + v
+    }
+    return n
+}
+
+// The single-name and range forms must be untouched by the rewrite: a range
+// binds one counter and can never be a tuple.
+func sumVec(_ xs: Vec[Int32]) using Alloc -> Int32 {
+    var total: Int32 = 0
+    for x in xs {
+        total = total + x
+    }
+    return total
+}
+
+func rangeSum(_ n: Int32) -> Int32 {
+    var total: Int32 = 0
+    for i in 0..<n {
+        total = total + i
+    }
+    return total
+}
+
+func inclusiveSum(_ n: Int32) -> Int32 {
+    var total: Int32 = 0
+    for i in 0..n {
+        total = total + i
+    }
+    return total
+}

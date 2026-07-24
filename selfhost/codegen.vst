@@ -6596,7 +6596,7 @@ func emitFor(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ iter: Vec[Nd],
     }
     print(indent)
     print("for (")
-    emitForHead(env, patName(pat), iter)
+    emitForHead(env, pat, iter)
     print(") {\n")
     if body.len() > 0 { emitBlockStmts(env, body.get(0) ?? Nd.wildcard, deeper(indent)) }
     print(indent)
@@ -6632,18 +6632,21 @@ func emitIterProtoFor(_ env: inout TyEnv, _ indent: Str, _ v: Str, _ iter: Vec[N
     print("} } }\n")
 }
 
-func emitForHead(_ env: inout TyEnv, _ v: Str, _ iter: Vec[Nd]) using Alloc, Log {
+func emitForHead(_ env: inout TyEnv, _ pat: Vec[Nd], _ iter: Vec[Nd]) using Alloc, Log {
     if iter.len() == 0 { return }
     match iter.get(0) ?? Nd.wildcard {
-        case .binary(let op, let lo, let hi): emitForMaybeRange(env, v, op, lo, hi, iter)
-        default: emitForEach(env, v, iter)
+        case .binary(let op, let lo, let hi): emitForMaybeRange(env, pat, op, lo, hi, iter)
+        default: emitForEach(env, pat, iter)
     }
 }
 
-func emitForMaybeRange(_ env: inout TyEnv, _ v: Str, _ op: Str, _ lo: Vec[Nd], _ hi: Vec[Nd], _ iter: Vec[Nd]) using Alloc, Log {
+// A range only ever binds a single counter, so it keeps the plain name; the
+// tuple form cannot reach here (a range is not a tuple sequence).
+func emitForMaybeRange(_ env: inout TyEnv, _ pat: Vec[Nd], _ op: Str, _ lo: Vec[Nd], _ hi: Vec[Nd], _ iter: Vec[Nd]) using Alloc, Log {
+    let v = patName(pat)
     if streq(op, "..<") { emitForRange(env, v, lo, hi, true); return }
     if streq(op, "..") { emitForRange(env, v, lo, hi, false); return }
-    emitForEach(env, v, iter)
+    emitForEach(env, pat, iter)
 }
 
 func emitForRange(_ env: inout TyEnv, _ v: Str, _ lo: Vec[Nd], _ hi: Vec[Nd], _ excl: Bool) using Alloc, Log {
@@ -6660,11 +6663,25 @@ func emitForRange(_ env: inout TyEnv, _ v: Str, _ lo: Vec[Nd], _ hi: Vec[Nd], _ 
     print(v)
 }
 
-func emitForEach(_ env: inout TyEnv, _ v: Str, _ iter: Vec[Nd]) using Alloc, Log {
+// `for (k, v) in m.entries()` destructures each element, so the loop variable
+// is a C++ STRUCTURED BINDING — `for (auto&& [k, v] : __vstr::map_entries(m))`.
+// The name list is the same one `let (a, b) = …` builds, wildcards and all
+// (a `_` element still owes a name and mints `__vstr_tp_unused_<N>`).
+func emitForEach(_ env: inout TyEnv, _ pat: Vec[Nd], _ iter: Vec[Nd]) using Alloc, Log {
     print("auto&& ")
-    print(v)
+    emitForBinder(env, pat)
     print(" : ")
     emitBoxed(env, iter)
+}
+
+func emitForBinder(_ env: inout TyEnv, _ pat: Vec[Nd]) using Alloc, Log {
+    if patIsTuple(pat) {
+        print("[")
+        emitTuplePatNames(env, pat.get(0) ?? Nd.wildcard)
+        print("]")
+        return
+    }
+    print(patName(pat))
 }
 
 func emitExprStmt(_ env: inout TyEnv, _ indent: Str, _ e: Vec[Nd]) using Alloc, Log {
