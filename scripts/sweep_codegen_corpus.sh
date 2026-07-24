@@ -33,6 +33,10 @@
 #   DIFF <stem> cpp=<n> hpp=<n>
 #   SKIP <stem> <reason>
 #
+# Line counts come from MINIMAL diffs (-d). Do not compare a report against
+# one produced without it — plain diff's edit script is not canonical, and
+# the counts will differ by a few lines for the same content.
+#
 set -uo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -108,8 +112,13 @@ for f in examples/*.vst; do
     "$vgen" "$f"       > "$d/gen.cpp"  2>"$d/gen.cpp.err"
     "$vgen" --hpp "$f" > "$d/tail.gen" 2>"$d/tail.gen.err"
 
-    dc=$(diff "$d/$stem.cpp" "$d/gen.cpp"  | grep -c '^[<>]')
-    dh=$(diff "$d/tail.ref"  "$d/tail.gen" | grep -c '^[<>]')
+    # -d (minimal) matters for the LINE COUNT, not for OK/DIFF. Plain diff
+    # picks a fast, non-minimal edit script whose size depends on how the
+    # surrounding text happens to align, so fixing one hunk can INFLATE the
+    # reported count elsewhere and fake a regression. -d agrees with a true
+    # LCS (difflib, autojunk off) on this corpus.
+    dc=$(diff -d "$d/$stem.cpp" "$d/gen.cpp"  | grep -c '^[<>]')
+    dh=$(diff -d "$d/tail.ref"  "$d/tail.gen" | grep -c '^[<>]')
 
     if [[ $dc -eq 0 && $dh -eq 0 ]]; then
         echo "OK $stem" >> "$report"
