@@ -6598,13 +6598,26 @@ func emitPlainExprStmt(_ env: inout TyEnv, _ indent: Str, _ e: Vec[Nd]) using Al
 // The inline statement-`if`: `<indent>if (<cond>) { <then-stmts>}` then an
 // optional ` else { <else-stmts>}` and a trailing newline. The branch statements
 // are emitted with EMPTY indentation (the emitter opens the block inline and the
-// closing braces sit at column 0), and no `;` follows. Plain `if` only; if-let
-// (a non-empty bind name) and else-if chains are deferred.
+// closing braces sit at column 0), and no `;` follows. An if-LET (a non-empty
+// bind name) tests-and-binds through the C++ init-statement form:
+// `if (auto __vstr_opt = <init>; __vstr_opt.has_value()) { auto&& <n> =
+// *__vstr_opt; <then-stmts>}` — the bound name registers as the init's
+// optional-stripped type so the branch body infers.
 func emitIfStmt(_ env: inout TyEnv, _ indent: Str, _ ln: Str, _ li: Vec[Nd], _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc, Log {
     print(indent)
-    print("if (")
-    emitBoxed(env, cond)
-    print(") { ")
+    if streq(ln, "") {
+        print("if (")
+        emitBoxed(env, cond)
+        print(") { ")
+    } else {
+        print("if (auto __vstr_opt = ")
+        emitBoxed(env, li)
+        print("; __vstr_opt.has_value()) { auto&& ")
+        print(ln)
+        print(" = *__vstr_opt; ")
+        let it = tyInferBoxed(env, li)
+        tyAddSymSpelling(&env, own(ln), tyUnwrapOpt(it))
+    }
     if thenB.len() > 0 { emitBlockStmts(env, thenB.get(0) ?? Nd.wildcard, "") }
     print("}")
     if els.len() > 0 {
@@ -7341,6 +7354,7 @@ func emitBoxed(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc, Log {
 func emitExpr(_ env: inout TyEnv, _ e: Nd) using Alloc, Log {
     match e {
         case .ident(let n): print(n)
+        case .nilLit: print("std::nullopt")
         case .selfE: print("(*this)")
         case .intLit(let s): print(s)
         case .floatLit(let s): print(s)

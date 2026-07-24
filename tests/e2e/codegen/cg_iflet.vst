@@ -1,0 +1,26 @@
+// Codegen slice 56 (corpus burndown 2): the optional surface pair.
+// `nil` -> `std::nullopt` (the surrounding optional slot narrows it via the
+// converting ctor), and statement-position if-LET tests-and-binds through
+// the C++ init-statement form: `if (auto __vstr_opt = <init>;
+// __vstr_opt.has_value()) { auto&& v = *__vstr_opt; ... }` with the bound
+// name registered as the init's optional-stripped type. Value-position
+// if-let stays out of the mirrored subset; `while let` appears nowhere in
+// the corpus (the bootstrap parser itself only takes if-let).
+func none() -> Int32? {
+    return nil
+}
+
+func pick(_ o: Int32?) -> Int32 {
+    if let v = o {
+        return v + v
+    }
+    return 0
+}
+
+func fallback(_ o: Int32?) -> Int32 {
+    if let v = o {
+        return v
+    } else {
+        return 0 - 1
+    }
+}
