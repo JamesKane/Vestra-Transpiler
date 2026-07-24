@@ -1,0 +1,31 @@
+// Codegen slice 54: channels. `Channel[T]` maps to `__vstr::Channel<T>`
+// (and `Future[T]` to `__vstr::Future<T>`) in both the type-node emitter
+// and the spelling mapper; everything else rides existing machinery —
+// `Channel.new()` through the annotation-driven Type.new() path, `.send` /
+// `.close` / `.receive()` as plain method calls, `await ch.receive()` ->
+// `co_await (ch.receive())`, the optional result through `value_or`, and
+// the by-value async params from slice 44. `select` stays parked: its
+// 800-line resolver-driven lowering (blocking SelectAwaiter coroutine vs
+// poll form, arm classification by Future-ness) is disproportionate to
+// mirror, and the selfhost parser has no SelectExpr capture.
+async func drain(_ ch: Channel[Int32], _ n: Int32) -> Int32 {
+    var total: Int32 = 0
+    var i: Int32 = 0
+    while i < n {
+        let v = await ch.receive()
+        total = total + (v ?? 0)
+        i = i + 1
+    }
+    return total
+}
+
+async func produce(_ ch: Channel[Int32]) -> Int32 {
+    ch.send(1)
+    ch.close()
+    return 0
+}
+
+func mk() -> Channel[Int32] {
+    let ch: Channel[Int32] = Channel.new()
+    return ch
+}

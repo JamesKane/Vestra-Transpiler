@@ -5405,6 +5405,8 @@ func emitGenericType(_ path: Str, _ args: Vec[Nd]) using Alloc, Log {
     if streq(path, "Span") { emitWrap1("std::span<const ", args); return }
     if streq(path, "MutSpan") { emitWrap1("std::span<", args); return }
     if streq(path, "HashMap") { emitWrap2("std::unordered_map<", args); return }
+    if streq(path, "Channel") { emitWrap1("__vstr::Channel<", args); return }
+    if streq(path, "Future") { emitWrap1("__vstr::Future<", args); return }
     // A user generic instantiation: `Pair[Int32]` -> `Pair<std::int32_t>`.
     print(path)
     print("<")
@@ -7519,6 +7521,8 @@ func cppGenericSpelling(_ sp: String) using Alloc -> String {
     if streq(base, "Vec") { s.append("std::vector<") }
     else if streq(base, "HashMap") { s.append("std::unordered_map<") }
     else if streq(base, "Box") { s.append("std::unique_ptr<") }
+    else if streq(base, "Channel") { s.append("__vstr::Channel<") }
+    else if streq(base, "Future") { s.append("__vstr::Future<") }
     else {
         s.append(base)
         s.append("<")
