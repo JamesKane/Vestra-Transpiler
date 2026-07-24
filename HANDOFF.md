@@ -37,12 +37,12 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 
 ## Current state
 
-- **1502 / 1502 tests pass** (`ctest --test-dir build/debug`), Debug build,
-  format-check clean. Of these, **212 are `e2e_selfhost`** (4 lexer, 11 parser,
-  74 sema, 119 codegen, 4 end-to-end demo).
-- Tip commit: `f13b4eb` (codegen slice 61, tuple for-patterns — corpus
-  burndown 7). Slice 31's probe also produced `62b747b`, a **bootstrap emitter
-  fix the differential found** (see below). 103 commits carry the `selfhost:`
+- **1504 / 1504 tests pass** (`ctest --test-dir build/debug`), Debug build,
+  format-check clean. Of these, **214 are `e2e_selfhost`** (4 lexer, 11 parser,
+  74 sema, 121 codegen, 4 end-to-end demo).
+- Tip commit: `8ede5d4` (codegen slice 62, leading-dot cases — corpus
+  burndown 8). Slice 31's probe also produced `62b747b`, a **bootstrap emitter
+  fix the differential found** (see below). 104 commits carry the `selfhost:`
   prefix.
 - Phase status:
   - **Lexer: done.** Token stream byte-identical on the sample corpus and on
@@ -58,7 +58,7 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
     generics tracking (unknown-type, is-not-generic), all match families
     (guard-Bool, exhaustiveness, arm-type, pattern checks), and multi-file
     modules (import resolution, qualified member + type).
-  - **Codegen: 61 slices; the close-out roadmap is complete and the corpus
+  - **Codegen: 62 slices; the close-out roadmap is complete and the corpus
     burndown is active.** See "Where to pick up" below.
 
 ## Where to pick up: codegen
@@ -266,16 +266,16 @@ slice per commit:
 Closures against **generic** callees (`map`/`filter`) stay out of reach: their
 param types need full generic instantiation, not recoverable structurally.
 
-**The corpus burndown is ACTIVE (slices 55+): 21 of 150 examples
+**The corpus burndown is ACTIVE (slices 55+): 22 of 150 examples
 byte-identical** (baseline was 11), and **total divergence across the corpus
-is down from 23394 lines to 13559** (both under the minimal-diff count the
+is down from 23394 lines to 11149** (both under the minimal-diff count the
 sweep now uses; see the metric note below). Landed: 55 entry main (`argc/argv` +
 `args_init`, non-module files only — module-form mains already worked), 56
 nil + statement if-let (62 example files use if-let), 57 scalar-conversion
 casts (`Int32(x)` → `static_cast<...>`) + the iterator-protocol for-loop
 (known-struct iterables), 58 tuple wildcard bindings (`__vstr_tp_unused_N`),
 59 match payload binding TYPES, 60 nested match expressions, 61 tuple
-for-loop patterns.
+for-loop patterns, 62 leading-dot case references.
 
 Slices 59–60 are one arc and were measured together. **59** gave a payload
 arm's binding the case's declared field type (a new `ecfTy` column beside
@@ -299,6 +299,16 @@ emitting `for (auto&& : …)`, invalid C++, in 26 examples. `emitForHead` and
 friends now take the PATTERN rather than a pre-flattened name, reusing slice
 58's name list so a `_` element still mints `__vstr_tp_unused_<N>`.
 
+Slice **62** resolved LEADING-DOT cases (`.plus`, `.just(v)`), which name no
+enum of their own. The bootstrap reads the resolved type; vgen reads the
+SLOT the value flows into — the five coercion slots plus match arm bodies
+(a new `TyEnv.armTo`, published by `emitMatchValue` and restored after, so a
+nested match cannot leak its arm slot outward). Three shapes: `Ordering`
+first (a builtin whose cases ARE the `std::memory_order_*` literals), then
+the sum-type variant wrap (instantiated name when generic), then the plain
+scoped reference. It moved the example count for the first time in four
+slices.
+
 **Two notes on the metric.** First, the identical-example count held at 21
 across slices 59–61 even as ~9800 divergent lines disappeared: the
 interpreter demos each carry several remaining families, so line count is
@@ -320,13 +330,14 @@ stopped being identical. Run it before and after every burndown slice —
 ./scripts/sweep_codegen_corpus.sh --build --compare build/sweep/before.txt
 ```
 
-**Next families, ranked by the post-slice-61 sweep:**
-(1) LEADING-DOT
-`.case` in typed slots (`return .plus` → `Tok::plus`) — needs expected-type
-threading at the five coercion slots, plus the `Ordering` →
-`std::memory_order_*` snake-case rule and the payload-enum variant wrap (see
-the bootstrap's LeadingDotExpr case, cpp_emitter.cpp ~5058, and the call
-form at ~4614). (2) OR-PATTERNS (`case .a(n) | .b(n):`) — one if-constexpr
+**Next families, ranked by the post-slice-62 sweep:**
+(1) MATCH ON A NON-ENUM SCRUTINEE (a `Str` or numeric matched against
+LITERAL patterns) — the bootstrap lowers it to an equality if/else chain
+over `auto&& __vstr_m = <scrut>;` (`__vstr_m == std::string_view("fn")`),
+where vgen assumes an enum and emits the broken `case Str:::`. It gates the
+big keyword-dispatch functions in every `interp_*` demo, and the arm bodies
+inside it are leading dots that already work. (2) OR-PATTERNS
+(`case .a(n) | .b(n):`) — one if-constexpr
 branch per alternative sharing the arm body (see examples/match.vst;
 `armCaseName` on an `orP` currently yields the broken `Enum::_t`). Smaller
 but cheap: `[[gnu::*]]` attribute passthrough (7 examples), derive-generated
