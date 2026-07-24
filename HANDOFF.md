@@ -295,9 +295,17 @@ slices even as 9569 divergent lines disappeared. The interpreter demos each
 carry several remaining families, so line count is the finer-grained signal
 mid-arc; example count only moves when a file's LAST family closes.
 
-**Next families, ranked by the post-slice-60 sweep** (`/tmp/vgensweep`
-holds the per-example report; the sweep script is worth re-creating — build
-`vgen`, run both differentials over `examples/*.vst`, count `diff` lines):
+The sweep itself is [`scripts/sweep_codegen_corpus.sh`](scripts/sweep_codegen_corpus.sh):
+`--build` rebuilds `vgen` first, and `--compare <earlier-report>` prints the
+before/after totals and flags any example whose divergence GREW or that
+stopped being identical. Run it before and after every burndown slice —
+```
+./scripts/sweep_codegen_corpus.sh --build --report build/sweep/before.txt
+# … land the slice …
+./scripts/sweep_codegen_corpus.sh --build --compare build/sweep/before.txt
+```
+
+**Next families, ranked by the post-slice-60 sweep:**
 (1) HASHMAP/VEC ENTRY DESTRUCTURING in for-loops — vgen emits
 `for (auto&&  : __vstr::map_entries(m))` with the binding list dropped
 entirely, which is both a divergence and invalid C++. (2) LEADING-DOT
