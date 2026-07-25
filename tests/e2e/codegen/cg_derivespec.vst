@@ -1,0 +1,77 @@
+// Codegen slice 66 (corpus burndown 12): the derives that lower to LIBRARY
+// SPECIALIZATIONS. Both sit at global scope after the module namespace closes,
+// so they qualify their target with the module path.
+//
+//   derive(Hash)            -> std::hash, Boost-style combine. Only structs
+//                              and the struct-of-variant enum form need one;
+//                              a bare `enum class` uses the standard library's.
+//   derive(Debug / Display) -> std::formatter. The two render identically in
+//                              v0.5, and deriving BOTH emits a single spec —
+//                              two specializations would be an ODR violation.
+//
+// A generic target takes a PARTIAL specialization: the decl's own template
+// head, its parameters repeated as arguments on the target name, and
+// `typename` on the dependent `X<T>::case_t`.
+
+module tests.cg_derivespec
+
+struct Point {
+    var x: Int32
+    var y: Int32
+}
+
+derive(Eq, Hash, Debug) for Point
+
+// Deriving both Debug and Display must still emit exactly one formatter.
+struct Tagged {
+    var label: Str
+    var count: Int32
+}
+
+derive(Debug, Display) for Tagged
+
+// A bare enum: no hash spec (the standard library covers enum class), but a
+// formatter that switches and renders `Color.red`.
+enum Color {
+    case red
+    case green
+}
+
+derive(Eq, Hash, Debug) for Color
+
+// A sum-type enum: both specs visit, and the payload-free case contributes an
+// empty hash branch and a brace-less render.
+enum Shape {
+    case circle(Float64)
+    case rect(width: Float64, height: Float64)
+    case dot
+}
+
+derive(Eq, Hash, Display) for Shape
+
+// Generic targets: partial specializations on both sides.
+struct Pair[T] {
+    var first: T
+    var second: T
+}
+
+derive(Eq, Hash, Debug) for Pair
+
+enum Maybe[T] {
+    case just(T)
+    case nothing
+}
+
+derive(Eq, Hash, Debug) for Maybe
+
+func renderPoint(_ p: Point) using Alloc -> String {
+    return "\(p)"
+}
+
+func renderShape(_ s: Shape) using Alloc -> String {
+    return "\(s)"
+}
+
+func renderColor(_ c: Color) using Alloc -> String {
+    return "\(c)"
+}

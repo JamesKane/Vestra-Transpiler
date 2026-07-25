@@ -4888,6 +4888,414 @@ func emitHpp(_ u: NUnit) using Alloc, Log {
         i = i + 1
     }
     emitNsClose(u.hasMod, u.modPath)
+    let qp = nsQualPrefix(u.hasMod, u.modPath)
+    emitHashSpecs(&env, u, qp)
+    emitDebugSpecs(&env, u, qp)
+}
+
+// The `a::b::` prefix the library specializations qualify their target with —
+// they live at GLOBAL scope after the namespace closes, so an unqualified name
+// would not resolve. Empty for a module-less unit.
+func nsQualPrefix(_ hasMod: Bool, _ modPath: Str) using Alloc -> String {
+    if !hasMod || streq(modPath, "") { return own("") }
+    var s: String = dotsToColons(modPath)
+    s.append("::")
+    return s
+}
+
+// §12.3 derive(Hash) -> a std::hash specialization, emitted after the module
+// namespace closes and separated by a blank line. Bare `enum class` cases fall
+// back to the standard library's enum hash, so only structs and the
+// struct-of-variant enum form need one. (Opaque newtypes also take a spec in
+// the bootstrap; vgen does not emit opaque declarations at all yet, so that
+// pairing stays out.)
+func emitHashSpecs(_ env: inout TyEnv, _ u: NUnit, _ qp: Str) using Alloc, Log {
+    var i: Int = 0
+    while i < u.decls.len() {
+        emitHashSpecDecl(env, u.decls.get(i) ?? Nd.wildcard, qp)
+        i = i + 1
+    }
+}
+
+func emitHashSpecDecl(_ env: inout TyEnv, _ d: Nd, _ qp: Str) using Alloc, Log {
+    match d {
+        case .structD(let vis, let name, let fields, let m, let dn, let isLinear, let generics):
+            emitHashSpecStruct(env, name, fields, generics, qp)
+        case .enumD(let vis, let name, let cases, let m, let generics):
+            emitHashSpecEnum(env, name, cases, generics, qp)
+        default: noop()
+    }
+}
+
+func emitHashSpecStruct(_ env: inout TyEnv, _ name: Str, _ fields: Vec[Nd], _ generics: Vec[Nd], _ qp: Str) using Alloc, Log {
+    if !tyDerives(env, name, "Hash") { return }
+    print("\n")
+    emitSpecHead(generics)
+    print("struct std::hash<")
+    print(qp)
+    print(name)
+    emitSpecArgs(generics)
+    print("> {\n    [[nodiscard]] std::size_t operator()(const ")
+    print(qp)
+    print(name)
+    emitSpecArgs(generics)
+    print("& v) const noexcept {\n        std::size_t __h = 0;\n")
+    var i: Int = 0
+    while i < fields.len() {
+        emitHashField(fields.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    print("        return __h;\n    }\n};\n")
+}
+
+// The Boost-style combine the bootstrap uses — cheap, no <bit> dependency, and
+// only ever feeds unordered_map bucket dispatch.
+// An `embed` field is skipped: the bootstrap defers embed flattening for both
+// specializations, so neither side hashes or renders it.
+func emitHashField(_ f: Nd) using Alloc, Log {
+    match f {
+        case .field(let kind, let name, let ty): emitHashFieldParts(kind, name, ty)
+        default: noop()
+    }
+}
+
+func emitHashFieldParts(_ kind: Str, _ name: Str, _ ty: Vec[Nd]) using Alloc, Log {
+    if isEmbedField(kind) { return }
+    print("        __h ^= std::hash<")
+    emitTypeBoxed(ty)
+    print(">{}(v.")
+    print(name)
+    print(") + 0x9e3779b9 + (__h << 6) + (__h >> 2);\n")
+}
+
+func emitHashSpecEnum(_ env: inout TyEnv, _ name: Str, _ cases: Vec[Nd], _ generics: Vec[Nd], _ qp: Str) using Alloc, Log {
+    if !tyDerives(env, name, "Hash") { return }
+    if allCasesBare(cases) && generics.len() == 0 { return }
+    print("\n")
+    emitSpecHead(generics)
+    print("struct std::hash<")
+    print(qp)
+    print(name)
+    emitSpecArgs(generics)
+    print("> {\n    [[nodiscard]] std::size_t operator()(const ")
+    print(qp)
+    print(name)
+    emitSpecArgs(generics)
+    print("& v) const noexcept {\n        return std::visit([&](auto&& __alt) {\n")
+    print("            using __T = std::decay_t<decltype(__alt)>;\n")
+    print("            std::size_t __h = v.value.index();\n")
+    var i: Int = 0
+    while i < cases.len() {
+        emitHashCase(cases.get(i) ?? Nd.wildcard, name, generics, qp, i)
+        i = i + 1
+    }
+    // The hash chain needs NO unreachable fallback — unlike the formatter, it
+    // has a value to return either way, so an alternative that hashes nothing
+    // (a payload-free case) just leaves __h at the variant index.
+    if cases.len() > 0 { print("\n") }
+    print("            return __h;\n        }, v.value);\n    }\n};\n")
+}
+
+func emitHashCase(_ c: Nd, _ owner: Str, _ generics: Vec[Nd], _ qp: Str, _ k: Int) using Alloc, Log {
+    match c {
+        case .enumCase(let cname, let payload): emitHashCaseParts(cname, payload, owner, generics, qp, k)
+        default: noop()
+    }
+}
+
+func emitHashCaseParts(_ cname: Str, _ payload: Vec[Nd], _ owner: Str, _ generics: Vec[Nd], _ qp: Str, _ k: Int) using Alloc, Log {
+    emitSpecAltHead(cname, owner, generics, qp, k)
+    var i: Int = 0
+    while i < payload.len() {
+        emitHashPayField(payload.get(i) ?? Nd.wildcard, i)
+        i = i + 1
+    }
+    print("            }")
+}
+
+// `if constexpr (std::is_same_v<__T, <Q><Enum><args>::<case>_t>) {`, chained
+// with ` else if` after the first. Inside a PARTIAL specialization the nested
+// `X<T>::case_t` is a dependent name and needs `typename`.
+func emitSpecAltHead(_ cname: Str, _ owner: Str, _ generics: Vec[Nd], _ qp: Str, _ k: Int) using Alloc, Log {
+    if k == 0 { print("            if") } else { print(" else if") }
+    print(" constexpr (std::is_same_v<__T, ")
+    if specIsGeneric(generics) { print("typename ") }
+    print(qp)
+    print(owner)
+    emitSpecArgs(generics)
+    print("::")
+    print(cname)
+    print("_t>) {\n")
+}
+
+func emitHashPayField(_ pe: Nd, _ idx: Int) using Alloc, Log {
+    match pe {
+        case .payElem(let label, let ty): emitHashPayFieldParts(label, ty, idx)
+        default: noop()
+    }
+}
+
+func emitHashPayFieldParts(_ label: Str, _ ty: Vec[Nd], _ idx: Int) using Alloc, Log {
+    print("                __h ^= std::hash<")
+    emitTypeBoxed(ty)
+    print(">{}(__alt.")
+    printPayFieldName(label, idx)
+    print(") + 0x9e3779b9 + (__h << 6) + (__h >> 2);\n")
+}
+
+// The C++ name of payload field <idx>: its declared label, or positional `_<i>`.
+func printPayFieldName(_ label: Str, _ idx: Int) using Alloc, Log {
+    if streq(label, "") {
+        print("_")
+        print(intToStr(idx))
+        return
+    }
+    print(label)
+}
+
+// A specialization over a GENERIC type is partial, so it carries the decl's own
+// template head and repeats the parameters as arguments on the target name;
+// a concrete type degrades to `template <>` with no suffix.
+func specIsGeneric(_ gens: Vec[Nd]) -> Bool {
+    return gens.len() > 0
+}
+
+func emitSpecHead(_ gens: Vec[Nd]) using Alloc, Log {
+    if !specIsGeneric(gens) { print("template <>\n"); return }
+    emitTemplateHead(gens)
+}
+
+func emitSpecArgs(_ gens: Vec[Nd]) using Alloc, Log {
+    if !specIsGeneric(gens) { return }
+    print("<")
+    var i: Int = 0
+    while i < gens.len() {
+        if i > 0 { print(", ") }
+        printGenParamName(gens.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    print(">")
+}
+
+func printGenParamName(_ g: Nd) using Alloc, Log {
+    match g {
+        case .genType(let n, let bounds): print(n)
+        case .genConst(let n, let t): print(n)
+        default: noop()
+    }
+}
+
+// §12.3 derive(Debug) + §4 derive(Display): both lower to a std::formatter
+// specialization so std::format and string interpolation work. For v0.5 the
+// two render identically, and deriving BOTH emits a single spec — two
+// specializations of the same template would be an ODR violation.
+func emitDebugSpecs(_ env: inout TyEnv, _ u: NUnit, _ qp: Str) using Alloc, Log {
+    var i: Int = 0
+    while i < u.decls.len() {
+        emitDebugSpecDecl(env, u.decls.get(i) ?? Nd.wildcard, qp)
+        i = i + 1
+    }
+}
+
+func emitDebugSpecDecl(_ env: inout TyEnv, _ d: Nd, _ qp: Str) using Alloc, Log {
+    match d {
+        case .structD(let vis, let name, let fields, let m, let dn, let isLinear, let generics):
+            emitDebugSpecStruct(env, name, fields, generics, qp)
+        case .enumD(let vis, let name, let cases, let m, let generics):
+            emitDebugSpecEnum(env, name, cases, generics, qp)
+        default: noop()
+    }
+}
+
+func wantsFormatter(_ env: inout TyEnv, _ name: Str) using Alloc -> Bool {
+    if tyDerives(env, name, "Debug") { return true }
+    return tyDerives(env, name, "Display")
+}
+
+// Renders as `Name{field: <v.field>, …}`. Literal braces are DOUBLED so they
+// survive std::format's placeholder syntax.
+func emitDebugSpecStruct(_ env: inout TyEnv, _ name: Str, _ fields: Vec[Nd], _ generics: Vec[Nd], _ qp: Str) using Alloc, Log {
+    if !wantsFormatter(env, name) { return }
+    print("\n")
+    emitSpecHead(generics)
+    print("struct std::formatter<")
+    print(qp)
+    print(name)
+    emitSpecArgs(generics)
+    print("> {\n    constexpr auto parse(auto& __ctx) { return __ctx.begin(); }\n")
+    print("    auto format(const ")
+    print(qp)
+    print(name)
+    emitSpecArgs(generics)
+    print("& v, auto& __ctx) const {\n        return std::format_to(__ctx.out(), \"")
+    print(name)
+    print("{{")
+    var i: Int = 0
+    while i < fields.len() {
+        if i > 0 { print(", ") }
+        printFieldPlaceholder(fields.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    print("}}\"")
+    var j: Int = 0
+    while j < fields.len() {
+        printFieldArg(fields.get(j) ?? Nd.wildcard)
+        j = j + 1
+    }
+    print(");\n    }\n};\n")
+}
+
+func printFieldPlaceholder(_ f: Nd) using Alloc, Log {
+    match f {
+        case .field(let kind, let name, let ty): printFieldPlaceholderParts(kind, name)
+        default: noop()
+    }
+}
+
+func printFieldPlaceholderParts(_ kind: Str, _ name: Str) using Alloc, Log {
+    if isEmbedField(kind) { return }
+    print(name)
+    print(": {}")
+}
+
+func printFieldArg(_ f: Nd) using Alloc, Log {
+    match f {
+        case .field(let kind, let name, let ty): printFieldArgParts(kind, name)
+        default: noop()
+    }
+}
+
+func printFieldArgParts(_ kind: Str, _ name: Str) using Alloc, Log {
+    if isEmbedField(kind) { return }
+    print(", v.")
+    print(name)
+}
+
+func isEmbedField(_ kind: Str) -> Bool { return streq(kind, "embed ") }
+
+func emitDebugSpecEnum(_ env: inout TyEnv, _ name: Str, _ cases: Vec[Nd], _ generics: Vec[Nd], _ qp: Str) using Alloc, Log {
+    if !wantsFormatter(env, name) { return }
+    print("\n")
+    emitSpecHead(generics)
+    print("struct std::formatter<")
+    print(qp)
+    print(name)
+    emitSpecArgs(generics)
+    print("> {\n    constexpr auto parse(auto& __ctx) { return __ctx.begin(); }\n")
+    if allCasesBare(cases) && generics.len() == 0 {
+        emitDebugSpecBareEnum(name, cases, qp)
+        return
+    }
+    emitDebugSpecSumEnum(name, cases, generics, qp)
+}
+
+// A bare `enum class` renders `EnumName.caseName` through a switch.
+func emitDebugSpecBareEnum(_ name: Str, _ cases: Vec[Nd], _ qp: Str) using Alloc, Log {
+    print("    auto format(")
+    print(qp)
+    print(name)
+    print(" v, auto& __ctx) const {\n        switch (v) {\n")
+    var i: Int = 0
+    while i < cases.len() {
+        emitDebugBareCase(cases.get(i) ?? Nd.wildcard, name, qp)
+        i = i + 1
+    }
+    print("        }\n        return std::format_to(__ctx.out(), \"?\");\n    }\n};\n")
+}
+
+func emitDebugBareCase(_ c: Nd, _ owner: Str, _ qp: Str) using Alloc, Log {
+    match c {
+        case .enumCase(let cname, let payload): emitDebugBareCaseParts(cname, owner, qp)
+        default: noop()
+    }
+}
+
+func emitDebugBareCaseParts(_ cname: Str, _ owner: Str, _ qp: Str) using Alloc, Log {
+    print("            case ")
+    print(qp)
+    print(owner)
+    print("::")
+    print(cname)
+    print(": return std::format_to(__ctx.out(), \"")
+    print(owner)
+    print(".")
+    print(cname)
+    print("\");\n")
+}
+
+// A sum-type enum visits, rendering `EnumName::caseName{field: …}` per
+// alternative (bare alternatives drop the brace group).
+func emitDebugSpecSumEnum(_ name: Str, _ cases: Vec[Nd], _ generics: Vec[Nd], _ qp: Str) using Alloc, Log {
+    print("    auto format(const ")
+    print(qp)
+    print(name)
+    emitSpecArgs(generics)
+    print("& v, auto& __ctx) const {\n        return std::visit([&](auto&& __alt) {\n")
+    print("            using __T = std::decay_t<decltype(__alt)>;\n")
+    var i: Int = 0
+    while i < cases.len() {
+        emitDebugSumCase(cases.get(i) ?? Nd.wildcard, name, generics, qp, i)
+        i = i + 1
+    }
+    print(" else { std::unreachable(); }\n")
+    print("        }, v.value);\n    }\n};\n")
+}
+
+func emitDebugSumCase(_ c: Nd, _ owner: Str, _ generics: Vec[Nd], _ qp: Str, _ k: Int) using Alloc, Log {
+    match c {
+        case .enumCase(let cname, let payload): emitDebugSumCaseParts(cname, payload, owner, generics, qp, k)
+        default: noop()
+    }
+}
+
+func emitDebugSumCaseParts(_ cname: Str, _ payload: Vec[Nd], _ owner: Str, _ generics: Vec[Nd], _ qp: Str, _ k: Int) using Alloc, Log {
+    emitSpecAltHead(cname, owner, generics, qp, k)
+    print("                return std::format_to(__ctx.out(), \"")
+    print(owner)
+    print("::")
+    print(cname)
+    if payload.len() > 0 {
+        print("{{")
+        var i: Int = 0
+        while i < payload.len() {
+            if i > 0 { print(", ") }
+            printPayPlaceholder(payload.get(i) ?? Nd.wildcard, i)
+            i = i + 1
+        }
+        print("}}\"")
+        var j: Int = 0
+        while j < payload.len() {
+            printPayArg(payload.get(j) ?? Nd.wildcard, j)
+            j = j + 1
+        }
+    } else {
+        print("\"")
+    }
+    print(");\n            }")
+}
+
+func printPayPlaceholder(_ pe: Nd, _ idx: Int) using Alloc, Log {
+    match pe {
+        case .payElem(let label, let ty): printPayPlaceholderParts(label, idx)
+        default: noop()
+    }
+}
+
+func printPayPlaceholderParts(_ label: Str, _ idx: Int) using Alloc, Log {
+    printPayFieldName(label, idx)
+    print(": {}")
+}
+
+func printPayArg(_ pe: Nd, _ idx: Int) using Alloc, Log {
+    match pe {
+        case .payElem(let label, let ty): printPayArgParts(label, idx)
+        default: noop()
+    }
+}
+
+func printPayArgParts(_ label: Str, _ idx: Int) using Alloc, Log {
+    print(", __alt.")
+    printPayFieldName(label, idx)
 }
 
 // §5 imports in the header: `import c "h"` lowers to `#include "h"` at global
