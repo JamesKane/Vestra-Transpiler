@@ -1,0 +1,82 @@
+// Codegen slice 65 (corpus burndown 11): §12.3 derives that are NOT a
+// std::hash / std::formatter specialization — the members that live inside the
+// type, plus the one construction form.
+//
+//   derive(Eq)      -> a defaulted operator==; the C++ compiler recurses
+//                      through nested derived-Eq members for free. A sum-type
+//                      enum needs one on EVERY case_t as well, since
+//                      std::variant compares structurally only when each
+//                      alternative is itself equality-comparable.
+//   derive(Clone)   -> an explicit clone() delegating to the copy ctor.
+//   derive(Default) -> `T.default()` at the call site becomes `T{}`.
+//
+// A payload-free `enum class` gets nothing: C++ enumerators already compare
+// and copy natively.
+
+struct Point {
+    var x: Int32
+    var y: Int32
+}
+
+derive(Eq) for Point
+
+struct Boxed {
+    var inner: Int32
+}
+
+derive(Clone) for Boxed
+
+struct Both {
+    var a: Int32
+    var b: Int32
+}
+
+derive(Eq, Clone) for Both
+
+struct Cursor {
+    var offset: Int32
+    var line: Int32
+}
+
+derive(Default) for Cursor
+
+// A sum-type enum: the wrapper takes the members, and every case_t takes its
+// own operator== — including the payload-free case, whose struct goes from
+// `{}` to holding just the operator.
+enum Shape {
+    case circle(Float64)
+    case rect(width: Float64, height: Float64)
+    case dot
+}
+
+derive(Eq, Clone) for Shape
+
+// A payload-free enum derives Eq without gaining any member.
+enum Color {
+    case red
+    case green
+}
+
+derive(Eq) for Color
+
+func samePoint(_ a: Point, _ b: Point) -> Bool {
+    return a == b
+}
+
+func sameShape(_ a: Shape, _ b: Shape) -> Bool {
+    return a == b
+}
+
+func sameColor(_ a: Color, _ b: Color) -> Bool {
+    return a == b
+}
+
+func freshCursor() -> Cursor {
+    return Cursor.default()
+}
+
+func cursorInBinding() -> Int32 {
+    var c = Cursor.default()
+    c.offset = 4
+    return c.offset
+}

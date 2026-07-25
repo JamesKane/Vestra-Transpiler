@@ -2929,6 +2929,8 @@ struct TyEnv {
     var ecfIdx: Vec[Int]        // ... field index ...
     var ecfName: Vec[String]    // ... -> declared field label ("" if positional)
     var ecfTy: Vec[String]      // ... -> declared field TYPE spelling (for typing a match arm's payload binding)
+    var dvTarget: Vec[String]   // global: per-derive rows — target type name ...
+    var dvProto: Vec[String]    // ... -> one derived protocol (a `derive(Eq, Hash) for T` pushes one row each)
     var symName: Vec[String]    // per-function: binding name ...
     var symType: Vec[String]    // ... -> type spelling
     var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
@@ -2970,7 +2972,61 @@ func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
             tyRecordFunc(env, name, params, r)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyRecordStructDecl(env, name, fl, m, generics)
         case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumDecl(env, name, cs, m, generics)
+        case .deriveD(let protocols, let target): tyRecordDerive(env, protocols, target)
         default: noop()
+    }
+}
+
+// §12.3 `derive(Eq, Hash) for T` — one row per protocol, keyed by the target's
+// LAST path segment (a qualified target derives on the named type itself).
+func tyRecordDerive(_ env: inout TyEnv, _ protocols: Vec[Nd], _ target: Vec[Nd]) using Alloc {
+    let tn = tyAnnSpelling(target)
+    if streq(tn, "") { return }
+    var i: Int = 0
+    while i < protocols.len() {
+        tyPushDerive(env, tn, protocols.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyPushDerive(_ env: inout TyEnv, _ target: Str, _ proto: Nd) using Alloc {
+    let pn = typeSpelling(proto)
+    if streq(pn, "") { return }
+    env.dvTarget.push(own(target))
+    env.dvProto.push(pn)
+}
+
+// Whether <target> derives <proto>. A generic target is recorded under its bare
+// name, so the lookup compares base names.
+func tyDerives(_ env: inout TyEnv, _ target: Str, _ proto: Str) using Alloc -> Bool {
+    let bn = genBaseOf(target)
+    var i: Int = 0
+    while i < env.dvTarget.len() {
+        if let t = env.dvTarget.get(i) {
+            if streq(t, bn) {
+                if let pr = env.dvProto.get(i) { if streq(pr, proto) { return true } }
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// §12.3 the derive-generated members that live INSIDE the type: a defaulted
+// operator== for Eq (the C++ compiler recurses through nested derived-Eq
+// members for free), and an explicit clone() for Clone that delegates to the
+// implicit copy constructor. Shared by the struct and the sum-type enum
+// wrapper, which emit the identical pair.
+func emitDerivedMembers(_ env: inout TyEnv, _ name: Str) using Alloc, Log {
+    if tyDerives(env, name, "Eq") {
+        print("    [[nodiscard]] bool operator==(const ")
+        print(name)
+        print("&) const noexcept = default;\n")
+    }
+    if tyDerives(env, name, "Clone") {
+        print("    [[nodiscard]] ")
+        print(name)
+        print(" clone() const { return *this; }\n")
     }
 }
 
@@ -4717,6 +4773,7 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     ecName: Vec.new(), ecArity: Vec.new(),
                     ecfEnum: Vec.new(), ecfCase: Vec.new(),
                     ecfIdx: Vec.new(), ecfName: Vec.new(), ecfTy: Vec.new(),
+                    dvTarget: Vec.new(), dvProto: Vec.new(),
                     symName: Vec.new(), symType: Vec.new(),
                     curRet: own(""), curRetNode: Vec.new(),
                     tryN: 0, hoistName: Vec.new(), hoistExpr: Vec.new(),
@@ -4903,7 +4960,7 @@ func emitHppDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
         case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics):
             emitGenStructDef(env, generics, name, fields, methods)
         case .enumD(let vis, let name, let cases, let methods, let generics):
-            emitGenEnumDecl(generics, name, cases, methods)
+            emitGenEnumDecl(env, generics, name, cases, methods)
         case .constD(let vis, let name, let ty, let value):
             emitGlobalDef(env, "inline constexpr ", name, ty, value)
         case .staticD(let vis, let name, let ty, let value):
@@ -4934,28 +4991,31 @@ func emitGlobalDef(_ env: inout TyEnv, _ prefix: Str, _ name: Str, _ ty: Vec[Nd]
 // Enum methods are dropped by the C++ emitter (an `enum class` cannot carry them,
 // and the variant form does not lower them either), so only the definition is
 // emitted whether or not the enum declares methods.
-func emitEnumDecl(_ name: Str, _ cases: Vec[Nd], _ methods: Vec[Nd]) using Alloc, Log {
+func emitEnumDecl(_ env: inout TyEnv, _ name: Str, _ cases: Vec[Nd], _ methods: Vec[Nd]) using Alloc, Log {
+    // A payload-free `enum class` needs no derived members: C++ enumerators
+    // already compare and copy natively, so only the variant form carries them.
     if allCasesBare(cases) { emitEnumClass(name, cases) }
-    else { emitPayloadEnum(name, cases) }
+    else { emitPayloadEnum(env, name, cases) }
 }
 
 // `struct <Name> { <case>_t structs...; std::variant<...> value{}; };`
-func emitPayloadEnum(_ name: Str, _ cases: Vec[Nd]) using Alloc, Log {
+func emitPayloadEnum(_ env: inout TyEnv, _ name: Str, _ cases: Vec[Nd]) using Alloc, Log {
     print("struct ")
     print(name)
     print(" {\n")
     var i: Int = 0
     while i < cases.len() {
-        emitCaseStruct(cases.get(i) ?? Nd.wildcard)
+        emitCaseStruct(env, name, cases.get(i) ?? Nd.wildcard)
         i = i + 1
     }
     emitVariantMember(cases)
+    emitDerivedMembers(env, name)
     print("};\n\n")
 }
 
-func emitCaseStruct(_ c: Nd) using Alloc, Log {
+func emitCaseStruct(_ env: inout TyEnv, _ owner: Str, _ c: Nd) using Alloc, Log {
     match c {
-        case .enumCase(let cname, let payload): emitCaseStructBody(cname, payload)
+        case .enumCase(let cname, let payload): emitCaseStructBody(env, owner, cname, payload)
         default: noop()
     }
 }
@@ -4964,21 +5024,29 @@ func emitCaseStruct(_ c: Nd) using Alloc, Log {
 // — payload fields `<type> <name>{};` joined by two spaces, with a trailing
 // space before the closing brace. A named field keeps its declared label; a
 // positional one is `_<i>`.
-func emitCaseStructBody(_ cname: Str, _ payload: Vec[Nd]) using Alloc, Log {
+// When the OWNING enum derives Eq, every case_t needs its own defaulted
+// operator== as well: std::variant compares structurally only if each
+// alternative is itself equality-comparable.
+func emitCaseStructBody(_ env: inout TyEnv, _ owner: Str, _ cname: Str, _ payload: Vec[Nd]) using Alloc, Log {
     print("    struct ")
     print(cname)
     print("_t {")
-    if payload.len() > 0 {
-        var i: Int = 0
-        while i < payload.len() {
-            if i > 0 { print("  ") }
-            emitPayloadField(payload.get(i) ?? Nd.wildcard, i)
-            i = i + 1
-        }
-        print(" };\n")
-    } else {
-        print("};\n")
+    var any: Bool = false
+    var i: Int = 0
+    while i < payload.len() {
+        if i > 0 { print("  ") }
+        emitPayloadField(payload.get(i) ?? Nd.wildcard, i)
+        any = true
+        i = i + 1
     }
+    if tyDerives(env, owner, "Eq") {
+        if any { print(" ") }
+        print("[[nodiscard]] bool operator==(const ")
+        print(cname)
+        print("_t&) const noexcept = default;")
+        any = true
+    }
+    if any { print(" };\n") } else { print("};\n") }
 }
 
 func emitPayloadField(_ pe: Nd, _ idx: Int) using Alloc, Log {
@@ -5075,9 +5143,9 @@ func emitGenStructDef(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ fields
     emitStructDef(env, name, fields, methods)
 }
 
-func emitGenEnumDecl(_ gens: Vec[Nd], _ name: Str, _ cases: Vec[Nd], _ methods: Vec[Nd]) using Alloc, Log {
+func emitGenEnumDecl(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ cases: Vec[Nd], _ methods: Vec[Nd]) using Alloc, Log {
     if gens.len() > 0 { emitTemplateHead(gens) }
-    emitEnumDecl(name, cases, methods)
+    emitEnumDecl(env, name, cases, methods)
 }
 
 func emitTemplateHead(_ gens: Vec[Nd]) using Alloc, Log {
@@ -5120,6 +5188,7 @@ func emitStructDef(_ env: inout TyEnv, _ name: Str, _ fields: Vec[Nd], _ methods
         emitField(fields.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    emitDerivedMembers(env, name)
     var m: Int = 0
     while m < methods.len() {
         emitMethod(env, name, methods.get(m) ?? Nd.wildcard)
@@ -8297,6 +8366,7 @@ func emitStr(_ s: Str) using Alloc, Log {
 // calls in the curated corpus are struct constructions; method calls have a
 // member callee (not an identifier) and so never match.
 func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
+    if tryEmitDeriveDefault(env, callee, args) { return }
     if tryEmitPayloadCase(env, callee, args) { return }
     if tryEmitImportCall(env, callee, args) { return }
     if tryEmitMapError(env, callee, args) { return }
@@ -8318,6 +8388,31 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     print("(")
     emitCallArgList(env, "", fname, args)
     print(")")
+}
+
+// §12.3 derive(Default) construction: `T.default()` lowers to `T{}`, C++
+// value-init, which zero-initialises every field through the brace-init each
+// field already carries. Gated on the base naming a STRUCT — sema has already
+// checked that it derives Default and that every field conforms, so the
+// codegen only has to spell the value.
+func tryEmitDeriveDefault(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if args.len() > 0 { return false }
+    if callee.len() == 0 { return false }
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let name, let chain): tryEmitDefaultOf(env, base, name, chain)
+        default: false
+    }
+}
+
+func tryEmitDefaultOf(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool) using Alloc, Log -> Bool {
+    if chain { return false }
+    if !streq(name, "default") { return false }
+    let bn = identBaseName(base)
+    if streq(bn, "") { return false }
+    if !tyIsStruct(env, bn) { return false }
+    print(bn)
+    print("{}")
+    return true
 }
 
 // §17.x conversion call: `Float64(i)` -> `static_cast<double>(i)` — a bare
