@@ -40,10 +40,11 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 - **1512 / 1512 tests pass** (`ctest --test-dir build/debug`), Debug build,
   format-check clean. Of these, **222 are `e2e_selfhost`** (4 lexer, 11 parser,
   74 sema, 129 codegen, 4 end-to-end demo).
-- Tip commit: `7c28cc8` (codegen slice 66, derive specializations — corpus
-  burndown 12). Slice 31's probe also produced `62b747b`, a **bootstrap emitter
-  fix the differential found** (see below). 108 commits carry the `selfhost:`
-  prefix.
+- Latest slice: `7c28cc8` (codegen slice 66, derive specializations — corpus
+  burndown 12). **108 commits** carry the `selfhost:` prefix.
+- **Corpus burndown: 38 of 150 examples byte-identical, 1606 divergent lines**
+  (572 of them in families parked by design). The baseline when the burndown
+  started was 11 examples and 23394 lines.
 - Phase status:
   - **Lexer: done.** Token stream byte-identical on the sample corpus and on
     the self-hosted lexer source itself.
@@ -63,10 +64,10 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 
 ## Where to pick up: codegen
 
-Codegen (`selfhost/codegen.vst` building `vgen`) is the active front. It re-uses
-the lexer + parser, has the **whole sema type checker ported in** (the `TyEnv`),
-and emits the generated C++. Two differentials run byte-for-byte vs
-`vestra build`:
+Codegen (`selfhost/codegen.vst`, ~9.7K lines, building `vgen`) is the active
+front. It re-uses the lexer + parser, has the **whole sema type checker ported
+in** (the `TyEnv`), and emits the generated C++. Two differentials run
+byte-for-byte vs `vestra build`:
 
 - **`vgen FILE`** gives the `.cpp` *definitions* (function bodies, etc.).
 - **`vgen --hpp FILE`** gives the `.hpp` *per-program tail*: everything after the
@@ -74,355 +75,154 @@ and emits the generated C++. Two differentials run byte-for-byte vs
   declarations, top-level const/static). The reference tail is extracted with
   `awk 'f{print} index($0,"#endif  // VESTRA_RUNTIME_PRELUDE"){f=1}' FILE.hpp`.
 
-**Done (slices 1 through 28):** free functions; all statements (let/var/assign/
-while/for, statement-position if, break/continue, `with`-blocks); the full
-expression set (calls, literals, index, `??`, member, struct construction,
-force-unwrap); match expressions in **every statement-level position** — return,
-`let`/`var` binding (annotated, or inferred via the new `tyInferMatch`;
-unannotated payload-arm bindings out of scope), and bare statement (`-> auto`) —
-through the position-agnostic `emitMatchValue` (payload-free `switch`,
-payload `std::visit`, guard if/else chain, default/wildcard); payload-enum
-construction; scalar + generic + optional types; **function-pointer types**
-(`(A)->R` becomes `R(*name)(const A&)`); **closures** both in annotated bindings
-(`{p=>body}` becomes a `[&]` lambda, param types from the annotation's function
-type) and as **call arguments of named callees** (`apply({ n => n+1 }, 5)` — the
-`TyEnv` param rows carry a `pTyNode` type-**node** table, so the callee's
-function-typed parameter feeds `emitClosureVal`); structs (fields + inline
-methods); enum defs (enum class + payload struct/variant; methods dropped both
-sides); forward declarations; enum case access; top-level const/static; **named
-payload fields** (`case circle(r: Float64)` puts `r` in the `.hpp` payload
-struct and the `.cpp` visit binding; positional stays `_<idx>`); the **print
-family** (`print`/`println`/`eprint`/`eprintln` → `std::print`/`std::println`,
-text as a format *argument*; the other §18 builtins — `readFile`, `writeFile`,
-`args`, `panic` — are still open, see `src/codegen/cpp_emitter.cpp` ~4320).
+### The next action
 
-Slice 31 added **closures as method-call arguments** (per-method-parameter
-type-node rows `mpOwner`/`mpName`/`mpIdx`/`mpTyNode`; the member callee's owner
-comes from inferring the base expression's type). Its probe **found a bootstrap
-bug**, fixed in `62b747b`: a method's function-typed parameter emitted
-ill-formed `const R(*)(A)& f` instead of the declarator form `R(*f)(A)`.
+The completion standard is the whole `examples/` corpus byte-identical, the same
+bar the lexer and parser already met. **38 of 150** examples are there;
+**1606 divergent lines** remain, of which **572 are parked by design**. Start by
+re-establishing the baseline, since it is also the regression check:
 
-Slice 32 added **if-as-value**: value position is a parenthesized IIFE with
-per-branch lambdas (`([&]{ if (c) { return [&]{ … }(); } else … }())`, the
-branch body sharing the closure-body shape via `emitClosureStmts`), while
-**return position** is a plain statement `if` with returning branch tails.
-If-let expressions stay stubbed.
-
-Slice 33 added **guarded-payload match**, closing the last match-lowering
-family: the visit emitter now GROUPS arms by case — one if-constexpr branch
-per distinct case, each arm its own payload-binding scope, guarded arms
-returning inside a runtime `if` that falls through to the next scope, and a
-group ending in a guarded arm falling back to the default body. Unguarded
-matches are the degenerate one-scope case (output-neutral rewrite).
-
-Slice 34 added the **§18 builtins**: `panic`/`abort`/`unreachable`
-(unconditional on name + arity) and `readFile`/`writeFile`/`args` (yielding to
-unit-defined functions) lower to their `__vstr` shims, and `tyBuiltinRet`
-teaches the call inference that `readFile` yields `String?` so `readFile(p)!`
-force-unwraps rather than reading as logical-not. New Vestra-in-Vestra gotcha:
-`copy x` cannot appear in transpiled code (the bootstrap stubs
-copy-expressions) — restructure around conditional `return x` instead.
-
-Slice 35 added **array/tuple literals**: `[e…]` lowers to `std::array<elemT,
-N>{…}` with the element type threaded from the annotation or return type (else
-first-element inference via the recursive `cppOfSpelling`); tuples are
-context-free `std::tuple{…}` plus structured-binding destructuring, and
-`emitType` gained `vecT`/`tupleT`. Notably the **index cast is
-type-dependent**: only container bases (Vec/Span/MutSpan) get
-`static_cast<std::size_t>`; `[N]T` arrays index plainly.
-
-Slice 36 added **optional-chain**: `p?.x` lowers to
-`p.transform([](auto&& __vstr_o) { return __vstr_o.x; })`, context-free, with
-`??` composing through the existing `.value_or`. Probing verified sema only
-permits a single field hop through `?.` (no method calls, no deeper members),
-so that's the entire family.
-
-Slice 37 added **Str→String coercion** (the §18.5 string lattice): a Str /
-StrConst value flowing into a String slot wraps in `std::string(...)`, at all
-five slots the bootstrap's resolver marks — return, annotated initializer,
-assignment, call argument, struct-construction field. `tySetRetNode` now also
-records `env.curRet` during emission. Exclusivity idiom worth remembering:
-never pass `env.field` in the same call that takes `env` inout — bind the
-derived value to a local first.
-
-Slice 38 added **string interpolation**: the `interpE` capture was reshaped to
-`interpE(Vec[String], Vec[Nd])` — literal fragment texts alongside the splice
-exprs (`parts.len() == exprs.len() + 1`, empties included) — mirrored into
-`parser.vst`/`sema.vst` with the parser differential staying byte-identical.
-`"a \(x) b"` emits `std::format("a {} b", x)` with `{`/`}` doubled in
-fragments.
-
-Two **known bootstrap gaps** the text differential does not police (documented,
-not yet fixed; discovered while compiling probe output):
-
-- The closure lowering family (slices 26/27/31) emits `[&]` lambdas where the
-  target type is a raw function pointer — C++ forbids that conversion for a
-  lambda with a capture-default, and the lambda's by-value params mismatch the
-  pointer's `const T&` params. The generated text matches byte-for-byte but
-  does not compile. A real fix is bootstrap-side (captureless lambdas with
-  matching params, or `std::function`).
-- Methods are not const-qualified (v0.5 minimalism), so calling any method on
-  a read-mode (`const T&`) parameter does not compile; fixtures call methods
-  through `var` locals.
-
-Slice 39 added the **§18.5 builtin methods** — the last big single-file gap.
-`tryEmitBuiltinMethod` dispatches on the base's inferred type spelling: Vec
-(`push`→`.push_back`, `len`→`.size()` as Int, `get`/`pop`→`__vstr` optional
-helpers, `set`, `clear`), HashMap (`set`/`get`/`contains`/`len`/`keys`/
-`values`/`entries`), the string families (append/len/isEmpty/slice/byteAt/
-charAt/find/toInt/split/chars/contains/startsWith/endsWith), numeric
-`toString`, and the Char predicates. `Type.new()` annotated bindings construct
-the annotation's C++ type; `tyBuiltinMethodRet` feeds builtin return types
-into the inference so chained calls, unwrap, and string coercion keep working
-on builtin results. Still out (as bootstrap-side special cases): Soa methods,
-span `split`/`chunks`, atomics, `Result.mapError`.
-
-Slices 40–41 delivered the core **generics arc**. Functions: a generic
-function lowers to a header-resident template (`template <class T, class U>` +
-`[[nodiscard]]` + the same `emitFunc` body emitter; nothing in the `.cpp`,
-plain call sites). Types: generic struct/enum definitions get template heads;
-`Pair[Int32]` references lower to `Pair<std::int32_t>` (node-level via
-`emitGenericType`'s fixed fallback, spelling-level via `cppOfSpelling` +
-`genBaseOf`); and CONSTRUCTION recovers the instantiated C++ name from the
-expected type (binding annotation or result type) via `TyEnv.genTypes` +
-`emitGenericCtor` — including bare enum cases and generic-enum matches.
-Still open in generics: const-generics, bounds, generic methods, and
-arg-driven ctor inference (a generic construction with no expected type in
-hand, e.g. as a call argument).
-
-Slice 42 added **param modes**: `inout` → `T&`, `sink` → `T&&` (one dispatch
-in `emitParam` covers every param surface), with call-site `&x` markers
-dropping and move-only lvalues into sink params wrapping in `std::move` (new
-`TyEnv.pMode` rows; move-only judged conservatively by spelling — owned
-String/Vec/HashMap/Box only, user nominals not moved).
-
-Slice 43 added the **throws core**: `throws(E)` wraps the declared result in
-`std::expected<T, E>` (`void` when omitted) in both the `.cpp` definition and
-the `.hpp` forward declaration (`emitExpectedRet`; the `[[nodiscard]]` rule
-widened to cover throws-void). `throw e` at statement position lowers to
-`return std::unexpected{e};`. A propagating `try` gets the canonical 3-line
-hoist (`__vstr_tN_r` / early-return / unwrap into `__vstr_tN`) collected per
-statement in the bootstrap's walk order (post-order at a try; if/match visit
-only cond/scrutinee; `&&`/`||` skip the rhs), with the use-site consuming
-names in collection order — `TyEnv.tryN` is file-global and never resets,
-matching the bootstrap's `hoist_counter_`. `try!` → `__vstr::unwrap_exp`,
-`try?` → the optional-converting IIFE. Out of scope: **cond-hoists** (a try
-inside if/match branches lifts to a `__vstr_cN` lambda in the bootstrap),
-do/catch, `.mapError`, throws methods, async+throws.
-
-Slice 44 added the **async core**: an `async func` returns `__vstr::Task<R>`
-(`emitTaskRet` wraps `emitExpectedRet`, so async+throws nests
-`Task<std::expected<T, E>>` for free), its read params pass **by value** (the
-coroutine frame must own copies across suspension), function-level `return` /
-`throw` / the try-hoist escape switch to `co_return` (`TyEnv.curAsync` +
-`emitRetKw`; lambda-internal returns untouched), a void async body not ending
-in a return gets a trailing `co_return;`, `await e` → `co_await (e)`, and
-`spawn e` → `__vstr::spawn_future(e)` (inference round-trips spawn→`Future[T]`
-→await→`T`). Out of scope: select, channels/recv, async methods, async
-closures.
-
-Slice 45 added **import declarations**, closing the last structural arc: the
-`.hpp` tail gains `#include "h"` for `import c "h"` then `#include "m.hpp"`
-per module import (dotted path → directory path), each group followed by a
-blank line; cross-module references emit fully qualified via `TyEnv.imports`
-(`m.f(x)` → `m::f(x)`, `m.CONST` → `m::CONST`, and a Capitalized member call
-is a cross-module construction `m.Point(x: a)` → `m::Point{.x = a}`). vgen
-needs no import loading — the include and the qualified spelling suffice.
-Note: the importED module must carry a `module <name>` decl or the
-bootstrap's sema rejects the qualifier. Out of scope: a module decl in the
-emitted file (namespace-wrapped output), qualified type annotations, nested
-qualifiers (`m.Color.red`).
-
-**Close-out roadmap (slices 46-54): COMPLETE.** All four phases landed, one
-slice per commit:
-
-- **Phase A, modules** — 46 namespace wrapping (`module a.b` →
-  `namespace a::b { }` in both outputs; `cghelp.vst` became a differential
-  target); 47 qualified type annotations (dotted type paths spell `::` via
-  the context-free `cppNamed` fallback).
-- **Phase B, throws tail** — 48 `.mapError` → `transform_error`
-  (name-dispatched); 49 if-branch cond-hoists (the `__vstr_cN`
-  expected-returning lambda, T from statement context, try tails via the
-  fixed `__vstr_r` inline escape, snapshot-hardened hoist emission);
-  50 match-arm cond-hoists (holds_alternative chain / braced-case switch /
-  `__vstr_mh` if-chain — and a statement-position match types its lambda by
-  its own arm type, unlike a statement if); 51 do/catch (annotated,
-  value-position nested IIFEs; bare `catch e`, multi-statement bodies, and
-  where-guard stay out — the bare form needs sema's inferred error type).
-- **Phase C, generics tail** — 52 in one slice: const-generics
-  (`template <std::size_t N>`), self typed as the owning struct (plain
-  array-field indexing), bounds erasure (already matching), arg-driven ctor
-  inference (callee param type node); generic methods documented as a
-  SHARED bootstrap gap (no template head, non-compiling output both sides).
-- **Phase D, async tail** — 53 async methods (plain non-coroutine shape but
-  BY-VALUE read params, mirroring the bootstrap's method emitter);
-  54 channels (`Channel[T]`/`Future[T]` → `__vstr::` type mappings;
-  send/close/receive/new/await all ride existing machinery). **select is
-  parked with rationale**: the bootstrap's ~800-line resolver-driven
-  emit_select (channel-vs-Future arm classification, blocking SelectAwaiter
-  coroutine vs poll lowering, timeout timers) plus a missing SelectExpr
-  parser capture make it disproportionate to mirror.
-
-Closures against **generic** callees (`map`/`filter`) stay out of reach: their
-param types need full generic instantiation, not recoverable structurally.
-
-**The corpus burndown is ACTIVE (slices 55+): 38 of 150 examples
-byte-identical** (baseline was 11), and **total divergence across the corpus
-is down from 23394 lines to 1606 — a 93% cut** (both under the minimal-diff count the
-sweep now uses; see the metric note below). Landed: 55 entry main (`argc/argv` +
-`args_init`, non-module files only — module-form mains already worked), 56
-nil + statement if-let (62 example files use if-let), 57 scalar-conversion
-casts (`Int32(x)` → `static_cast<...>`) + the iterator-protocol for-loop
-(known-struct iterables), 58 tuple wildcard bindings (`__vstr_tp_unused_N`),
-59 match payload binding TYPES, 60 nested match expressions, 61 tuple
-for-loop patterns, 62 leading-dot case references, 63 value-scrutinee match,
-64 else-if chains, 65 derive Eq/Clone/Default, 66 derive Hash/Debug/Display.
-
-Slices 59–60 are one arc and were measured together. **59** gave a payload
-arm's binding the case's declared field type (a new `ecfTy` column beside
-`ecfName`, `tyPayFieldTy` beside `tyPayFieldName`, registered in
-`emitOneBinding`) — until then every type-directed lowering went blind
-inside an arm, so `s.len()` never reached `.size()` and Str→String coercion
-never fired. **60** routed `matchE` out of `emitExpr`'s `/*?expr*/` default
-into `emitMatchValue`: a match arm body is a single expression, so a match
-on a second scrutinee can only appear AS that body — the shape every
-interpreter demo is built from. Two details the reference pins: the nested
-lowering lays out at the FIXED statement indent (the bootstrap indents
-absolutely, so depth never shifts the columns), and its lambda takes the
-nested match's OWN inferred type, not `curRetNode`. That last part forced a
-fix in `tyInferMatch`, which ran before the emitter registered arm bindings
-and so typed `x + y` over two payload names as `Int` rather than `Int32`;
-it now registers each arm's bindings before typing that arm.
-
-Slice **61** made a tuple for-pattern a C++ structured binding —
-`for (k, v) in m.entries()` had been flattening to a single name and
-emitting `for (auto&& : …)`, invalid C++, in 26 examples. `emitForHead` and
-friends now take the PATTERN rather than a pre-flattened name, reusing slice
-58's name list so a `_` element still mints `__vstr_tp_unused_<N>`.
-
-Slice **62** resolved LEADING-DOT cases (`.plus`, `.just(v)`), which name no
-enum of their own. The bootstrap reads the resolved type; vgen reads the
-SLOT the value flows into — the five coercion slots plus match arm bodies
-(a new `TyEnv.armTo`, published by `emitMatchValue` and restored after, so a
-nested match cannot leak its arm slot outward). Three shapes: `Ordering`
-first (a builtin whose cases ARE the `std::memory_order_*` literals), then
-the sum-type variant wrap (instantiated name when generic), then the plain
-scoped reference. It moved the example count for the first time in four
-slices.
-
-Slice **63** was the largest single slice of the burndown, cutting
-divergence 53% on its own. A Str, number, Bool or tuple scrutinee has no
-cases to switch on, so the bootstrap binds it once and walks an if/else-if
-chain of per-arm PREDICATES; vgen assumed an enum unconditionally and
-emitted the nonsense `case Str:::` — the shape every interpreter demo's
-keyword lookup is built from. `emitPatPredicate` covers all five pattern
-shapes (literal equality, both range spellings, `||`-joined alternatives,
-tuple elements through `std::get<i>`, and always-match as plain `true` with
-the binding emitted separately). Dispatch mirrors the bootstrap: anything
-whose scrutinee does not name a declared enum takes this path, INCLUDING one
-vgen failed to infer. That surfaced a real gap the sweep caught as a
-regression — a do/catch catch binding was never registered, so `match e`
-over an error enum inferred nothing and fell to the value path; it now takes
-the declared error type from the catch clause.
-
-Slice **64** was one match arm for the second-largest cut of the burndown.
-The parser stores an `else if` as a bare `ifE` in the else slot rather than
-a block wrapping one, and `emitElse` only matched the block case — so every
-else-if branch emitted as an empty `} else { }`, silently DROPPING the
-chain. The bootstrap does not flatten a chain into `else if`; it nests,
-emitting `} else { if (c) { … } }` per level, so a run closes with one brace
-per level, and the nested if emits at indent `""` to land on the
-`} else { ` line. The whole `calc_*` demo family flipped at once.
-
-Slices **65-66** closed §12.3 **derives**, split by mechanism. 65 did the
-ones that are not library specializations: a defaulted `operator==` for Eq
-(a sum-type enum needs one on every `case_t` too, since `std::variant`
-compares structurally only when each alternative does), an explicit
-`clone()` for Clone, and `T.default()` becoming `T{}` at the call site. 66
-did the two specializations, which live at global scope AFTER the module
-namespace closes and so qualify their target with the module path:
-`std::hash` (structs and the variant enum form only — a bare `enum class`
-already has the library's) and `std::formatter` for Debug/Display, which
-render identically in v0.5 and emit a SINGLE spec when both are derived,
-since two specializations of one template would be an ODR violation. A
-generic target takes a partial specialization, with `typename` on the
-dependent `X<T>::case_t`. One asymmetry the reference caught: the hash
-visit chain has no `unreachable` fallback, unlike the formatter's — it has
-a value to return either way.
-
-**A ranking caveat worth carrying forward.** Slice 64's family was recorded
-in the previous handoff as a cosmetic `} else { if` vs `} else if` spacing
-difference. It was the reverse — the reference is the side with the nested
-braces, and vgen was dropping code. When ranking from a diff, check which
-side is the reference before characterising a family, and prefer reading the
-generated output over the diff's `<`/`>` markers.
-
-**Two notes on the metric.** First, the identical-example count held at 21
-across slices 59–61 even as ~9800 divergent lines disappeared: the
-interpreter demos each carry several remaining families, so line count is
-the finer-grained signal mid-arc and example count only moves when a file's
-LAST family closes. Second, line counts MUST come from minimal diffs
-(`diff -d`, which the sweep now uses). Plain diff picks a non-minimal edit
-script whose size depends on how surrounding text aligns, so repairing one
-hunk can inflate the count elsewhere — slice 61 was falsely reported as a
-regression that way. Reports produced before that fix read a few lines high
-and are not comparable.
-
-The sweep itself is [`scripts/sweep_codegen_corpus.sh`](scripts/sweep_codegen_corpus.sh):
-`--build` rebuilds `vgen` first, and `--compare <earlier-report>` prints the
-before/after totals and flags any example whose divergence GREW or that
-stopped being identical. Run it before and after every burndown slice —
 ```
 ./scripts/sweep_codegen_corpus.sh --build --report build/sweep/before.txt
-# … land the slice …
+#   … pick a family below, probe it, implement the slice …
 ./scripts/sweep_codegen_corpus.sh --build --compare build/sweep/before.txt
 ```
 
-**Next families, ranked by the post-slice-66 sweep.** 1606 divergent lines
-over 112 examples, 572 of them in the three parked families — the live
-remainder is a scatter of small one-offs rather than families.
-(1) OPAQUE newtypes — vgen does not emit `opaque type Q = T` at all
-(`enum class Q : T {}`), which also blocks its Hash/Debug specs
-(`newtype` 36 lines). (2) `parser_errors_demo` (48) and `midmatch` (40),
-each worth a direct probe; they are the largest live examples and have not
-been characterised. (3) `[[gnu::*]]` ATTRIBUTE passthrough (~7 examples, a
-few lines each) — mechanical. (4) `requires`-clause BOUNDS on generic
-functions. (5) `args()` typing as `Vec[Str]` so `argv.len()` / `argv.get()`
-dispatch — 4 lines in each `interp_*` demo and the ONLY thing left in most
-of them, so it should flip a large block at once. PARKED BY DESIGN and
-expected to stay divergent: `quote_demo` (368, comptime/quote),
-`channel_select_demo` (118, select), `atomics` (86, the atomics method
-surface). After those, re-sweep and re-rank.
+`--compare` prints the before/after totals and flags any example whose
+divergence GREW or that stopped being identical. Run it every slice: in twelve
+slices it flagged twice, once on a genuine gap the fixtures would have missed
+(slice 63, an unregistered do/catch binding) and once on a false alarm that
+turned out to be the metric itself (slice 61, which is why the sweep now counts
+with `diff -d`). Both were worth knowing.
 
-**Remaining unmirrored codegen** (full audit in the memory file): select
-(parked, see above), the do/catch leftovers (bare `catch e`, multi-statement
-bodies, where-guard), unannotated bindings of if/match cond-hoists (vgen
-does not infer if-expressions), and the low-value tier (comptime,
-quote/splice, @-intrinsics). Known SHARED bootstrap gaps, mirrored rather
-than fixed: closure→fn-ptr conversion and template-less generic methods
-(both produce non-compiling C++; the differential is textual).
+**Ranked candidates (post-slice-66).** The corpus is long-tailed now — what is
+left is a scatter of one-offs rather than families, so these are named by
+example rather than by taxonomy.
+
+1. **`args()` typing as `Vec[Str]`** so `argv.len()` / `argv.get()` dispatch
+   through the §18.5 builtin-method path. Four lines in each `interp_*` demo
+   and the ONLY thing left in most of them, so it should flip a large block at
+   once. Highest leverage of anything remaining.
+2. **Opaque newtypes.** vgen does not emit `opaque type Q = T` at all
+   (`enum class Q : T {}`), which also blocks its derived Hash/Debug specs
+   (`newtype`, 36 lines).
+3. **`parser_errors_demo` (48) and `midmatch` (40)** — the largest live
+   examples, and NOT yet characterised. Probe them directly rather than
+   guessing from the diff; see the ranking caveat below.
+4. **`[[gnu::*]]` attribute passthrough** (~7 examples, a few lines each) —
+   mechanical.
+5. **`requires`-clause bounds** on generic functions.
+
+**Parked by design; expect these to stay divergent.** `quote_demo` (368,
+comptime/quote), `channel_select_demo` (118, select), `atomics` (86, the
+atomics method surface). Together they are 36% of the remaining line count, so
+subtract them before reading the total as progress.
+
+### Two lessons about the metric
+
+Both were learned by getting them wrong; they cost a slice each.
+
+- **The identical-example count is coarse mid-arc.** A file only flips when its
+  LAST divergent family closes, so a slice can remove thousands of lines and
+  move it by zero — slices 59–61 cut ~9800 lines at a flat 21/150. Track total
+  divergent LINES as the fine-grained signal and treat the example count as a
+  milestone.
+- **Line counts must come from MINIMAL diffs** (`diff -d`, which the sweep
+  uses). Plain diff picks a non-minimal edit script whose size depends on how
+  the surrounding text happens to align, so repairing one hunk can inflate the
+  count elsewhere and fake a regression. Reports from before commit `9b67d6d`
+  read a few lines high and are not comparable.
+
+### A ranking caveat
+
+Slice 64's family was recorded in an earlier handoff as a cosmetic
+`} else { if` vs `} else if` spacing difference. It was the reverse: the
+reference was the side with the nested braces, and vgen was silently DROPPING
+every else-if branch. Before characterising a family from a diff, confirm which
+side is the reference (check the `diff` argument order), and prefer reading the
+generated output directly over reading the `<`/`>` markers.
+
+### What codegen covers
+
+Sixty-six slices; the close-out roadmap is complete and the corpus burndown is
+active. The per-slice engineering log — every lowering, its bootstrap source
+line, and its gotchas — is in the `project_dogfood_compiler.md` memory file.
+The capability summary:
+
+- **Declarations.** Free functions, structs (fields + inline methods), enums in
+  both the `enum class` and struct-of-variant forms, forward declarations,
+  top-level const/static, module namespace wrapping, imports (C headers and
+  modules, with cross-module references fully qualified).
+- **Statements.** let/var/assign, while, for (ranges, containers, the iterator
+  protocol, and tuple destructuring), if / else-if chains / if-let, break,
+  continue, `with` blocks, return.
+- **Expressions.** The full set — calls, literals, index, `??`, member,
+  optional chains, struct construction, force-unwrap, array/tuple literals,
+  string interpolation, scalar casts, leading-dot cases, closures.
+- **Match.** Every lowering family: payload-free `switch`, payload
+  `std::visit` (grouped by case, guarded arms falling through), guard chains,
+  non-enum value scrutinees with predicate patterns, and match in every
+  position including nested inside an arm body.
+- **Types.** Scalars, generics (functions, structs, enums, const-generics,
+  arg-driven ctor inference), optionals, function pointers, param modes
+  (`inout` / `sink` with call-site `std::move`), the Str/String lattice.
+- **Effects.** `throws(E)` as `std::expected` with the full try family
+  (propagating hoists, `try!`, `try?`, cond-hoists, `.mapError`, do/catch),
+  and async as `__vstr::Task` with `await` / `spawn` / channels.
+- **Builtins and derives.** The §18 builtins, the §18.5 builtin-method surface
+  (Vec / HashMap / Str family / Char / toString), and §12.3 derives
+  (Eq, Clone, Default, Hash, Debug, Display).
+
+**Known gaps, deliberately unmirrored.** `select` (the bootstrap's ~800-line
+resolver-driven `emit_select` plus a missing `SelectExpr` parser capture make
+it disproportionate); comptime / quote / splice / `@`-intrinsics; the do/catch
+leftovers (bare `catch e`, multi-statement bodies, where-guard); unannotated
+bindings of if/match cond-hoists; opaque type declarations; the atomics method
+surface; Soa methods and span `split`/`chunks`.
+
+**Known SHARED bootstrap gaps**, mirrored rather than fixed — both produce
+non-compiling C++ on BOTH sides, so the differential stays textual:
+closure→fn-ptr conversion (a `[&]` lambda cannot convert to a raw function
+pointer) and template-less generic methods. Separately, methods are not
+const-qualified in v0.5, so calling one on a read-mode (`const T&`) parameter
+does not compile; fixtures call methods through `var` locals.
+
+**One bootstrap bug the differential found**, fixed in `62b747b`: a method's
+function-typed parameter emitted the ill-formed `const R(*)(A)& f` instead of
+the declarator form `R(*f)(A)`. Probing a lowering against the reference is
+worth doing even when vgen looks wrong.
 
 ## How the work proceeds
 
 A tight, one-slice-at-a-time loop:
 
-1. Pick the next gap (this handoff or the audit in the memory file).
-2. **Probe the target lowering**: run `vestra build` (or `check`) on a tiny
+1. Pick the next gap (the ranked list above, or the audit in the memory file).
+2. **Sweep first** — `scripts/sweep_codegen_corpus.sh --build --report
+   build/sweep/before.txt` — so there is a baseline to compare against.
+3. **Probe the target lowering**: run `vestra build` (or `check`) on a tiny
    hand-written program and read the reference output byte-exactly
    (`cat -e`, `od -c`, `diff`), since spacing and punctuation must match.
-3. Implement the slice in the relevant `.vst` file (mirror parser-front-end
+   Also read the bootstrap emitter that produces it; `src/codegen/` is the
+   spec, and every lowering has one function that owns it.
+4. Implement the slice in the relevant `.vst` file (mirror parser-front-end
    changes into the downstream files).
-4. **Rebuild the binary and diff.** For codegen:
+5. **Rebuild the binary and diff.** For codegen:
    ```
    build/debug/vestra build selfhost/codegen.vst -o /tmp/vgenbuild
    c++ -std=c++26 -O0 -I/tmp/vgenbuild /tmp/vgenbuild/codegen.cpp -o /tmp/vgenbuild/vgen
-   diff <(/tmp/vgenbuild/vgen FILE.vst) <(vestra build FILE.vst …)
+   diff -d <(/tmp/vgenbuild/vgen FILE.vst) <(vestra build FILE.vst …)
    ```
-5. Add a curated fixture under `tests/e2e/codegen/` (or `tests/e2e/sema/`), wire
+6. **Re-sweep with `--compare build/sweep/before.txt`** and read the regression
+   lines. Do not skip this — a flagged example is either a genuine gap the
+   fixtures would have missed or a problem with the measurement, and both are
+   worth stopping for.
+7. Add a curated fixture under `tests/e2e/codegen/` (or `tests/e2e/sema/`), wire
    its stem into the `foreach(prog …)` list(s) in `tests/CMakeLists.txt`
    (codegen fixtures go in **both** the `.cpp` and `.hpp` lists), re-run
-   `cmake .` + `ctest -R e2e_selfhost`.
-6. One commit per slice; then update the `project_dogfood_compiler.md` memory.
+   `cmake .` + `ctest -R e2e_selfhost`, then the full `ctest`.
+8. One commit per slice; then update the `project_dogfood_compiler.md` memory.
+   Keep doc/script changes in their own commits so the slice diff stays
+   reviewable.
 
 Standing constraints, honored every commit:
 
@@ -431,11 +231,12 @@ Standing constraints, honored every commit:
 - **Explicit `git add` paths**, never `git add -A`/`.`. The working tree carries
   untracked spec drafts (`VESTRA_DRAFT_3_*.md`, `VESTRA_ANNEX_A.md`) the user
   authors independently and that must never be swept into a commit.
-- **No `--no-verify`, no force-push to main.** Branch first if on `main` and the
-  user hasn't asked to commit there.
+- **No `--no-verify`, no force-push to main.** Slices commit **directly to
+  `main`** — confirmed by the user on 2026-07-24, and consistent with all 108
+  prior `selfhost:` commits. No need to ask again.
 - Commit subject `selfhost: <phase> slice N — <feature>`, a rationale body, and
-  the trailer `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>` (the
-  active Claude model; earlier slices credit Opus 4.8).
+  a `Co-Authored-By:` trailer naming the ACTIVE Claude model (slices 59–66
+  credit Opus 5, earlier ones Fable 5 and Opus 4.8).
 
 ## Rough edges (writing Vestra-in-Vestra)
 
@@ -457,6 +258,18 @@ Standing constraints, honored every commit:
 - Closures use **last-expression-as-value**; an explicit `return` inside a
   closure makes it type as `Unit`.
 - `pi` is a reserved/builtin name, so don't name a fixture function `pi`.
+- **Exclusivity**: never pass `env.<field>` in the same call that takes `env`
+  as `inout` — bind the derived value to a local first
+  (`let to = own(env.curRet)`, then pass `to`). This bites constantly in the
+  emitters, where nearly every helper takes `env inout`.
+- **Functions may be declared in any order** (the emitter writes forward
+  declarations), so a new helper can sit next to its caller. Only TYPES are
+  order-sensitive.
+- Match arms must all have the SAME type, which constrains fixtures: a
+  `String`-returning arm cannot sit beside a `StrConst` literal arm. Build a
+  tiny helper (`func mkString(_ s: Str) -> String`) rather than fighting it.
+- `own("")` is the idiom for an empty owned `String`; `own(x)` copies a `Str`
+  into one. Example fixtures cannot call the compiler's internal helpers.
 - Commit with `git commit -F <messagefile>` (backtick substitution otherwise
   mangles bodies).
 
