@@ -6768,9 +6768,16 @@ func emitIfStmt(_ env: inout TyEnv, _ indent: Str, _ ln: Str, _ li: Vec[Nd], _ c
     print("\n")
 }
 
+// The else branch is either a block or — for `else if` — another if, which the
+// parser stores as a bare `ifE` rather than a block wrapping one. The bootstrap
+// does NOT flatten the chain into `else if`; it nests, emitting
+// `} else { if (c) { … } }` per level, so each level closes with its own brace.
+// Emitting the nested if at indent "" puts it on the `} else { ` line, exactly
+// where the reference has it.
 func emitElse(_ env: inout TyEnv, _ e: Nd) using Alloc, Log {
     match e {
         case .block(let stmts): emitStmtList(env, stmts, "")
+        case .ifE(let ln, let li, let cond, let thenB, let els): emitIfStmt(env, "", ln, li, cond, thenB, els)
         default: noop()
     }
 }
