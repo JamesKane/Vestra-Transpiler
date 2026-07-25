@@ -37,13 +37,12 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 
 ## Current state
 
-- **1506 / 1506 tests pass** (`ctest --test-dir build/debug`), Debug build,
-  format-check clean. Of these, **216 are `e2e_selfhost`** (4 lexer, 11 parser,
-  74 sema, 123 codegen, 4 end-to-end demo).
-- Tip commit: `1c70282` (codegen slice 63, value-scrutinee match — corpus
-  burndown 9). Slice 31's probe also produced `62b747b`, a **bootstrap emitter
-  fix the differential found** (see below). 105 commits carry the `selfhost:`
-  prefix.
+- **1508 / 1508 tests pass** (`ctest --test-dir build/debug`), Debug build,
+  format-check clean. Of these, **218 are `e2e_selfhost`** (4 lexer, 11 parser,
+  74 sema, 125 codegen, 4 end-to-end demo).
+- Tip commit: `c421c61` (codegen slice 64, else-if chains — corpus burndown
+  10). Slice 31's probe also produced `62b747b`, a **bootstrap emitter fix the
+  differential found** (see below). 106 commits carry the `selfhost:` prefix.
 - Phase status:
   - **Lexer: done.** Token stream byte-identical on the sample corpus and on
     the self-hosted lexer source itself.
@@ -58,7 +57,7 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
     generics tracking (unknown-type, is-not-generic), all match families
     (guard-Bool, exhaustiveness, arm-type, pattern checks), and multi-file
     modules (import resolution, qualified member + type).
-  - **Codegen: 63 slices; the close-out roadmap is complete and the corpus
+  - **Codegen: 64 slices; the close-out roadmap is complete and the corpus
     burndown is active.** See "Where to pick up" below.
 
 ## Where to pick up: codegen
@@ -266,16 +265,17 @@ slice per commit:
 Closures against **generic** callees (`map`/`filter`) stay out of reach: their
 param types need full generic instantiation, not recoverable structurally.
 
-**The corpus burndown is ACTIVE (slices 55+): 23 of 150 examples
+**The corpus burndown is ACTIVE (slices 55+): 30 of 150 examples
 byte-identical** (baseline was 11), and **total divergence across the corpus
-is down from 23394 lines to 5186 — a 78% cut** (both under the minimal-diff count the
+is down from 23394 lines to 1783 — a 92% cut** (both under the minimal-diff count the
 sweep now uses; see the metric note below). Landed: 55 entry main (`argc/argv` +
 `args_init`, non-module files only — module-form mains already worked), 56
 nil + statement if-let (62 example files use if-let), 57 scalar-conversion
 casts (`Int32(x)` → `static_cast<...>`) + the iterator-protocol for-loop
 (known-struct iterables), 58 tuple wildcard bindings (`__vstr_tp_unused_N`),
 59 match payload binding TYPES, 60 nested match expressions, 61 tuple
-for-loop patterns, 62 leading-dot case references, 63 value-scrutinee match.
+for-loop patterns, 62 leading-dot case references, 63 value-scrutinee match,
+64 else-if chains.
 
 Slices 59–60 are one arc and were measured together. **59** gave a payload
 arm's binding the case's declared field type (a new `ecfTy` column beside
@@ -324,6 +324,22 @@ regression — a do/catch catch binding was never registered, so `match e`
 over an error enum inferred nothing and fell to the value path; it now takes
 the declared error type from the catch clause.
 
+Slice **64** was one match arm for the second-largest cut of the burndown.
+The parser stores an `else if` as a bare `ifE` in the else slot rather than
+a block wrapping one, and `emitElse` only matched the block case — so every
+else-if branch emitted as an empty `} else { }`, silently DROPPING the
+chain. The bootstrap does not flatten a chain into `else if`; it nests,
+emitting `} else { if (c) { … } }` per level, so a run closes with one brace
+per level, and the nested if emits at indent `""` to land on the
+`} else { ` line. The whole `calc_*` demo family flipped at once.
+
+**A ranking caveat worth carrying forward.** Slice 64's family was recorded
+in the previous handoff as a cosmetic `} else { if` vs `} else if` spacing
+difference. It was the reverse — the reference is the side with the nested
+braces, and vgen was dropping code. When ranking from a diff, check which
+side is the reference before characterising a family, and prefer reading the
+generated output over the diff's `<`/`>` markers.
+
 **Two notes on the metric.** First, the identical-example count held at 21
 across slices 59–61 even as ~9800 divergent lines disappeared: the
 interpreter demos each carry several remaining families, so line count is
@@ -345,38 +361,21 @@ stopped being identical. Run it before and after every burndown slice —
 ./scripts/sweep_codegen_corpus.sh --build --compare build/sweep/before.txt
 ```
 
-**Next families, ranked by the post-slice-63 sweep.** The corpus is now
-long-tailed — no family dominates, and the largest single divergent example
-is 368 lines. (1) NESTED STATEMENT if/else — vgen emits `} else { if (c) {`
-where the reference emits `} else if (c) {`; it is the whole remaining
-divergence in most `interp_*` demos (80 lines each, ~40 files) and looks
-purely structural. (2) OR-PATTERNS over an ENUM (`case .a(n) | .b(n):`) —
-one if-constexpr branch per alternative sharing the arm body (see
-examples/match.vst; `armCaseName` on an `orP` yields the broken `Enum::_t`).
-Note slice 63 already handles or-patterns on a VALUE scrutinee. (3) The
-cheap tail: `[[gnu::*]]` attribute passthrough (7 examples),
-derive-generated `clone`/`operator==`/`default` in the `.hpp` (6),
-`requires`-clause bounds (1). Parked-by-design and expected to stay
-divergent: `quote_demo` (368, comptime/quote), `channel_select_demo` (118,
-select), `atomics` (86, the atomics method surface). After those, re-sweep
-and re-rank.
-
-**The original burndown proposal (measured 2026-07-24), kept for the
-metric's definition:** With the
-family roadmap complete, the completion standard shifts to the one the lexer
-and parser already met — the whole `examples/` corpus, byte-identical. The
-baseline measurement: **11 of 150 examples** already emit identically
-(`.cpp` + `.hpp` tail), and **`vgen` on its own 10,807-line source diverges
-on only 738 lines (~93% identical)** — self-emission is a reachable
-milestone. Sampled divergence families, each a normal slice: `func main`
-emission (`int argc, char** argv` + `__vstr::args_init` — touches nearly
-every demo), if-let / while-let (`if (auto __vstr_opt = o; …)` — the long-
-stubbed family), the `nil` literal (`std::nullopt`), range-for bound casts
-(`static_cast<std::int32_t>(0)`, not `Int32(0)`), tuple wildcard bindings
-(`__vstr_tp_unused_<i>`), and match payload-pattern case-name capture
-(`Event::_t` instead of `Event::keyDown_t`). The loop: pick the divergence
-family with the highest example count, slice it, re-measure — the
-identical-example count is the arc's progress metric.
+**Next families, ranked by the post-slice-64 sweep.** Only 1783 divergent
+lines remain across 120 examples, and 570 of those are the three parked
+families. What is left is a genuine long tail — the largest live example is
+54 lines. (1) DERIVE-GENERATED members in the `.hpp` — `clone`,
+`operator==`, `Default`, and the debug/`Display` string (`generic_derive` 54,
+`derive_debug` 38, `newtype` 36, plus several smaller); one family, several
+spellings, and the biggest live block left. (2) `[[gnu::*]]` ATTRIBUTE
+passthrough (~7 examples, a handful of lines each) — mechanical.
+(3) `requires`-clause BOUNDS on generic functions. (4) A scatter of
+one-offs worth re-probing individually once the above land, e.g. `args()`
+typing as `Vec[Str]` so `argv.len()` dispatches (4 lines in each `interp_*`
+demo, and the ONLY thing left in most of them). PARKED BY DESIGN and
+expected to stay divergent: `quote_demo` (368, comptime/quote),
+`channel_select_demo` (118, select), `atomics` (86, the atomics method
+surface). After those, re-sweep and re-rank.
 
 **Remaining unmirrored codegen** (full audit in the memory file): select
 (parked, see above), the do/catch leftovers (bare `catch e`, multi-statement
