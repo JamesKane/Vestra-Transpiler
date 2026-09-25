@@ -2933,6 +2933,7 @@ struct TyEnv {
     var dvProto: Vec[String]    // ... -> one derived protocol (a `derive(Eq, Hash) for T` pushes one row each)
     var opName: Vec[String]     // global: §3 opaque newtype names ...
     var opUnder: Vec[Nd]        // ... -> the underlying type NODE (for `.value` and the derive specs)
+    var moveOnly: Vec[String]   // global: §10 struct/enum names that transitively own a Box (C++ non-copyable)
     var symName: Vec[String]    // per-function: binding name ...
     var symType: Vec[String]    // ... -> type spelling
     var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
@@ -4283,6 +4284,9 @@ func tyInferMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain:
     // §3 `q.value` on an opaque newtype types as its underlying.
     if streq(name, "value") && tyIsOpaque(env, bt) { return typeSpelling(tyOpaqueUnder(env, bt)) }
     if streq(name, "value") && tyStartsWith(bt, "Box[") { return own(bt.slice(4, bt.len() - 1)) }
+    // A bare case of a user enum (`List.empty`) types as the enum.
+    let en = identBaseName(base)
+    if !streq(en, "") && tyIsEnum(env, en) && tyEnumHasCase(env, en, name) { return en }
     return own("")
 }
 
@@ -4824,7 +4828,7 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     ecfEnum: Vec.new(), ecfCase: Vec.new(),
                     ecfIdx: Vec.new(), ecfName: Vec.new(), ecfTy: Vec.new(),
                     dvTarget: Vec.new(), dvProto: Vec.new(),
-                    opName: Vec.new(), opUnder: Vec.new(),
+                    opName: Vec.new(), opUnder: Vec.new(), moveOnly: Vec.new(),
                     symName: Vec.new(), symType: Vec.new(),
                     curRet: own(""), curRetNode: Vec.new(),
                     tryN: 0, hoistName: Vec.new(), hoistExpr: Vec.new(),
@@ -4846,7 +4850,93 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
         tyRecordImport(&env, u.imports.get(m) ?? Nd.wildcard)
         m = m + 1
     }
+    tyComputeMoveOnly(&env)
     return env
+}
+
+// §10 move-only nominals: a struct/enum becomes move-only once any field or
+// case payload is, given what is already known — iterated to a fixpoint (the
+// bootstrap's compute_move_only_types). Monotonic, bounded by the decl count.
+func tyComputeMoveOnly(_ env: inout TyEnv) using Alloc {
+    var changed: Bool = true
+    while changed {
+        changed = false
+        var i: Int = 0
+        while i < env.sFldStruct.len() {
+            let owner = own(env.sFldStruct.get(i) ?? own(""))
+            let ft = own(env.sFldType.get(i) ?? own(""))
+            if tyMarkMoveOnly(env, owner, ft) { changed = true }
+            i = i + 1
+        }
+        var j: Int = 0
+        while j < env.ecfEnum.len() {
+            let owner = own(env.ecfEnum.get(j) ?? own(""))
+            let pt = own(env.ecfTy.get(j) ?? own(""))
+            if tyMarkMoveOnly(env, owner, pt) { changed = true }
+            j = j + 1
+        }
+    }
+}
+
+// Marks <owner> move-only when member type <t> is and it is not yet marked;
+// true when it newly marked.
+func tyMarkMoveOnly(_ env: inout TyEnv, _ owner: String, _ t: String) using Alloc -> Bool {
+    if tyInMoveOnly(env, owner) { return false }
+    if !tyIsMoveOnly(env, t) { return false }
+    env.moveOnly.push(owner)
+    return true
+}
+
+func tyInMoveOnly(_ env: inout TyEnv, _ name: Str) -> Bool {
+    var i: Int = 0
+    while i < env.moveOnly.len() {
+        if let n = env.moveOnly.get(i) {
+            if streq(n, name) { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Whether a type spelling lowers to a non-copyable C++ type: it reaches a Box
+// (std::unique_ptr). Only Box and its containers count — Vec / String /
+// HashMap own storage but are COPYABLE in C++ — so a container is move-only
+// exactly when an element is; a nominal is move-only when the fixpoint marked
+// it. (A tuple has no spelling on the vgen side, so it never counts.)
+func tyIsMoveOnly(_ env: inout TyEnv, _ t: Str) using Alloc -> Bool {
+    if t.len() == 0 { return false }
+    if (t.byteAt(t.len() - 1) ?? 0) == 63 { return tyIsMoveOnly(env, t.slice(0, t.len() - 1)) }  // 'T?'
+    if tyIsArray(own(t)) { return tyIsMoveOnly(env, tyArrayElem(own(t))) }
+    let base = genBaseOf(t)
+    if streq(base, "Box") { return true }
+    if streq(base, "Vec") || streq(base, "Optional") || streq(base, "HashMap") || streq(base, "Soa") {
+        return tyAnyArgMoveOnly(env, t.slice(base.len() + 1, t.len() - 1))
+    }
+    return tyInMoveOnly(env, base)
+}
+
+// Whether any top-level comma-separated argument of `A, B[C, D]` is move-only.
+func tyAnyArgMoveOnly(_ env: inout TyEnv, _ inner: Str) using Alloc -> Bool {
+    var start: Int = 0
+    var depth: Int = 0
+    var i: Int = 0
+    while i < inner.len() {
+        let c = inner.byteAt(i) ?? 0
+        if c == 91 { depth = depth + 1 }
+        if c == 93 { depth = depth - 1 }
+        if c == 44 && depth == 0 {
+            if tyIsMoveOnly(env, tyTrimSp(inner.slice(start, i))) { return true }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    return tyIsMoveOnly(env, tyTrimSp(inner.slice(start, inner.len())))
+}
+
+func tyTrimSp(_ s: Str) using Alloc -> String {
+    var a: Int = 0
+    while a < s.len() && (s.byteAt(a) ?? 0) == 32 { a = a + 1 }
+    return own(s.slice(a, s.len()))
 }
 
 func tyRecordImport(_ env: inout TyEnv, _ d: Nd) using Alloc {
@@ -6517,12 +6607,20 @@ func emitTryHoistEntry(_ env: inout TyEnv, _ indent: Str, _ nm: Str, _ ex: Nd) u
     print(" std::unexpected{")
     print(nm)
     print("_r.error()}; }\n")
+    // §10 move the unwrapped value out of the std::expected when it is
+    // move-only — `*r` is an lvalue, so a plain copy is a hard error.
     print(indent)
     print("auto ")
     print(nm)
-    print(" = *")
-    print(nm)
-    print("_r;\n")
+    if tyIsMoveOnly(env, tyInfer(env, ex)) {
+        print(" = std::move(*")
+        print(nm)
+        print("_r);\n")
+    } else {
+        print(" = *")
+        print(nm)
+        print("_r;\n")
+    }
 }
 
 // §9 the conditional hoist: the if lifts to an immediately-invoked lambda
@@ -7126,8 +7224,8 @@ func emitBindingValue(_ env: inout TyEnv, _ ty: Vec[Nd], _ value: Vec[Nd]) using
     let to = tyAnnSpelling(ty)
     if tryEmitLeadingDot(env, to, value) { return }
     let from = tyInferBoxed(env, value)
-    let wrap = needsStrCoercion(from, to)
-    emitMaybeCoerced(env, wrap, value)
+    if needsStrCoercion(from, to) { emitMaybeCoerced(env, true, value) }
+    else { emitMovedValue(env, value) }
 }
 
 func valIsNewCall(_ v: Vec[Nd]) using Alloc -> Bool {
@@ -7473,7 +7571,7 @@ func emitGenericPayloadCase(_ env: inout TyEnv, _ tb: Vec[Nd], _ caseName: Str, 
     print("::")
     print(caseName)
     print("_t{")
-    emitArgList(env, args)
+    emitMovedArgList(env, args)
     print("}}")
 }
 
@@ -8465,7 +8563,9 @@ func emitTupleLit(_ env: inout TyEnv, _ elems: Vec[Nd]) using Alloc, Log {
     var i: Int = 0
     while i < elems.len() {
         if i > 0 { print(", ") }
-        emitExpr(env, elems.get(i) ?? Nd.wildcard)
+        var eb: Vec[Nd] = Vec.new()
+        eb.push(elems.get(i) ?? Nd.wildcard)
+        emitMovedValue(env, eb)
         i = i + 1
     }
     print("}")
@@ -8855,7 +8955,7 @@ func emitPayloadCase(_ env: inout TyEnv, _ enumName: Str, _ caseName: Str, _ arg
     print("::")
     print(caseName)
     print("_t{")
-    emitArgList(env, args)
+    emitMovedArgList(env, args)
     print("}}")
 }
 
@@ -9645,7 +9745,47 @@ func emitCtorFieldParts(_ env: inout TyEnv, _ sn: Str, _ label: Str, _ val: Vec[
     let to = tyFieldType(env, own(sn), own(label))
     if tryEmitLeadingDot(env, to, val) { return }
     let from = tyInferBoxed(env, val)
-    emitMaybeCoerced(env, needsStrCoercion(from, to), val)
+    if needsStrCoercion(from, to) { emitMaybeCoerced(env, true, val) }
+    else { emitMovedValue(env, val) }
+}
+
+// §10 by-value position (a binding initializer, a tuple element, a payload or
+// field initializer): an lvalue of move-only type moves rather than copies —
+// the bootstrap's emit_value. A prvalue already binds without a copy. A
+// propagating `try` reads its hoisted temp, an lvalue, so it counts too; so
+// does any member expression, including a bare enum case (`List.empty`).
+func emitMovedValue(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc, Log {
+    let mv = valIsLvalueOrTry(v) && tyIsMoveOnly(env, tyInferBoxed(env, v))
+    if mv { print("std::move(") }
+    emitBoxed(env, v)
+    if mv { print(")") }
+}
+
+func valIsLvalueOrTry(_ v: Vec[Nd]) -> Bool {
+    if v.len() == 0 { return false }
+    return match v.get(0) ?? Nd.wildcard {
+        case .ident(let n): true
+        case .member(let b, let n, let c): true
+        case .index(let b, let i): true
+        case .prefixE(let kw, let inner): streq(kw, "try ")
+        default: false
+    }
+}
+
+func emitMovedArgList(_ env: inout TyEnv, _ args: Vec[Nd]) using Alloc, Log {
+    var i: Int = 0
+    while i < args.len() {
+        if i > 0 { print(", ") }
+        emitMovedArg(env, args.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func emitMovedArg(_ env: inout TyEnv, _ a: Nd) using Alloc, Log {
+    match a {
+        case .arg(let label, let isInout, let val): emitMovedValue(env, val)
+        default: noop()
+    }
 }
 
 func emitArgList(_ env: inout TyEnv, _ args: Vec[Nd]) using Alloc, Log {

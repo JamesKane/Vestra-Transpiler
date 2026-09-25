@@ -1,0 +1,58 @@
+// §10 move-only types: a struct/enum that transitively owns a Box lowers to a
+// non-copyable C++ type, so an lvalue of it in a by-value position moves —
+// a binding initializer, a tuple element, a payload or field initializer —
+// and a propagating try's hoist moves the value out of its std::expected.
+// Node owns a Box; Wrap owns a Node, so the fixpoint marks both (rewrap moves
+// a Wrap through the transitive step). A String or Vec[Int32] is copyable in
+// C++ and stays a copy. A bare case (`Node.end`) is a member expression, so
+// it moves too.
+enum Node {
+    case end
+    case link(Int32, Box[Node])
+}
+
+struct Wrap {
+    var node: Node
+    var tag: Int32
+}
+
+enum Oops {
+    case bad
+}
+
+func mk(_ n: Int32) throws(Oops) -> Node {
+    if n < 0 { throw Oops.bad }
+    return Node.end
+}
+
+func chain(_ n: Int32) using Alloc throws(Oops) -> Node {
+    let first = try mk(n)
+    let second = first
+    return Node.link(n, Box.new(second))
+}
+
+func wrapIt(_ n: Int32) throws(Oops) -> Wrap {
+    var inner: Node = try mk(n)
+    return Wrap(node: inner, tag: n)
+}
+
+func rewrap(_ n: Int32) throws(Oops) -> Wrap {
+    let w = try wrapIt(n)
+    let v = w
+    return v
+}
+
+func pairUp(_ n: Int32) -> (Node, Int32) {
+    let e = Node.end
+    return (e, n)
+}
+
+func emptyPair(_ n: Int32) -> (Node, Int32) {
+    return (Node.end, n)
+}
+
+func copies(_ s: String, _ xs: Vec[Int32]) -> Int {
+    let t = s
+    let ys = xs
+    return t.len() + ys.len()
+}
