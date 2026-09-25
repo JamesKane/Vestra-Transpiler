@@ -281,6 +281,11 @@ endforeach()
 set(selfhost_codegen ${CMAKE_SOURCE_DIR}/selfhost/codegen.vst)
 set(cg_dir           ${CMAKE_SOURCE_DIR}/tests/e2e/codegen)
 set(cg_workdir       ${e2e_workdir}/_codegen)
+# Every differential test builds into its OWN directory
+# (<workdir>/<cpp|hpp>/<prog>). Under `ctest -j` a shared output dir raced:
+# a fixture's .cpp and .hpp tests both run `vestra build` on it, and a fixture
+# that imports another (cg_import -> cghelp) rewrites that module's outputs
+# too, so a test could read a file another test was still writing.
 
 add_test(
     NAME    e2e_selfhost_codegen_transpile
@@ -298,7 +303,7 @@ set_tests_properties(e2e_selfhost_codegen_compile PROPERTIES DEPENDS e2e_selfhos
 foreach(prog cg_func cg_expr cg_stmt cg_if cg_for cg_struct cg_index cgh_struct cgh_enum cgh_enumpl cg_enumcase cg_unwrap cg_match cg_enumctor cg_paymatch cg_matchdefault cg_matchguard cgh_enummethod cg_breakcont cgh_const cg_with cg_fnptr cg_closure cg_closurearg cg_matchpos cg_namedpl cg_print cg_mclosure cg_ifval cg_gpaymatch cg_builtins cg_lits cg_optchain cg_strco cg_interp cg_bmethods cg_genfunc cg_gentype cg_pmodes cg_throws cg_async cg_import cg_module cghelp cg_qualty cg_maperr cg_condhoist cg_matchhoist cg_docatch cg_gentail cg_amethod cg_channel cg_main cg_iflet cg_forproto cg_tpwild cg_paybindty cg_nestmatch cg_forpair cg_leaddot cg_valmatch cg_elseif cg_derive cg_derivespec cg_argsvec cg_opaque cg_box cg_moveonly cg_barecatch cg_hoistarms cg_tuplety)
     add_test(
         NAME    e2e_selfhost_codegen_diff_${prog}
-        COMMAND sh -c "mkdir -p ${cg_workdir} && $<TARGET_FILE:vestra> build ${cg_dir}/${prog}.vst -o ${cg_workdir} >/dev/null 2>&1; ${e2e_workdir}/vgen ${cg_dir}/${prog}.vst > ${cg_workdir}/${prog}_got.cpp; diff ${cg_workdir}/${prog}.cpp ${cg_workdir}/${prog}_got.cpp")
+        COMMAND sh -c "mkdir -p ${cg_workdir}/cpp/${prog} && $<TARGET_FILE:vestra> build ${cg_dir}/${prog}.vst -o ${cg_workdir}/cpp/${prog} >/dev/null 2>&1; ${e2e_workdir}/vgen ${cg_dir}/${prog}.vst > ${cg_workdir}/cpp/${prog}/${prog}_got.cpp; diff ${cg_workdir}/cpp/${prog}/${prog}.cpp ${cg_workdir}/cpp/${prog}/${prog}_got.cpp")
     set_tests_properties(e2e_selfhost_codegen_diff_${prog} PROPERTIES DEPENDS e2e_selfhost_codegen_compile)
 endforeach()
 
@@ -311,7 +316,7 @@ endforeach()
 foreach(prog cg_func cg_expr cg_stmt cg_if cg_for cg_index cgh_struct cgh_enum cgh_enumpl cg_enumcase cg_unwrap cg_match cg_enumctor cg_paymatch cg_matchdefault cg_matchguard cgh_enummethod cg_breakcont cgh_const cg_with cg_fnptr cg_closure cg_closurearg cg_matchpos cg_namedpl cg_print cg_mclosure cg_ifval cg_gpaymatch cg_builtins cg_lits cg_optchain cg_strco cg_interp cg_bmethods cg_genfunc cg_gentype cg_pmodes cg_throws cg_async cg_import cg_module cghelp cg_qualty cg_maperr cg_condhoist cg_matchhoist cg_docatch cg_gentail cg_amethod cg_channel cg_main cg_iflet cg_forproto cg_tpwild cg_paybindty cg_nestmatch cg_forpair cg_leaddot cg_valmatch cg_elseif cg_derive cg_derivespec cg_argsvec cg_opaque cg_box cg_moveonly cg_barecatch cg_hoistarms cg_tuplety)
     add_test(
         NAME    e2e_selfhost_codegen_hpp_${prog}
-        COMMAND sh -c "mkdir -p ${cg_workdir} && $<TARGET_FILE:vestra> build ${cg_dir}/${prog}.vst -o ${cg_workdir} >/dev/null 2>&1; awk 'f{print} index(\$0, \"#endif  // VESTRA_RUNTIME_PRELUDE\"){f=1}' ${cg_workdir}/${prog}.hpp > ${cg_workdir}/${prog}_href.txt; ${e2e_workdir}/vgen --hpp ${cg_dir}/${prog}.vst > ${cg_workdir}/${prog}_hgot.txt; diff ${cg_workdir}/${prog}_href.txt ${cg_workdir}/${prog}_hgot.txt")
+        COMMAND sh -c "mkdir -p ${cg_workdir}/hpp/${prog} && $<TARGET_FILE:vestra> build ${cg_dir}/${prog}.vst -o ${cg_workdir}/hpp/${prog} >/dev/null 2>&1; awk 'f{print} index(\$0, \"#endif  // VESTRA_RUNTIME_PRELUDE\"){f=1}' ${cg_workdir}/hpp/${prog}/${prog}.hpp > ${cg_workdir}/hpp/${prog}/${prog}_href.txt; ${e2e_workdir}/vgen --hpp ${cg_dir}/${prog}.vst > ${cg_workdir}/hpp/${prog}/${prog}_hgot.txt; diff ${cg_workdir}/hpp/${prog}/${prog}_href.txt ${cg_workdir}/hpp/${prog}/${prog}_hgot.txt")
     set_tests_properties(e2e_selfhost_codegen_hpp_${prog} PROPERTIES DEPENDS e2e_selfhost_codegen_compile)
 endforeach()
 
