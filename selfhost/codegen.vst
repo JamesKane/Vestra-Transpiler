@@ -2903,6 +2903,7 @@ struct TyEnv {
     var funcName: Vec[String]   // global: function name ...
     var funcRet: Vec[String]    // ... -> return-type spelling ("Unit" if none) ...
     var funcArity: Vec[Int]     // ... -> declared parameter count
+    var funcThr: Vec[Nd]        // ... -> `throws(E)` type NODE (wildcard if the function does not throw)
     var pFn: Vec[String]        // global: per-parameter rows — function name ...
     var pIdx: Vec[Int]          // ... parameter index ...
     var pType: Vec[String]      // ... -> parameter type spelling
@@ -2972,7 +2973,7 @@ func tyCheck(_ env: inout TyEnv, _ u: NUnit) using Alloc {
 func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
-            tyRecordFunc(env, name, params, r)
+            tyRecordFunc(env, name, params, t, r)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyRecordStructDecl(env, name, fl, m, generics)
         case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumDecl(env, name, cs, m, generics)
         case .deriveD(let protocols, let target): tyRecordDerive(env, protocols, target)
@@ -3322,8 +3323,9 @@ func tyFieldType(_ env: inout TyEnv, _ structName: String, _ label: String) usin
     return own("")
 }
 
-func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ result: Vec[Nd]) using Alloc {
+func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ thr: Vec[Nd], _ result: Vec[Nd]) using Alloc {
     env.funcName.push(name)
+    env.funcThr.push(thr.get(0) ?? Nd.wildcard)
     if result.len() == 0 { env.funcRet.push("Unit") }
     else { env.funcRet.push(typeSpelling(result.get(0) ?? Nd.wildcard)) }
     env.funcArity.push(params.len())
@@ -4815,7 +4817,7 @@ func tyBodyMsg(_ name: String, _ ret: String, _ body: String) using Alloc -> Str
 // struct fields, enum cases, methods) collected. The per-function symbol table is
 // (re)built per function/method body.
 func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
-    var env = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(),
+    var env = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(), funcThr: Vec.new(),
                     pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(), pTyNode: Vec.new(),
                     pMode: Vec.new(),
                     structs: Vec.new(), genTypes: Vec.new(),
@@ -6949,12 +6951,13 @@ func emitCondUseBind(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Ve
 // own `[&]{ return ...; }()` IIFE). T comes from the use-site context (the
 // function result at return position, the annotation at a binding), E from
 // the catch ANNOTATION — the bare `catch e` form needs sema's inferred
-// error type and stays out of the mirrored subset, as do multi-statement
-// do/handler bodies and the where-guard form.
-func valIsDoCatch(_ v: Vec[Nd]) -> Bool {
+// error type: the resolver infers it from the do-body's FIRST try, so vgen
+// takes the throws(E) of that try's callee (a unit function). Multi-statement
+// do/handler bodies and the where-guard form stay out of the mirrored subset.
+func valIsDoCatch(_ v: Vec[Nd]) using Alloc -> Bool {
     if v.len() == 0 { return false }
     return match v.get(0) ?? Nd.wildcard {
-        case .doCatchE(let db, let en, let et, let cb): et.len() > 0
+        case .doCatchE(let db, let en, let et, let cb): et.len() > 0 || boxHasTry(blockTrailing(db))
         default: false
     }
 }
@@ -6972,11 +6975,12 @@ func emitDoCatchParts(_ env: inout TyEnv, _ tyB: Vec[Nd], _ db: Vec[Nd], _ en: S
     print(" { auto __vstr_do = [&]() -> std::expected<")
     emitTypeBoxed(tyB)
     print(", ")
-    emitTypeBoxed(et)
-    print("> { ")
     let tr = blockTrailing(db)
     clearHoists(&env)
     collectTryList(env, tr)
+    let errB = doCatchErrType(env, et)
+    emitTypeBoxed(errB)
+    print("> { ")
     emitStmtHoists(&env, "")
     print("return ")
     emitBoxed(env, tr)
@@ -6987,16 +6991,61 @@ func emitDoCatchParts(_ env: inout TyEnv, _ tyB: Vec[Nd], _ db: Vec[Nd], _ en: S
     // the catch body type-dispatch on `e` — most visibly, a `match e` over an
     // error ENUM has to reach the switch lowering rather than being taken for
     // a value scrutinee.
-    let esp = tyAnnSpelling(et)
+    let esp = tyAnnSpelling(errB)
     tyAddSymSpelling(&env, own(en), esp)
-    emitCatchTail(env, cb)
+    emitCatchTail(env, tyB, cb)
     print("; }())")
 }
 
-func emitCatchTail(_ env: inout TyEnv, _ cb: Vec[Nd]) using Alloc, Log {
+// The do/catch error type: the catch annotation when present; for a bare
+// `catch e`, the throws(E) of the do-body's first try's callee — read off the
+// hoists collectTryList just gathered (in evaluation order, operand = the call).
+func doCatchErrType(_ env: inout TyEnv, _ et: Vec[Nd]) using Alloc -> Vec[Nd] {
+    if et.len() > 0 { return elemBoxCopy(et) }
+    if env.hoistExpr.len() == 0 { return Vec.new() }
+    var out: Vec[Nd] = Vec.new()
+    let callee = callNameOf(env.hoistExpr.get(0) ?? Nd.wildcard)
+    let t = tyFuncThrows(env, callee)
+    if !ndIsWildcard(t) { out.push(t) }
+    return out
+}
+
+// The plain-identifier callee name of a call node ("" for anything else).
+func callNameOf(_ c: Nd) using Alloc -> String {
+    return match c {
+        case .call(let callee, let args): exCalleeNameBoxed(callee)
+        default: own("")
+    }
+}
+
+func ndIsWildcard(_ n: Nd) -> Bool {
+    return match n {
+        case .wildcard: true
+        default: false
+    }
+}
+
+func tyFuncThrows(_ env: inout TyEnv, _ name: Str) -> Nd {
+    var i: Int = 0
+    while i < env.funcName.len() {
+        if let n = env.funcName.get(i) {
+            if streq(n, name) { return env.funcThr.get(i) ?? Nd.wildcard }
+        }
+        i = i + 1
+    }
+    return Nd.wildcard
+}
+
+// The handler is checked against the do/catch's own type T, so a `match`
+// handler types its lambda as T rather than as its arms' inferred type
+// (`-100` arms under an Int32 result are Int32, not Int).
+func emitCatchTail(_ env: inout TyEnv, _ tyB: Vec[Nd], _ cb: Vec[Nd]) using Alloc, Log {
     print("[&]{ return ")
     let tr = blockTrailing(cb)
-    emitBoxed(env, tr)
+    match tr.get(0) ?? Nd.wildcard {
+        case .matchE(let scrut, let arms): emitMatchValue(env, "    ", tyB, "", scrut, arms)
+        default: emitBoxed(env, tr)
+    }
     print("; }()")
 }
 

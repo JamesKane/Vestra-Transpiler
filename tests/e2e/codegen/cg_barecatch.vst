@@ -1,0 +1,62 @@
+// §9 bare `catch e`: the error type is inferred from the do-body's FIRST try —
+// the throws(E) of its callee — and lowers exactly like the annotated form
+// (`std::expected<T, E>` inner lambda). The handler is checked against the
+// do/catch's type T, so a `match` handler types its lambda as T (Int32 here)
+// rather than as its arms' inferred Int.
+enum Bad {
+    case neg
+    case big
+}
+
+func check(_ x: Int32) throws(Bad) -> Int32 {
+    if x < 0 { throw Bad.neg }
+    if x > 100 { throw Bad.big }
+    return x
+}
+
+func orZero(_ x: Int32) -> Int32 {
+    return do {
+        try check(x)
+    } catch e {
+        0
+    }
+}
+
+func sumOr(_ a: Int32, _ b: Int32) -> Int32 {
+    return do {
+        try check(a) + try check(b)
+    } catch e {
+        -1
+    }
+}
+
+func bound(_ x: Int32) -> Int32 {
+    let v: Int32 = do {
+        try check(x)
+    } catch e {
+        1
+    }
+    return v
+}
+
+func classify(_ x: Int32) -> Int32 {
+    return do {
+        try check(x)
+    } catch (e: Bad) {
+        match e {
+            case .neg: -1
+            case .big: -2
+        }
+    }
+}
+
+func classifyBare(_ x: Int32) -> Int32 {
+    return do {
+        try check(x)
+    } catch e {
+        match e {
+            case .neg: -10
+            case .big: -20
+        }
+    }
+}
