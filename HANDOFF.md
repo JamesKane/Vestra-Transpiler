@@ -95,18 +95,30 @@ slices it flagged twice, once on a genuine gap the fixtures would have missed
 turned out to be the metric itself (slice 61, which is why the sweep now counts
 with `diff -d`). Both were worth knowing.
 
-**Ranked candidates (post-slice-74).** Slices 67 to 74 (session of 2026-09-25)
-took the count from 38 to 93: `args()` typing alone flipped 45 examples, then
-opaque newtypes, `Box`, move-only types, bare `catch e`, the match cond-hoist
-arms, tuple-type spelling (with nested tuple destructuring), and block
-expressions. What is left is a scatter; re-rank from a fresh sweep before
-picking:
+**Ranked candidates (full re-rank after slice 74).** Slices 67 to 74 (session
+of 2026-09-25) took the count from 38 to 93. Every one of the 54 live
+divergent examples was then read and bucketed; lines are the sweep's per-
+example totals, "flips" the examples a family would make identical.
 
-1. **`[[gnu::*]]` attribute passthrough** (~7 examples, a few lines each),
-   mechanical.
-2. **`requires`-clause bounds** on generic functions.
-3. **`selfhost_demo` (2)**: `for t in line.split(" ")` needs the iterable's
-   `Str` receiver typed so `split` takes the builtin path.
+| # | Family | Examples (lines) | Flips | Effort |
+|---|---|---|---|---|
+| 1 | **Loop-element / receiver typing**: a `for` element or iterable is untyped, so `.len()` / `.isDigit()` / `.split()` / `.toInt()` miss the §18.5 builtin path | `tokenize_demo` 4, `string_split_demo` 4, `hashmap_iter_demo` 4, `selfhost_demo` 2 | 4 | small |
+| 2 | **Global without initializer** emits `T x = ;` instead of `inline T x;` | `padded`, `per_cpu`, `per_cpu_extras`, `link_attrs` (1 to 2 lines each) | 0 alone | tiny; unblocks 5 and 6 |
+| 3 | **Or-patterns over enum cases** (`case .red, .green:` as stacked `case` labels; `case .a(let n), .b(let n)` in a visit) | `match` 8, `match_patterns` 4 | 2 | small |
+| 4 | **Cheap one-offs**: sink arg of a struct not moved; `requires` bounds; typed `with x = e` binding; if-let as a value; `?.` through an optional field (`and_then`); a function name as a value (`&f`) | `ownership` 2, `generic_bounds` 2, `with_binding` 4, `optional` 4, `optchain` 6, `fn_ptr_table` 6 | up to 6 | small each |
+| 5 | **Attributes** (`@naked`, `@section`, `@used`, `@weak`, `@stack_protector`, `@packed` / `@align` / bitfields, asm symbol names). The parser SKIPS them (`skipAttributes`), so this starts with capturing them on `funcD` / `structD` | `stack_protector` 4, `boot_chain` 4, `interrupt_handler` 8, `layout` 8, `link_attrs` 14, `mmio_union` 16, `vec_table` 18 | 5 to 7 | medium |
+| 6 | **Atomics / sync surface outside `atomics`**: `Atomic[T]` as `std::atomic`, `fetchAdd` as `fetch_add`, the default `seq_cst` ordering argument, `__vstr::PerCpu` / `Padded`, sync intrinsics | `padded` 8, `per_cpu` 10, `interrupts_off` 18, `sync_intrinsics` 22, `panic_handler` 13 (and part of the parked `atomics` 86) | 4 to 5 | medium |
+| 7 | **Raw pointers and MMIO**: `Ptr` / `MutPtr.unchecked` as `reinterpret_cast`, `p.value` as `(*p)`, `Span.raw`, `MmioView` / `MmioRegion` / `MmioWireView`, `memcpy` / cache intrinsics, `&x` | `raw_mint` 8, `mmio` 8, `mmio_wire` 8, `ptr_deref` 14, `mem_intrinsics` 16, `addr_of` 18, `cache_tlb` 26 | 6 to 7 | medium to large |
+| 8 | **Spans and iterator adapters**: `s.count` / `isEmpty` / `split` / `chunks` and the `zip` / `take` / `map` / `filter` adapter protocol | `split_demo` 12, `iter_combinators` 12, `map_filter` 16, `chunks_demo` 18 | 4 | medium |
+| 9 | **Medium one-offs** | `simd_demo` 6, `map_error` 7 (closure with a match body), `const_generic` 12 (array literal element type from a generic field), `tuple_params` 14 (tuple-pattern parameters), `docatch_where` 14, `parallel_demo` 14 (closure param types), `soa_demo` 20, `midtry` 27 (an `if` cond-hoist at an unannotated binding and mid-expression) | 1 each | varies |
+
+**Also parked in practice**, beyond the three below: the **comptime family**
+(`comptime` 26, `reflection` 26, `cfg` 20, `sin_table` 13, `vectors` 13,
+`embed` 4, most of `inline_layout` 28 and `spans` 15). The bootstrap folds
+comptime functions and drops them from the output, and comptime is already a
+known unmirrored gap. `async_demo` (20) is a `select`, the same parked family
+as `channel_select_demo`. Counting those, about 720 of the 1218 remaining lines
+are parked, and about 500 are live.
 
 **A pattern worth checking first.** When many examples share the same small
 divergence count (44 `interp_*` demos at exactly 4 lines each), the cause is
