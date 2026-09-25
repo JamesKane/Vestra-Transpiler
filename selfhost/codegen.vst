@@ -4122,7 +4122,7 @@ func tyInfer(_ env: inout TyEnv, _ e: Nd) using Alloc -> String {
         case .ident(let n): tySymType(env, n)
         case .selfE: tySymType(env, own("self"))
         case .paren(let inner): tyInferBoxed(env, inner)
-        case .call(let callee, let args): tyInferCall(env, callee)
+        case .call(let callee, let args): tyInferCallArgs(env, callee, args)
         case .binary(let op, let l, let r): tyInferBinary(env, op, l, r)
         case .unary(let op, let x): tyInferUnary(env, op, x)
         case .member(let base, let name, let chain): tyInferMember(env, base, name, chain)
@@ -4282,6 +4282,7 @@ func tyInferMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain:
     if tyHasField(env, bt, name) { return tyFieldType(env, bt, name) }
     // §3 `q.value` on an opaque newtype types as its underlying.
     if streq(name, "value") && tyIsOpaque(env, bt) { return typeSpelling(tyOpaqueUnder(env, bt)) }
+    if streq(name, "value") && tyStartsWith(bt, "Box[") { return own(bt.slice(4, bt.len() - 1)) }
     return own("")
 }
 
@@ -4492,6 +4493,18 @@ func tyCtorLabelMsg(_ n: Int) using Alloc -> String {
     var s: String = "struct constructor argument "
     s.append(intToStr(n))
     s.append(" requires a field label")
+    return s
+}
+
+// `Box.new(v)` types as Box[<v's type>] (unknown if v's is); any other call
+// types by its callee alone.
+func tyInferCallArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc -> String {
+    if !isBoxNewCallee(callee) || args.len() != 1 { return tyInferCall(env, callee) }
+    let at = tyInferArg(env, args)
+    if streq(at, "") { return own("") }
+    var s: String = "Box["
+    s.append(at)
+    s.append("]")
     return s
 }
 
@@ -8676,6 +8689,13 @@ func emitMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool)
     // §3 `q.value` extracts an opaque newtype's underlying T via one static_cast.
     if streq(name, "value") {
         let bt = tyInferBoxed(env, base)
+        // §10 Box[T]: `box.value` reads the heap pointee via `*box`.
+        if tyStartsWith(bt, "Box[") {
+            print("(*")
+            emitBoxed(env, base)
+            print(")")
+            return
+        }
         if tyIsOpaque(env, bt) {
             print("static_cast<")
             emitType(tyOpaqueUnder(env, bt))
@@ -8875,6 +8895,7 @@ func emitStr(_ s: Str) using Alloc, Log {
 // calls in the curated corpus are struct constructions; method calls have a
 // member callee (not an identifier) and so never match.
 func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
+    if tryEmitBoxNew(env, callee, args) { return }
     if tryEmitDeriveDefault(env, callee, args) { return }
     if tryEmitPayloadCase(env, callee, args) { return }
     if tryEmitImportCall(env, callee, args) { return }
@@ -8898,6 +8919,37 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     print("(")
     emitCallArgList(env, "", fname, args)
     print(")")
+}
+
+// §10 `Box.new(v)` -> `std::make_unique<T>(std::move(v))`, T the argument's
+// type (the bootstrap peels the call's Box[T], which is the same type). The
+// argument is always moved in: the box takes sole ownership, and a move of a
+// temporary or a scalar is harmless.
+func tryEmitBoxNew(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if args.len() != 1 { return false }
+    if !isBoxNewCallee(callee) { return false }
+    let at = tyInferArg(env, args)
+    print("std::make_unique<")
+    print(cppOfSpelling(at))
+    print(">(std::move(")
+    emitArgList(env, args)
+    print("))")
+    return true
+}
+
+func isBoxNewCallee(_ callee: Vec[Nd]) using Alloc -> Bool {
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let name, let chain): !chain && streq(name, "new") && streq(identBaseName(base), "Box")
+        default: false
+    }
+}
+
+// The inferred type of a call's sole argument ("" if unknown).
+func tyInferArg(_ env: inout TyEnv, _ args: Vec[Nd]) using Alloc -> String {
+    return match args.get(0) ?? Nd.wildcard {
+        case .arg(let label, let isInout, let value): tyInferBoxed(env, value)
+        default: own("")
+    }
 }
 
 // §12.3 derive(Default) construction: `T.default()` lowers to `T{}`, C++

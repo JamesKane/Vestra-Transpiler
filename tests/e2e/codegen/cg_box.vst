@@ -1,0 +1,45 @@
+// §10 Box[T]: `Box.new(v)` -> `std::make_unique<T>(std::move(v))`, T the
+// argument's type, and `b.value` -> `(*b)`. A binding from `Box.new` types as
+// Box[T], so its `.value` lowers too; a Box field and a recursive enum's Box
+// payload both read through the same deref. `pair` sinks its Trees: a
+// Box-owning type is move-only, so a read (const&) parameter cannot be boxed.
+struct Cell {
+    var inner: Box[Int32]
+}
+
+enum Tree {
+    case leaf(Int32)
+    case node(Box[Tree], Box[Tree])
+}
+
+func boxed(_ x: Int32) using Alloc -> Box[Int32] {
+    return Box.new(x)
+}
+
+func unbox(_ b: Box[Int32]) -> Int32 {
+    return b.value
+}
+
+func roundTrip(_ x: Int32) using Alloc -> Int32 {
+    let b = Box.new(x)
+    return b.value + 1
+}
+
+func cellOf(_ x: Int32) using Alloc -> Cell {
+    return Cell(inner: Box.new(x))
+}
+
+func cellValue(_ c: Cell) -> Int32 {
+    return c.inner.value
+}
+
+func pair(_ a: sink Tree, _ b: sink Tree) using Alloc -> Tree {
+    return Tree.node(Box.new(a), Box.new(b))
+}
+
+func total(_ t: Tree) -> Int32 {
+    return match t {
+        case .leaf(let v): v
+        case .node(let l, let r): total(l.value) + total(r.value)
+    }
+}
