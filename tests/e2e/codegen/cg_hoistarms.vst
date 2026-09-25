@@ -1,0 +1,64 @@
+// §9 match cond-hoist arms: a `throw E` arm returns `std::unexpected{E}` from
+// the hoisted lambda (bare-enum switch, payload visit, and value chain alike);
+// a hoisted value match takes the full pattern predicate, so `1 | 2` lowers to
+// `((m == 1) || (m == 2))` and `3..5` to a range test; and an UNANNOTATED
+// `let x = match ...` hoists too, binding `auto x = (*__vstr_cN)` typed by the
+// match's inferred value so later expressions still type.
+enum Err {
+    case bad
+    case worse
+}
+
+enum Op {
+    case keep
+    case load
+    case fail
+}
+
+enum Msg {
+    case num(Int32)
+    case pair(Int32, Int32)
+    case none
+}
+
+func load() throws(Err) -> Int32 { return 7 }
+func one() -> Int32 { return 1 }
+func halve(_ x: Int32) throws(Err) -> Int32 {
+    if x < 0 { throw Err.bad }
+    return x / 2
+}
+
+func run(_ o: Op) throws(Err) -> Int32 {
+    return match o {
+        case .keep: 1
+        case .load: try load()
+        case .fail: throw Err.worse
+    }
+}
+
+func bound(_ o: Op) throws(Err) -> Int32 {
+    let v = match o {
+        case .keep: one()
+        case .load: try load()
+        case .fail: throw Err.bad
+    }
+    let w = v * 3
+    return w + 1
+}
+
+func payload(_ m: Msg) throws(Err) -> Int32 {
+    return match m {
+        case .num(let n): try halve(n)
+        case .pair(let a, let b): try halve(a + b)
+        case .none: throw Err.bad
+    }
+}
+
+func bucket(_ n: Int32) throws(Err) -> Int32 {
+    return match n {
+        case 0: 0
+        case 1 | 2: try halve(n)
+        case 3..5: try halve(n * 2)
+        default: throw Err.worse
+    }
+}

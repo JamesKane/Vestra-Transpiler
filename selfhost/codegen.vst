@@ -6331,10 +6331,18 @@ func collectRetHoists(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc {
     collectTryList(env, v)
 }
 
+// An UNANNOTATED binding hoists only a match: its lambda types by the match's
+// inferred value, as at statement position (vgen does not infer if-exprs).
 func collectBindHoists(_ env: inout TyEnv, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc {
     if ty.len() > 0 {
         let tyB = elemBoxCopy(ty)
         if collectStmtCond(env, value, tyB) { return }
+    } else if valIsMatch(value) {
+        let noTy: Vec[Nd] = Vec.new()
+        if collectStmtCond(env, value, noTy) {
+            setCondStmtTyStr(env, value)
+            return
+        }
     }
     collectTryList(env, value)
 }
@@ -6846,9 +6854,7 @@ func emitValLambdaArm(_ env: inout TyEnv, _ ind: Str, _ i12: Str, _ arm: Nd, _ k
 func emitValLambdaArmParts(_ env: inout TyEnv, _ ind: Str, _ i12: Str, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd], _ k: Int) using Alloc, Log {
     print(ind)
     if k == 0 { print("if (") } else { print("else if (") }
-    print("(__vstr_mh == ")
-    emitLitPat(env, pat)
-    print(")")
+    emitPatPredicate(env, pat, "__vstr_mh")
     if guard.len() > 0 {
         print(" && (")
         emitBoxed(env, guard)
@@ -6859,15 +6865,6 @@ func emitValLambdaArmParts(_ env: inout TyEnv, _ ind: Str, _ i12: Str, _ pat: Ve
     emitRetTailExpr(env, body)
     print(ind)
     print("}\n")
-}
-
-// A literal pattern (`case 0:`) compares the handle against its boxed
-// literal expression.
-func emitLitPat(_ env: inout TyEnv, _ pat: Vec[Nd]) using Alloc, Log {
-    match pat.get(0) ?? Nd.wildcard {
-        case .litP(let inner): emitBoxed(env, inner)
-        default: emitBoxed(env, pat)
-    }
 }
 
 func emitLambdaArmBody(_ env: inout TyEnv, _ i12: Str, _ arm: Nd) using Alloc, Log {
@@ -6910,8 +6907,8 @@ func emitCondUse(_ env: inout TyEnv, _ s: Nd, _ indent: Str, _ cn: Str) using Al
     match s {
         case .exprS(let e): emitCondUseStmt(indent, cn)
         case .retS(let v): emitCondUseRet(env, indent, cn)
-        case .letS(let pat, let ty, let value): emitCondUseBind(env, indent, pat, ty, cn)
-        case .varS(let pat, let ty, let value): emitCondUseBind(env, indent, pat, ty, cn)
+        case .letS(let pat, let ty, let value): emitCondUseBind(env, indent, pat, ty, value, cn)
+        case .varS(let pat, let ty, let value): emitCondUseBind(env, indent, pat, ty, value, cn)
         default: noop()
     }
 }
@@ -6931,15 +6928,16 @@ func emitCondUseRet(_ env: inout TyEnv, _ indent: Str, _ cn: Str) using Alloc, L
     print(");\n")
 }
 
-func emitCondUseBind(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd], _ cn: Str) using Alloc, Log {
+func emitCondUseBind(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd], _ value: Vec[Nd], _ cn: Str) using Alloc, Log {
     print(indent)
-    emitTypeBoxed(ty)
+    if ty.len() > 0 { emitTypeBoxed(ty) } else { print("auto") }
     print(" ")
     print(patName(pat))
     print(" = (*")
     print(cn)
     print(");\n")
-    tyRegisterPat(&env, pat, ty)
+    if ty.len() > 0 { tyRegisterPat(&env, pat, ty) }
+    else { tyAddSymSpelling(&env, patName(pat), tyInferBoxed(&env, value)) }
 }
 
 // §9 `do { body } catch (NAME: E) { handler }` in value position: a pair of
@@ -7726,6 +7724,7 @@ func emitRetTail(_ env: inout TyEnv, _ s: Nd) using Alloc, Log {
 
 func emitRetTailExpr(_ env: inout TyEnv, _ e: Vec[Nd]) using Alloc, Log {
     if emitTryTail(env, e) { return }
+    if emitThrowTail(env, e) { return }
     print("return ")
     emitBoxed(env, e)
     print(";\n")
@@ -7740,6 +7739,24 @@ func emitTryTail(_ env: inout TyEnv, _ e: Vec[Nd]) using Alloc, Log -> Bool {
         case .prefixE(let kw, let inner): emitTryTailParts(env, kw, inner)
         default: false
     }
+}
+
+// §9 a `throw E` arm body inside a cond-hoist lambda returns the error from
+// the lambda (which returns std::expected<T, E>) — a lambda-internal
+// `return`, never co_return.
+func emitThrowTail(_ env: inout TyEnv, _ e: Vec[Nd]) using Alloc, Log -> Bool {
+    if e.len() == 0 { return false }
+    return match e.get(0) ?? Nd.wildcard {
+        case .throwE(let inner): emitThrowTailParts(env, inner)
+        default: false
+    }
+}
+
+func emitThrowTailParts(_ env: inout TyEnv, _ inner: Vec[Nd]) using Alloc, Log -> Bool {
+    print("return std::unexpected{")
+    emitBoxed(env, inner)
+    print("};\n")
+    return true
 }
 
 func emitTryTailParts(_ env: inout TyEnv, _ kw: Str, _ inner: Vec[Nd]) using Alloc, Log -> Bool {
