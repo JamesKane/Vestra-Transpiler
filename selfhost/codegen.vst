@@ -4131,11 +4131,23 @@ func tyInfer(_ env: inout TyEnv, _ e: Nd) using Alloc -> String {
         case .member(let base, let name, let chain): tyInferMember(env, base, name, chain)
         case .index(let base, let idxs): tyInferIndex(env, base, idxs)
         case .vecLit(let elems): tyInferVecLit(env, elems)
+        case .tupleLit(let elems): tyInferTupleLit(env, elems)
         case .matchE(let scrut, let arms): tyInferMatch(env, scrut, arms)
         case .interpE(let parts, let exprs): own("String")
         case .prefixE(let kw, let inner): tyInferPrefix(env, kw, inner)
         default: own("")
     }
+}
+
+// `(a, b)` types as the tuple of its element types (unknown if any is).
+func tyInferTupleLit(_ env: inout TyEnv, _ elems: Vec[Nd]) using Alloc -> String {
+    var parts: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < elems.len() {
+        parts.push(tyInfer(env, elems.get(i) ?? Nd.wildcard))
+        i = i + 1
+    }
+    return tyJoinTuple(parts)
 }
 
 // `try e` / `try! e` type as the operand's declared result — the hoist /
@@ -4639,8 +4651,62 @@ func typeSpelling(_ t: Nd) using Alloc -> String {
         case .named(let path, let hasG, let args): tyNamedSpelling(path, hasG, args)
         case .opt(let inner): tyOptSpelling(inner)
         case .vecT(let len, let elem): tyVecTSpelling(len, elem)
+        case .tupleT(let elems): tyTupleTSpelling(elems)
         default: own("")
     }
+}
+
+// A tuple type `(A, B)` spells as the resolver describes it: the element
+// spellings, ", "-joined, in parens. Unknown ("") if any element is.
+func tyTupleTSpelling(_ elems: Vec[Nd]) using Alloc -> String {
+    var parts: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < elems.len() {
+        parts.push(typeSpelling(elems.get(i) ?? Nd.wildcard))
+        i = i + 1
+    }
+    return tyJoinTuple(parts)
+}
+
+func tyJoinTuple(_ parts: Vec[String]) using Alloc -> String {
+    if parts.len() == 0 { return own("") }
+    var s: String = "("
+    var i: Int = 0
+    while i < parts.len() {
+        let p = own(parts.get(i) ?? own(""))
+        if streq(p, "") { return own("") }
+        if i > 0 { s.append(", ") }
+        s.append(p)
+        i = i + 1
+    }
+    s.append(")")
+    return s
+}
+
+func tyIsTuple(_ sp: Str) -> Bool {
+    return sp.len() > 1 && (sp.byteAt(0) ?? 0) == 40   // '('
+}
+
+// The element spellings of `(A, B[C, D], (E, F))`, split at depth-0 commas.
+func tyTupleParts(_ sp: Str) using Alloc -> Vec[String] {
+    if !tyIsTuple(sp) { return Vec.new() }
+    var out: Vec[String] = Vec.new()
+    let inner = sp.slice(1, sp.len() - 1)
+    var start: Int = 0
+    var depth: Int = 0
+    var i: Int = 0
+    while i < inner.len() {
+        let c = inner.byteAt(i) ?? 0
+        if c == 91 || c == 40 { depth = depth + 1 }
+        if c == 93 || c == 41 { depth = depth - 1 }
+        if c == 44 && depth == 0 {
+            out.push(tyTrimSp(inner.slice(start, i)))
+            start = i + 1
+        }
+        i = i + 1
+    }
+    out.push(tyTrimSp(inner.slice(start, inner.len())))
+    return out
 }
 
 // A fixed-size array type `[N]T` spells as "[N]" + the element spelling, no
@@ -4904,11 +4970,12 @@ func tyInMoveOnly(_ env: inout TyEnv, _ name: Str) -> Bool {
 // (std::unique_ptr). Only Box and its containers count — Vec / String /
 // HashMap own storage but are COPYABLE in C++ — so a container is move-only
 // exactly when an element is; a nominal is move-only when the fixpoint marked
-// it. (A tuple has no spelling on the vgen side, so it never counts.)
+// it. A tuple is move-only when any element is.
 func tyIsMoveOnly(_ env: inout TyEnv, _ t: Str) using Alloc -> Bool {
     if t.len() == 0 { return false }
     if (t.byteAt(t.len() - 1) ?? 0) == 63 { return tyIsMoveOnly(env, t.slice(0, t.len() - 1)) }  // 'T?'
     if tyIsArray(own(t)) { return tyIsMoveOnly(env, tyArrayElem(own(t))) }
+    if tyIsTuple(t) { return tyAnyArgMoveOnly(env, t.slice(1, t.len() - 1)) }
     let base = genBaseOf(t)
     if streq(base, "Box") { return true }
     if streq(base, "Vec") || streq(base, "Optional") || streq(base, "HashMap") || streq(base, "Soa") {
@@ -4924,8 +4991,9 @@ func tyAnyArgMoveOnly(_ env: inout TyEnv, _ inner: Str) using Alloc -> Bool {
     var i: Int = 0
     while i < inner.len() {
         let c = inner.byteAt(i) ?? 0
-        if c == 91 { depth = depth + 1 }
-        if c == 93 { depth = depth - 1 }
+        if c == 91 || c == 40 { depth = depth + 1 }   // '[' '('
+        if c == 93 || c == 41 { depth = depth - 1 }   // ']' ')'
+
         if c == 44 && depth == 0 {
             if tyIsMoveOnly(env, tyTrimSp(inner.slice(start, i))) { return true }
             start = i + 1
@@ -7157,14 +7225,99 @@ func patIsTuple(_ pat: Vec[Nd]) -> Bool {
 
 // `let (a, b) = <expr>` lowers to a C++ structured binding: `auto [a, b] = <expr>;`.
 // A wildcard element still owes a C++ binding name and mints
-// `__vstr_tp_unused_<N>` on the file-global counter.
+// `__vstr_tp_unused_<N>` on the file-global counter. C++ structured bindings
+// are single-level, so a NESTED tuple element binds a `__vstr_tp<N>`
+// placeholder (same counter) that a follow-on `auto [...] = __vstr_tp<N>;`
+// unpacks right after, depth-first — the bootstrap's
+// collect_tuple_pat_names / emit_tuple_pat_followons.
 func emitTupleBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    var fNames: Vec[String] = Vec.new()
+    var fPats: Vec[Nd] = Vec.new()
     print(indent)
     print("auto [")
-    emitTuplePatNames(env, pat.get(0) ?? Nd.wildcard)
+    emitNestedPatNames(env, pat.get(0) ?? Nd.wildcard, &fNames, &fPats)
     print("] = ")
     emitBoxed(env, value)
     print(";\n")
+    emitTupleFollowons(env, indent, fNames, fPats)
+    tyRegisterTuplePat(&env, pat.get(0) ?? Nd.wildcard, tyInferBoxed(&env, value))
+}
+
+func emitNestedPatNames(_ env: inout TyEnv, _ p: Nd, _ fNames: inout Vec[String], _ fPats: inout Vec[Nd]) using Alloc, Log {
+    match p {
+        case .tupleP(let elems): emitNestedPatNameList(env, elems, fNames, fPats)
+        default: noop()
+    }
+}
+
+func emitNestedPatNameList(_ env: inout TyEnv, _ elems: Vec[Nd], _ fNames: inout Vec[String], _ fPats: inout Vec[Nd]) using Alloc, Log {
+    var i: Int = 0
+    while i < elems.len() {
+        if i > 0 { print(", ") }
+        let el = elems.get(i) ?? Nd.wildcard
+        let nm = patNameOf(el)
+        if !streq(nm, "") {
+            print(nm)
+        } else if patNodeIsTuple(el) {
+            var ph: String = "__vstr_tp"
+            ph.append(intToStr(env.tpN))
+            env.tpN = env.tpN + 1
+            print(ph)
+            fNames.push(ph)
+            fPats.push(el)
+        } else {
+            print("__vstr_tp_unused_")
+            print(intToStr(env.tpN))
+            env.tpN = env.tpN + 1
+        }
+        i = i + 1
+    }
+}
+
+func patNodeIsTuple(_ p: Nd) -> Bool {
+    return match p {
+        case .tupleP(let elems): true
+        default: false
+    }
+}
+
+func emitTupleFollowons(_ env: inout TyEnv, _ indent: Str, _ fNames: Vec[String], _ fPats: Vec[Nd]) using Alloc, Log {
+    var i: Int = 0
+    while i < fNames.len() {
+        var subNames: Vec[String] = Vec.new()
+        var subPats: Vec[Nd] = Vec.new()
+        print(indent)
+        print("auto [")
+        emitNestedPatNames(env, fPats.get(i) ?? Nd.wildcard, &subNames, &subPats)
+        print("] = ")
+        print(fNames.get(i) ?? own(""))
+        print(";\n")
+        emitTupleFollowons(env, indent, subNames, subPats)
+        i = i + 1
+    }
+}
+
+// Each name of a destructuring pattern types as its element of the value's
+// tuple spelling (nested tuple patterns recurse; wildcards bind nothing).
+func tyRegisterTuplePat(_ env: inout TyEnv, _ p: Nd, _ sp: String) using Alloc {
+    match p {
+        case .tupleP(let elems): tyRegisterTupleElems(env, elems, sp)
+        default: noop()
+    }
+}
+
+func tyRegisterTupleElems(_ env: inout TyEnv, _ elems: Vec[Nd], _ sp: String) using Alloc {
+    let parts = tyTupleParts(sp)
+    if parts.len() != elems.len() { return }
+    var i: Int = 0
+    while i < elems.len() {
+        let el = elems.get(i) ?? Nd.wildcard
+        let et = own(parts.get(i) ?? own(""))
+        let nm = patNameOf(el)
+        if !streq(nm, "") { tyAddSymSpelling(env, nm, et) }
+        else { tyRegisterTuplePat(env, el, et) }
+        i = i + 1
+    }
 }
 
 func emitTuplePatNames(_ env: inout TyEnv, _ p: Nd) using Alloc, Log {
@@ -8672,6 +8825,18 @@ func emitInferredElemTy(_ env: inout TyEnv, _ elems: Vec[Nd]) using Alloc, Log {
 // builtin containers keeping their std:: mappings), anything else is the
 // scalar mapping.
 func cppOfSpelling(_ sp: String) using Alloc -> String {
+    if tyIsTuple(sp) {
+        let parts = tyTupleParts(sp)
+        var t: String = "std::tuple<"
+        var k: Int = 0
+        while k < parts.len() {
+            if k > 0 { t.append(", ") }
+            t.append(cppOfSpelling(own(parts.get(k) ?? own(""))))
+            k = k + 1
+        }
+        t.append(">")
+        return t
+    }
     if tyIsArray(sp) {
         var s: String = "std::array<"
         s.append(cppOfSpelling(tyArrayElem(sp)))
@@ -8732,8 +8897,9 @@ func cppArgsOfSpelling(_ inner: Str) using Alloc -> String {
     var i: Int = 0
     while i < inner.len() {
         let c = inner.byteAt(i) ?? 0
-        if c == 91 { depth = depth + 1 }
-        if c == 93 { depth = depth - 1 }
+        if c == 91 || c == 40 { depth = depth + 1 }   // '[' '('
+        if c == 93 || c == 41 { depth = depth - 1 }   // ']' ')'
+
         if c == 44 && depth == 0 && (inner.byteAt(i + 1) ?? 0) == 32 {
             if !first { out.append(", ") }
             out.append(cppOfSpelling(own(inner.slice(start, i))))

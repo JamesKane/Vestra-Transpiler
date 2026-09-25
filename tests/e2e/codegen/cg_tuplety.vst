@@ -1,0 +1,72 @@
+// Tuple types spell `(A, B)` the way the resolver describes them, so values
+// that flow through a tuple keep their types: each name of `let (a, b) = f()`
+// types as its element (nested patterns recurse), a tuple literal types as
+// the tuple of its elements, and `(A, B)` maps to `std::tuple<A', B'>` where
+// a C++ spelling is needed (`Box.new(t)`). A tuple is move-only when an
+// element is, so binding one from an lvalue moves it. A nested pattern binds
+// a `__vstr_tp<N>` placeholder that a follow-on binding unpacks. (Destructuring
+// a move-only tuple LVALUE copies it in the bootstrap, which does not compile,
+// so `moved` returns the tuple instead.)
+enum Chain {
+    case stop
+    case next(Int32, Box[Chain])
+}
+
+struct Label {
+    var text: String
+}
+
+func split(_ n: Int32) using Alloc -> (Vec[Int32], Int32) {
+    var v: Vec[Int32] = Vec.new()
+    v.push(n)
+    return (v, n)
+}
+
+func named(_ s: Str) -> (Str, Int32) {
+    return (s, 1)
+}
+
+func nested() -> ((Int32, Int32), Int32) {
+    return ((1, 2), 3)
+}
+
+func grow(_ n: Int32) using Alloc -> (Chain, Int32) {
+    if n <= 0 { return (Chain.stop, 0) }
+    let (rest, k) = grow(n - 1)
+    return (Chain.next(n, Box.new(rest)), k + 1)
+}
+
+func count(_ n: Int32) using Alloc -> Int {
+    let (v, m) = split(n)
+    return v.len()
+}
+
+func label(_ raw: Str) using Alloc -> Label {
+    let (s, k) = named(raw)
+    return Label(text: s)
+}
+
+func sumNested() -> Int32 {
+    let ((a, b), c) = nested()
+    return a + b + c
+}
+
+func boxPair(_ x: Int32) using Alloc -> Box[(Int32, Int32)] {
+    let t = (x, x)
+    return Box.new(t)
+}
+
+func moved(_ n: Int32) using Alloc -> (Chain, Int32) {
+    let p = grow(n)
+    let q = p
+    return q
+}
+
+func deep() -> ((Int32, (Int32, Int32)), (Int32, Int32)) {
+    return ((1, (2, 3)), (4, 5))
+}
+
+func sumDeep() -> Int32 {
+    let ((a, (b, _)), (d, e)) = deep()
+    return a + b + d + e
+}
