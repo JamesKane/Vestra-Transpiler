@@ -43,8 +43,9 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 - Latest slice: `c41e3b3` (codegen slice 74, block expressions; corpus
   burndown 20). **116 commits** carry the `selfhost:` prefix.
 - **Corpus burndown: 93 of 150 examples byte-identical, 1218 divergent lines**
-  (572 of them in families parked by design, so about 650 live). The baseline
-  when the burndown started was 11 examples and 23394 lines.
+  (about 720 of them parked by design or in practice, so about 500 live; see
+  the ranking below). The baseline when the burndown started was 11 examples
+  and 23394 lines.
 - Phase status:
   - **Lexer: done.** Token stream byte-identical on the sample corpus and on
     the self-hosted lexer source itself.
@@ -64,7 +65,7 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 
 ## Where to pick up: codegen
 
-Codegen (`selfhost/codegen.vst`, ~9.7K lines, building `vgen`) is the active
+Codegen (`selfhost/codegen.vst`, ~10.2K lines, building `vgen`) is the active
 front. It re-uses the lexer + parser, has the **whole sema type checker ported
 in** (the `TyEnv`), and emits the generated C++. Two differentials run
 byte-for-byte vs `vestra build`:
@@ -79,8 +80,11 @@ byte-for-byte vs `vestra build`:
 
 The completion standard is the whole `examples/` corpus byte-identical, the same
 bar the lexer and parser already met. **93 of 150** examples are there;
-**1218 divergent lines** remain, of which **572 are parked by design**. Start by
-re-establishing the baseline, since it is also the regression check:
+**1218 divergent lines** remain, of which about **720 are parked** (by design or
+in practice; see the ranking). **Start with family #1 in the table below**
+(loop-element typing, four small flips), then #2 to #4; together they could
+reach about 105 identical. First re-establish the baseline, since it is also
+the regression check:
 
 ```
 ./scripts/sweep_codegen_corpus.sh --build --report build/sweep/before.txt
@@ -111,6 +115,13 @@ example totals, "flips" the examples a family would make identical.
 | 7 | **Raw pointers and MMIO**: `Ptr` / `MutPtr.unchecked` as `reinterpret_cast`, `p.value` as `(*p)`, `Span.raw`, `MmioView` / `MmioRegion` / `MmioWireView`, `memcpy` / cache intrinsics, `&x` | `raw_mint` 8, `mmio` 8, `mmio_wire` 8, `ptr_deref` 14, `mem_intrinsics` 16, `addr_of` 18, `cache_tlb` 26 | 6 to 7 | medium to large |
 | 8 | **Spans and iterator adapters**: `s.count` / `isEmpty` / `split` / `chunks` and the `zip` / `take` / `map` / `filter` adapter protocol | `split_demo` 12, `iter_combinators` 12, `map_filter` 16, `chunks_demo` 18 | 4 | medium |
 | 9 | **Medium one-offs** | `simd_demo` 6, `map_error` 7 (closure with a match body), `const_generic` 12 (array literal element type from a generic field), `tuple_params` 14 (tuple-pattern parameters), `docatch_where` 14, `parallel_demo` 14 (closure param types), `soa_demo` 20, `midtry` 27 (an `if` cond-hoist at an unannotated binding and mid-expression) | 1 each | varies |
+
+**Open decision (raised 2026-09-25, not yet answered).** The `atomics` example
+was parked for its size (86 lines), but family #6 shows the same surface in five
+OTHER examples (about 70 lines). The recommendation on the table is to unpark
+the core (the `Atomic[T]` mapping, `fetch_add` and friends, the default
+`seq_cst` ordering argument) when #6 comes up, and still leave the `atomics`
+example itself for last. Ask before starting #6.
 
 **Also parked in practice**, beyond the three below: the **comptime family**
 (`comptime` 26, `reflection` 26, `cfg` 20, `sin_table` 13, `vectors` 13,
