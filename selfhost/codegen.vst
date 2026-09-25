@@ -4481,10 +4481,12 @@ func tyInferPlainCall(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> Stri
 
 // Return types of the §18 builtins vgen lowers (a unit-defined function wins in
 // the lookup above). readFile's optional makes the `!` disambiguation fire so
-// `readFile(p)!` lowers as a force-unwrap, not logical-not.
+// `readFile(p)!` lowers as a force-unwrap, not logical-not. args()'s Vec[Str]
+// routes `argv.len()` / `argv.get(i)` through the §18.5 builtin-method path.
 func tyBuiltinRet(_ nm: Str) using Alloc -> String {
     if streq(nm, "readFile") { return own("String?") }
     if streq(nm, "writeFile") { return own("Bool") }
+    if streq(nm, "args") { return own("Vec[Str]") }
     return own("")
 }
 

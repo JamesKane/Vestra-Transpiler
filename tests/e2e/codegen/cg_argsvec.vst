@@ -1,0 +1,29 @@
+// §18 `args()` types as Vec[Str], so a binding from it dispatches through the
+// §18.5 builtin-method path: `argv.len()` lowers to the intptr-cast size and
+// `argv.get(i)` to __vstr::vec_get, rather than emitting as plain member calls.
+func argCount() using Alloc -> Int {
+    let argv = args()
+    return argv.len()
+}
+
+func argOr(_ i: Int, _ dflt: Str) using Alloc -> Str {
+    let argv = args()
+    return argv.get(i) ?? dflt
+}
+
+func hasFlag() using Alloc -> Bool {
+    let argv = args()
+    if argv.len() < 2 { return false }
+    let first = argv.get(1) ?? ""
+    return first.startsWith("-")
+}
+
+func main() -> Int32 {
+    with Alloc {
+        with Log {
+            if hasFlag() { println(argOr(1, "")) }
+            if argCount() > 3 { return 1 }
+        }
+    }
+    return 0
+}
