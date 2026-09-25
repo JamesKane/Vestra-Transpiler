@@ -8680,6 +8680,7 @@ func emitExpr(_ env: inout TyEnv, _ e: Nd) using Alloc, Log {
         case .member(let base, let name, let chain): emitMember(env, base, name, chain)
         case .index(let base, let idxs): emitIndex(env, base, idxs)
         case .ifE(let ln, let li, let cond, let thenB, let els): emitIfE(env, ln, cond, thenB, els)
+        case .block(let stmts): emitBlockExpr(env, stmts)
         case .vecLit(let elems): emitVecLitNoTy(env, elems)
         case .tupleLit(let elems): emitTupleLit(env, elems)
         case .interpE(let parts, let exprs): emitInterp(env, parts, exprs)
@@ -8975,6 +8976,15 @@ func emitIfValue(_ env: inout TyEnv, _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: V
     print("; } else { return ")
     emitIfElseValue(env, els)
     print("; } }())")
+}
+
+// A block in expression position (a `{ let x = ...; x + 1 }` match-arm body)
+// lowers like the bootstrap's BlockExpr: an immediately-invoked lambda whose
+// statements emit at column 0 and whose trailing expression is returned.
+func emitBlockExpr(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc, Log {
+    print("[&]{ ")
+    emitClosureStmts(env, stmts, true)
+    print(" }()")
 }
 
 // `[&]{ <branch stmts> }()` — the branch block as an invoked lambda, its

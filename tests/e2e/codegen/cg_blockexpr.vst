@@ -1,0 +1,64 @@
+// A block in expression position lowers to an immediately-invoked lambda:
+// `[&]{ <stmts> return <trailing>; }()`, its statements at column 0. It
+// appears as a match-arm body (payload visit, bare-enum switch, and value
+// match alike), as a binding initializer, and nested inside another block;
+// a trailing if-expression takes its own value form.
+enum Shape {
+    case dot
+    case box(Int32, Int32)
+}
+
+enum Mode {
+    case fast
+    case slow
+}
+
+func area(_ s: Shape) -> Int32 {
+    return match s {
+        case .dot: 0
+        case .box(let w, let h): {
+            let a = w * h
+            if a > 100 { 100 } else { a }
+        }
+    }
+}
+
+func cost(_ m: Mode, _ n: Int32) -> Int32 {
+    return match m {
+        case .fast: n
+        case .slow: {
+            var t: Int32 = n
+            t = t * 2
+            t + 1
+        }
+    }
+}
+
+func grade(_ n: Int32) -> Int32 {
+    return match n {
+        case 0: 0
+        default: {
+            let half = n / 2
+            half + 1
+        }
+    }
+}
+
+func bound(_ n: Int32) -> Int32 {
+    let v: Int32 = {
+        let d = n * 3
+        d - 1
+    }
+    return v
+}
+
+func nested(_ n: Int32) -> Int32 {
+    let v: Int32 = {
+        let inner: Int32 = {
+            let k = n + 1
+            k * k
+        }
+        inner - n
+    }
+    return v
+}
