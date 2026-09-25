@@ -37,13 +37,13 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 
 ## Current state
 
-- **1524 / 1524 tests pass** (`ctest --test-dir build/debug`), Debug build,
-  format-check clean. Of these, **234 are `e2e_selfhost`** (4 lexer, 11 parser,
-  74 sema, 141 codegen, 4 end-to-end demo).
-- Latest slice: `d1e294a` (codegen slice 72, match cond-hoist arms; corpus
-  burndown 18). **114 commits** carry the `selfhost:` prefix.
-- **Corpus burndown: 91 of 150 examples byte-identical, 1236 divergent lines**
-  (572 of them in families parked by design, so about 660 live). The baseline
+- **1526 / 1526 tests pass** (`ctest --test-dir build/debug`), Debug build,
+  format-check clean. Of these, **236 are `e2e_selfhost`** (4 lexer, 11 parser,
+  74 sema, 143 codegen, 4 end-to-end demo).
+- Latest slice: `f86efb5` (codegen slice 73, tuple-type spelling; corpus
+  burndown 19). **115 commits** carry the `selfhost:` prefix.
+- **Corpus burndown: 92 of 150 examples byte-identical, 1221 divergent lines**
+  (572 of them in families parked by design, so about 650 live). The baseline
   when the burndown started was 11 examples and 23394 lines.
 - Phase status:
   - **Lexer: done.** Token stream byte-identical on the sample corpus and on
@@ -59,7 +59,7 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
     generics tracking (unknown-type, is-not-generic), all match families
     (guard-Bool, exhaustiveness, arm-type, pattern checks), and multi-file
     modules (import resolution, qualified member + type).
-  - **Codegen: 72 slices; the close-out roadmap is complete and the corpus
+  - **Codegen: 73 slices; the close-out roadmap is complete and the corpus
     burndown is active.** See "Where to pick up" below.
 
 ## Where to pick up: codegen
@@ -78,8 +78,8 @@ byte-for-byte vs `vestra build`:
 ### The next action
 
 The completion standard is the whole `examples/` corpus byte-identical, the same
-bar the lexer and parser already met. **91 of 150** examples are there;
-**1236 divergent lines** remain, of which **572 are parked by design**. Start by
+bar the lexer and parser already met. **92 of 150** examples are there;
+**1221 divergent lines** remain, of which **572 are parked by design**. Start by
 re-establishing the baseline, since it is also the regression check:
 
 ```
@@ -95,22 +95,18 @@ slices it flagged twice, once on a genuine gap the fixtures would have missed
 turned out to be the metric itself (slice 61, which is why the sweep now counts
 with `diff -d`). Both were worth knowing.
 
-**Ranked candidates (post-slice-72).** Slices 67 to 72 (session of 2026-09-25)
-took the count from 38 to 91: `args()` typing alone flipped 45 examples, then
-opaque newtypes, `Box`, move-only types, bare `catch e`, and the match
-cond-hoist arms (`throw` arms, or-patterns, unannotated match bindings). What
-is left is a scatter; re-rank from a fresh sweep before picking:
+**Ranked candidates (post-slice-73).** Slices 67 to 73 (session of 2026-09-25)
+took the count from 38 to 92: `args()` typing alone flipped 45 examples, then
+opaque newtypes, `Box`, move-only types, bare `catch e`, the match cond-hoist
+arms, and tuple-type spelling (with nested tuple destructuring). What is left
+is a scatter; re-rank from a fresh sweep before picking:
 
-1. **Tuple-type spelling.** vgen has no `(A, B)` spelling, so
-   `let (a, b) = f()` bindings are untyped (`movelist_demo` emits
-   `make_unique<>`). Every lowering driven by a return type can see the new
-   spelling, so size this carefully and sweep hard.
-2. **`movelist_demo` (5)**: the tuple typing above, plus a block-bodied match
-   arm (`[&]{ auto rest = ...; return ...; }()`).
-3. **`[[gnu::*]]` attribute passthrough** (~7 examples, a few lines each),
+1. **`movelist_demo` (3)**: a block-bodied match arm
+   (`[&]{ auto rest = ...; return ...; }()`). The only thing left in it.
+2. **`[[gnu::*]]` attribute passthrough** (~7 examples, a few lines each),
    mechanical.
-4. **`requires`-clause bounds** on generic functions.
-5. **`selfhost_demo` (2)**: `for t in line.split(" ")` needs the iterable's
+3. **`requires`-clause bounds** on generic functions.
+4. **`selfhost_demo` (2)**: `for t in line.split(" ")` needs the iterable's
    `Str` receiver typed so `split` takes the builtin path.
 
 **A pattern worth checking first.** When many examples share the same small
@@ -120,7 +116,7 @@ almost always one missing builtin type. Slice 67 was a one-line fix to
 
 **Parked by design; expect these to stay divergent.** `quote_demo` (368,
 comptime/quote), `channel_select_demo` (118, select), `atomics` (86, the
-atomics method surface). Together they are 46% of the remaining line count, so
+atomics method surface). Together they are 47% of the remaining line count, so
 subtract them before reading the total as progress.
 
 ### Two lessons about the metric
@@ -149,7 +145,7 @@ generated output directly over reading the `<`/`>` markers.
 
 ### What codegen covers
 
-Seventy-two slices; the close-out roadmap is complete and the corpus burndown
+Seventy-three slices; the close-out roadmap is complete and the corpus burndown
 is active. The per-slice engineering log — every lowering, its bootstrap source
 line, and its gotchas — is in the `project_dogfood_compiler.md` memory file.
 The capability summary:
@@ -172,7 +168,8 @@ The capability summary:
   arg-driven ctor inference), optionals, function pointers, param modes
   (`inout` / `sink` with call-site `std::move`), the Str/String lattice,
   opaque newtypes (`enum class Q : T {}`, `Q(t)`, `q.value`), and `Box`
-  (`std::make_unique`, `(*b)`).
+  (`std::make_unique`, `(*b)`), and tuple types (`(A, B)` spellings, so
+  destructured names keep their element types).
 - **Ownership.** The bootstrap's move-only rule: a type that transitively owns
   a `Box` is found by fixpoint, and lvalues of it move at bindings, tuple
   elements, payload and field initializers, and try-hoist unwraps.
@@ -191,13 +188,15 @@ it disproportionate); comptime / quote / splice / `@`-intrinsics; the do/catch
 leftovers (multi-statement bodies, where-guard, and a bare `catch e` whose
 first `try` calls a method rather than a plain function); unannotated
 bindings of if cond-hoists (unannotated match bindings hoist since slice 72);
-tuple-type spellings; the atomics method
+nested tuple patterns outside `let`/`var` (for loops, match arms, do/catch
+still take the flat form); the atomics method
 surface; Soa methods and span `split`/`chunks`.
 
 **Known SHARED bootstrap gaps**, mirrored rather than fixed — both produce
 non-compiling C++ on BOTH sides, so the differential stays textual:
 closure→fn-ptr conversion (a `[&]` lambda cannot convert to a raw function
-pointer) and template-less generic methods. Separately, methods are not
+pointer), template-less generic methods, and destructuring a move-only tuple
+LVALUE (`let (c, k) = q` emits `auto [c, k] = q;`, a copy; found in slice 73). Separately, methods are not
 const-qualified in v0.5, so calling one on a read-mode (`const T&`) parameter
 does not compile; fixtures call methods through `var` locals.
 
@@ -233,7 +232,11 @@ A tight, one-slice-at-a-time loop:
 7. Add a curated fixture under `tests/e2e/codegen/` (or `tests/e2e/sema/`), wire
    its stem into the `foreach(prog …)` list(s) in `tests/CMakeLists.txt`
    (codegen fixtures go in **both** the `.cpp` and `.hpp` lists), re-run
-   `cmake .` + `ctest -R e2e_selfhost`, then the full `ctest`.
+   `cmake .` + `ctest -R e2e_selfhost`, then the full `ctest`. Each
+   differential builds into its own `_codegen/<cpp|hpp>/<prog>` directory
+   (since `d4dbfc6`); a shared output path raced under `ctest -j8` and failed
+   a random unrelated fixture about one run in five. Keep new test commands
+   on per-test paths.
 8. One commit per slice; then update the `project_dogfood_compiler.md` memory.
    Keep doc/script changes in their own commits so the slice diff stays
    reviewable.
@@ -249,7 +252,7 @@ Standing constraints, honored every commit:
   `main`** — confirmed by the user on 2026-07-24, and consistent with all 108
   prior `selfhost:` commits. No need to ask again.
 - Commit subject `selfhost: <phase> slice N — <feature>`, a rationale body, and
-  a `Co-Authored-By:` trailer naming the ACTIVE Claude model (slices 67 to 72
+  a `Co-Authored-By:` trailer naming the ACTIVE Claude model (slices 67 to 73
   credit Opus 5.5, 59 to 66 Opus 5, earlier ones Fable 5 and Opus 4.8).
 
 ## Rough edges (writing Vestra-in-Vestra)
