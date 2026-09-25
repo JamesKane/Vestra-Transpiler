@@ -37,12 +37,12 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 
 ## Current state
 
-- **1526 / 1526 tests pass** (`ctest --test-dir build/debug`), Debug build,
-  format-check clean. Of these, **236 are `e2e_selfhost`** (4 lexer, 11 parser,
-  74 sema, 143 codegen, 4 end-to-end demo).
-- Latest slice: `f86efb5` (codegen slice 73, tuple-type spelling; corpus
-  burndown 19). **115 commits** carry the `selfhost:` prefix.
-- **Corpus burndown: 92 of 150 examples byte-identical, 1221 divergent lines**
+- **1528 / 1528 tests pass** (`ctest --test-dir build/debug`), Debug build,
+  format-check clean. Of these, **238 are `e2e_selfhost`** (4 lexer, 11 parser,
+  74 sema, 145 codegen, 4 end-to-end demo).
+- Latest slice: `c41e3b3` (codegen slice 74, block expressions; corpus
+  burndown 20). **116 commits** carry the `selfhost:` prefix.
+- **Corpus burndown: 93 of 150 examples byte-identical, 1218 divergent lines**
   (572 of them in families parked by design, so about 650 live). The baseline
   when the burndown started was 11 examples and 23394 lines.
 - Phase status:
@@ -59,7 +59,7 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
     generics tracking (unknown-type, is-not-generic), all match families
     (guard-Bool, exhaustiveness, arm-type, pattern checks), and multi-file
     modules (import resolution, qualified member + type).
-  - **Codegen: 73 slices; the close-out roadmap is complete and the corpus
+  - **Codegen: 74 slices; the close-out roadmap is complete and the corpus
     burndown is active.** See "Where to pick up" below.
 
 ## Where to pick up: codegen
@@ -78,8 +78,8 @@ byte-for-byte vs `vestra build`:
 ### The next action
 
 The completion standard is the whole `examples/` corpus byte-identical, the same
-bar the lexer and parser already met. **92 of 150** examples are there;
-**1221 divergent lines** remain, of which **572 are parked by design**. Start by
+bar the lexer and parser already met. **93 of 150** examples are there;
+**1218 divergent lines** remain, of which **572 are parked by design**. Start by
 re-establishing the baseline, since it is also the regression check:
 
 ```
@@ -95,18 +95,17 @@ slices it flagged twice, once on a genuine gap the fixtures would have missed
 turned out to be the metric itself (slice 61, which is why the sweep now counts
 with `diff -d`). Both were worth knowing.
 
-**Ranked candidates (post-slice-73).** Slices 67 to 73 (session of 2026-09-25)
-took the count from 38 to 92: `args()` typing alone flipped 45 examples, then
+**Ranked candidates (post-slice-74).** Slices 67 to 74 (session of 2026-09-25)
+took the count from 38 to 93: `args()` typing alone flipped 45 examples, then
 opaque newtypes, `Box`, move-only types, bare `catch e`, the match cond-hoist
-arms, and tuple-type spelling (with nested tuple destructuring). What is left
-is a scatter; re-rank from a fresh sweep before picking:
+arms, tuple-type spelling (with nested tuple destructuring), and block
+expressions. What is left is a scatter; re-rank from a fresh sweep before
+picking:
 
-1. **`movelist_demo` (3)**: a block-bodied match arm
-   (`[&]{ auto rest = ...; return ...; }()`). The only thing left in it.
-2. **`[[gnu::*]]` attribute passthrough** (~7 examples, a few lines each),
+1. **`[[gnu::*]]` attribute passthrough** (~7 examples, a few lines each),
    mechanical.
-3. **`requires`-clause bounds** on generic functions.
-4. **`selfhost_demo` (2)**: `for t in line.split(" ")` needs the iterable's
+2. **`requires`-clause bounds** on generic functions.
+3. **`selfhost_demo` (2)**: `for t in line.split(" ")` needs the iterable's
    `Str` receiver typed so `split` takes the builtin path.
 
 **A pattern worth checking first.** When many examples share the same small
@@ -145,7 +144,7 @@ generated output directly over reading the `<`/`>` markers.
 
 ### What codegen covers
 
-Seventy-three slices; the close-out roadmap is complete and the corpus burndown
+Seventy-four slices; the close-out roadmap is complete and the corpus burndown
 is active. The per-slice engineering log — every lowering, its bootstrap source
 line, and its gotchas — is in the `project_dogfood_compiler.md` memory file.
 The capability summary:
@@ -159,7 +158,8 @@ The capability summary:
   continue, `with` blocks, return.
 - **Expressions.** The full set — calls, literals, index, `??`, member,
   optional chains, struct construction, force-unwrap, array/tuple literals,
-  string interpolation, scalar casts, leading-dot cases, closures.
+  string interpolation, scalar casts, leading-dot cases, closures, block
+  expressions.
 - **Match.** Every lowering family: payload-free `switch`, payload
   `std::visit` (grouped by case, guarded arms falling through), guard chains,
   non-enum value scrutinees with predicate patterns, and match in every
@@ -252,7 +252,7 @@ Standing constraints, honored every commit:
   `main`** — confirmed by the user on 2026-07-24, and consistent with all 108
   prior `selfhost:` commits. No need to ask again.
 - Commit subject `selfhost: <phase> slice N — <feature>`, a rationale body, and
-  a `Co-Authored-By:` trailer naming the ACTIVE Claude model (slices 67 to 73
+  a `Co-Authored-By:` trailer naming the ACTIVE Claude model (slices 67 to 74
   credit Opus 5.5, 59 to 66 Opus 5, earlier ones Fable 5 and Opus 4.8).
 
 ## Rough edges (writing Vestra-in-Vestra)
