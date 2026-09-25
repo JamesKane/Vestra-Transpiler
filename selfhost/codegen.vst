@@ -2931,6 +2931,8 @@ struct TyEnv {
     var ecfTy: Vec[String]      // ... -> declared field TYPE spelling (for typing a match arm's payload binding)
     var dvTarget: Vec[String]   // global: per-derive rows — target type name ...
     var dvProto: Vec[String]    // ... -> one derived protocol (a `derive(Eq, Hash) for T` pushes one row each)
+    var opName: Vec[String]     // global: §3 opaque newtype names ...
+    var opUnder: Vec[Nd]        // ... -> the underlying type NODE (for `.value` and the derive specs)
     var symName: Vec[String]    // per-function: binding name ...
     var symType: Vec[String]    // ... -> type spelling
     var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
@@ -2973,8 +2975,38 @@ func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyRecordStructDecl(env, name, fl, m, generics)
         case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumDecl(env, name, cs, m, generics)
         case .deriveD(let protocols, let target): tyRecordDerive(env, protocols, target)
+        case .opaqueD(let vis, let name, let under): tyRecordOpaque(env, name, under)
         default: noop()
     }
+}
+
+// §3 `opaque type Q = T` — one row per newtype, keeping T's node so `q.value`
+// and the derived Hash/Debug specs can spell the underlying.
+func tyRecordOpaque(_ env: inout TyEnv, _ name: Str, _ under: Vec[Nd]) using Alloc {
+    env.opName.push(own(name))
+    env.opUnder.push(under.get(0) ?? Nd.wildcard)
+}
+
+func tyOpaqueIdx(_ env: inout TyEnv, _ name: Str) -> Int {
+    var i: Int = 0
+    while i < env.opName.len() {
+        if let n = env.opName.get(i) {
+            if streq(n, name) { return i }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+func tyIsOpaque(_ env: inout TyEnv, _ name: Str) -> Bool {
+    return tyOpaqueIdx(env, name) >= 0
+}
+
+// The underlying type node of opaque <name> (wildcard if <name> is not one).
+func tyOpaqueUnder(_ env: inout TyEnv, _ name: Str) -> Nd {
+    let i = tyOpaqueIdx(env, name)
+    if i < 0 { return Nd.wildcard }
+    return env.opUnder.get(i) ?? Nd.wildcard
 }
 
 // §12.3 `derive(Eq, Hash) for T` — one row per protocol, keyed by the target's
@@ -4248,6 +4280,8 @@ func tyInferMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain:
     if chain { return own("") }
     let bt = tyInferBoxed(env, base)
     if tyHasField(env, bt, name) { return tyFieldType(env, bt, name) }
+    // §3 `q.value` on an opaque newtype types as its underlying.
+    if streq(name, "value") && tyIsOpaque(env, bt) { return typeSpelling(tyOpaqueUnder(env, bt)) }
     return own("")
 }
 
@@ -4474,8 +4508,9 @@ func tyInferPlainCall(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> Stri
     if !streq(r, "") { return r }
     let b = tyBuiltinRet(nm)
     if !streq(b, "") { return b }
-    // §17.x a conversion call types as its primitive: `Int32(x)` -> Int32.
-    if tyIsStruct(env, nm) || tyIsNumeric(nm) { return nm }
+    // §17.x a conversion call types as its primitive: `Int32(x)` -> Int32;
+    // §3 `Q(t)` constructs the opaque newtype Q.
+    if tyIsStruct(env, nm) || tyIsNumeric(nm) || tyIsOpaque(env, nm) { return nm }
     return own("")
 }
 
@@ -4776,6 +4811,7 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     ecfEnum: Vec.new(), ecfCase: Vec.new(),
                     ecfIdx: Vec.new(), ecfName: Vec.new(), ecfTy: Vec.new(),
                     dvTarget: Vec.new(), dvProto: Vec.new(),
+                    opName: Vec.new(), opUnder: Vec.new(),
                     symName: Vec.new(), symType: Vec.new(),
                     curRet: own(""), curRetNode: Vec.new(),
                     tryN: 0, hoistName: Vec.new(), hoistExpr: Vec.new(),
@@ -4908,9 +4944,8 @@ func nsQualPrefix(_ hasMod: Bool, _ modPath: Str) using Alloc -> String {
 // §12.3 derive(Hash) -> a std::hash specialization, emitted after the module
 // namespace closes and separated by a blank line. Bare `enum class` cases fall
 // back to the standard library's enum hash, so only structs and the
-// struct-of-variant enum form need one. (Opaque newtypes also take a spec in
-// the bootstrap; vgen does not emit opaque declarations at all yet, so that
-// pairing stays out.)
+// struct-of-variant enum form need one, plus opaque newtypes (an `enum class`
+// over T, which delegates to std::hash<T>).
 func emitHashSpecs(_ env: inout TyEnv, _ u: NUnit, _ qp: Str) using Alloc, Log {
     var i: Int = 0
     while i < u.decls.len() {
@@ -4925,6 +4960,7 @@ func emitHashSpecDecl(_ env: inout TyEnv, _ d: Nd, _ qp: Str) using Alloc, Log {
             emitHashSpecStruct(env, name, fields, generics, qp)
         case .enumD(let vis, let name, let cases, let m, let generics):
             emitHashSpecEnum(env, name, cases, generics, qp)
+        case .opaqueD(let vis, let name, let under): emitHashSpecOpaque(env, name, under, qp)
         default: noop()
     }
 }
@@ -5105,8 +5141,46 @@ func emitDebugSpecDecl(_ env: inout TyEnv, _ d: Nd, _ qp: Str) using Alloc, Log 
             emitDebugSpecStruct(env, name, fields, generics, qp)
         case .enumD(let vis, let name, let cases, let m, let generics):
             emitDebugSpecEnum(env, name, cases, generics, qp)
+        case .opaqueD(let vis, let name, let under): emitDebugSpecOpaque(env, name, under, qp)
         default: noop()
     }
+}
+
+// §3 opaque newtype Hash: delegate to the underlying T's std::hash over
+// `static_cast<T>(v)` (the enum class has no std::hash of its own). Passed
+// by value — it is a scalar.
+func emitHashSpecOpaque(_ env: inout TyEnv, _ name: Str, _ under: Vec[Nd], _ qp: Str) using Alloc, Log {
+    if !tyDerives(env, name, "Hash") { return }
+    if under.len() == 0 { return }
+    print("\ntemplate <>\nstruct std::hash<")
+    print(qp)
+    print(name)
+    print("> {\n    [[nodiscard]] std::size_t operator()(")
+    print(qp)
+    print(name)
+    print(" v) const noexcept {\n        return std::hash<")
+    emitTypeBoxed(under)
+    print(">{}(static_cast<")
+    emitTypeBoxed(under)
+    print(">(v));\n    }\n};\n")
+}
+
+// §3 opaque newtype Debug/Display: render `Q(value)`, the underlying through
+// its own formatter via `{}`. One spec covers both derives.
+func emitDebugSpecOpaque(_ env: inout TyEnv, _ name: Str, _ under: Vec[Nd], _ qp: Str) using Alloc, Log {
+    if !wantsFormatter(env, name) { return }
+    if under.len() == 0 { return }
+    print("\ntemplate <>\nstruct std::formatter<")
+    print(qp)
+    print(name)
+    print("> {\n    constexpr auto parse(auto& __ctx) { return __ctx.begin(); }\n    auto format(")
+    print(qp)
+    print(name)
+    print(" v, auto& __ctx) const {\n        return std::format_to(__ctx.out(), \"")
+    print(name)
+    print("({})\", static_cast<")
+    emitTypeBoxed(under)
+    print(">(v));\n    }\n};\n")
 }
 
 func wantsFormatter(_ env: inout TyEnv, _ name: Str) using Alloc -> Bool {
@@ -5375,8 +5449,21 @@ func emitHppDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
             emitGlobalDef(env, "inline constexpr ", name, ty, value)
         case .staticD(let vis, let name, let ty, let value):
             emitGlobalDef(env, "inline ", name, ty, value)
+        case .opaqueD(let vis, let name, let under): emitOpaqueDecl(name, under)
         default: noop()
     }
+}
+
+// §3 `opaque type Q = T` -> `enum class Q : T {};` — a distinct type with
+// T's representation and no implicit conversions, under a comment naming it.
+func emitOpaqueDecl(_ name: Str, _ under: Vec[Nd]) using Alloc, Log {
+    print("// opaque type ")
+    print(name)
+    print("\nenum class ")
+    print(name)
+    print(" : ")
+    emitTypeBoxed(under)
+    print(" {};\n")
 }
 
 // A top-level `const` / `static` lowers to an inline variable in the header:
@@ -8586,6 +8673,18 @@ func emitIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc
 // lowercase by convention, so instance access is unaffected.
 func emitMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool) using Alloc, Log {
     if chain { emitChainMember(env, base, name); return }
+    // §3 `q.value` extracts an opaque newtype's underlying T via one static_cast.
+    if streq(name, "value") {
+        let bt = tyInferBoxed(env, base)
+        if tyIsOpaque(env, bt) {
+            print("static_cast<")
+            emitType(tyOpaqueUnder(env, bt))
+            print(">(")
+            emitBoxed(env, base)
+            print(")")
+            return
+        }
+    }
     // §5 cross-module reference: a base naming an imported module qualifies
     // with `::` (`helper.LIMIT` -> `helper::LIMIT`).
     let mq = memberBaseImport(env, base)
@@ -8781,6 +8880,7 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     if tryEmitImportCall(env, callee, args) { return }
     if tryEmitMapError(env, callee, args) { return }
     if tryEmitScalarCast(env, callee, args) { return }
+    if tryEmitOpaqueCtor(env, callee, args) { return }
     if isStructCtor(callee, args) { emitStructCtor(env, callee, args); return }
     let fname = identBaseName(callee)
     if tryEmitPrint(env, fname, args) { return }
@@ -8836,6 +8936,20 @@ func tryEmitScalarCast(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) u
     if !tyIsNumeric(nm) { return false }
     print("static_cast<")
     print(cppNamed(nm))
+    print(">(")
+    emitArgList(env, args)
+    print(")")
+    return true
+}
+
+// §3 opaque-type construction: `Q(t)` -> `static_cast<Q>(t)` over the
+// `enum class Q : T {}` emission. Single positional argument (sema enforces).
+func tryEmitOpaqueCtor(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if args.len() != 1 { return false }
+    let nm = identBaseName(callee)
+    if streq(nm, "") || !tyIsOpaque(env, nm) { return false }
+    print("static_cast<")
+    print(nm)
     print(">(")
     emitArgList(env, args)
     print(")")

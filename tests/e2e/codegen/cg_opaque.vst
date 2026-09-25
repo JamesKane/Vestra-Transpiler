@@ -1,0 +1,31 @@
+// §3 opaque newtypes: `opaque type Q = T` -> `enum class Q : T {};` in the
+// header, `Q(t)` -> `static_cast<Q>(t)`, and `q.value` -> `static_cast<T>(q)`.
+// A binding from `Q(t)` types as Q, so its `.value` lowers too. derive(Hash)
+// delegates to std::hash<T>; Debug or Display alone renders `Q(value)`. No
+// module, so the specializations name the target unqualified.
+opaque type Meters = Int32
+opaque type Tag = UInt8
+
+derive(Eq, Hash, Debug) for Meters
+derive(Display) for Tag
+
+func meters(_ n: Int32) -> Meters {
+    return Meters(n)
+}
+
+func raw(_ m: Meters) -> Int32 {
+    return m.value
+}
+
+func doubled(_ n: Int32) -> Int32 {
+    let m = Meters(n)
+    return m.value * 2
+}
+
+func tagOf(_ b: UInt8) -> Tag {
+    return Tag(b)
+}
+
+func back(_ t: Tag) -> UInt8 {
+    return UInt8(t)
+}
