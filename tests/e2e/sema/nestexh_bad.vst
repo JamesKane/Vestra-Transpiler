@@ -1,0 +1,24 @@
+// §6 a missing nested case, or a case covered only by a guarded arm, used to
+// pass as exhaustive.
+
+enum Inner { case x  case y }
+enum Outer { case p(Inner)  case q(Int32)  case r(Bool, Inner) }
+
+func f(_ o: Outer) -> Int32 {
+    return match o {
+        case .p(.x): 1
+        case .q(let n) where n > 0: n
+        case .r(true, _): 2
+        case .r(false, .x): 3
+    }
+}
+
+func g(_ o: Outer) -> Int32 {
+    return match o {
+        case .p(_): 1
+        case .q(0): 2
+        case .r(_, _): 3
+    }
+}
+
+func main() -> Int32 { return 0 }

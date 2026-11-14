@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <format>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -25,6 +26,188 @@
 namespace vestra::sema {
 
 using detail::named_type_param_count;
+
+namespace {
+
+// A pattern that matches every value of its type: `_`, a binding, or a
+// tuple of such. (nullptr stands for an implied wildcard.)
+bool pattern_is_wild(const ast::Pattern* p) {
+    if (p == nullptr) {
+        return true;
+    }
+    switch (p->kind) {
+    case ast::NodeKind::WildcardPat:
+    case ast::NodeKind::BindPat:
+    case ast::NodeKind::IdentPat:
+        return true;
+    case ast::NodeKind::TuplePat:
+        for (const auto& e : static_cast<const ast::TuplePat&>(*p).elements) {
+            if (!pattern_is_wild(e.get())) {
+                return false;
+            }
+        }
+        return true;
+    default:
+        return false;
+    }
+}
+
+// `true` / `false` for a Bool literal pattern, else nullopt.
+std::optional<bool> bool_pattern(const ast::Pattern* p) {
+    if (p == nullptr || p->kind != ast::NodeKind::LiteralPat) {
+        return std::nullopt;
+    }
+    const auto& lp = static_cast<const ast::LiteralPat&>(*p);
+    if (lp.literal == nullptr || lp.literal->kind != ast::NodeKind::BoolLit) {
+        return std::nullopt;
+    }
+    return static_cast<const ast::BoolLit&>(*lp.literal).value;
+}
+
+std::string join_witness(const std::vector<std::string>& w, std::size_t from, std::size_t to) {
+    std::string out;
+    for (std::size_t i = from; i < to && i < w.size(); ++i) {
+        if (i > from) {
+            out += ", ";
+        }
+        out += w[i];
+    }
+    return out;
+}
+
+}  // namespace
+
+// §6 exhaustiveness: the classic usefulness check over a matrix of pattern
+// rows, one column per value still to be matched. Enum and Bool columns split
+// by constructor when some row names one; any other type is covered only by
+// wildcards. Returns a witness (one pattern spelling per column) that no row
+// matches, or nullopt when the rows cover every value.
+std::optional<std::vector<std::string>>
+Resolver::uncovered_patterns(std::vector<std::vector<const ast::Pattern*>> rows,
+                             const std::vector<TypePtr>& cols,
+                             int depth) {
+    // Expand or-patterns at the head into one row per alternative.
+    for (bool again = true; again;) {
+        again = false;
+        std::vector<std::vector<const ast::Pattern*>> next;
+        for (auto& r : rows) {
+            if (!r.empty() && r[0] != nullptr && r[0]->kind == ast::NodeKind::OrPat) {
+                for (const auto& alt : static_cast<const ast::OrPat&>(*r[0]).alternatives) {
+                    auto copy = r;
+                    copy[0] = alt.get();
+                    next.push_back(std::move(copy));
+                }
+                again = true;
+            } else {
+                next.push_back(std::move(r));
+            }
+        }
+        rows = std::move(next);
+    }
+    if (cols.empty()) {
+        if (rows.empty()) {
+            return std::vector<std::string>{};
+        }
+        return std::nullopt;
+    }
+    if (depth > 32) {
+        return std::nullopt;  // give up quietly rather than recurse forever
+    }
+    TypePtr t = cols[0];
+    std::vector<TypePtr> rest(cols.begin() + 1, cols.end());
+    auto tail = [](const std::vector<const ast::Pattern*>& r) {
+        return std::vector<const ast::Pattern*>(r.begin() + 1, r.end());
+    };
+    const ast::EnumDecl* ed = nullptr;
+    if (t != nullptr && t->kind() == TypeKind::Enum && t->nominal_decl() != nullptr
+        && t->nominal_decl()->kind == ast::NodeKind::Enum) {
+        ed = &static_cast<const ast::EnumDecl&>(*t->nominal_decl());
+    }
+    const bool is_bool = t != nullptr && t->kind() == TypeKind::Bool;
+    bool any_ctor = false;
+    for (const auto& r : rows) {
+        if (ed != nullptr && r[0] != nullptr && r[0]->kind == ast::NodeKind::EnumPat) {
+            any_ctor = true;
+        }
+        if (is_bool && bool_pattern(r[0]).has_value()) {
+            any_ctor = true;
+        }
+    }
+    if (any_ctor && ed != nullptr) {
+        for (const auto& c : ed->cases) {
+            const std::size_t arity = c.payload.size();
+            std::vector<TypePtr> sub;
+            for (const auto& pl : c.payload) {
+                sub.push_back(pl.second ? resolve_member_type_with_generics(ed->generics,
+                                                                            *pl.second,
+                                                                            t->parts())
+                                        : types_->error());
+            }
+            sub.insert(sub.end(), rest.begin(), rest.end());
+            std::vector<std::vector<const ast::Pattern*>> spec;
+            for (const auto& r : rows) {
+                std::vector<const ast::Pattern*> nr;
+                if (pattern_is_wild(r[0])) {
+                    nr.assign(arity, nullptr);
+                } else if (r[0]->kind == ast::NodeKind::EnumPat
+                           && static_cast<const ast::EnumPat&>(*r[0]).case_name == c.name) {
+                    const auto& ch = static_cast<const ast::EnumPat&>(*r[0]).children;
+                    if (ch.size() == arity) {
+                        for (const auto& x : ch) {
+                            nr.push_back(x.get());
+                        }
+                    } else {
+                        nr.assign(arity, nullptr);
+                    }
+                } else {
+                    continue;
+                }
+                auto t2 = tail(r);
+                nr.insert(nr.end(), t2.begin(), t2.end());
+                spec.push_back(std::move(nr));
+            }
+            if (auto w = uncovered_patterns(std::move(spec), sub, depth + 1)) {
+                std::string head = "." + c.name;
+                if (arity > 0) {
+                    head += "(" + join_witness(*w, 0, arity) + ")";
+                }
+                std::vector<std::string> out{head};
+                out.insert(out.end(), w->begin() + static_cast<std::ptrdiff_t>(arity), w->end());
+                return out;
+            }
+        }
+        return std::nullopt;
+    }
+    if (any_ctor && is_bool) {
+        for (bool v : {true, false}) {
+            std::vector<std::vector<const ast::Pattern*>> spec;
+            for (const auto& r : rows) {
+                auto b = bool_pattern(r[0]);
+                if (pattern_is_wild(r[0]) || (b.has_value() && *b == v)) {
+                    spec.push_back(tail(r));
+                }
+            }
+            if (auto w = uncovered_patterns(std::move(spec), rest, depth + 1)) {
+                std::vector<std::string> out{v ? "true" : "false"};
+                out.insert(out.end(), w->begin(), w->end());
+                return out;
+            }
+        }
+        return std::nullopt;
+    }
+    std::vector<std::vector<const ast::Pattern*>> def;
+    for (const auto& r : rows) {
+        if (pattern_is_wild(r[0])) {
+            def.push_back(tail(r));
+        }
+    }
+    if (auto w = uncovered_patterns(std::move(def), rest, depth + 1)) {
+        std::vector<std::string> out{"_"};
+        out.insert(out.end(), w->begin(), w->end());
+        return out;
+    }
+    return std::nullopt;
+}
 
 void Resolver::bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type, bool mutable_bindings) {
     if (value_type == nullptr || value_type->is_error()) {
@@ -166,38 +349,7 @@ TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
         && scrutinee_type->nominal_decl() != nullptr) {
         scrutinee_enum = &static_cast<const ast::EnumDecl&>(*scrutinee_type->nominal_decl());
     }
-    std::vector<bool> case_seen(scrutinee_enum ? scrutinee_enum->cases.size() : 0, false);
     bool saw_default = false;
-
-    // §17.7 enum-coverage walk: drain through OrPat alternatives so a
-    // `case .red | .green:` arm marks both cases as covered. Wildcard
-    // and unrelated patterns terminate the walk on this arm.
-    auto mark_enum_covered = [&](const ast::Pattern& p, auto& self) -> void {
-        if (scrutinee_enum == nullptr) {
-            return;
-        }
-        if (p.kind == ast::NodeKind::WildcardPat) {
-            for (auto&& s : case_seen) {
-                s = true;
-            }
-            return;
-        }
-        if (p.kind == ast::NodeKind::EnumPat) {
-            const auto& ep = static_cast<const ast::EnumPat&>(p);
-            for (std::size_t i = 0; i < scrutinee_enum->cases.size(); ++i) {
-                if (scrutinee_enum->cases[i].name == ep.case_name) {
-                    case_seen[i] = true;
-                    break;
-                }
-            }
-            return;
-        }
-        if (p.kind == ast::NodeKind::OrPat) {
-            for (const auto& alt : static_cast<const ast::OrPat&>(p).alternatives) {
-                self(*alt, self);
-            }
-        }
-    };
 
     // §8 dead-code arm detection. Two flavors of unreachability we
     // can pin at compile time:
@@ -228,6 +380,7 @@ TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
         }
     };
 
+    std::vector<std::vector<const ast::Pattern*>> cover_rows;
     TypePtr result_type = nullptr;
     for (const auto& arm : m.arms) {
         ScopeStack::Guard g(scopes_);
@@ -268,7 +421,10 @@ TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
             seen_catchall = true;
         } else if (arm.pattern) {
             check_pattern(*arm.pattern, scrutinee_type);
-            mark_enum_covered(*arm.pattern, mark_enum_covered);
+            // §6 a guarded arm covers nothing: its guard may fail.
+            if (!arm.guard) {
+                cover_rows.push_back({arm.pattern.get()});
+            }
             // A wildcard arm closes everything (acts as default).
             if (arm.pattern->kind == ast::NodeKind::WildcardPat) {
                 seen_catchall = true;
@@ -330,13 +486,66 @@ TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
     }
 
     // Exhaustiveness: when the scrutinee is an enum and there's no `default`,
-    // every case must be covered by at least one arm.
+    // every value of every case must be matched by some unguarded arm,
+    // through nested payload patterns. One diagnostic per case, naming the
+    // first unmatched shape (`p(.y)`), or just the case when no arm names it.
     if (scrutinee_enum != nullptr && !saw_default) {
-        for (std::size_t i = 0; i < scrutinee_enum->cases.size(); ++i) {
-            if (!case_seen[i]) {
+        for (const auto& c : scrutinee_enum->cases) {
+            const std::size_t arity = c.payload.size();
+            std::vector<TypePtr> sub;
+            for (const auto& pl : c.payload) {
+                sub.push_back(pl.second
+                                  ? resolve_member_type_with_generics(scrutinee_enum->generics,
+                                                                      *pl.second,
+                                                                      scrutinee_type->parts())
+                                  : types_->error());
+            }
+            std::vector<std::vector<const ast::Pattern*>> rows;
+            bool named = false;
+            std::vector<std::vector<const ast::Pattern*>> heads = cover_rows;
+            // Flatten top-level or-patterns.
+            for (bool again = true; again;) {
+                again = false;
+                std::vector<std::vector<const ast::Pattern*>> next;
+                for (auto& r : heads) {
+                    if (r[0] != nullptr && r[0]->kind == ast::NodeKind::OrPat) {
+                        for (const auto& alt : static_cast<const ast::OrPat&>(*r[0]).alternatives) {
+                            next.push_back({alt.get()});
+                        }
+                        again = true;
+                    } else {
+                        next.push_back(std::move(r));
+                    }
+                }
+                heads = std::move(next);
+            }
+            for (const auto& r : heads) {
+                if (pattern_is_wild(r[0])) {
+                    rows.emplace_back(arity, nullptr);
+                    named = true;
+                } else if (r[0]->kind == ast::NodeKind::EnumPat
+                           && static_cast<const ast::EnumPat&>(*r[0]).case_name == c.name) {
+                    const auto& ch = static_cast<const ast::EnumPat&>(*r[0]).children;
+                    std::vector<const ast::Pattern*> nr(arity, nullptr);
+                    if (ch.size() == arity) {
+                        for (std::size_t k = 0; k < arity; ++k) {
+                            nr[k] = ch[k].get();
+                        }
+                    }
+                    rows.push_back(std::move(nr));
+                    named = true;
+                }
+            }
+            if (!named) {
                 error_at(m.range,
-                         std::format("match is not exhaustive: case '{}' is not covered",
-                                     scrutinee_enum->cases[i].name));
+                         std::format("match is not exhaustive: case '{}' is not covered", c.name));
+                continue;
+            }
+            if (auto w = uncovered_patterns(std::move(rows), sub, 0)) {
+                error_at(m.range,
+                         std::format("match is not exhaustive: case '{}({})' is not covered",
+                                     c.name,
+                                     join_witness(*w, 0, w->size())));
             }
         }
     }

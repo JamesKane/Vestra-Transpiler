@@ -325,6 +325,12 @@ private:
     // AtomicTaggedPointer method call.
     void check_atomic_call(const ast::CallExpr& c);
 
+    // §6 exhaustiveness over a pattern matrix; see resolver_match.cpp.
+    std::optional<std::vector<std::string>>
+    uncovered_patterns(std::vector<std::vector<const ast::Pattern*>> rows,
+                       const std::vector<TypePtr>& cols,
+                       int depth);
+
     void check_generic_bounds(const std::vector<ast::GenericParam>& generics,
                               const std::unordered_map<std::string, TypePtr>& bindings,
                               diag::SourceRange range);

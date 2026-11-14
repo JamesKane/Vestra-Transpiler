@@ -112,8 +112,7 @@ Each gap has one of four kinds:
 | §6 | `embed` fields | missing (partial) | Memberwise init rejects the embed label ("not constructible (yet)", `resolver_call.cpp:1223`). The explicit `e.t.p` path fails. Ambiguous promoted names are not diagnosed. |
 | §6 | Opaque types inherit no operations | unsound | `==` between two values of an opaque `EntityId` is accepted. |
 | §6 | `@repr(wire)` byte order | missing | "@repr(wire) is not supported yet". |
-| §6 | Exhaustiveness of nested patterns | unsound | Leaving out `.p(.y)` is accepted. |
-| §6 | Guarded arms do not count toward coverage | unsound | `.a(let r) where r > 0` plus `.b` passes as exhaustive. |
+| §6 | Exhaustiveness beyond enum scrutinees | weaker | Checked only when the scrutinee is an enum (through nested enum, `Bool` and wildcard payload patterns). A match on an integer, `Bool`, tuple or optional with no `default` is not checked, and a tuple sub-pattern counts only when all its elements are wildcards. |
 | §6, §17.6 | Slice patterns and struct patterns | missing | "expected pattern". |
 | §17.6 | A bare identifier pattern matches an existing value | divergent | `case k:` binds a fresh `k`, which always matches. |
 | §6 | `match self` inside an enum method | divergent (bug) | "enum pattern '.a' used against non-enum type &lt;error&gt;". |

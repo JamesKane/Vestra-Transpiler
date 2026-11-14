@@ -1,0 +1,25 @@
+// §6 exhaustiveness through nested patterns: every value of every case is
+// matched by an unguarded arm (or-patterns, Bool literals, wildcards).
+
+enum Inner { case x  case y }
+enum Outer { case p(Inner)  case q(Int32)  case r(Bool, Inner) }
+
+func f(_ o: Outer) -> Int32 {
+    return match o {
+        case .p(.x) | .p(.y): 1
+        case .q(let n) where n > 0: n
+        case .q(_): 0
+        case .r(true, _): 2
+        case .r(false, .x): 3
+        case .r(false, .y): 4
+    }
+}
+
+func g(_ o: Outer) -> Int32 {
+    return match o {
+        case .p(.x): 1
+        default: 2
+    }
+}
+
+func main() -> Int32 { return f(Outer.q(1)) + g(Outer.p(Inner.y)) }

@@ -120,8 +120,8 @@ accepts. Ordered by how likely each is to let a wrong program through:
    admitted while the builtin `split` and `args()` return one; the decision is
    a lazy `split` iterator or tracking sources through the container).
 
-2. **Patterns:** exhaustiveness through nested patterns and guarded arms; a
-   bare identifier pattern matches an existing value (Gaps §6).
+2. **Patterns:** a bare identifier pattern matches an existing value (Gaps
+   §17.6).
 3. **Comptime purity:** no capabilities or runtime calls in `comptime`;
    every `@when` branch type-checked; `cfg` follows the build target, not the
    compiler's host, and `cfg.has` folds against `--target-features` (Gaps

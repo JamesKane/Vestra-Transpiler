@@ -6950,6 +6950,9 @@ struct TyEnv {
     var stName: Vec[String]     // global: statics ...
     var stAtomic: Vec[Bool]     // ... and whether each is an Atomic (the only writable kind)
     var stSpell: Vec[String]    // ... and its type spelling
+    var ecpEnum: Vec[String]    // global: per-payload-field rows — enum ...
+    var ecpCase: Vec[String]    // ... case ...
+    var ecpType: Vec[String]    // ... -> field type spelling, in order
     var esBad: Vec[String]      // §19.4 escape errors (printed after the flow passes, as the bootstrap's pass runs last)
     var esFn: String            // per-function: its name
     var esLocals: Vec[String]   // per-function: every let / var it declares
@@ -7023,9 +7026,39 @@ func tyRecordEnumDecl(_ env: inout TyEnv, _ name: String, _ cases: Vec[Nd], _ me
 
 func tyRecordCase(_ env: inout TyEnv, _ enumName: String, _ c: Nd) using Alloc {
     match c {
-        case .enumCase(let cn, let pay): tyPushCase(env, enumName, cn, pay.len())
+        case .enumCase(let cn, let pay): tyPushCaseAll(env, enumName, cn, pay)
         default: noop()
     }
+}
+
+func tyPushCaseAll(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ pay: Vec[Nd]) using Alloc {
+    tyPushCase(env, enumName, cn, pay.len())
+    var i: Int = 0
+    while i < pay.len() {
+        match pay.get(i) ?? Nd.wildcard {
+            case .payElem(let label, let ty): tyPushPay(env, enumName, cn, tyAnnSpelling(ty))
+            default: tyPushPay(env, enumName, cn, own(""))
+        }
+        i = i + 1
+    }
+}
+
+func tyPushPay(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ sp: String) using Alloc {
+    env.ecpEnum.push(own(enumName))
+    env.ecpCase.push(own(cn))
+    env.ecpType.push(sp)
+}
+
+func tyPayTypes(_ env: inout TyEnv, _ enumName: String, _ cn: String) using Alloc -> Vec[String] {
+    var out: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < env.ecpEnum.len() {
+        if streq(env.ecpEnum.get(i) ?? own(""), enumName) && streq(env.ecpCase.get(i) ?? own(""), cn) {
+            out.push(env.ecpType.get(i) ?? own(""))
+        }
+        i = i + 1
+    }
+    return out
 }
 
 func tyPushCase(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ arity: Int) using Alloc {
@@ -8373,92 +8406,398 @@ func tyArmDiffMsg(_ x: Str, _ y: Str) using Alloc -> String {
     return s
 }
 
-// When the scrutinee is a known enum and no arm is a catch-all (a `default` or a
-// `_` wildcard), every case must be covered by some arm's pattern, else
-// "match is not exhaustive: case '<c>' is not covered" — one per uncovered case,
-// in declaration order. Guards do not affect coverage (matching the resolver).
+// §6 when the scrutinee is a known enum and no arm is a `default`, every value
+// of every case must be matched by some unguarded arm, through nested payload
+// patterns: "match is not exhaustive: case '<c>' is not covered", or with the
+// first unmatched shape ('p(.y)'), one per case in declaration order. The
+// usefulness check runs over a matrix whose rows are `tupleP` nodes (one
+// pattern per column); enum and Bool columns split by constructor, any other
+// type is covered only by wildcards.
 func tyCheckExhaustive(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc {
     let st = tyInferBoxed(env, scrut)
     if !tyIsEnum(env, st) { return }
-    if tyHasCatchAll(arms) { return }
+    if tyHasDefault(arms) { return }
+    let heads = tyExpandOr(tyCoverRows(arms))
     var i: Int = 0
     while i < env.ecEnum.len() {
-        if let e = env.ecEnum.get(i) {
-            if streq(e, st) {
-                if let cn = env.ecName.get(i) {
-                    if !tyArmsCover(arms, cn) { env.bad.push(notExhaustiveMsg(cn)) }
-                }
-            }
+        if streq(env.ecEnum.get(i) ?? own(""), st) {
+            tyCheckCaseCovered(env, st, env.ecName.get(i) ?? own(""), heads)
         }
         i = i + 1
     }
 }
 
-func tyHasCatchAll(_ arms: Vec[Nd]) -> Bool {
+func tyCheckCaseCovered(_ env: inout TyEnv, _ st: String, _ cn: String, _ heads: Vec[Nd]) using Alloc {
+    let pt = tyPayTypes(env, st, cn)
+    var rows: Vec[Nd] = Vec.new()
+    var named: Bool = false
+    var i: Int = 0
+    while i < heads.len() {
+        let h = tyRowHead(heads.get(i) ?? Nd.wildcard)
+        if tyPatWild(h) {
+            rows.push(Nd.tupleP(tyWilds(pt.len())))
+            named = true
+        } else if streq(tyEnumPName(h), cn) {
+            rows.push(Nd.tupleP(tyEnumPKids(h, pt.len())))
+            named = true
+        }
+        i = i + 1
+    }
+    if !named {
+        env.bad.push(notExhaustiveMsg(cn))
+        return
+    }
+    let w = tyUncovered(env, rows, pt, 0)
+    if !tyIsCovered(w) {
+        var s: String = own(cn)
+        s.append("(")
+        s.append(tyJoinW(w, 0, w.len()))
+        s.append(")")
+        env.bad.push(notExhaustiveMsg(s))
+    }
+}
+
+func tyHasDefault(_ arms: Vec[Nd]) -> Bool {
     var i: Int = 0
     while i < arms.len() {
-        if tyArmIsCatchAll(arms.get(i) ?? Nd.wildcard) { return true }
+        if tyArmIsDefault(arms.get(i) ?? Nd.wildcard) { return true }
         i = i + 1
     }
     return false
 }
 
-func tyArmIsCatchAll(_ a: Nd) -> Bool {
+func tyArmIsDefault(_ a: Nd) -> Bool {
     return match a {
-        case .matchArm(let isDef, let pat, let guard, let body): tyDefaultOrWild(isDef, pat)
+        case .matchArm(let isDef, let pat, let guard, let body): isDef
         default: false
     }
 }
 
-func tyDefaultOrWild(_ isDef: Bool, _ pat: Vec[Nd]) -> Bool {
-    if isDef { return true }
-    if pat.len() == 0 { return false }
-    return tyPatIsWild(pat.get(0) ?? Nd.wildcard)
+// One single-column row per unguarded, non-default arm (a guard may fail).
+func tyCoverRows(_ arms: Vec[Nd]) using Alloc -> Vec[Nd] {
+    var out: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < arms.len() {
+        match arms.get(i) ?? Nd.wildcard {
+            case .matchArm(let isDef, let pat, let guard, let body): tyCoverRow(out, isDef, pat, guard)
+            default: noop()
+        }
+        i = i + 1
+    }
+    return out
 }
 
-func tyPatIsWild(_ p: Nd) -> Bool {
+func tyCoverRow(_ out: inout Vec[Nd], _ isDef: Bool, _ pat: Vec[Nd], _ guard: Vec[Nd]) using Alloc {
+    if isDef || guard.len() > 0 || pat.len() == 0 { return }
+    var row: Vec[Nd] = Vec.new()
+    row.push(pat.get(0) ?? Nd.wildcard)
+    out.push(Nd.tupleP(row))
+}
+
+func tyRowCells(_ r: Nd) using Alloc -> Vec[Nd] {
+    return match r {
+        case .tupleP(let xs): xs
+        default: Vec.new()
+    }
+}
+
+func tyRowHead(_ r: Nd) using Alloc -> Nd {
+    let xs = tyRowCells(r)
+    return xs.get(0) ?? Nd.wildcard
+}
+
+func tyRowTail(_ r: Nd) using Alloc -> Vec[Nd] {
+    let xs = tyRowCells(r)
+    var out: Vec[Nd] = Vec.new()
+    var i: Int = 1
+    while i < xs.len() {
+        out.push(xs.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    return out
+}
+
+func tyWilds(_ n: Int) using Alloc -> Vec[Nd] {
+    var out: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < n {
+        out.push(Nd.wildcard)
+        i = i + 1
+    }
+    return out
+}
+
+func tyAppendNds(_ out: inout Vec[Nd], _ xs: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < xs.len() {
+        out.push(xs.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+// A pattern matching every value: `_`, a binding, or a tuple of such.
+func tyPatWild(_ p: Nd) -> Bool {
     return match p {
         case .wildcard: true
+        case .identP(let n): true
+        case .bindP(let n): true
+        case .tupleP(let xs): tyAllWild(xs)
         default: false
     }
 }
 
-func tyArmsCover(_ arms: Vec[Nd], _ caseName: String) -> Bool {
+func tyAllWild(_ xs: Vec[Nd]) -> Bool {
     var i: Int = 0
-    while i < arms.len() {
-        if tyArmCovers(arms.get(i) ?? Nd.wildcard, caseName) { return true }
+    while i < xs.len() {
+        if !tyPatWild(xs.get(i) ?? Nd.wildcard) { return false }
         i = i + 1
     }
-    return false
+    return true
 }
 
-func tyArmCovers(_ a: Nd, _ caseName: String) -> Bool {
-    return match a {
-        case .matchArm(let isDef, let pat, let guard, let body): tyPatBoxedCovers(pat, caseName)
-        default: false
-    }
-}
-
-func tyPatBoxedCovers(_ pat: Vec[Nd], _ caseName: String) -> Bool {
-    if pat.len() == 0 { return false }
-    return tyPatCoversCase(pat.get(0) ?? Nd.wildcard, caseName)
-}
-
-func tyPatCoversCase(_ p: Nd, _ caseName: String) -> Bool {
+func tyEnumPName(_ p: Nd) using Alloc -> String {
     return match p {
-        case .enumP(let cn, let ch): streq(cn, caseName)
-        case .orP(let alts): tyAltsCover(alts, caseName)
+        case .enumP(let cn, let ch): own(cn)
+        default: own("")
+    }
+}
+
+func tyIsEnumP(_ p: Nd) -> Bool {
+    return match p {
+        case .enumP(let cn, let ch): true
         default: false
     }
 }
 
-func tyAltsCover(_ alts: Vec[Nd], _ caseName: String) -> Bool {
-    var i: Int = 0
-    while i < alts.len() {
-        if tyPatCoversCase(alts.get(i) ?? Nd.wildcard, caseName) { return true }
+// An enum pattern's children, or wildcards when it binds none (`case .x:`).
+func tyEnumPKids(_ p: Nd, _ arity: Int) using Alloc -> Vec[Nd] {
+    return match p {
+        case .enumP(let cn, let ch): tyKidsOrWild(ch, arity)
+        default: tyWilds(arity)
+    }
+}
+
+func tyKidsOrWild(_ ch: Vec[Nd], _ arity: Int) using Alloc -> Vec[Nd] {
+    if ch.len() == arity { return ch }
+    return tyWilds(arity)
+}
+
+// 1 / 0 for a `true` / `false` literal pattern, else -1.
+func tyBoolPat(_ p: Nd) -> Int {
+    return match p {
+        case .litP(let x): tyBoolLitOf(x)
+        default: -1
+    }
+}
+
+func tyBoolLitOf(_ x: Vec[Nd]) -> Int {
+    return match x.get(0) ?? Nd.wildcard {
+        case .boolLit(let v): tyBoolInt(v)
+        default: -1
+    }
+}
+
+func tyBoolInt(_ v: Bool) -> Int {
+    if v { return 1 }
+    return 0
+}
+
+func tyOrAlts(_ p: Nd) using Alloc -> Vec[Nd] {
+    return match p {
+        case .orP(let alts): alts
+        default: Vec.new()
+    }
+}
+
+// Expand or-patterns at each row's head into one row per alternative.
+func tyExpandOr(_ rows: Vec[Nd]) using Alloc -> Vec[Nd] {
+    var cur = rows
+    var again: Bool = true
+    while again {
+        again = false
+        var next: Vec[Nd] = Vec.new()
+        var i: Int = 0
+        while i < cur.len() {
+            let r = cur.get(i) ?? Nd.wildcard
+            let alts = tyOrAlts(tyRowHead(r))
+            if alts.len() > 0 {
+                again = true
+                var k: Int = 0
+                while k < alts.len() {
+                    var row: Vec[Nd] = Vec.new()
+                    row.push(alts.get(k) ?? Nd.wildcard)
+                    tyAppendNds(row, tyRowTail(r))
+                    next.push(Nd.tupleP(row))
+                    k = k + 1
+                }
+            } else {
+                next.push(r)
+            }
+            i = i + 1
+        }
+        cur = next
+    }
+    return cur
+}
+
+func tyCovered() using Alloc -> Vec[String] {
+    var out: Vec[String] = Vec.new()
+    out.push(own("#"))
+    return out
+}
+
+func tyIsCovered(_ w: Vec[String]) using Alloc -> Bool {
+    return w.len() == 1 && streq(w.get(0) ?? own(""), "#")
+}
+
+func tyJoinW(_ w: Vec[String], _ from: Int, _ to: Int) using Alloc -> String {
+    var s: String = ""
+    var i: Int = from
+    while i < to && i < w.len() {
+        if i > from { s.append(", ") }
+        s.append(w.get(i) ?? own(""))
         i = i + 1
     }
-    return false
+    return s
+}
+
+func tyStrTail(_ xs: Vec[String], _ from: Int) using Alloc -> Vec[String] {
+    var out: Vec[String] = Vec.new()
+    var i: Int = from
+    while i < xs.len() {
+        out.push(own(xs.get(i) ?? own("")))
+        i = i + 1
+    }
+    return out
+}
+
+// A witness (one spelling per column) no row matches, or tyCovered().
+func tyUncovered(_ env: inout TyEnv, _ rows0: Vec[Nd], _ cols: Vec[String], _ depth: Int) using Alloc -> Vec[String] {
+    let rows = tyExpandOr(rows0)
+    if cols.len() == 0 {
+        if rows.len() == 0 { var none: Vec[String] = Vec.new(); return none }
+        return tyCovered()
+    }
+    if depth > 32 { return tyCovered() }
+    let t = cols.get(0) ?? own("")
+    let rest = tyStrTail(cols, 1)
+    let isEnum = tyIsEnum(env, t)
+    let isBool = streq(t, "Bool")
+    var anyCtor: Bool = false
+    var i: Int = 0
+    while i < rows.len() {
+        let h = tyRowHead(rows.get(i) ?? Nd.wildcard)
+        if isEnum && tyIsEnumP(h) { anyCtor = true }
+        if isBool && tyBoolPat(h) >= 0 { anyCtor = true }
+        i = i + 1
+    }
+    if anyCtor && isEnum { return tyUncEnum(env, rows, t, rest, depth) }
+    if anyCtor && isBool { return tyUncBool(env, rows, rest, depth) }
+    var def: Vec[Nd] = Vec.new()
+    var j: Int = 0
+    while j < rows.len() {
+        let r = rows.get(j) ?? Nd.wildcard
+        if tyPatWild(tyRowHead(r)) { def.push(Nd.tupleP(tyRowTail(r))) }
+        j = j + 1
+    }
+    let w = tyUncovered(env, def, rest, depth + 1)
+    if tyIsCovered(w) { return w }
+    var out: Vec[String] = Vec.new()
+    out.push(own("_"))
+    var k: Int = 0
+    while k < w.len() {
+        out.push(own(w.get(k) ?? own("")))
+        k = k + 1
+    }
+    return out
+}
+
+func tyUncEnum(_ env: inout TyEnv, _ rows: Vec[Nd], _ t: String, _ rest: Vec[String], _ depth: Int) using Alloc -> Vec[String] {
+    var i: Int = 0
+    while i < env.ecEnum.len() {
+        if streq(env.ecEnum.get(i) ?? own(""), t) {
+            let w = tyUncCase(env, rows, t, env.ecName.get(i) ?? own(""), rest, depth)
+            if !tyIsCovered(w) { return w }
+        }
+        i = i + 1
+    }
+    return tyCovered()
+}
+
+func tyUncCase(_ env: inout TyEnv, _ rows: Vec[Nd], _ t: String, _ cn: String, _ rest: Vec[String], _ depth: Int) using Alloc -> Vec[String] {
+    let pt = tyPayTypes(env, t, cn)
+    let arity = pt.len()
+    var sub: Vec[String] = Vec.new()
+    var a: Int = 0
+    while a < pt.len() {
+        sub.push(own(pt.get(a) ?? own("")))
+        a = a + 1
+    }
+    var b: Int = 0
+    while b < rest.len() {
+        sub.push(own(rest.get(b) ?? own("")))
+        b = b + 1
+    }
+    var spec: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < rows.len() {
+        let r = rows.get(i) ?? Nd.wildcard
+        let h = tyRowHead(r)
+        if tyPatWild(h) {
+            var row = tyWilds(arity)
+            tyAppendNds(row, tyRowTail(r))
+            spec.push(Nd.tupleP(row))
+        } else if streq(tyEnumPName(h), cn) {
+            var row = tyEnumPKids(h, arity)
+            tyAppendNds(row, tyRowTail(r))
+            spec.push(Nd.tupleP(row))
+        }
+        i = i + 1
+    }
+    let w = tyUncovered(env, spec, sub, depth + 1)
+    if tyIsCovered(w) { return w }
+    var head: String = "."
+    head.append(cn)
+    if arity > 0 {
+        head.append("(")
+        head.append(tyJoinW(w, 0, arity))
+        head.append(")")
+    }
+    var out: Vec[String] = Vec.new()
+    out.push(head)
+    var k: Int = arity
+    while k < w.len() {
+        out.push(own(w.get(k) ?? own("")))
+        k = k + 1
+    }
+    return out
+}
+
+func tyUncBool(_ env: inout TyEnv, _ rows: Vec[Nd], _ rest: Vec[String], _ depth: Int) using Alloc -> Vec[String] {
+    var v: Int = 1
+    while v >= 0 {
+        var spec: Vec[Nd] = Vec.new()
+        var i: Int = 0
+        while i < rows.len() {
+            let r = rows.get(i) ?? Nd.wildcard
+            let h = tyRowHead(r)
+            if tyPatWild(h) || tyBoolPat(h) == v { spec.push(Nd.tupleP(tyRowTail(r))) }
+            i = i + 1
+        }
+        let w = tyUncovered(env, spec, rest, depth + 1)
+        if !tyIsCovered(w) {
+            var out: Vec[String] = Vec.new()
+            if v == 1 { out.push(own("true")) } else { out.push(own("false")) }
+            var k: Int = 0
+            while k < w.len() {
+                out.push(own(w.get(k) ?? own("")))
+                k = k + 1
+            }
+            return out
+        }
+        v = v - 1
+    }
+    return tyCovered()
 }
 
 func notExhaustiveMsg(_ caseName: String) using Alloc -> String {
@@ -10994,6 +11333,7 @@ func main() -> Int32 {
                                      mInout: Vec.new(), muName: Vec.new(), muFlag: Vec.new(),
                                      muKind: Vec.new(), muMarks: Vec.new(),
                                      stName: Vec.new(), stAtomic: Vec.new(), stSpell: Vec.new(),
+                                     ecpEnum: Vec.new(), ecpCase: Vec.new(), ecpType: Vec.new(),
                                      esBad: Vec.new(), esFn: own(""), esLocals: Vec.new(), esSinks: Vec.new(),
                                      esVName: Vec.new(), esVOrig: Vec.new(), esRaw: 0, esMmio: 0,
                                      esDepth: 0, esLocDepth: Vec.new(), esVDepth: Vec.new(),
