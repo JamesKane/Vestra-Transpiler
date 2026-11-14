@@ -37,11 +37,11 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 
 ## Current state
 
-- **1530 / 1530 tests pass** (`ctest --test-dir build/debug`), Debug build,
-  format-check clean. Of these, **240 are `e2e_selfhost`** (4 lexer, 11 parser,
-  74 sema, 147 codegen, 4 end-to-end demo).
-- Latest slice: `86c43cf` (codegen slice 75, for-loop element typing;
-  corpus burndown 21). **117 commits** carry the `selfhost:` prefix.
+- **1532 / 1532 tests pass** (`ctest --test-dir build/debug`), Debug build,
+  format-check clean. Of these, **242 are `e2e_selfhost`** (4 lexer, 11 parser,
+  74 sema, 149 codegen, 4 end-to-end demo).
+- Latest slice: `af2a689` (codegen slice 76, `@noinit` statics and untyped
+  consts; corpus burndown 22). **118 commits** carry the `selfhost:` prefix.
 - **Corpus burndown: 97 of 150 examples byte-identical, 1204 divergent lines**
   (about 720 of them parked by design or in practice, so about 485 live; see
   the ranking below). The baseline when the burndown started was 11 examples
@@ -60,7 +60,7 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
     generics tracking (unknown-type, is-not-generic), all match families
     (guard-Bool, exhaustiveness, arm-type, pattern checks), and multi-file
     modules (import resolution, qualified member + type).
-  - **Codegen: 75 slices; the close-out roadmap is complete and the corpus
+  - **Codegen: 76 slices; the close-out roadmap is complete and the corpus
     burndown is active.** See "Where to pick up" below.
 
 ## Where to pick up: codegen
@@ -81,9 +81,10 @@ byte-for-byte vs `vestra build`:
 The completion standard is the whole `examples/` corpus byte-identical, the same
 bar the lexer and parser already met. **97 of 150** examples are there;
 **1204 divergent lines** remain, of which about **720 are parked** (by design or
-in practice; see the ranking). Family #1 (loop-element typing) shipped as slice 75. **Start with family
-#2 in the table below** (global without initializer), then #3 and #4;
-together they could reach about 105 identical. First re-establish the baseline, since it is also
+in practice; see the ranking). Families #1 (loop-element typing, slice 75) and #2 (`@noinit` globals,
+slice 76) have shipped. **Start with family #3 in the table below**
+(or-patterns over enum cases), then #4; together they could reach about
+105 identical. First re-establish the baseline, since it is also
 the regression check:
 
 ```
@@ -107,7 +108,7 @@ example totals, "flips" the examples a family would make identical.
 | # | Family | Examples (lines) | Flips | Effort |
 |---|---|---|---|---|
 | 1 | ~~**Loop-element / receiver typing**~~ DONE in slice 75: a `for` element or iterable is untyped, so `.len()` / `.isDigit()` / `.split()` / `.toInt()` miss the §18.5 builtin path | `tokenize_demo` 4, `string_split_demo` 4, `hashmap_iter_demo` 4, `selfhost_demo` 2 | 4 | small |
-| 2 | **Global without initializer** emits `T x = ;` instead of `inline T x;` | `padded`, `per_cpu`, `per_cpu_extras`, `link_attrs` (1 to 2 lines each) | 0 alone | tiny; unblocks 5 and 6 |
+| 2 | ~~**Global without initializer**~~ DONE in slice 76 emits `T x = ;` instead of `inline T x;` | `padded`, `per_cpu`, `per_cpu_extras`, `link_attrs` (1 to 2 lines each) | 0 alone | tiny; unblocks 5 and 6 |
 | 3 | **Or-patterns over enum cases** (`case .red, .green:` as stacked `case` labels; `case .a(let n), .b(let n)` in a visit) | `match` 8, `match_patterns` 4 | 2 | small |
 | 4 | **Cheap one-offs**: sink arg of a struct not moved; `requires` bounds; typed `with x = e` binding; if-let as a value; `?.` through an optional field (`and_then`); a function name as a value (`&f`) | `ownership` 2, `generic_bounds` 2, `with_binding` 4, `optional` 4, `optchain` 6, `fn_ptr_table` 6 | up to 6 | small each |
 | 5 | **Attributes** (`@naked`, `@section`, `@used`, `@weak`, `@stack_protector`, `@packed` / `@align` / bitfields, asm symbol names). The parser SKIPS them (`skipAttributes`), so this starts with capturing them on `funcD` / `structD` | `stack_protector` 4, `boot_chain` 4, `interrupt_handler` 8, `layout` 8, `link_attrs` 14, `mmio_union` 16, `vec_table` 18 | 5 to 7 | medium |
@@ -167,7 +168,7 @@ generated output directly over reading the `<`/`>` markers.
 
 ### What codegen covers
 
-Seventy-five slices; the close-out roadmap is complete and the corpus burndown
+Seventy-six slices; the close-out roadmap is complete and the corpus burndown
 is active. The per-slice engineering log — every lowering, its bootstrap source
 line, and its gotchas — is in the `project_dogfood_compiler.md` memory file.
 The capability summary:
