@@ -5204,7 +5204,7 @@ func tyCheckConst(_ env: inout TyEnv, _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     let ann = tyAnnSpelling(ty)
     if streq(ann, "") { return }
     let vt = tyInferBoxed(env, v)
-    if !tyAssignable(vt, ann) { env.bad.push(tyConstMsg(vt, ann)) }
+    if !tyFits(vt, v, ann) { env.bad.push(tyConstMsg(vt, ann)) }
 }
 
 // ----- statement / expression walk (find every let/var, check initializers) -
@@ -5553,7 +5553,7 @@ func tyCtorArgLabeled(_ env: inout TyEnv, _ structName: String, _ idx: Int, _ la
     if !tyHasField(env, structName, label) { env.bad.push(tyNoFieldMsg(structName, label)); return }
     let ft = tyFieldType(env, structName, label)
     let at = tyInferBoxed(env, val)
-    if !tyAssignable(at, ft) { env.bad.push(tyFieldMsg(label, ft, at)) }
+    if !tyFits(at, val, ft) { env.bad.push(tyFieldMsg(label, ft, at)) }
     seen.push(label)
 }
 
@@ -5596,7 +5596,7 @@ func tyCheckArg(_ env: inout TyEnv, _ fname: String, _ idx: Int, _ a: Nd) using 
 func tyCheckArgVal(_ env: inout TyEnv, _ fname: String, _ idx: Int, _ val: Vec[Nd]) using Alloc {
     let at = tyInferBoxed(env, val)
     let pt = tyParamType(env, fname, idx)
-    if !tyAssignable(at, pt) { env.bad.push(tyArgMsg(idx + 1, at, pt)) }
+    if !tyFits(at, val, pt) { env.bad.push(tyArgMsg(idx + 1, at, pt)) }
 }
 
 func tyIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc {
@@ -5724,7 +5724,7 @@ func tyLet(_ env: inout TyEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) usin
     let ann = tyAnnSpelling(ty)
     if !streq(ann, "") {
         let vt = tyInferBoxed(env, v)
-        if !tyAssignable(vt, ann) { env.bad.push(tyInitMsg(vt, ann)) }
+        if !tyFits(vt, v, ann) { env.bad.push(tyInitMsg(vt, ann)) }
     }
     tyBoxed(env, v)
     tyRegisterPat(env, pat, ty)
@@ -5739,7 +5739,7 @@ func tyAssign(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     let lt = tyInferBoxed(env, t)
     let rt = tyInferBoxed(env, v)
     if streq(lt, "") || streq(rt, "") { return }
-    if !tyAssignable(rt, lt) { env.bad.push(tyAssignMsg(rt, lt)) }
+    if !tyFits(rt, v, lt) { env.bad.push(tyAssignMsg(rt, lt)) }
 }
 
 func tyAssignMsg(_ from: String, _ to: String) using Alloc -> String {
@@ -5757,7 +5757,7 @@ func tyRet(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc {
     if streq(env.curRet, "") { return }
     var rt: String = own("Unit")
     if v.len() > 0 { rt = tyInferBoxed(env, v) }
-    if !tyAssignable(rt, env.curRet) { env.bad.push(tyReturnMsg(rt, env.curRet)) }
+    if !tyFits(rt, v, env.curRet) { env.bad.push(tyReturnMsg(rt, env.curRet)) }
 }
 
 func tyWith(_ env: inout TyEnv, _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc {
@@ -5825,12 +5825,15 @@ func tyInferVecLit(_ env: inout TyEnv, _ elems: Vec[Nd]) using Alloc -> String {
 // unknown (arrays spell empty here, and non-indexables type as unknown anyway).
 func tyInferIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc -> String {
     let bt = tyInferBoxed(env, base)
+    if tyStartsWith(bt, "[") { return tyArrayElem(bt) }
     if tyIsIndexable(bt) { return tyBracketInner(bt) }
     return own("")
 }
 
+// A fixed array `[N]T` is indexable too (the bootstrap's resolver).
 func tyIsIndexable(_ s: String) -> Bool {
     return tyStartsWith(s, "Vec[") || tyStartsWith(s, "Span[") || tyStartsWith(s, "MutSpan[")
+        || tyStartsWith(s, "[")
 }
 
 func tyStartsWith(_ s: String, _ prefix: Str) -> Bool {
@@ -6195,6 +6198,58 @@ func tyOptSpelling(_ inner: Vec[Nd]) using Alloc -> String {
 }
 
 // ----- assignability --------------------------------------------------------
+// Does expression `e`, of inferred type `t`, fit where `to` is expected? The
+// bootstrap types a number literal against the expected type, so `1` fits a
+// UInt8 and `[[1, 2], [3, 4]]` fits a `[2][2]UInt8`; here a literal infers as
+// `Int`, so a literal (or an array literal of them) is let through by shape.
+func tyFits(_ t: String, _ e: Vec[Nd], _ to: String) using Alloc -> Bool {
+    if tyAssignable(t, to) { return true }
+    return tyLitFits(e, to)
+}
+
+func tyLitFits(_ e: Vec[Nd], _ to: String) using Alloc -> Bool {
+    if tyIsNumLitTree(e) {
+        if tyHasFloatLit(e) { return streq(to, "Float32") || streq(to, "Float64") }
+        return tyIsInt(to)   // an integer literal doesn't become a float
+    }
+    if let n = e.get(0) {
+        return match n {
+            case .vecLit(let xs): tyArrayLitFits(xs, to)
+            case .paren(let x): tyLitFits(x, to)
+            default: false
+        }
+    }
+    return false
+}
+
+// `[a, b, ...]` against `[N]T`: the count matches and every element fits T.
+func tyArrayLitFits(_ xs: Vec[Nd], _ to: String) using Alloc -> Bool {
+    if !tyIsArray(to) { return false }
+    if !streq(tyArrayCount(to), intToStr(xs.len())) { return false }
+    let et = tyArrayElem(to)
+    var i: Int = 0
+    while i < xs.len() {
+        var one: Vec[Nd] = Vec.new()
+        one.push(xs.get(i) ?? Nd.wildcard)
+        if !tyLitFits(one, et) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+func tyHasFloatLit(_ e: Vec[Nd]) -> Bool {
+    if let n = e.get(0) {
+        return match n {
+            case .floatLit(let t): true
+            case .paren(let x): tyHasFloatLit(x)
+            case .unary(let op, let x): tyHasFloatLit(x)
+            case .binary(let op, let a, let b): tyHasFloatLit(a) || tyHasFloatLit(b)
+            default: false
+        }
+    }
+    return false
+}
+
 func tyAssignable(_ from: String, _ to: String) using Alloc -> Bool {
     if streq(from, "") || streq(to, "") { return true }   // unknown: don't pile on
     if streq(from, to) { return true }
