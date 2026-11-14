@@ -1,0 +1,35 @@
+// A free-function argument bound to a `sink` parameter always arrives as an
+// rvalue: every one is wrapped in `std::move(...)`, whatever its shape (a
+// copyable struct lvalue, a call, a construction, a scalar lvalue, a
+// literal, an expression, a sink parameter passed on, an owned String).
+struct Buf {
+    var n: Int32
+}
+
+func mk(_ n: Int32) -> Buf {
+    return Buf(n: n)
+}
+
+func eat(_ b: sink Buf) -> Int32 {
+    return b.n
+}
+
+func eatI(_ x: sink Int32) -> Int32 {
+    return x
+}
+
+func eatS(_ s: sink String) -> Int {
+    return s.len()
+}
+
+func run(_ q: sink Buf) -> Int32 {
+    let b = mk(1)
+    let i: Int32 = 5
+    return eat(b) + eat(mk(2)) + eat(Buf(n: 3)) + eatI(i) + eatI(4) + eatI(i + 1) + eat(q)
+}
+
+func owned() using Alloc -> Int {
+    var s: String = String.new()
+    s.append("abc")
+    return eatS(s)
+}

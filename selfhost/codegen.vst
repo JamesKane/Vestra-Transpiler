@@ -10005,7 +10005,22 @@ func emitCallArg(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int, _ a
     }
 }
 
+// A free-function argument bound to a SINK parameter always arrives as an
+// rvalue: the bootstrap wraps every one in `std::move(...)`, prvalues and
+// copyable lvalues included (`std::move` of a temporary is harmless). A
+// method's sink parameter is not wrapped (the bootstrap resolves only a plain
+// callee to its FuncDecl).
 func emitCallArgVal(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int, _ val: Vec[Nd]) using Alloc, Log {
+    var sinkArg: Bool = false
+    if streq(owner, "") && !streq(fname, "") {
+        sinkArg = streq(tyParamMode(env, fname, idx), "sink ")
+    }
+    if sinkArg { print("std::move(") }
+    emitCallArgInner(env, owner, fname, idx, val)
+    if sinkArg { print(")") }
+}
+
+func emitCallArgInner(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int, _ val: Vec[Nd]) using Alloc, Log {
     if valIsClosure(val) && !streq(fname, "") {
         let tn = callArgTypeNode(env, owner, fname, idx)
         if nodeIsFnTy(tn) { emitClosureArgTy(env, tn, val); return }
@@ -10022,18 +10037,6 @@ func emitCallArgVal(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int, 
             return
         }
     }
-    // A move-only lvalue flowing into a SINK parameter moves: `consume(s)` ->
-    // `consume(std::move(s))`. (Prvalues — literals, calls, constructions —
-    // already bind as rvalues and are not wrapped.)
-    if streq(owner, "") && !streq(fname, "") {
-        let mode = tyParamMode(env, fname, idx)
-        if streq(mode, "sink ") && isMovableLvalue(env, val) {
-            print("std::move(")
-            emitBoxed(env, val)
-            print(")")
-            return
-        }
-    }
     let to = callArgTypeSpelling(env, owner, fname, idx)
     if tryEmitLeadingDot(env, to, val) { return }
     let from = tyInferBoxed(env, val)
@@ -10045,31 +10048,6 @@ func nodeIsNamedGen(_ tn: Nd) -> Bool {
         case .named(let p, let hasG, let args): hasG
         default: false
     }
-}
-
-func isMovableLvalue(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc -> Bool {
-    if !valIsLvalue(v) { return false }
-    let t = tyInferBoxed(env, v)
-    return isMoveOnlySpelling(t)
-}
-
-func valIsLvalue(_ v: Vec[Nd]) -> Bool {
-    if v.len() == 0 { return false }
-    return match v.get(0) ?? Nd.wildcard {
-        case .ident(let n): true
-        case .member(let b, let n, let c): true
-        case .index(let b, let idxs): true
-        default: false
-    }
-}
-
-// The owned containers and strings move; scalars, Str views, and unknown
-// types do not. (User nominals are conservatively NOT moved here — the
-// bootstrap's move-only tracking is finer-grained than the spellings vgen
-// carries.)
-func isMoveOnlySpelling(_ t: String) -> Bool {
-    if streq(t, "String") { return true }
-    return tyStartsWith(t, "Vec[") || tyStartsWith(t, "HashMap[") || tyStartsWith(t, "Box[")
 }
 
 func callArgTypeSpelling(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int) using Alloc -> String {
