@@ -660,6 +660,13 @@ void Resolver::check_func(const ast::FuncDecl& f) {
     do_catch_infer_stack_.clear();
 
     check_naked_body(f);
+    const auto* prev_func = current_func_;
+    current_func_ = &f;
+    struct FuncRestore {
+        Resolver* self;
+        const ast::FuncDecl* prev;
+        ~FuncRestore() { self->current_func_ = prev; }
+    } restore_func{this, prev_func};
 
     // The body is always a BlockExpr; pass the expected result as the context.
     TypePtr body_type = types_->unit();
@@ -1174,6 +1181,29 @@ void Resolver::check_stmt(const ast::Stmt& s) {
         break;
     case ast::NodeKind::AssignStmt: {
         const auto& a = static_cast<const ast::AssignStmt&>(s);
+        // §5 a plain method reads its receiver; only an `inout func` may
+        // assign through `self` (codegen makes a plain method `const`).
+        if (current_func_ != nullptr && current_func_->recv_mode == ast::FuncDecl::RecvMode::None) {
+            const ast::Expr* root = a.target.get();
+            while (root != nullptr
+                   && (root->kind == ast::NodeKind::MemberExpr || root->kind == ast::NodeKind::IndexExpr
+                       || root->kind == ast::NodeKind::ParenExpr)) {
+                if (root->kind == ast::NodeKind::MemberExpr) {
+                    root = static_cast<const ast::MemberExpr&>(*root).base.get();
+                } else if (root->kind == ast::NodeKind::IndexExpr) {
+                    root = static_cast<const ast::IndexExpr&>(*root).base.get();
+                } else {
+                    root = static_cast<const ast::ParenExpr&>(*root).inner.get();
+                }
+            }
+            if (root != nullptr && root->kind == ast::NodeKind::SelfExpr) {
+                error_at(a.range,
+                         std::format("'{}' only reads its receiver, so it can't assign to `self`; "
+                                     "declare it `inout func {}` to mutate it",
+                                     current_func_->name,
+                                     current_func_->name));
+            }
+        }
         auto lhs = check_expr(*a.target);
         // Pass the target type as the expected type for the rhs so an
         // int literal (`i + 1`) adapts to the slot width (Int32 vs Int)

@@ -68,6 +68,14 @@ private:
     void
     emit_unit_throws_return(std::ostream& os, const ast::FuncDecl& f, const ast::BlockExpr& blk);
     static bool is_unit_result(const ast::FuncDecl& f);
+    // §A12 a closure written where a function type is expected (a `let`
+    // annotated with one, or an argument to a function-typed parameter)
+    // becomes a C function pointer: a capture-free `[]` lambda with the
+    // pointer's parameter types. Set just before emitting such a closure.
+    bool closure_to_fn_ptr_ = false;
+    [[nodiscard]] bool closure_captures(const ast::ClosureExpr& cx) const;
+    // The Vestra function a call resolves to (free function or struct method).
+    [[nodiscard]] const ast::FuncDecl* callee_decl(const ast::CallExpr& c) const;
     // §19.6 `if let x = place` over a linear payload borrows the place's
     // value: x binds by reference instead of copying the Optional (F17).
     [[nodiscard]] bool if_let_borrows(const ast::IfExpr& i) const;

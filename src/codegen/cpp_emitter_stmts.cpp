@@ -151,7 +151,10 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         }
         os << " = ";
         if (l.value) {
+            closure_to_fn_ptr_ = l.type != nullptr && l.type->kind == ast::NodeKind::FunctionType
+                                 && l.value->kind == ast::NodeKind::ClosureExpr;
             emit_value(os, *l.value);  // §10 move a move-only lvalue initializer
+            closure_to_fn_ptr_ = false;
         }
         os << ";\n";
         break;

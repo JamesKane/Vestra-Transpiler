@@ -10,7 +10,7 @@
 struct CountDown {
     var n: Int32
 
-    func next() -> Int32? {
+    inout func next() -> Int32? {
         if self.n <= 0 {
             return nil
         }

@@ -173,6 +173,9 @@ private:
     // ---- pass 2: resolve bodies ------------------------------------------
     void check_decl(const ast::Decl& d);
     void check_func(const ast::FuncDecl& f);
+    // The function whose body is being checked (a method's receiver mode
+    // decides whether it may assign through `self`).
+    const ast::FuncDecl* current_func_ = nullptr;
     // §5 record this unit's struct-field / enum-payload types in the shared
     // arena for importers (TypeArena::record_member_type).
     void record_member_types();

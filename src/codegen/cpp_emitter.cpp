@@ -1013,6 +1013,10 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
             os << ", ";
             emit_type(os, *f.effects.throws_type);
             os << ">";
+        } else if (f.result && f.result->kind == ast::NodeKind::FunctionType && !f.is_async) {
+            // §A12 a function returning a function pointer: C++ can only spell
+            // that as a trailing return type (`auto f() -> R(*)(A)`).
+            os << "auto";
         } else if (f.result) {
             emit_type(os, *f.result);
         } else {
@@ -1106,6 +1110,11 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
             }
         }
         os << ")";
+        if (f.result && f.result->kind == ast::NodeKind::FunctionType && !f.is_async
+            && !f.effects.throws_type) {
+            os << " -> ";
+            emit_type(os, *f.result);
+        }
         // §A1 (§6.7) @symbol: GCC / Clang accept the asm-label
         // trailer on a function *declaration* — after the closing
         // paren, before the `;`. A function *definition* (signature
@@ -1276,6 +1285,161 @@ bool CppEmitter::is_unit_typed(const ast::Expr& e) const {
     return t != nullptr && t->kind() == sema::TypeKind::Unit;
 }
 
+const ast::FuncDecl* CppEmitter::callee_decl(const ast::CallExpr& c) const {
+    if (resolution_ == nullptr) {
+        return nullptr;
+    }
+    const auto* sym = resolution_->symbol_of(c.callee.get());
+    if (sym != nullptr && sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Func) {
+        return static_cast<const ast::FuncDecl*>(sym->decl);
+    }
+    if (c.callee->kind != ast::NodeKind::MemberExpr) {
+        return nullptr;
+    }
+    const auto& m = static_cast<const ast::MemberExpr&>(*c.callee);
+    auto bt = resolution_->type_of(m.base.get());
+    if (bt == nullptr || bt->kind() != sema::TypeKind::Struct || bt->nominal_decl() == nullptr
+        || bt->nominal_decl()->kind != ast::NodeKind::Struct) {
+        return nullptr;
+    }
+    for (const auto& md : static_cast<const ast::StructDecl&>(*bt->nominal_decl()).methods) {
+        if (md->kind == ast::NodeKind::Func
+            && static_cast<const ast::FuncDecl&>(*md).name == m.member) {
+            return static_cast<const ast::FuncDecl*>(md.get());
+        }
+    }
+    return nullptr;
+}
+
+namespace {
+
+// Does any identifier under `n` resolve to a local or parameter defined
+// outside [lo, hi) (the closure's own source)?
+bool refers_outside(const ast::Node& n, const sema::Resolution& r, const diag::SourceRange& span);
+
+bool refers_outside_expr(const ast::Expr* e, const sema::Resolution& r, const diag::SourceRange& span) {
+    return e != nullptr && refers_outside(*e, r, span);
+}
+
+bool refers_outside(const ast::Node& n, const sema::Resolution& r, const diag::SourceRange& span) {
+    auto x = [&](const ast::Expr* e) { return refers_outside_expr(e, r, span); };
+    switch (n.kind) {
+    case ast::NodeKind::IdentExpr: {
+        const auto* sym = r.symbol_of(static_cast<const ast::Expr*>(&n));
+        if (sym == nullptr
+            || (sym->kind != sema::SymbolKind::Local && sym->kind != sema::SymbolKind::Parameter)) {
+            return false;
+        }
+        const auto d = sym->definition_range.begin;
+        return d.file != span.begin.file || d.offset < span.begin.offset
+               || d.offset >= span.begin.offset + span.length;
+    }
+    case ast::NodeKind::SelfExpr:
+        return true;
+    case ast::NodeKind::ParenExpr:
+        return x(static_cast<const ast::ParenExpr&>(n).inner.get());
+    case ast::NodeKind::UnaryExpr:
+        return x(static_cast<const ast::UnaryExpr&>(n).operand.get());
+    case ast::NodeKind::BinaryExpr: {
+        const auto& b = static_cast<const ast::BinaryExpr&>(n);
+        return x(b.lhs.get()) || x(b.rhs.get());
+    }
+    case ast::NodeKind::MemberExpr:
+        return x(static_cast<const ast::MemberExpr&>(n).base.get());
+    case ast::NodeKind::IndexExpr: {
+        const auto& ix = static_cast<const ast::IndexExpr&>(n);
+        if (x(ix.base.get())) {
+            return true;
+        }
+        for (const auto& i : ix.indices) {
+            if (x(i.get())) {
+                return true;
+            }
+        }
+        return false;
+    }
+    case ast::NodeKind::CallExpr: {
+        const auto& c = static_cast<const ast::CallExpr&>(n);
+        if (x(c.callee.get())) {
+            return true;
+        }
+        for (const auto& a : c.args) {
+            if (x(a.value.get())) {
+                return true;
+            }
+        }
+        return false;
+    }
+    case ast::NodeKind::IfExpr: {
+        const auto& i = static_cast<const ast::IfExpr&>(n);
+        return x(i.cond.get()) || x(i.let_init.get()) || x(i.then_branch.get())
+               || x(i.else_branch.get());
+    }
+    case ast::NodeKind::BlockExpr:
+        for (const auto& s : static_cast<const ast::BlockExpr&>(n).stmts) {
+            if (refers_outside(*s, r, span)) {
+                return true;
+            }
+        }
+        return false;
+    case ast::NodeKind::ExprStmt:
+        return x(static_cast<const ast::ExprStmt&>(n).expr.get());
+    case ast::NodeKind::LetStmt:
+        return x(static_cast<const ast::LetStmt&>(n).value.get());
+    case ast::NodeKind::VarStmt:
+        return x(static_cast<const ast::VarStmt&>(n).value.get());
+    case ast::NodeKind::ReturnStmt:
+        return x(static_cast<const ast::ReturnStmt&>(n).value.get());
+    case ast::NodeKind::AssignStmt: {
+        const auto& a = static_cast<const ast::AssignStmt&>(n);
+        return x(a.target.get()) || x(a.value.get());
+    }
+    case ast::NodeKind::WhileStmt: {
+        const auto& w = static_cast<const ast::WhileStmt&>(n);
+        return x(w.cond.get()) || x(w.body.get());
+    }
+    case ast::NodeKind::ForStmt: {
+        const auto& f = static_cast<const ast::ForStmt&>(n);
+        return x(f.iter.get()) || x(f.body.get());
+    }
+    case ast::NodeKind::MatchExpr: {
+        const auto& m = static_cast<const ast::MatchExpr&>(n);
+        if (x(m.scrutinee.get())) {
+            return true;
+        }
+        for (const auto& arm : m.arms) {
+            if (x(arm.guard.get()) || x(arm.body.get())) {
+                return true;
+            }
+        }
+        return false;
+    }
+    case ast::NodeKind::ClosureExpr:
+        for (const auto& s : static_cast<const ast::ClosureExpr&>(n).body) {
+            if (refers_outside(*s, r, span)) {
+                return true;
+            }
+        }
+        return false;
+    default:
+        return false;
+    }
+}
+
+}  // namespace
+
+bool CppEmitter::closure_captures(const ast::ClosureExpr& cx) const {
+    if (resolution_ == nullptr) {
+        return false;
+    }
+    for (const auto& s : cx.body) {
+        if (refers_outside(*s, *resolution_, cx.range)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool CppEmitter::if_let_borrows(const ast::IfExpr& i) const {
     if (resolution_ == nullptr || i.let_init == nullptr) {
         return false;
@@ -1411,12 +1575,38 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
             continue;
         }
         const auto& fn = static_cast<const ast::FuncDecl&>(*m);
+        // §7 a generic method is a member template.
+        bool any_generic = false;
+        for (const auto& g : fn.generics) {
+            if (g.name.empty()) {
+                continue;
+            }
+            if (!any_generic) {
+                write_indent(hdr, 1);
+                hdr << "template <";
+            } else {
+                hdr << ", ";
+            }
+            any_generic = true;
+            hdr << (g.is_const ? "std::size_t " : "class ") << g.name;
+        }
+        if (any_generic) {
+            hdr << ">\n";
+        }
         write_indent(hdr, 1);
         hdr << "[[nodiscard]] ";
+        // §11 an async method is a coroutine returning Task<R>, like an async
+        // free function.
+        if (fn.is_async) {
+            hdr << "__vstr::Task<";
+        }
         if (fn.result) {
             emit_type(hdr, *fn.result);
         } else {
             hdr << "void";
+        }
+        if (fn.is_async) {
+            hdr << ">";
         }
         hdr << " " << fn.name << "(";
         for (std::size_t i = 0; i < fn.params.size(); ++i) {
@@ -1466,9 +1656,32 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
                 break;
             }
         }
-        hdr << ") ";
+        // §5 a plain method reads its receiver: `const`, so it can be called
+        // on a `read` value. `inout func` mutates it; `sink func` consumes it.
+        hdr << (fn.recv_mode == ast::FuncDecl::RecvMode::None ? ") const " : ") ");
         if (fn.body && fn.body->kind == ast::NodeKind::BlockExpr) {
-            emit_block(hdr, static_cast<const ast::BlockExpr&>(*fn.body), 1);
+            const auto& blk = static_cast<const ast::BlockExpr&>(*fn.body);
+            if (fn.is_async) {
+                // Returns in the body lower to co_return; a void coroutine
+                // still needs one to be a coroutine.
+                const bool prev_async = current_func_is_async_;
+                current_func_is_async_ = true;
+                hdr << "{\n";
+                for (const auto& st : blk.stmts) {
+                    emit_stmt(hdr, *st, 2);
+                }
+                const bool ends_in_return =
+                    !blk.stmts.empty() && blk.stmts.back()->kind == ast::NodeKind::ReturnStmt;
+                if (fn.result == nullptr && !ends_in_return) {
+                    write_indent(hdr, 2);
+                    hdr << "co_return;\n";
+                }
+                write_indent(hdr, 1);
+                hdr << "}";
+                current_func_is_async_ = prev_async;
+            } else {
+                emit_block(hdr, blk, 1);
+            }
         } else {
             hdr << "{}";
         }
@@ -3648,13 +3861,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // Recover the callee's parameter modes so we can wrap sink arguments
         // in std::move(). If the callee resolves to a Vestra func declaration,
         // use its params; otherwise treat every param as `read` (the default).
-        const ast::FuncDecl* fn = nullptr;
-        if (resolution_ != nullptr) {
-            const auto* sym = resolution_->symbol_of(c.callee.get());
-            if (sym != nullptr && sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Func) {
-                fn = static_cast<const ast::FuncDecl*>(sym->decl);
-            }
-        }
+        const ast::FuncDecl* fn = callee_decl(c);
         emit_expr(os, *c.callee);
         os << "(";
         for (std::size_t i = 0; i < c.args.size(); ++i) {
@@ -3663,6 +3870,10 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             }
             const bool is_sink = fn != nullptr && i < fn->params.size()
                                  && fn->params[i].mode == ast::ParamMode::Sink;
+            closure_to_fn_ptr_ = fn != nullptr && i < fn->params.size()
+                                 && fn->params[i].type != nullptr
+                                 && fn->params[i].type->kind == ast::NodeKind::FunctionType
+                                 && c.args[i].value->kind == ast::NodeKind::ClosureExpr;
             // For a sink param, the value must arrive as an rvalue. The
             // simplest correct lowering: always std::move at the call site.
             // (`std::move(temporary)` is harmless — it just stays an rvalue.)
@@ -4056,14 +4267,32 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // is safe.
         const auto& cx = static_cast<const ast::ClosureExpr&>(e);
         sema::TypePtr fn_type = resolution_ != nullptr ? resolution_->type_of(&e) : nullptr;
-        os << "[&](";
+        // §A12 a closure bound to a function type is a C function pointer:
+        // no captures, and the pointer's `const T&` parameters exactly.
+        const bool as_fn_ptr = closure_to_fn_ptr_;
+        closure_to_fn_ptr_ = false;  // not inherited by closures nested in this one
+        if (as_fn_ptr && closure_captures(cx)) {
+            reporter_->report(
+                diag::Diagnostic::error(
+                    "a closure that captures can't be used where a function type is expected: a "
+                    "Vestra function type is a plain function pointer, with nowhere to keep the "
+                    "captured values; pass them as parameters")
+                    .at(e.range));
+        }
+        os << (as_fn_ptr ? "[](" : "[&](");
         for (std::size_t i = 0; i < cx.params.size(); ++i) {
             if (i != 0) {
                 os << ", ";
             }
             if (fn_type != nullptr && fn_type->kind() == sema::TypeKind::Function
                 && i < fn_type->parts().size() && fn_type->parts()[i] != nullptr) {
+                if (as_fn_ptr) {
+                    os << "const ";
+                }
                 emit_sema_type(os, fn_type->parts()[i]);
+                if (as_fn_ptr) {
+                    os << "&";
+                }
             } else {
                 os << "auto";
             }

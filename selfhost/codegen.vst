@@ -6352,35 +6352,51 @@ func emitStructDef(_ env: inout TyEnv, _ name: Str, _ fields: Vec[Nd], _ methods
 func emitMethod(_ env: inout TyEnv, _ owner: Str, _ d: Nd) using Alloc, Log {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body, let attrs):
-            emitMethodDef(env, owner, mods, name, params, res, body)
+            emitMethodWithGens(env, owner, mods, gens, name, params, res, body)
         default: noop()
     }
+}
+
+// §7 a generic method is a member template.
+func emitMethodWithGens(_ env: inout TyEnv, _ owner: Str, _ mods: Str, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    if gens.len() > 0 {
+        print("    ")
+        emitTemplateHead(gens)
+    }
+    emitMethodDef(env, owner, mods, name, params, res, body)
 }
 
 // An inline struct method, indented one level: a method ALWAYS carries
 // `[[nodiscard]]` (even an omitted / Unit return), unlike a free function. Its
 // body sits two levels in; `self.x` lowers to `(*this).x`, and `self` types
 // as the owning struct so field accesses infer (array fields index plainly,
-// string fields coerce). An ASYNC method keeps the plain (non-coroutine)
-// shape — no Task wrapper, `return` stays `return` — but its read params
-// pass BY VALUE, mirroring the bootstrap's method emitter.
+// string fields coerce). A plain method (no `inout` / `sink` receiver) is
+// `const`. An ASYNC method is a coroutine returning Task<R>: its returns are
+// co_returns and its read params pass BY VALUE, mirroring the bootstrap's
+// method emitter.
 func emitMethodDef(_ env: inout TyEnv, _ owner: Str, _ mods: Str, _ name: Str, _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    let isA = isAsyncMods(mods)
     print("    [[nodiscard]] ")
+    if isA { print("__vstr::Task<") }
     emitRetType(res)
+    if isA { print(">") }
     print(" ")
     print(name)
     print("(")
-    emitParamsMode(params, isAsyncMods(mods), false)
-    print(") {\n")
+    emitParamsMode(params, isA, false)
+    let mo = own(mods)
+    if containsSub(mo, "inout") || containsSub(mo, "sink") { print(") {\n") } else { print(") const {\n") }
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
     tyAddSymSpelling(&env, own("self"), own(owner))
     tySetRetNode(&env, res)
     let noThrows: Vec[Nd] = Vec.new()
     tySetThrowsNode(&env, noThrows)
-    env.curAsync = false
+    env.curAsync = isA
     env.curUnitThrows = false
     if body.len() > 0 { emitBlockStmts(env, body.get(0) ?? Nd.wildcard, "        ") }
+    if isA && res.len() == 0 && !blockEndsInReturn(body) { print("        co_return;\n") }
+    env.curAsync = false
     print("    }\n")
 }
 
@@ -6645,6 +6661,7 @@ func emitFwdDecl(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd]
     if isEntryMain(env, name) { print("int argc, char** argv") }
     else { emitParamsMode(params, isAsyncMods(mods) || isForeignAbi(attrs), true) }
     print(")")
+    emitTrailingRet(isAsyncMods(mods), thr, res)
     // The asm label rides only on the declaration (a definition cannot take it).
     emitAsmLabel(attrStr(attrs, "symbol"))
     print(";\n")
@@ -6667,7 +6684,9 @@ func emitFunc(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd], _
     print("(")
     if isEntryMain(env, name) { print("int argc, char** argv") }
     else { emitParamsMode(params, isA || isForeignAbi(env.curAttrs), true) }
-    print(") {\n")
+    print(")")
+    emitTrailingRet(isA, thr, res)
+    print(" {\n")
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
     tySetRetNode(&env, res)
@@ -6803,10 +6822,23 @@ func emitRetType(_ res: Vec[Nd]) using Alloc, Log {
 // where R is the (possibly expected-wrapped) declared result — an async
 // `throws(E)` nests as `Task<std::expected<T, E>>`.
 func emitTaskRet(_ isAsync: Bool, _ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
+    if hasTrailingRet(isAsync, thr, res) { print("auto"); return }
     if !isAsync { emitExpectedRet(thr, res); return }
     print("__vstr::Task<")
     emitExpectedRet(thr, res)
     print(">")
+}
+
+// §A12 a function returning a function pointer: C++ spells it only as a
+// trailing return type (`auto f() -> R(*)(A)`), as the bootstrap emits.
+func hasTrailingRet(_ isAsync: Bool, _ thr: Vec[Nd], _ res: Vec[Nd]) -> Bool {
+    return !isAsync && thr.len() == 0 && isFnTy(res)
+}
+
+func emitTrailingRet(_ isAsync: Bool, _ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
+    if !hasTrailingRet(isAsync, thr, res) { return }
+    print(" -> ")
+    emitTypeBoxed(res)
 }
 
 // §9: a `throws(E)` clause wraps the declared result in `std::expected<T, E>`
@@ -7198,12 +7230,28 @@ func collectStmtHoists(_ env: inout TyEnv, _ s: Nd) using Alloc {
 // if-expressions), as does an if nested deeper in an expression — those
 // branch tries fall back to the unwrap_exp safety net.
 func collectExprHoists(_ env: inout TyEnv, _ e: Vec[Nd]) using Alloc {
+    // An `if` used as a statement emits its branches as ordinary statements,
+    // each hoisting its own tries, so a `return` there leaves the function;
+    // a lambda hoist would make it leave only the lambda (the bootstrap's
+    // collect_stmt_hoists). Only its cond / let-init tries hoist here.
+    if boxIsIf(e) {
+        collectTryList(env, e)
+        return
+    }
     let noTy: Vec[Nd] = Vec.new()
     if collectStmtCond(env, e, noTy) {
         setCondStmtTyStr(env, e)
         return
     }
     collectTryList(env, e)
+}
+
+func boxIsIf(_ e: Vec[Nd]) -> Bool {
+    if e.len() == 0 { return false }
+    return match e.get(0) ?? Nd.wildcard {
+        case .ifE(let ln, let li, let c, let t, let el): true
+        default: false
+    }
 }
 
 func clearHoists(_ env: inout TyEnv) using Alloc {
@@ -11587,7 +11635,7 @@ func nodeIsFnTy(_ t: Nd) -> Bool {
 
 func emitClosureArgTy(_ env: inout TyEnv, _ tn: Nd, _ val: Vec[Nd]) using Alloc, Log {
     match tn {
-        case .fnT(let params, let caps, let thr, let res): emitClosureVal(env, val, params, res)
+        case .fnT(let params, let caps, let thr, let res): emitFnPtrClosureVal(env, val, params, res)
         default: noop()
     }
 }
@@ -11781,7 +11829,11 @@ func emitArg(_ env: inout TyEnv, _ a: Nd) using Alloc, Log {
 // match (or a leading dot) inside it types against the closure; the outer
 // result type is restored after.
 func emitClosure(_ env: inout TyEnv, _ cparams: Vec[Nd], _ body: Vec[Nd], _ ptypes: Vec[Nd], _ resTy: Vec[Nd]) using Alloc, Log {
-    print("[&](")
+    emitClosureMode(env, cparams, body, ptypes, resTy, false)
+}
+
+func emitClosureMode(_ env: inout TyEnv, _ cparams: Vec[Nd], _ body: Vec[Nd], _ ptypes: Vec[Nd], _ resTy: Vec[Nd], _ fnPtr: Bool) using Alloc, Log {
+    if fnPtr { print("[](") } else { print("[&](") }
     var i: Int = 0
     while i < cparams.len() {
         if i > 0 { print(", ") }
@@ -11789,7 +11841,9 @@ func emitClosure(_ env: inout TyEnv, _ cparams: Vec[Nd], _ body: Vec[Nd], _ ptyp
         if i < ptypes.len() {
             let pt = ptypes.get(i) ?? Nd.wildcard
             tyAddSymSpelling(&env, pn, typeSpelling(pt))
+            if fnPtr { print("const ") }
             emitType(pt)
+            if fnPtr { print("&") }
         } else {
             print("auto")
         }
@@ -11860,7 +11914,18 @@ func closureReturnsValue(_ resTy: Vec[Nd]) using Alloc -> Bool {
 // closure literal, then lower the lambda.
 func emitClosureWithFnTy(_ env: inout TyEnv, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
     match ty.get(0) ?? Nd.wildcard {
-        case .fnT(let params, let caps, let thr, let res): emitClosureVal(env, value, params, res)
+        case .fnT(let params, let caps, let thr, let res): emitFnPtrClosureVal(env, value, params, res)
+        default: noop()
+    }
+}
+
+// §A12 a closure where a function type is expected (a `let` annotated with
+// one, or an argument to a function-typed parameter) becomes the C function
+// pointer itself: a capture-free `[]` lambda taking the pointer's `const T&`
+// parameters (the bootstrap rejects a capturing one).
+func emitFnPtrClosureVal(_ env: inout TyEnv, _ value: Vec[Nd], _ ptypes: Vec[Nd], _ resTy: Vec[Nd]) using Alloc, Log {
+    match value.get(0) ?? Nd.wildcard {
+        case .closureE(let cparams, let body): emitClosureMode(env, cparams, body, ptypes, resTy, true)
         default: noop()
     }
 }

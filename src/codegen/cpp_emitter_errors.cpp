@@ -221,9 +221,29 @@ void CppEmitter::collect_stmt_hoists(const ast::Stmt& s, std::vector<TryHoist>& 
             collect_try_hoists(*v.value, out);
         }
         break;
-    case ast::NodeKind::ExprStmt:
-        collect_try_hoists(*static_cast<const ast::ExprStmt&>(s).expr, out);
+    case ast::NodeKind::ExprStmt: {
+        // §9 an `if` used as a statement (Unit, its value unused) emits its
+        // branches as ordinary statements, each hoisting its own tries, so
+        // `return` in a branch returns from the function. Only a value-
+        // producing `if` needs the lambda-returning-expected hoist, inside
+        // which a `return` would leave only the lambda.
+        const auto& ex = *static_cast<const ast::ExprStmt&>(s).expr;
+        if (ex.kind == ast::NodeKind::IfExpr && resolution_ != nullptr) {
+            auto t = resolution_->type_of(&ex);
+            if (t == nullptr || t->kind() == sema::TypeKind::Unit) {
+                const auto& i = static_cast<const ast::IfExpr&>(ex);
+                if (i.cond) {
+                    collect_try_hoists(*i.cond, out);
+                }
+                if (i.let_init) {
+                    collect_try_hoists(*i.let_init, out);
+                }
+                break;
+            }
+        }
+        collect_try_hoists(ex, out);
         break;
+    }
     case ast::NodeKind::ReturnStmt:
         if (const auto& r = static_cast<const ast::ReturnStmt&>(s); r.value) {
             collect_try_hoists(*r.value, out);

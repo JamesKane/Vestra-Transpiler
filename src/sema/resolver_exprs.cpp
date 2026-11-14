@@ -383,6 +383,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
                 sym.name = name;
                 sym.kind = SymbolKind::Local;
                 sym.type = types_->error();
+                sym.definition_range = cx.range;
                 (void)g.scope().insert(std::move(sym));
             }
             for (const auto& stmt : cx.body) {
@@ -399,6 +400,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
             sym.name = cx.params[i];
             sym.kind = SymbolKind::Local;
             sym.type = expected->parts()[i] != nullptr ? expected->parts()[i] : types_->error();
+            sym.definition_range = cx.range;  // a closure parameter is defined by the closure
             (void)g.scope().insert(std::move(sym));
         }
         // The body's trailing ExprStmt yields the closure result —
