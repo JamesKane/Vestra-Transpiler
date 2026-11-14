@@ -2921,6 +2921,15 @@ add_test(
 set_tests_properties(e2e_check_nolibc PROPERTIES
     PASS_REGULAR_EXPRESSION "`Alloc` needs the hosted runtime")
 
+# §15.5 F5: under --no-libc the @panic_handler is bound at link time through
+# __vstr_panic_hook, not registered by a static initializer.
+add_test(
+    NAME    e2e_freestanding_panic_hook
+    COMMAND sh -c "rm -rf ${e2e_workdir}/_fs_ph && $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/examples/panic_handler.vst --no-libc --target=aarch64 -o ${e2e_workdir}/_fs_ph >/dev/null && cat ${e2e_workdir}/_fs_ph/panic_handler.cpp")
+set_tests_properties(e2e_freestanding_panic_hook PROPERTIES
+    PASS_REGULAR_EXPRESSION "extern \"C\" void __vstr_panic_hook\\(.*\n    \\(void\\)vestraPanic\\(message, file, line\\);"
+    FAIL_REGULAR_EXPRESSION "__vstr_register_panic_handler")
+
 # §5 visibility: referencing a non-public (internal) decl of an imported module
 # must fail to resolve. `vestra check` is expected to exit non-zero.
 add_test(

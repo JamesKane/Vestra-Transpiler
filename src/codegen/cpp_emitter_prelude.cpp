@@ -1913,11 +1913,13 @@ void emit_unlowered_macro(std::ostream& hdr) {
 )__fs";
 }
 
-// §10 / §15.5 the freestanding panic path: the registered @panic_handler if
-// there is one, else park the CPU. Nothing to print to, nothing to abort to.
+// §10 / §15.5 the freestanding panic path: the @panic_handler if there is
+// one, else park the CPU. Nothing to print to, nothing to abort to. The
+// handler is bound at link time (F5): the unit that declares it defines
+// `__vstr_panic_hook`, and the weak declaration here is null without one, so
+// no static initializer (and no .init_array) is involved.
 void emit_freestanding_panic(std::ostream& hdr) {
-    hdr << R"__fs(using PanicHandlerFn = Never(*)(const std::string_view& message, const std::string_view& file, const std::intptr_t& line);
-inline PanicHandlerFn panic_handler = nullptr;
+    hdr << R"__fs(extern "C" [[gnu::weak]] void __vstr_panic_hook(const std::string_view& message, const std::string_view& file, const std::intptr_t& line) noexcept;
 
 [[noreturn]] inline void halt() noexcept {
     for (;;) {
@@ -1932,10 +1934,10 @@ inline PanicHandlerFn panic_handler = nullptr;
 }
 
 [[noreturn]] inline Never panic(std::string_view msg) noexcept {
-    if (panic_handler != nullptr) {
+    if (&__vstr_panic_hook != nullptr) {
         const std::string_view empty_file{};
         const std::intptr_t zero_line = 0;
-        (void)panic_handler(msg, empty_file, zero_line);
+        __vstr_panic_hook(msg, empty_file, zero_line);
     }
     halt();
 }

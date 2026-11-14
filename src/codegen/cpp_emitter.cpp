@@ -521,7 +521,14 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
             break;
         }
     }
-    if (panic_handler != nullptr) {
+    if (panic_handler != nullptr && no_libc_) {
+        // §15.5 freestanding: bind the handler at link time (F5), so a panic
+        // before (or without) static initialization still reaches it.
+        src << "\nextern \"C\" void __vstr_panic_hook(const std::string_view& message, "
+               "const std::string_view& file, const std::intptr_t& line) noexcept {\n";
+        src << "    (void)" << panic_handler->name << "(message, file, line);\n";
+        src << "}\n";
+    } else if (panic_handler != nullptr) {
         src << "\n[[maybe_unused]] static const bool __vstr_register_panic_handler = []{\n";
         src << "    __vstr::panic_handler = &" << panic_handler->name << ";\n";
         src << "    return true;\n";
