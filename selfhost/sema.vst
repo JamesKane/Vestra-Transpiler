@@ -6746,7 +6746,7 @@ func tyCheckEnumPat(_ env: inout TyEnv, _ st: String, _ cn: String, _ children: 
 func tyCheckLitPat(_ env: inout TyEnv, _ st: String, _ inner: Vec[Nd]) using Alloc {
     let lt = tyInferBoxed(env, inner)
     if streq(lt, "") { return }
-    if !tyAssignable(lt, st) && !tyAssignable(st, lt) { env.bad.push(tyLitScrutMsg(lt, st)) }
+    if !tyAssignable(lt, st) && !tyAssignable(st, lt) && !tyLitFits(inner, st) { env.bad.push(tyLitScrutMsg(lt, st)) }
 }
 
 func tyEnumPatNonEnumMsg(_ cn: String, _ st: String) using Alloc -> String {
