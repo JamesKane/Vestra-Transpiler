@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §19.6 a table of linear handles (F17). A handle leaves a slot only by
+// `.take()`, enters one only where the slot is known empty (or by `.put`,
+// which checks at run time), and an `if let` on a slot borrows it.
+module examples.linear_demo
+
+public linear struct Handle {
+    var id: UInt64
+}
+
+public struct Table {
+    var slots: [4]Handle?
+}
+
+public func fresh() -> Table {
+    return Table(slots: [nil, nil, nil, nil])
+}
+
+public func mint(_ id: UInt64) -> Handle {
+    return Handle(id: id)
+}
+
+func close(_ h: sink Handle) { }
+
+public func shutdown(_ t: sink Table) { }
+
+// Into the first empty slot, by a guard the checker can see.
+public func store(_ t: inout Table, _ h: sink Handle) -> Int {
+    var i: Int = 0
+    while i < 4 {
+        if t.slots[i] == nil {
+            t.slots[i] = h
+            return i
+        }
+        i = i + 1
+    }
+    panic("table full")
+}
+
+// Into a named slot, checked when it runs.
+public func storeAt(_ t: inout Table, _ i: Int, _ h: sink Handle) {
+    t.slots[i].put(h)
+}
+
+// Borrow: read the handle without moving it.
+public func idAt(_ t: Table, _ i: Int) -> UInt64 {
+    var id: UInt64 = 0
+    if let h = t.slots[i] {
+        id = h.id
+    }
+    return id
+}
+
+// Move it from one slot to another.
+public func moveSlot(_ t: inout Table, _ from: Int, _ to: Int) {
+    if let h = t.slots[from].take() {
+        t.slots[to].put(h)
+    }
+}
+
+public func release(_ t: inout Table, _ i: Int) -> Bool {
+    if let h = t.slots[i].take() {
+        close(h)
+        return true
+    }
+    return false
+}

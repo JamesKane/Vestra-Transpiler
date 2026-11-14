@@ -1338,6 +1338,7 @@ TypePtr Resolver::check_if(const ast::IfExpr& i, TypePtr expected) {
         sym.type = bound;
         sym.definition_range = i.range;
         (void)scopes_.current().insert(std::move(sym));
+        resolution_.set_let_symbol(&i, scopes_.current().lookup_local(i.let_name));
         then_type = check_expr(*i.then_branch, expected);
     } else {
         auto cond_type = check_expr(*i.cond, types_->boolean());

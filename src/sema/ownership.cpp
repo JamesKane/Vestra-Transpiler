@@ -3,6 +3,8 @@
 
 #include "vestra/sema/ownership.hpp"
 
+#include <algorithm>
+
 #include "vestra/ast/nodes.hpp"
 #include "vestra/diag/diagnostic.hpp"
 #include "vestra/sema/resolver.hpp"
@@ -72,11 +74,16 @@ void OwnershipChecker::check_func(const ast::FuncDecl& f) {
     // *local* linear bindings (let/var) and the linear values they own must
     // be discharged before their scope ends.
     bindings_.clear();
+    empty_places_.clear();
+    borrows_.clear();
+    leak_reported_.clear();
+    current_func_ = &f;
     check_expr(*f.body);
     // §5/§19.6 — any linear binding still live at the end of the function
     // body is a leak: a linear value must be consumed before its scope ends.
     for (const auto& [sym, info] : bindings_) {
-        if (info.state == State::Live && sym != nullptr && is_linear_type(sym->type)) {
+        if (info.state == State::Live && sym != nullptr && is_linear_type(sym->type)
+            && !leak_reported_.contains(sym)) {
             reporter_->report(
                 diag::Diagnostic::error(
                     std::format("linear value '{}' is never consumed; a linear value must be moved "
@@ -101,6 +108,7 @@ void OwnershipChecker::check_stmt(const ast::Stmt& s) {
             // §5 — `let c = b` moves a non-trivial place: ownership transfers
             // to the new binding, so `b` is consumed (use `copy b` to keep
             // it). Symmetric with `return x` and sink-argument passing.
+            reject_move_out(*l.value, l.value->range);
             consume_place(*l.value, l.value->range);
         }
         register_linear_binding(s);
@@ -110,6 +118,7 @@ void OwnershipChecker::check_stmt(const ast::Stmt& s) {
         const auto& v = static_cast<const ast::VarStmt&>(s);
         if (v.value) {
             check_expr(*v.value);
+            reject_move_out(*v.value, v.value->range);
             consume_place(*v.value, v.value->range);
         }
         register_linear_binding(s);
@@ -124,43 +133,59 @@ void OwnershipChecker::check_stmt(const ast::Stmt& s) {
             check_expr(*r.value);
             // `return x` for a non-trivial place consumes the binding — the
             // function is handing ownership out to the caller.
+            reject_move_out(*r.value, r.value->range);
             consume_place(*r.value, s.range);
         }
         break;
     }
-    case ast::NodeKind::AssignStmt: {
-        const auto& a = static_cast<const ast::AssignStmt&>(s);
-        check_expr(*a.value);
-        // Reassignment to a `var` revives a consumed binding (§19.2). We
-        // approximate "the target is a var binding" by checking the LHS is
-        // a tracked Symbol; if so, reset its state to Live.
-        if (a.target && a.target->kind == ast::NodeKind::IdentExpr) {
-            const auto* sym = resolution_->symbol_of(a.target.get());
-            if (sym != nullptr) {
-                auto it = bindings_.find(sym);
-                if (it != bindings_.end()) {
-                    it->second.state = State::Live;
-                    it->second.consume_site = {};
-                }
-            }
-        } else if (a.target) {
-            check_expr(*a.target);  // member / index access — at least walk it
-        }
+    case ast::NodeKind::AssignStmt:
+        check_place_assign(static_cast<const ast::AssignStmt&>(s));
         break;
-    }
     case ast::NodeKind::WhileStmt: {
         const auto& w = static_cast<const ast::WhileStmt&>(s);
+        // A loop body runs again after its own writes, so no empty-place fact
+        // crosses into it (or out of it).
+        empty_places_.clear();
         check_expr(*w.cond);
+        if (w.body) {
+            check_expr(*w.body);
+        }
+        empty_places_.clear();
+        break;
+    }
+    case ast::NodeKind::ForStmt: {
+        const auto& f = static_cast<const ast::ForStmt&>(s);
+        empty_places_.clear();
+        check_expr(*f.iter);
+        if (f.body) {
+            check_expr(*f.body);
+        }
+        empty_places_.clear();
+        break;
+    }
+    case ast::NodeKind::WithStmt: {
+        // `with` opens a capability or value scope; its body is ordinary
+        // code and is checked like any block.
+        const auto& w = static_cast<const ast::WithStmt&>(s);
+        for (const auto& b : w.bindings) {
+            if (b.value) {
+                check_expr(*b.value);
+            }
+        }
         if (w.body) {
             check_expr(*w.body);
         }
         break;
     }
-    case ast::NodeKind::ForStmt: {
-        const auto& f = static_cast<const ast::ForStmt&>(s);
-        check_expr(*f.iter);
-        if (f.body) {
-            check_expr(*f.body);
+    case ast::NodeKind::AsmStmt: {
+        // Operands are read (inputs) or written in place (outputs); none moves.
+        const auto& a = static_cast<const ast::AsmStmt&>(s);
+        for (const auto* ops : {&a.inputs, &a.outputs, &a.inouts}) {
+            for (const auto& op : *ops) {
+                if (op.value) {
+                    check_expr(*op.value);
+                }
+            }
         }
         break;
     }
@@ -237,15 +262,32 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
         break;
     case ast::NodeKind::IfExpr: {
         const auto& i = static_cast<const ast::IfExpr&>(e);
+        std::vector<PlaceKey> then_facts;
+        std::vector<PlaceKey> else_facts;
+        // §9 / §19.6 an `if let` over a linear payload: on a storage place it
+        // borrows (the place keeps the value); otherwise the binding owns
+        // what it unwraps and must consume it in the then-branch.
+        const Symbol* let_sym = nullptr;
+        bool let_owned = false;
         if (i.cond) {
             check_expr(*i.cond);
+            collect_nil_facts(*i.cond, true, then_facts);
+            collect_nil_facts(*i.cond, false, else_facts);
         } else if (i.let_init) {
-            // §9 `if let NAME = INIT { ... }` — the init expression is the
-            // only thing checked here; the let-bound name is fresh inside
-            // the then-branch and doesn't participate in ownership flow
-            // until/unless it's used there.
             check_expr(*i.let_init);
+            let_sym = resolution_->let_symbol(&i);
+            const bool linear = let_sym != nullptr && is_linear_type(let_sym->type);
+            if (linear && storage_place(*i.let_init).has_value()) {
+                borrows_.insert(let_sym);
+            } else if (linear) {
+                if (borrows_.contains(place_symbol(*i.let_init))) {
+                    reject_move_out(*i.let_init, i.let_init->range);
+                }
+                consume_place(*i.let_init, i.let_init->range);
+                let_owned = true;
+            }
         }
+        const auto pre_facts = empty_places_;
         // §10/§5 phase 2 — branch-aware flow merge. Each branch is checked
         // from the same post-condition state, independently, then merged at
         // the join: a move in one branch no longer poisons the other, so
@@ -254,21 +296,78 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
         // (a one-sided `if c { take(x) }` still forbids a later use of x),
         // which keeps the analysis sound.
         BindingMap pre = bindings_;
+        empty_places_ = pre_facts;
+        empty_places_.insert(empty_places_.end(), then_facts.begin(), then_facts.end());
+        if (let_owned) {
+            bindings_[let_sym].state = State::Live;
+        }
         if (i.then_branch) {
             check_expr(*i.then_branch);
         }
+        if (let_owned) {
+            if (auto it = bindings_.find(let_sym);
+                it != bindings_.end() && it->second.state == State::Live
+                && !block_diverges(i.then_branch.get())) {
+                reporter_->report(
+                    diag::Diagnostic::error(
+                        std::format("linear value '{}' is never consumed; `if let` moved it out of "
+                                    "its Optional, so the then-branch must move it on",
+                                    let_sym->name))
+                        .at(i.range));
+            }
+            bindings_.erase(let_sym);
+        }
         BindingMap then_state = std::move(bindings_);
+        auto then_exit_facts = std::move(empty_places_);
         bindings_ = pre;
+        empty_places_ = pre_facts;
+        empty_places_.insert(empty_places_.end(), else_facts.begin(), else_facts.end());
         if (i.else_branch) {
             check_expr(*i.else_branch);
         }
         BindingMap else_state = bindings_;
+        // Facts after the if: a branch that can't fall through contributes
+        // nothing; otherwise only what both exits agree on survives.
+        const bool then_out = block_diverges(i.then_branch.get());
+        const bool else_out = i.else_branch != nullptr && block_diverges(i.else_branch.get());
+        // A branch that leaves the function with a linear value still live
+        // leaks it on that path.
+        if (then_out && leaves_function(i.then_branch.get())) {
+            report_path_leaks(then_state, i.then_branch->range);
+        }
+        if (else_out && leaves_function(i.else_branch.get())) {
+            report_path_leaks(else_state, i.else_branch->range);
+        }
+        if (then_out && !else_out) {
+            // keep the else-exit facts
+        } else if (else_out && !then_out) {
+            empty_places_ = std::move(then_exit_facts);
+        } else {
+            std::vector<PlaceKey> both;
+            for (const auto& k : then_exit_facts) {
+                for (const auto& m : empty_places_) {
+                    if (k.render() == m.render()) {
+                        both.push_back(k);
+                        break;
+                    }
+                }
+            }
+            empty_places_ = std::move(both);
+        }
         // §5/§19.6 — a linear binding live before the if must be consumed on
         // both paths or neither; consuming it on only one leaks the other.
-        report_linear_divergence(pre, {&then_state, &else_state}, e.range);
+        // Only paths that reach the join take part: one that returns, throws,
+        // breaks or continues never meets the other.
+        if (!then_out && !else_out) {
+            report_linear_divergence(pre, {&then_state, &else_state}, e.range);
+        }
         // bindings_ is now the else-path state (or `pre` when there is no
-        // else); union in the then-path's moves.
-        merge_consumed(bindings_, then_state);
+        // else); union in the then-path's moves if that path reaches here.
+        if (else_out && !then_out) {
+            bindings_ = std::move(then_state);
+        } else if (!then_out) {
+            merge_consumed(bindings_, then_state);
+        }
         break;
     }
     case ast::NodeKind::MatchExpr: {
@@ -304,6 +403,7 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
             report_linear_divergence(pre, ptrs, e.range);
         }
         bindings_ = std::move(merged);
+        empty_places_.clear();
         break;
     }
     case ast::NodeKind::BlockExpr: {
@@ -328,6 +428,9 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
 }
 
 void OwnershipChecker::check_call(const ast::CallExpr& c) {
+    if (check_optional_method(c)) {
+        return;
+    }
     // Walk the callee. We don't currently consume the callee — function
     // values are first-class but the binding semantics for `var f = ...; f()`
     // need more design.
@@ -369,9 +472,20 @@ void OwnershipChecker::check_call(const ast::CallExpr& c) {
             mode = ast::ParamMode::Inout;
         }
         if (mode == ast::ParamMode::Sink) {
+            reject_move_out(*arg.value, arg.value->range);
             consume_place(*arg.value, arg.value->range);
         }
+        // A callee handed `&place` may fill or empty anything under it.
+        if (mode == ast::ParamMode::Inout || arg.is_inout) {
+            if (auto k = storage_place(*arg.value)) {
+                kill_rooted_at(k->parts.front().text);
+            } else if (arg.value->kind == ast::NodeKind::IdentExpr) {
+                kill_rooted_at(static_cast<const ast::IdentExpr&>(*arg.value).name);
+            }
+        }
     }
+    // Any call may write a static.
+    std::erase_if(empty_places_, [](const PlaceKey& k) { return k.root_is_static; });
 }
 
 // ============================================================================
@@ -456,10 +570,19 @@ void OwnershipChecker::merge_consumed(BindingMap& dst, const BindingMap& branch)
 }
 
 bool OwnershipChecker::is_linear_type(TypePtr t) const noexcept {
-    if (t == nullptr || t->kind() != TypeKind::Struct) {
+    if (t == nullptr) {
         return false;
     }
-    const ast::Decl* d = t->nominal_decl();
+    // §5 transitive through owning containers and fields, imported structs
+    // included (vestra/sema/linearity.hpp).
+    if (!linearity_.has_value()) {
+        linearity_.emplace(resolution_->types());
+    }
+    if (linearity_->is_linear(t)) {
+        return true;
+    }
+    // Without the arena's member types, the unit-local field closure.
+    const ast::Decl* d = t->kind() == TypeKind::Struct ? t->nominal_decl() : nullptr;
     return d != nullptr && linear_decls_.contains(d);
 }
 
@@ -518,7 +641,15 @@ void OwnershipChecker::compute_linear_decls() {
 void OwnershipChecker::register_linear_binding(const ast::Stmt& s) {
     const Symbol* sym = resolution_->binding_symbol(&s);
     if (sym != nullptr && is_linear_type(sym->type)) {
-        bindings_[sym].state = State::Live;
+        // `var o: Slot? = nil` holds nothing yet: it starts out as if moved.
+        const ast::Expr* init = nullptr;
+        if (s.kind == ast::NodeKind::LetStmt) {
+            init = static_cast<const ast::LetStmt&>(s).value.get();
+        } else if (s.kind == ast::NodeKind::VarStmt) {
+            init = static_cast<const ast::VarStmt&>(s).value.get();
+        }
+        bindings_[sym].state =
+            init != nullptr && init->kind == ast::NodeKind::NilLit ? State::Consumed : State::Live;
     }
 }
 
@@ -589,6 +720,475 @@ bool OwnershipChecker::is_trivial(TypePtr t) noexcept {
 
 bool OwnershipChecker::is_trackable_kind(SymbolKind k) noexcept {
     return k == SymbolKind::Local || k == SymbolKind::Parameter;
+}
+
+// ============================================================================
+// §19.6 linear values in storage places (F17)
+// ============================================================================
+
+std::string OwnershipChecker::PlaceKey::render() const {
+    std::string out;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (i == 0) {
+            out = parts[i].text;
+        } else if (parts[i].index) {
+            out += "[" + parts[i].text + "]";
+        } else {
+            out += "." + parts[i].text;
+        }
+    }
+    return out;
+}
+
+namespace {
+
+const ast::Expr& strip_parens(const ast::Expr& e) {
+    const ast::Expr* p = &e;
+    while (p->kind == ast::NodeKind::ParenExpr) {
+        p = static_cast<const ast::ParenExpr&>(*p).inner.get();
+    }
+    return *p;
+}
+
+// An index we can compare textually: names, integer literals, fields of
+// names, and + - * of those. Collects the local names it mentions.
+std::optional<std::string> render_index(const ast::Expr& e, std::vector<std::string>& idents) {
+    const auto& x = strip_parens(e);
+    switch (x.kind) {
+    case ast::NodeKind::IdentExpr: {
+        const auto& n = static_cast<const ast::IdentExpr&>(x).name;
+        idents.push_back(n);
+        return n;
+    }
+    case ast::NodeKind::IntLit:
+        return static_cast<const ast::IntLit&>(x).text;
+    case ast::NodeKind::MemberExpr: {
+        const auto& m = static_cast<const ast::MemberExpr&>(x);
+        auto base = render_index(*m.base, idents);
+        if (!base) {
+            return std::nullopt;
+        }
+        return *base + "." + m.member;
+    }
+    case ast::NodeKind::BinaryExpr: {
+        const auto& b = static_cast<const ast::BinaryExpr&>(x);
+        const char* op = b.op == ast::BinaryOp::Add   ? "+"
+                         : b.op == ast::BinaryOp::Sub ? "-"
+                         : b.op == ast::BinaryOp::Mul ? "*"
+                                                      : nullptr;
+        if (op == nullptr) {
+            return std::nullopt;
+        }
+        auto l = render_index(*b.lhs, idents);
+        auto r = render_index(*b.rhs, idents);
+        if (!l || !r) {
+            return std::nullopt;
+        }
+        return "(" + *l + " " + op + " " + *r + ")";
+    }
+    case ast::NodeKind::CallExpr: {
+        // `Int(x)` and friends: a conversion of a renderable value.
+        const auto& c = static_cast<const ast::CallExpr&>(x);
+        if (c.callee->kind != ast::NodeKind::IdentExpr || c.args.size() != 1) {
+            return std::nullopt;
+        }
+        auto a = render_index(*c.args[0].value, idents);
+        if (!a) {
+            return std::nullopt;
+        }
+        return static_cast<const ast::IdentExpr&>(*c.callee).name + "(" + *a + ")";
+    }
+    default:
+        return std::nullopt;
+    }
+}
+
+}  // namespace
+
+std::optional<OwnershipChecker::PlaceKey> OwnershipChecker::storage_place(const ast::Expr& e) const {
+    const auto& x = strip_parens(e);
+    // Walk to the root, recording components outermost-last.
+    std::vector<PlaceComponent> rev;
+    const ast::Expr* cur = &x;
+    while (true) {
+        if (cur->kind == ast::NodeKind::MemberExpr) {
+            const auto& m = static_cast<const ast::MemberExpr&>(*cur);
+            if (m.is_optional_chain || resolution_->qualified_name_of(cur) != nullptr) {
+                return std::nullopt;
+            }
+            rev.push_back(PlaceComponent{false, m.member, {}});
+            cur = &strip_parens(*m.base);
+        } else if (cur->kind == ast::NodeKind::IndexExpr) {
+            const auto& ix = static_cast<const ast::IndexExpr&>(*cur);
+            if (ix.indices.size() != 1) {
+                return std::nullopt;
+            }
+            PlaceComponent pc;
+            pc.index = true;
+            auto r = render_index(*ix.indices[0], pc.idents);
+            if (!r) {
+                return std::nullopt;
+            }
+            pc.text = std::move(*r);
+            rev.push_back(std::move(pc));
+            cur = &strip_parens(*ix.base);
+        } else {
+            break;
+        }
+    }
+    PlaceKey key;
+    if (cur->kind == ast::NodeKind::SelfExpr) {
+        key.parts.push_back(PlaceComponent{false, "self", {}});
+    } else if (cur->kind == ast::NodeKind::IdentExpr) {
+        const auto* sym = resolution_->symbol_of(cur);
+        if (sym == nullptr) {
+            return std::nullopt;
+        }
+        const auto& name = static_cast<const ast::IdentExpr&>(*cur).name;
+        if (rev.empty()) {
+            // A bare name is storage only when this function doesn't own it:
+            // a static, or a `read` / `inout` parameter.
+            bool storage = sym->kind == SymbolKind::Static;
+            if (sym->kind == SymbolKind::Parameter && current_func_ != nullptr) {
+                for (const auto& p : current_func_->params) {
+                    if (p.name == name && p.mode != ast::ParamMode::Sink) {
+                        storage = true;
+                    }
+                }
+            }
+            if (!storage) {
+                return std::nullopt;
+            }
+        }
+        key.root_is_static = sym->kind == SymbolKind::Static;
+        key.parts.push_back(PlaceComponent{false, name, {}});
+    } else {
+        return std::nullopt;
+    }
+    for (auto it = rev.rbegin(); it != rev.rend(); ++it) {
+        key.parts.push_back(*it);
+    }
+    return key;
+}
+
+bool OwnershipChecker::may_alias(const PlaceKey& a, const PlaceKey& b) {
+    const std::size_t n = std::min(a.parts.size(), b.parts.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto& x = a.parts[i];
+        const auto& y = b.parts[i];
+        if (x.index != y.index) {
+            return false;
+        }
+        if (x.text == y.text) {
+            continue;
+        }
+        // Two elements of one array may be the same element; two different
+        // fields (or roots) never are.
+        return x.index;
+    }
+    return true;  // one is a prefix of the other
+}
+
+void OwnershipChecker::kill_aliasing(const PlaceKey& k) {
+    std::erase_if(empty_places_, [&](const PlaceKey& f) { return may_alias(k, f); });
+}
+
+void OwnershipChecker::kill_mentioning(std::string_view local) {
+    std::erase_if(empty_places_, [&](const PlaceKey& f) {
+        for (const auto& p : f.parts) {
+            if ((&p == &f.parts.front() && p.text == local)
+                || std::ranges::find(p.idents, local) != p.idents.end()) {
+                return true;
+            }
+        }
+        return false;
+    });
+}
+
+void OwnershipChecker::kill_rooted_at(std::string_view root) {
+    std::erase_if(empty_places_, [&](const PlaceKey& f) { return f.parts.front().text == root; });
+}
+
+bool OwnershipChecker::known_empty(const PlaceKey& k) const {
+    const auto r = k.render();
+    return std::ranges::any_of(empty_places_, [&](const PlaceKey& f) { return f.render() == r; });
+}
+
+bool OwnershipChecker::is_linear_place_value(const ast::Expr& e) const {
+    return is_linear_type(resolution_->type_of(&e));
+}
+
+void OwnershipChecker::reject_move_out(const ast::Expr& e, diag::SourceRange site) {
+    const auto& x = strip_parens(e);
+    if (x.kind == ast::NodeKind::IdentExpr) {
+        const auto* sym = resolution_->symbol_of(&x);
+        if (sym != nullptr && borrows_.contains(sym)) {
+            reporter_->report(
+                diag::Diagnostic::error(
+                    std::format("'{}' is borrowed from its place (an `if let` on a field or "
+                                "element doesn't move the value); move it out with "
+                                "`if let {} = <place>.take()`",
+                                sym->name,
+                                sym->name))
+                    .at(site));
+            return;
+        }
+    }
+    auto k = storage_place(x);
+    if (!k || !is_linear_place_value(x)) {
+        return;
+    }
+    auto t = resolution_->type_of(&x);
+    const auto place = k->render();
+    if (k->parts.size() == 1 && !k->root_is_static) {
+        reporter_->report(
+            diag::Diagnostic::error(
+                std::format("can't move the linear value '{}': it's a `read` or `inout` "
+                            "parameter, so the caller still owns it; take it as `sink` to move it",
+                            place))
+                .at(site));
+        return;
+    }
+    if (t != nullptr && t->kind() == TypeKind::Optional) {
+        reporter_->report(
+            diag::Diagnostic::error(
+                std::format("can't move the linear value out of '{}': the place would still hold "
+                            "it; use '{}.take()', which moves it out and leaves the place empty",
+                            place,
+                            place))
+                .at(site));
+    } else {
+        reporter_->report(
+            diag::Diagnostic::error(
+                std::format("can't move the linear value out of '{}': the place would still hold "
+                            "it; keep it in an Optional and move it out with '.take()', or move "
+                            "the value that owns the place",
+                            place))
+                .at(site));
+    }
+}
+
+void OwnershipChecker::check_place_assign(const ast::AssignStmt& a) {
+    check_expr(*a.value);
+    const bool value_is_nil = strip_parens(*a.value).kind == ast::NodeKind::NilLit;
+    // `x = y` moves a linear `y`.
+    if (is_linear_place_value(*a.value)) {
+        reject_move_out(*a.value, a.value->range);
+        consume_place(*a.value, a.value->range);
+    }
+    if (a.target == nullptr) {
+        return;
+    }
+    const auto& target = strip_parens(*a.target);
+    if (auto k = storage_place(target)) {
+        check_expr(target);
+        if (is_linear_place_value(target)) {
+            auto t = resolution_->type_of(&target);
+            const bool optional = t != nullptr && t->kind() == TypeKind::Optional;
+            if (!optional || !known_empty(*k)) {
+                const auto place = k->render();
+                reporter_->report(
+                    diag::Diagnostic::error(
+                        optional
+                            ? std::format(
+                                  "assigning to '{}' could drop the linear value it holds; assign "
+                                  "only where it's known to be empty (inside `if {} == nil`, or "
+                                  "after '{}.take()'), or use '{}.put(v)', which checks at run "
+                                  "time",
+                                  place,
+                                  place,
+                                  place,
+                                  place)
+                            : std::format("assigning to '{}' drops the linear value it holds; "
+                                          "move the old value out first",
+                                          place))
+                        .at(a.range));
+            }
+        }
+        kill_aliasing(*k);
+        if (value_is_nil) {
+            empty_places_.push_back(*k);
+        }
+        return;
+    }
+    if (target.kind == ast::NodeKind::IdentExpr) {
+        const auto* sym = resolution_->symbol_of(&target);
+        kill_mentioning(static_cast<const ast::IdentExpr&>(target).name);
+        if (sym == nullptr) {
+            return;
+        }
+        auto it = bindings_.find(sym);
+        if (is_linear_type(sym->type)) {
+            if (it != bindings_.end() && it->second.state == State::Live) {
+                reporter_->report(
+                    diag::Diagnostic::error(
+                        std::format("assigning to '{}' drops the linear value it still holds; "
+                                    "move that value on first",
+                                    sym->name))
+                        .at(a.range));
+            }
+            bindings_[sym].state = value_is_nil ? State::Consumed : State::Live;
+            bindings_[sym].consume_site = {};
+            return;
+        }
+        // Reassignment to a `var` revives a consumed binding (§19.2).
+        if (it != bindings_.end()) {
+            it->second.state = State::Live;
+            it->second.consume_site = {};
+        }
+        return;
+    }
+    check_expr(target);
+}
+
+bool OwnershipChecker::check_optional_method(const ast::CallExpr& c) {
+    if (c.callee == nullptr || c.callee->kind != ast::NodeKind::MemberExpr) {
+        return false;
+    }
+    const auto& m = static_cast<const ast::MemberExpr&>(*c.callee);
+    const bool take = m.member == "take" && c.args.empty();
+    const bool put = m.member == "put" && c.args.size() == 1;
+    if (!take && !put) {
+        return false;
+    }
+    auto bt = resolution_->type_of(m.base.get());
+    if (bt == nullptr || bt->kind() != TypeKind::Optional) {
+        return false;
+    }
+    const auto& base = strip_parens(*m.base);
+    auto k = storage_place(base);
+    const Symbol* local = nullptr;
+    if (!k && base.kind == ast::NodeKind::IdentExpr) {
+        local = resolution_->symbol_of(&base);
+    }
+    if (!k && local == nullptr) {
+        reporter_->report(
+            diag::Diagnostic::error(std::format("'{}()' needs a place (a variable, field or "
+                                                "element) to {}",
+                                                m.member,
+                                                take ? "empty" : "fill"))
+                .at(c.range));
+        return true;
+    }
+    if (k) {
+        check_expr(base);
+    }
+    const bool linear = is_linear_type(bt);
+    if (take) {
+        if (k) {
+            kill_aliasing(*k);
+            empty_places_.push_back(*k);
+        } else if (linear) {
+            auto& b = bindings_[local];
+            b.state = State::Consumed;
+            b.consume_site = {};
+        }
+        return true;
+    }
+    const auto& arg = *c.args[0].value;
+    check_expr(arg);
+    if (is_linear_place_value(arg)) {
+        reject_move_out(arg, arg.range);
+        consume_place(arg, arg.range);
+    }
+    if (k) {
+        kill_aliasing(*k);
+    } else if (linear) {
+        bindings_[local].state = State::Live;
+    }
+    return true;
+}
+
+void OwnershipChecker::collect_nil_facts(const ast::Expr& cond,
+                                         bool want_nil,
+                                         std::vector<PlaceKey>& out) const {
+    const auto& x = strip_parens(cond);
+    if (x.kind != ast::NodeKind::BinaryExpr) {
+        return;
+    }
+    const auto& b = static_cast<const ast::BinaryExpr&>(x);
+    if (want_nil && b.op == ast::BinaryOp::And) {
+        collect_nil_facts(*b.lhs, true, out);
+        collect_nil_facts(*b.rhs, true, out);
+        return;
+    }
+    const auto wanted = want_nil ? ast::BinaryOp::Eq : ast::BinaryOp::Ne;
+    if (b.op != wanted) {
+        return;
+    }
+    const ast::Expr* other = nullptr;
+    if (strip_parens(*b.rhs).kind == ast::NodeKind::NilLit) {
+        other = b.lhs.get();
+    } else if (strip_parens(*b.lhs).kind == ast::NodeKind::NilLit) {
+        other = b.rhs.get();
+    }
+    if (other != nullptr) {
+        if (auto k = storage_place(*other)) {
+            out.push_back(std::move(*k));
+        }
+    }
+}
+
+bool OwnershipChecker::block_diverges(const ast::Expr* e) const {
+    if (e == nullptr) {
+        return false;
+    }
+    if (auto t = resolution_->type_of(e); t != nullptr && t->is_never()) {
+        return true;
+    }
+    if (e->kind != ast::NodeKind::BlockExpr) {
+        return false;
+    }
+    const auto& b = static_cast<const ast::BlockExpr&>(*e);
+    if (b.stmts.empty()) {
+        return false;
+    }
+    const auto& last = *b.stmts.back();
+    switch (last.kind) {
+    case ast::NodeKind::ReturnStmt:
+    case ast::NodeKind::BreakStmt:
+    case ast::NodeKind::ContinueStmt:
+        return true;
+    case ast::NodeKind::ExprStmt: {
+        const auto* ex = static_cast<const ast::ExprStmt&>(last).expr.get();
+        if (ex == nullptr) {
+            return false;
+        }
+        if (ex->kind == ast::NodeKind::ThrowExpr) {
+            return true;
+        }
+        auto t = resolution_->type_of(ex);
+        return t != nullptr && t->is_never();
+    }
+    default:
+        return false;
+    }
+}
+
+bool OwnershipChecker::leaves_function(const ast::Expr* e) const {
+    if (e == nullptr || e->kind != ast::NodeKind::BlockExpr) {
+        return e != nullptr && block_diverges(e);
+    }
+    const auto& b = static_cast<const ast::BlockExpr&>(*e);
+    if (b.stmts.empty()) {
+        return false;
+    }
+    const auto k = b.stmts.back()->kind;
+    return k != ast::NodeKind::BreakStmt && k != ast::NodeKind::ContinueStmt;
+}
+
+void OwnershipChecker::report_path_leaks(const BindingMap& state, diag::SourceRange site) {
+    for (const auto& [sym, info] : state) {
+        if (info.state == State::Live && sym != nullptr && is_linear_type(sym->type)
+            && !borrows_.contains(sym) && leak_reported_.insert(sym).second) {
+            reporter_->report(
+                diag::Diagnostic::error(
+                    std::format("linear value '{}' leaks on this path, which leaves the function "
+                                "without consuming it",
+                                sym->name))
+                    .at(site));
+        }
+    }
 }
 
 }  // namespace vestra::sema

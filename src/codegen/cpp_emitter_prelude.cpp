@@ -124,6 +124,20 @@ void emit_prelude_unwrap(std::ostream& hdr) {
     hdr << "    if (!r.has_value()) { panic(\"force-unwrap of Result error\"); }\n";
     hdr << "    return *std::forward<Exp>(r);\n";
     hdr << "}\n\n";
+    // §18 `Optional.take()` moves the value out and leaves `.none`;
+    // `put(v)` fills an empty Optional and panics on an occupied one (how a
+    // linear value leaves and enters storage, §19.6).
+    hdr << "template <class T>\n";
+    hdr << "[[nodiscard]] inline std::optional<T> opt_take(std::optional<T>& o) {\n";
+    hdr << "    std::optional<T> out = std::move(o);\n";
+    hdr << "    o.reset();\n";
+    hdr << "    return out;\n";
+    hdr << "}\n\n";
+    hdr << "template <class T, class U>\n";
+    hdr << "inline void opt_put(std::optional<T>& o, U&& v) {\n";
+    hdr << "    if (o.has_value()) { panic(\"put into an Optional that already holds a value\"); }\n";
+    hdr << "    o.emplace(std::forward<U>(v));\n";
+    hdr << "}\n\n";
 }
 
 void emit_prelude_span_helpers(std::ostream& hdr) {

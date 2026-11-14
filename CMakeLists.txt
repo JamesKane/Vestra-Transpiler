@@ -67,6 +67,7 @@ set(vestra_sources
     src/sema/resolver_match.cpp
     src/sema/resolver_generics.cpp
     src/sema/ownership.cpp
+    src/sema/linearity.cpp
     src/sema/exclusivity.cpp
     src/sema/capability.cpp
     src/sema/comptime.cpp

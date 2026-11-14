@@ -49,6 +49,18 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
     // §14.12 SysregHandle (RW): `.read() -> T` and `.write(T) ->
     // Unit`. Both methods discharge Asm at the call site (gated in
     // capability.cpp via the SysregHandle base type).
+    // §18 `Optional.take()` moves the value out and leaves `.none`; `put(v)`
+    // moves `v` into an empty Optional and panics if it isn't empty. Both
+    // act on a place (the ownership checker requires one); they are how a
+    // linear value leaves and enters storage (§19.6, F17).
+    if (owner_type->kind() == TypeKind::Optional && owner_type->inner() != nullptr) {
+        if (name == "take") {
+            return types_->make_function({}, owner_type);
+        }
+        if (name == "put") {
+            return types_->make_function({owner_type->inner()}, types_->unit());
+        }
+    }
     if (owner_type->kind() == TypeKind::SysregHandle && owner_type->inner() != nullptr) {
         if (name == "read") {
             return types_->make_function({}, owner_type->inner());

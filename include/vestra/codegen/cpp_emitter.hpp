@@ -68,6 +68,9 @@ private:
     void
     emit_unit_throws_return(std::ostream& os, const ast::FuncDecl& f, const ast::BlockExpr& blk);
     static bool is_unit_result(const ast::FuncDecl& f);
+    // §19.6 `if let x = place` over a linear payload borrows the place's
+    // value: x binds by reference instead of copying the Optional (F17).
+    [[nodiscard]] bool if_let_borrows(const ast::IfExpr& i) const;
     // §14.4 an asm statement, as GCC/Clang extended (or basic) asm.
     void emit_asm(std::ostream& os, const ast::AsmStmt& a, int indent);
     static bool is_never_result(const ast::FuncDecl& f);

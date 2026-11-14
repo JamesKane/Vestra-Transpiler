@@ -2840,6 +2840,28 @@ add_test(
 set_tests_properties(e2e_sysreg_wrong_target PROPERTIES
     PASS_REGULAR_EXPRESSION "Sysreg.ia32_efer is an x86_64 register; this build targets aarch64")
 
+# §19.6 linear handles in storage (F17): take / put / borrowing if-let, run.
+set(e2e_lin_out ${e2e_workdir}/_linear_demo)
+add_test(
+    NAME    e2e_linear_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/examples/linear_demo/linear_demo.vst -o ${e2e_lin_out})
+add_test(
+    NAME    e2e_linear_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER} -std=c++26 -Wall -Wextra -O0 -I${e2e_lin_out}
+            ${CMAKE_SOURCE_DIR}/tests/e2e/main_linear_demo.cpp ${e2e_lin_out}/linear_demo.cpp
+            -o ${e2e_lin_out}/linear_demo_app)
+set_tests_properties(e2e_linear_demo_compile PROPERTIES DEPENDS e2e_linear_demo_transpile)
+add_test(NAME e2e_linear_demo_run COMMAND ${e2e_lin_out}/linear_demo_app)
+set_tests_properties(e2e_linear_demo_run PROPERTIES
+    DEPENDS e2e_linear_demo_compile PASS_REGULAR_EXPRESSION "linear_demo OK")
+add_test(NAME e2e_linear_demo_put_occupied COMMAND sh -c "${e2e_lin_out}/linear_demo_app occupied 2>&1; true")
+set_tests_properties(e2e_linear_demo_put_occupied PROPERTIES
+    DEPENDS e2e_linear_demo_compile
+    PASS_REGULAR_EXPRESSION "put into an Optional that already holds a value")
+add_test(
+    NAME    e2e_freestanding_linear_demo
+    COMMAND sh -c "rm -rf ${fs_workdir}/linear_demo && $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/examples/linear_demo/linear_demo.vst --no-libc -o ${fs_workdir}/linear_demo >/dev/null && ${CMAKE_CXX_COMPILER} --target=aarch64-none-elf ${fs_flags_str} -c -I${fs_workdir}/linear_demo ${fs_workdir}/linear_demo/linear_demo.cpp -o ${fs_workdir}/linear_demo/linear_demo.o")
+
 # §5 visibility: referencing a non-public (internal) decl of an imported module
 # must fail to resolve. `vestra check` is expected to exit non-zero.
 add_test(

@@ -717,7 +717,7 @@ void CppEmitter::emit_stmt_expr(std::ostream& os, const ast::Expr& expr, bool re
             break;
         }
         if (!i.let_name.empty()) {
-            os << "if (auto __vstr_opt = ";
+            os << (if_let_borrows(i) ? "if (auto& __vstr_opt = " : "if (auto __vstr_opt = ");
             emit_expr(os, *i.let_init);
             os << "; __vstr_opt.has_value()) { auto&& " << i.let_name << " = *__vstr_opt; ";
             emit_stmt_expr(os, *i.then_branch, return_value);

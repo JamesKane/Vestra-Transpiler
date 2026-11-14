@@ -489,3 +489,134 @@ TEST_CASE("forwarding a sink-linear parameter twice is still a double-move") {
                                "}\n"));
     CHECK(r.error_count >= 1);
 }
+
+// ---- §19.6 linear values in storage places (F17) -----------------------------
+
+namespace {
+
+const char* kTable = "linear struct Slot {\n"
+                     "    var badge: UInt64\n"
+                     "}\n"
+                     "struct Table {\n"
+                     "    var slots: [4]Slot?\n"
+                     "    var one: Slot\n"
+                     "    var used: UInt64\n"
+                     "}\n"
+                     "func give(_ s: sink Slot) { }\n"
+                     "func retire(_ t: sink Table) { }\n";
+
+CheckResult with_table(const char* body) {
+    return check(std::string(kTable) + body);
+}
+
+}  // namespace
+
+TEST_CASE("linearity is transitive through Optional, arrays and fields") {
+    // Table holds [4]Slot?, so it is linear: a local one must be consumed.
+    auto r = with_table("func f(_ t: sink Table) {\n    let u = t\n}\n");
+    CHECK(r.first_message.find("linear value 'u' is never consumed") != std::string::npos);
+    CHECK(with_table("func f(_ t: sink Table) {\n    let u = t\n    retire(u)\n}\n").error_count == 0);
+    // An Optional of a linear value is linear too.
+    CHECK(with_table("func f(_ t: inout Table) {\n    let x = t.slots[0].take()\n}\n")
+              .first_message.find("linear value 'x' is never consumed")
+          != std::string::npos);
+}
+
+TEST_CASE("a linear value leaves a place only by take()") {
+    CHECK(with_table("func f(_ t: inout Table) -> Slot? {\n    return t.slots[1]\n}\n")
+              .first_message.find("can't move the linear value out of 't.slots[1]'")
+          != std::string::npos);
+    CHECK(with_table("func f(_ t: inout Table) {\n    give(t.one)\n}\n")
+              .first_message.find("can't move the linear value out of 't.one'")
+          != std::string::npos);
+    CHECK(with_table("func f(_ s: Slot) {\n    give(s)\n}\n")
+              .first_message.find("the caller still owns it")
+          != std::string::npos);
+    CHECK(with_table("func f(_ t: inout Table) {\n"
+                     "    if let x = t.slots[1].take() {\n        give(x)\n    }\n}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("if let on a place borrows; on take() it owns") {
+    CHECK(with_table("func f(_ t: Table) -> UInt64 {\n    var b: UInt64 = 0\n"
+                     "    if let x = t.slots[0] {\n        b = x.badge\n    }\n    return b\n}\n")
+              .error_count
+          == 0);
+    CHECK(with_table("func f(_ t: inout Table) {\n"
+                     "    if let x = t.slots[0] {\n        give(x)\n    }\n}\n")
+              .first_message.find("'x' is borrowed from its place")
+          != std::string::npos);
+    CHECK(with_table("func f(_ t: inout Table) {\n"
+                     "    if let x = t.slots[0].take() {\n        let b = x.badge\n    }\n}\n")
+              .first_message.find("linear value 'x' is never consumed")
+          != std::string::npos);
+}
+
+TEST_CASE("assigning a linear place needs it proven empty, or put()") {
+    const char* msg = "could drop the linear value it holds";
+    CHECK(with_table("func f(_ t: inout Table, _ s: sink Slot) {\n    t.slots[0] = s\n}\n")
+              .first_message.find(msg)
+          != std::string::npos);
+    CHECK(with_table("func f(_ t: inout Table) {\n    t.slots[0] = nil\n}\n").first_message.find(msg)
+          != std::string::npos);
+    // Proven empty by a guard, by an early return, or by take().
+    CHECK(with_table("func f(_ t: inout Table, _ s: sink Slot) {\n"
+                     "    if t.slots[0] == nil {\n        t.used = t.used + 1\n        t.slots[0] = s\n"
+                     "    } else {\n        give(s)\n    }\n}\n")
+              .error_count
+          == 0);
+    CHECK(with_table("func f(_ t: inout Table, _ s: sink Slot) {\n"
+                     "    if t.slots[0] != nil {\n        give(s)\n        return\n    }\n"
+                     "    t.slots[0] = s\n}\n")
+              .error_count
+          == 0);
+    CHECK(with_table("func f(_ t: inout Table, _ s: sink Slot) {\n"
+                     "    if let x = t.slots[0].take() {\n        give(x)\n    }\n"
+                     "    t.slots[0] = s\n}\n")
+              .error_count
+          == 0);
+    CHECK(with_table("func f(_ t: inout Table, _ s: sink Slot) {\n    t.slots[2].put(s)\n}\n")
+              .error_count
+          == 0);
+    // The fact dies with anything that may refill the place.
+    CHECK(with_table("func f(_ t: inout Table, _ i: Int, _ j: Int, _ s: sink Slot) {\n"
+                     "    if t.slots[i] == nil {\n        t.slots[j] = s\n    } else {\n        give(s)\n    }\n}\n")
+              .first_message.find("'t.slots[j]'")
+          != std::string::npos);
+    CHECK(with_table("func g(_ t: inout Table) { }\n"
+                     "func f(_ t: inout Table, _ s: sink Slot) {\n"
+                     "    if t.slots[0] == nil {\n        g(&t)\n        t.slots[0] = s\n"
+                     "    } else {\n        give(s)\n    }\n}\n")
+              .first_message.find(msg)
+          != std::string::npos);
+    CHECK(with_table("func f(_ t: inout Table, _ s: sink Slot) {\n    t.one = s\n}\n")
+              .first_message.find("drops the linear value it holds")
+          != std::string::npos);
+}
+
+TEST_CASE("reassigning a live linear local is a leak; a nil-initialized one starts empty") {
+    CHECK(with_table("func f() {\n    var x = Slot(badge: 1)\n    x = Slot(badge: 2)\n    give(x)\n}\n")
+              .first_message.find("assigning to 'x' drops the linear value")
+          != std::string::npos);
+    CHECK(with_table("func f() {\n    var o: Slot? = nil\n    o = Slot(badge: 1)\n"
+                     "    if let x = o {\n        give(x)\n    }\n}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a branch that returns doesn't merge its moves, and leaks if it drops one") {
+    CHECK(with_table("func f(_ c: Bool, _ s: sink Slot) {\n"
+                     "    if c {\n        give(s)\n        return\n    }\n    give(s)\n}\n")
+              .error_count
+          == 0);
+    CHECK(with_table("func f(_ c: Bool, _ s: sink Slot) {\n"
+                     "    let k = s\n    if c {\n        return\n    }\n    give(k)\n}\n")
+              .first_message.find("linear value 'k' leaks on this path")
+          != std::string::npos);
+}
+
+TEST_CASE("ownership is checked inside `with` blocks") {
+    auto r = with_table("func f() {\n    with Alloc {\n        let x = Slot(badge: 1)\n    }\n}\n");
+    CHECK(r.first_message.find("linear value 'x' is never consumed") != std::string::npos);
+}

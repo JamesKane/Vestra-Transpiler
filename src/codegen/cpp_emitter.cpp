@@ -4,6 +4,7 @@
 #include "vestra/codegen/cpp_emitter.hpp"
 
 #include "cpp_emitter_internal.hpp"
+#include "vestra/sema/linearity.hpp"
 #include "vestra/sema/sysregs.hpp"
 
 #include <algorithm>
@@ -1275,6 +1276,27 @@ bool CppEmitter::is_unit_typed(const ast::Expr& e) const {
     return t != nullptr && t->kind() == sema::TypeKind::Unit;
 }
 
+bool CppEmitter::if_let_borrows(const ast::IfExpr& i) const {
+    if (resolution_ == nullptr || i.let_init == nullptr) {
+        return false;
+    }
+    const ast::Expr* e = i.let_init.get();
+    while (e->kind == ast::NodeKind::ParenExpr) {
+        e = static_cast<const ast::ParenExpr&>(*e).inner.get();
+    }
+    bool place = e->kind == ast::NodeKind::MemberExpr || e->kind == ast::NodeKind::IndexExpr;
+    if (e->kind == ast::NodeKind::IdentExpr) {
+        const auto* sym = resolution_->symbol_of(e);
+        place = sym != nullptr
+                && (sym->kind == sema::SymbolKind::Static || sym->kind == sema::SymbolKind::Parameter);
+    }
+    if (!place) {
+        return false;
+    }
+    sema::Linearity lin(resolution_->types());
+    return lin.is_linear(resolution_->type_of(e));
+}
+
 bool CppEmitter::is_never_result(const ast::FuncDecl& f) {
     if (f.result == nullptr || f.result->kind != ast::NodeKind::NamedType) {
         return false;
@@ -2417,6 +2439,24 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     }
     case ast::NodeKind::CallExpr: {
         const auto& c = static_cast<const ast::CallExpr&>(e);
+        // §18 `opt.take()` / `opt.put(v)` on an Optional place (F17).
+        if (resolution_ != nullptr && c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            auto bt = resolution_->type_of(mem.base.get());
+            if (bt != nullptr && bt->kind() == sema::TypeKind::Optional
+                && ((mem.member == "take" && c.args.empty())
+                    || (mem.member == "put" && c.args.size() == 1))) {
+                os << "__vstr::opt_" << mem.member << "(";
+                emit_expr(os, *mem.base);
+                if (mem.member == "put") {
+                    os << ", std::move(";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
+                }
+                os << ")";
+                break;
+            }
+        }
         // §A3 (§10.5) raw-mint builtins. Four shapes, all dispatched
         // by callee MemberExpr name. T comes from the resolver-typed
         // result for the pointer mints; from the inner-pointer's T
@@ -3955,7 +3995,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             // §9 `if let NAME = INIT { THEN } else { ELSE }` lowers to a
             // C++23 if-with-initializer over the std::optional, binding
             // the unwrapped value as a reference for THEN.
-            os << "([&]{ if (auto __vstr_opt = ";
+            os << (if_let_borrows(i) ? "([&]{ if (auto& __vstr_opt = " : "([&]{ if (auto __vstr_opt = ");
             emit_expr(os, *i.let_init);
             os << "; __vstr_opt.has_value()) { auto&& " << i.let_name << " = *__vstr_opt; return ";
             emit_expr(os, *i.then_branch);

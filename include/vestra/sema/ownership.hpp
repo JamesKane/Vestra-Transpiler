@@ -6,11 +6,15 @@
 #include "vestra/ast/nodes.hpp"
 #include "vestra/diag/diagnostic.hpp"
 #include "vestra/diag/source_manager.hpp"
+#include "vestra/sema/linearity.hpp"
 #include "vestra/sema/resolver.hpp"
 #include "vestra/sema/scope.hpp"
 #include "vestra/sema/types.hpp"
 
 #include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -114,9 +118,55 @@ private:
     // not values that can be consumed.)
     [[nodiscard]] static bool is_trackable_kind(SymbolKind k) noexcept;
 
+    // ---- §19.6 linear values in storage places (F17) -------------------------
+    // A storage place is a field, an element, a static, `self`'s state, or a
+    // `read` / `inout` parameter: storage this function doesn't own outright.
+    // A linear value moves out of one only with `.take()`, an `if let` on one
+    // borrows, and `place = v` must not overwrite a live linear value.
+    struct PlaceComponent {
+        bool index = false;      // `[i]` (vs a root name or `.field`)
+        std::string text;        // the name, or the rendered index expression
+        std::vector<std::string> idents;  // local names an index mentions
+    };
+    struct PlaceKey {
+        std::vector<PlaceComponent> parts;  // parts[0] is the root
+        bool root_is_static = false;
+        [[nodiscard]] std::string render() const;
+    };
+    // The storage place `e` names, if it is one we can key (a root plus
+    // fields and simply-indexed elements); nullopt otherwise.
+    [[nodiscard]] std::optional<PlaceKey> storage_place(const ast::Expr& e) const;
+    [[nodiscard]] static bool may_alias(const PlaceKey& a, const PlaceKey& b);
+    void kill_aliasing(const PlaceKey& k);
+    void kill_mentioning(std::string_view local);
+    void kill_rooted_at(std::string_view root);
+    [[nodiscard]] bool known_empty(const PlaceKey& k) const;
+    [[nodiscard]] bool is_linear_place_value(const ast::Expr& e) const;
+    // Rejects moving a linear value out of a storage place or a borrow.
+    void reject_move_out(const ast::Expr& e, diag::SourceRange site);
+    void check_place_assign(const ast::AssignStmt& a);
+    // The Optional-method special cases: `.take()` / `.put(v)`.
+    bool check_optional_method(const ast::CallExpr& c);
+    // `P == nil` conjuncts in `cond` (then-branch facts), or `P != nil`.
+    void collect_nil_facts(const ast::Expr& cond, bool want_nil, std::vector<PlaceKey>& out) const;
+    [[nodiscard]] bool block_diverges(const ast::Expr* e) const;
+    // Does this diverging branch leave the function (vs break / continue)?
+    [[nodiscard]] bool leaves_function(const ast::Expr* e) const;
+    void report_path_leaks(const BindingMap& state, diag::SourceRange site);
+
     const ast::CompilationUnit* unit_;
     const Resolution* resolution_;
     diag::DiagnosticReporter* reporter_;
+
+    // Places known to hold `.none` at the current program point.
+    std::vector<PlaceKey> empty_places_;
+    // `if let` bindings that borrow a storage place's value.
+    std::unordered_set<const Symbol*> borrows_;
+    // Bindings already reported as leaking, so one leak is one error.
+    std::unordered_set<const Symbol*> leak_reported_;
+    // The current function's parameters, for `read` / `inout` mode lookups.
+    const ast::FuncDecl* current_func_ = nullptr;
+    mutable std::optional<Linearity> linearity_;
 
     // Per-function: state of every tracked binding encountered so far. Reset
     // at the start of each function.

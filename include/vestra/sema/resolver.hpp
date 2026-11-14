@@ -63,8 +63,17 @@ public:
     // instead of a member access. Empty/absent for ordinary member exprs.
     [[nodiscard]] const std::string* qualified_name_of(const ast::Expr* e) const;
     void set_qualified_name(const ast::Expr* e, std::string name);
+    // §9 the Local Symbol an `if let NAME = INIT` binds in its then-branch.
+    [[nodiscard]] const Symbol* let_symbol(const ast::IfExpr* i) const;
+    void set_let_symbol(const ast::IfExpr* i, const Symbol* sym);
+    // The build's shared arena (member types of imported structs live there;
+    // linearity reads them, see vestra/sema/linearity.hpp).
+    [[nodiscard]] const TypeArena* types() const noexcept { return types_; }
+    void set_types(const TypeArena* t) noexcept { types_ = t; }
 
 private:
+    const TypeArena* types_ = nullptr;
+    std::unordered_map<const ast::IfExpr*, const Symbol*> let_symbols_;
     std::unordered_map<const ast::Expr*, TypePtr> expr_types_;
     std::unordered_map<const ast::Expr*, const Symbol*> expr_symbols_;
     std::unordered_map<const ast::Expr*, std::string> qualified_names_;

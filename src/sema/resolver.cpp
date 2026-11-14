@@ -60,6 +60,13 @@ const Symbol* Resolution::binding_symbol(const ast::Stmt* s) const {
 void Resolution::set_binding_symbol(const ast::Stmt* s, const Symbol* sym) {
     binding_symbols_[s] = sym;
 }
+const Symbol* Resolution::let_symbol(const ast::IfExpr* i) const {
+    auto it = let_symbols_.find(i);
+    return it == let_symbols_.end() ? nullptr : it->second;
+}
+void Resolution::set_let_symbol(const ast::IfExpr* i, const Symbol* sym) {
+    let_symbols_[i] = sym;
+}
 const std::string* Resolution::qualified_name_of(const ast::Expr* e) const {
     auto it = qualified_names_.find(e);
     return it == qualified_names_.end() ? nullptr : &it->second;
@@ -115,7 +122,9 @@ Resolver::Resolver(const ast::CompilationUnit& unit,
                    ComptimeFolder::EmbedReader embed_reader,
                    TargetContext target)
     : unit_(&unit), types_(&types), reporter_(&reporter),
-      folder_(&scopes_.global(), std::move(embed_reader)), target_(std::move(target)) {}
+      folder_(&scopes_.global(), std::move(embed_reader)), target_(std::move(target)) {
+    resolution_.set_types(types_);
+}
 
 void Resolver::resolve() {
     register_builtin_capabilities();
