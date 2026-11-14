@@ -72,6 +72,13 @@ private:
     void
     emit_unit_throws_return(std::ostream& os, const ast::FuncDecl& f, const ast::BlockExpr& blk);
     static bool is_unit_result(const ast::FuncDecl& f);
+    // §8 a statement-position `match` whose arms leave it (`return`, or a
+    // `break` / `continue` aimed outside it): lowered to real statements, an
+    // if-chain with arm-local bindings, so the jump leaves the function or
+    // loop and not a lambda (F18).
+    [[nodiscard]] static bool match_arms_escape(const ast::MatchExpr& m);
+    void emit_match_stmt(std::ostream& os, const ast::MatchExpr& m);
+    int match_stmt_counter_ = 0;
     // §A12 a closure written where a function type is expected (a `let`
     // annotated with one, or an argument to a function-typed parameter)
     // becomes a C function pointer: a capture-free `[]` lambda with the

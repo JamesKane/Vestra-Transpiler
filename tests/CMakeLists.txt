@@ -2892,6 +2892,22 @@ add_test(
 set_tests_properties(e2e_nolibc_rejects_hosted PROPERTIES
     PASS_REGULAR_EXPRESSION "`Alloc` needs the hosted runtime, which a --no-libc build")
 
+# §8 / §9 Optional-yielding match, bindless cases, statement match with
+# return / break, while let (F18), run.
+set(e2e_mf18_out ${e2e_workdir}/_match_flow_demo)
+add_test(
+    NAME    e2e_match_flow_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/examples/match_flow_demo/match_flow_demo.vst -o ${e2e_mf18_out})
+add_test(
+    NAME    e2e_match_flow_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER} -std=c++26 -Wall -Wextra -O0 -I${e2e_mf18_out}
+            ${CMAKE_SOURCE_DIR}/tests/e2e/main_match_flow_demo.cpp ${e2e_mf18_out}/match_flow_demo.cpp
+            -o ${e2e_mf18_out}/match_flow_demo_app)
+set_tests_properties(e2e_match_flow_demo_compile PROPERTIES DEPENDS e2e_match_flow_demo_transpile)
+add_test(NAME e2e_match_flow_demo_run COMMAND ${e2e_mf18_out}/match_flow_demo_app)
+set_tests_properties(e2e_match_flow_demo_run PROPERTIES
+    DEPENDS e2e_match_flow_demo_compile PASS_REGULAR_EXPRESSION "match_flow_demo OK")
+
 # §5 visibility: referencing a non-public (internal) decl of an imported module
 # must fail to resolve. `vestra check` is expected to exit non-zero.
 add_test(

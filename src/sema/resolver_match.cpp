@@ -287,6 +287,35 @@ TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
             }
         }
         TypePtr arm_type = arm.body ? check_expr(*arm.body, expected) : types_->unit();
+        // §9 arms that yield `T` and `nil` (or `T` and `T?`) make a `T?` match,
+        // as `if`/`else` does (F18).
+        auto optional_join = [&](TypePtr a, TypePtr b) -> TypePtr {
+            if (a == nullptr || b == nullptr) {
+                return nullptr;
+            }
+            const bool ao = a->kind() == TypeKind::Optional;
+            const bool bo = b->kind() == TypeKind::Optional;
+            if (ao && a->inner() != nullptr && a->inner()->is_never()) {
+                return bo ? b : types_->make_optional(b);  // nil, then T / T?
+            }
+            if (bo && b->inner() != nullptr && b->inner()->is_never()) {
+                return ao ? a : types_->make_optional(a);  // T / T?, then nil
+            }
+            if (ao && !bo && TypeArena::equal(a->inner(), b)) {
+                return a;
+            }
+            if (bo && !ao && TypeArena::equal(b->inner(), a)) {
+                return b;
+            }
+            return nullptr;
+        };
+        if (result_type != nullptr && arm_type != nullptr && !arm_type->is_never()
+            && !result_type->is_never() && !TypeArena::equal(arm_type, result_type)) {
+            if (auto joined = optional_join(result_type, arm_type)) {
+                result_type = joined;
+                continue;
+            }
+        }
         if (result_type == nullptr) {
             result_type = arm_type;
         } else if (arm_type != nullptr && !arm_type->is_never() && !result_type->is_never()
@@ -508,7 +537,9 @@ void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
                      std::format("enum '{}' has no case '{}'", enum_decl.name, ep.case_name));
             return;
         }
-        if (ep.children.size() != c->payload.size()) {
+        // §8 `case .x:` with no bindings matches the case and ignores its
+        // payload; a pattern that binds must bind every field (F18).
+        if (!ep.children.empty() && ep.children.size() != c->payload.size()) {
             error_at(p.range,
                      std::format("case '{}' has {} payload field(s), pattern binds {}",
                                  c->name,

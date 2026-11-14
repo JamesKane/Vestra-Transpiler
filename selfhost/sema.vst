@@ -5276,7 +5276,8 @@ func tyCheckAltPats(_ env: inout TyEnv, _ st: String, _ alts: Vec[Nd]) using All
 func tyCheckEnumPat(_ env: inout TyEnv, _ st: String, _ cn: String, _ children: Vec[Nd]) using Alloc {
     if !tyIsEnum(env, st) { env.bad.push(tyEnumPatNonEnumMsg(cn, st)); return }
     let arity = tyCaseArity(env, st, cn)
-    if arity >= 0 && children.len() != arity { env.bad.push(tyPayloadArityMsg(cn, arity, children.len())) }
+    // `case .x:` with no bindings ignores the payload (the bootstrap's rule).
+    if arity >= 0 && children.len() > 0 && children.len() != arity { env.bad.push(tyPayloadArityMsg(cn, arity, children.len())) }
 }
 
 func tyCheckLitPat(_ env: inout TyEnv, _ st: String, _ inner: Vec[Nd]) using Alloc {

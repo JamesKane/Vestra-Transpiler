@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §8 / §9 match and loop forms a kernel's tables want (F18): a match that
+// yields an Optional, a case matched without binding its payload, a
+// statement match whose arms `return` / `break`, and `while let`.
+module examples.match_flow_demo
+
+public enum Held {
+    case client(UInt32)
+    case serves(UInt32)
+    case token(UInt64)
+}
+
+public enum Light {
+    case red
+    case amber
+    case green
+}
+
+public func endpointOf(_ h: Held) -> UInt32? {
+    return match h {
+        case .client(let e): e
+        case .serves(let e): e
+        case .token(let t): nil
+    }
+}
+
+public func isClient(_ h: Held) -> Bool {
+    return match h {
+        case .client: true
+        default: false
+    }
+}
+
+// The arms return from the function (not from a lambda).
+public func servedOr(_ h: Held, _ dflt: UInt32) -> UInt32 {
+    match h {
+        case .serves(let e): { return e }
+        case .client: { return dflt + 1 }
+        default: { }
+    }
+    return dflt
+}
+
+public func stopAt(_ l: Light, _ urgent: Bool) -> UInt32 {
+    match l {
+        case .red: { return 0 }
+        case .amber where urgent: { return 1 }
+        default: { }
+    }
+    return 2
+}
+
+// `break` in an arm leaves the enclosing loop.
+public func firstOver(_ limit: UInt32) -> UInt32 {
+    var i: UInt32 = 0
+    while i < 100 {
+        match i {
+            case 7: { break }
+            default: { }
+        }
+        if i > limit { return i }
+        i = i + 1
+    }
+    return i
+}
+
+public struct Countdown {
+    var n: UInt32
+
+    inout func next() -> UInt32? {
+        if self.n == 0 { return nil }
+        self.n = self.n - 1
+        return self.n
+    }
+}
+
+public func drain(_ start: UInt32) -> UInt32 {
+    var c = Countdown(n: start)
+    var total: UInt32 = 0
+    while let v = c.next() {
+        total = total + v
+    }
+    return total
+}
+
+public func mk(_ k: UInt32) -> Held {
+    if k == 0 { return Held.client(5) }
+    if k == 1 { return Held.serves(9) }
+    return Held.token(3)
+}

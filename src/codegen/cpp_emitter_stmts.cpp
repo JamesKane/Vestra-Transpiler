@@ -10,6 +10,7 @@
 
 #include "cpp_emitter_internal.hpp"
 
+#include <algorithm>
 #include <format>
 #include <ostream>
 #include <sstream>
@@ -661,6 +662,157 @@ void CppEmitter::emit_asm(std::ostream& os, const ast::AsmStmt& a, int indent) {
     }
 }
 
+namespace {
+
+// Does `n` hold a `return`, or a `break` / `continue` not inside a loop of
+// its own? Closures are their own control context.
+bool escapes(const ast::Node& n, bool in_loop) {
+    auto x = [&](const ast::Node* c, bool loop) { return c != nullptr && escapes(*c, loop); };
+    switch (n.kind) {
+    case ast::NodeKind::ReturnStmt:
+        return true;
+    case ast::NodeKind::BreakStmt:
+    case ast::NodeKind::ContinueStmt:
+        return !in_loop;
+    case ast::NodeKind::BlockExpr:
+        for (const auto& st : static_cast<const ast::BlockExpr&>(n).stmts) {
+            if (escapes(*st, in_loop)) {
+                return true;
+            }
+        }
+        return false;
+    case ast::NodeKind::ExprStmt:
+        return x(static_cast<const ast::ExprStmt&>(n).expr.get(), in_loop);
+    case ast::NodeKind::IfExpr: {
+        const auto& i = static_cast<const ast::IfExpr&>(n);
+        return x(i.then_branch.get(), in_loop) || x(i.else_branch.get(), in_loop);
+    }
+    case ast::NodeKind::MatchExpr:
+        for (const auto& arm : static_cast<const ast::MatchExpr&>(n).arms) {
+            if (x(arm.body.get(), in_loop)) {
+                return true;
+            }
+        }
+        return false;
+    case ast::NodeKind::WhileStmt:
+        return x(static_cast<const ast::WhileStmt&>(n).body.get(), true);
+    case ast::NodeKind::ForStmt:
+        return x(static_cast<const ast::ForStmt&>(n).body.get(), true);
+    case ast::NodeKind::WithStmt:
+        return x(static_cast<const ast::WithStmt&>(n).body.get(), in_loop);
+    default:
+        return false;
+    }
+}
+
+}  // namespace
+
+bool CppEmitter::match_arms_escape(const ast::MatchExpr& m) {
+    for (const auto& arm : m.arms) {
+        if (arm.body != nullptr && escapes(*arm.body, false)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void CppEmitter::emit_match_stmt(std::ostream& os, const ast::MatchExpr& m) {
+    const int n = match_stmt_counter_++;
+    const std::string var = std::format("__vstr_ms{}", n);
+    const std::string end = var + "_end";
+    auto st = resolution_ != nullptr ? resolution_->type_of(m.scrutinee.get()) : nullptr;
+    const ast::EnumDecl* ed = nullptr;
+    if (st != nullptr && st->kind() == sema::TypeKind::Enum && st->nominal_decl() != nullptr) {
+        ed = static_cast<const ast::EnumDecl*>(st->nominal_decl());
+    }
+    const bool payload = ed != nullptr && detail::enum_is_sum_type(*ed);
+    auto enum_name = [&]() {
+        std::ostringstream o;
+        if (st != nullptr && !st->parts().empty()) {
+            emit_sema_type(o, st);
+        } else {
+            o << nominal_prefix(ed) << ed->name;
+        }
+        return o.str();
+    };
+    // The test for one (non-or) enum pattern.
+    auto enum_test = [&](const ast::EnumPat& ep) {
+        if (payload) {
+            return std::format("std::holds_alternative<{}::{}_t>({}.value)", enum_name(), ep.case_name, var);
+        }
+        return std::format("{} == {}::{}", var, enum_name(), ep.case_name);
+    };
+    os << "{\n";
+    os << "auto&& " << var << " = ";
+    emit_expr(os, *m.scrutinee);
+    os << ";\n";
+    for (const auto& arm : m.arms) {
+        std::string test = "true";
+        const ast::Pattern* p = arm.is_default ? nullptr : arm.pattern.get();
+        if (p != nullptr && ed != nullptr) {
+            if (p->kind == ast::NodeKind::EnumPat) {
+                test = enum_test(static_cast<const ast::EnumPat&>(*p));
+            } else if (p->kind == ast::NodeKind::OrPat) {
+                test.clear();
+                for (const auto& alt : static_cast<const ast::OrPat&>(*p).alternatives) {
+                    if (alt != nullptr && alt->kind == ast::NodeKind::EnumPat) {
+                        test += (test.empty() ? "" : " || ") + enum_test(static_cast<const ast::EnumPat&>(*alt));
+                    }
+                }
+                if (test.empty()) {
+                    test = "true";
+                }
+            }
+        } else if (p != nullptr) {
+            std::ostringstream t;
+            emit_pat_predicate(t, *p, var);
+            test = t.str();
+        }
+        os << "if (" << test << ") {\n";
+        // Bindings, arm-local.
+        if (p != nullptr && ed != nullptr && p->kind == ast::NodeKind::EnumPat && payload) {
+            const auto& ep = static_cast<const ast::EnumPat&>(*p);
+            const auto c = std::ranges::find_if(ed->cases, [&](const auto& cs) { return cs.name == ep.case_name; });
+            if (c != ed->cases.end() && !ep.children.empty()) {
+                os << "auto&& " << var << "_alt = std::get<" << enum_name() << "::" << ep.case_name
+                   << "_t>(" << var << ".value);\n";
+                for (std::size_t i = 0; i < ep.children.size() && i < c->payload.size(); ++i) {
+                    const auto& child = *ep.children[i];
+                    const std::string field = c->payload[i].first.empty() ? std::format("_{}", i) : c->payload[i].first;
+                    std::string name;
+                    if (child.kind == ast::NodeKind::BindPat) {
+                        name = static_cast<const ast::BindPat&>(child).name;
+                    } else if (child.kind == ast::NodeKind::IdentPat) {
+                        name = static_cast<const ast::IdentPat&>(child).name;
+                    }
+                    if (!name.empty()) {
+                        os << "auto&& " << name << " = " << var << "_alt." << field << ";\n";
+                    }
+                }
+            }
+        } else if (p != nullptr && ed == nullptr) {
+            emit_pat_bindings(os, *p, var, 0);
+        } else if (p != nullptr && (p->kind == ast::NodeKind::IdentPat || p->kind == ast::NodeKind::BindPat)) {
+            emit_pat_bindings(os, *p, var, 0);
+        }
+        if (arm.guard) {
+            os << "if (";
+            emit_expr(os, *arm.guard);
+            os << ") {\n";
+        }
+        if (arm.body) {
+            emit_stmt_expr(os, *arm.body, false);
+        }
+        os << "goto " << end << ";\n";
+        if (arm.guard) {
+            os << "}\n";
+        }
+        os << "}\n";
+    }
+    os << end << ":;\n";
+    os << "}\n";
+}
+
 void CppEmitter::emit_stmt_expr(std::ostream& os, const ast::Expr& expr, bool return_value) {
     // §9 + §17.7 statement-position lowering. The kinds we special-case
     // are the ones whose value semantics fight a generic `expr;` /
@@ -673,6 +825,11 @@ void CppEmitter::emit_stmt_expr(std::ostream& os, const ast::Expr& expr, bool re
     //   * BlockExpr — flatten its statements; recurse on the trailing
     //     expression so a `throw` at the end of a block fires correctly.
     // Everything else falls back to plain `expr;` / `return expr;`.
+    if (expr.kind == ast::NodeKind::MatchExpr && !return_value
+        && match_arms_escape(static_cast<const ast::MatchExpr&>(expr))) {
+        emit_match_stmt(os, static_cast<const ast::MatchExpr&>(expr));
+        return;
+    }
     switch (expr.kind) {
     case ast::NodeKind::ThrowExpr: {
         // §11 — inside an `async func` the body is a coroutine, so the error

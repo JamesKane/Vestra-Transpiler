@@ -156,6 +156,43 @@ ast::StmtPtr Parser::parse_statement() {
     }
     case TokenKind::KwWhile: {
         advance();
+        // §9 `while let NAME = INIT { BODY }` desugars to
+        // `while true { if let NAME = INIT { BODY } else { break } }`: INIT is
+        // re-evaluated each time round, and the loop ends at the first nil
+        // (F18).
+        if (check(TokenKind::KwLet)) {
+            advance();
+            auto ifx = std::make_unique<ast::IfExpr>();
+            if (check(TokenKind::Identifier)) {
+                ifx->let_name = std::string{advance().lexeme};
+            } else {
+                emit_error(peek().range, "expected a name after `while let`");
+            }
+            expect(TokenKind::Assign, "'=' in while let");
+            ifx->let_init = parse_expr();
+            ifx->then_branch = parse_block_expr();
+            auto brk = std::make_unique<ast::BreakStmt>();
+            brk->range = last_range();
+            auto els = std::make_unique<ast::BlockExpr>();
+            els->range = last_range();
+            els->stmts.push_back(std::move(brk));
+            ifx->else_branch = std::move(els);
+            ifx->range = merge(start, last_range());
+            auto es = std::make_unique<ast::ExprStmt>();
+            es->range = ifx->range;
+            es->expr = std::move(ifx);
+            auto body = std::make_unique<ast::BlockExpr>();
+            body->range = es->range;
+            body->stmts.push_back(std::move(es));
+            auto tru = std::make_unique<ast::BoolLit>();
+            tru->value = true;
+            tru->range = start;
+            auto w = std::make_unique<ast::WhileStmt>();
+            w->cond = std::move(tru);
+            w->body = std::move(body);
+            w->range = merge(start, last_range());
+            return w;
+        }
         auto w = std::make_unique<ast::WhileStmt>();
         w->cond = parse_expr();
         w->body = parse_block_expr();
