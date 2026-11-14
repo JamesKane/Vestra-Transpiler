@@ -3455,3 +3455,9 @@ TEST_CASE("Str.bytes() is a Span[UInt8] view, no allocation (§18.6)") {
     CHECK(f.out.source.find("std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(")
           != std::string::npos);
 }
+
+TEST_CASE("hosted compilerFence is a full compiler barrier, not a signal fence") {
+    SemaEmitFixture f("func f() using Asm { compilerFence(.seqCst) }\n");
+    CHECK(f.out.header.find("__asm__ volatile(\"\" ::: \"memory\");") != std::string::npos);
+    CHECK(f.out.header.find("std::atomic_signal_fence(ord)") == std::string::npos);
+}

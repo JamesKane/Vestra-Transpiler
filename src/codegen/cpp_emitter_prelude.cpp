@@ -1264,8 +1264,11 @@ struct SelectAwaiter {
     hdr << "enum class BarrierScope { full, inner, outer, nonShareable };\n";
     hdr << "enum class BarrierKind { loadLoad, storeStore, loadStore, full };\n\n";
     hdr << "namespace __vstr {\n\n";
-    hdr << "inline void compilerFence(std::memory_order ord) noexcept {\n";
-    hdr << "    std::atomic_signal_fence(ord);\n";
+    // compilerFence is a full compiler barrier, as in the freestanding
+    // prelude: an atomic_signal_fence may be optimized away, which deletes a
+    // delay loop whose only body is a compilerFence.
+    hdr << "inline void compilerFence(std::memory_order) noexcept {\n";
+    hdr << "    __asm__ volatile(\"\" ::: \"memory\");\n";
     hdr << "}\n";
     hdr << "inline void memoryBarrier(BarrierScope, BarrierKind kind) noexcept {\n";
     hdr << "    switch (kind) {\n";
