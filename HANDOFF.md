@@ -37,13 +37,13 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 
 ## Current state
 
-- **1560 / 1560 tests pass** (`ctest --test-dir build/debug`), Debug build,
-  format-check clean. Of these, **270 are `e2e_selfhost`** (4 lexer, 11 parser,
-  74 sema, 177 codegen, 4 end-to-end demo).
-- Latest slice: `b22c3df` (codegen slice 90, `@interrupt` slot types and
-  vector tables; corpus burndown 36). **132 commits** carry the `selfhost:` prefix.
-- **Corpus burndown: 119 of 150 examples byte-identical, 879 divergent lines**
-  (629 of them parked by design or in practice, so 250 live; see
+- **1564 / 1564 tests pass** (`ctest --test-dir build/debug`), Debug build,
+  format-check clean. Of these, **274 are `e2e_selfhost`** (4 lexer, 11 parser,
+  74 sema, 181 codegen, 4 end-to-end demo).
+- Latest slice: `199e898` (codegen slice 92, raw pointers, spans, MMIO views
+  and mem intrinsics; corpus burndown 38). **134 commits** carry the `selfhost:` prefix.
+- **Corpus burndown: 127 of 150 examples byte-identical, 801 divergent lines**
+  (629 of them parked by design or in practice, so 172 live; see
   the ranking below). The baseline when the burndown started was 11 examples
   and 23394 lines.
 - Phase status:
@@ -60,7 +60,7 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
     generics tracking (unknown-type, is-not-generic), all match families
     (guard-Bool, exhaustiveness, arm-type, pattern checks), and multi-file
     modules (import resolution, qualified member + type).
-  - **Codegen: 90 slices; the close-out roadmap is complete and the corpus
+  - **Codegen: 92 slices; the close-out roadmap is complete and the corpus
     burndown is active.** See "Where to pick up" below.
 
 ## Where to pick up: codegen
@@ -79,12 +79,12 @@ byte-for-byte vs `vestra build`:
 ### The next action
 
 The completion standard is the whole `examples/` corpus byte-identical, the same
-bar the lexer and parser already met. **119 of 150** examples are there;
-**879 divergent lines** remain, of which **629 are parked** (by design or
-in practice; see the ranking), leaving **250 live**. Families #1 to #6 have shipped (slices 75 to 90, session of 2026-11-14),
-reaching 119 identical. **Start with family #10 in the table below**
-(typed system registers, one small flip), then #7 (raw pointers and MMIO,
-the largest live family at about 76 lines). First re-establish the baseline, since it is also
+bar the lexer and parser already met. **127 of 150** examples are there;
+**801 divergent lines** remain, of which **629 are parked** (by design or
+in practice; see the ranking), leaving **172 live**. Families #1 to #7 and #10 have shipped (slices 75 to 92, session of
+2026-11-14), reaching 127 identical. **Start with family #8 in the table
+below** (spans and iterator adapters, four examples); after it only the
+family #9 one-offs remain live. First re-establish the baseline, since it is also
 the regression check:
 
 ```
@@ -113,10 +113,10 @@ example totals, "flips" the examples a family would make identical.
 | 4 | ~~**Cheap one-offs**~~ DONE in slices 78 to 83 (`addr_of` also fell from 18 to 14): sink arg of a struct not moved; `requires` bounds; typed `with x = e` binding; if-let as a value; `?.` through an optional field (`and_then`); a function name as a value (`&f`) | `ownership` 2, `generic_bounds` 2, `with_binding` 4, `optional` 4, `optchain` 6, `fn_ptr_table` 6 | up to 6 | small each |
 | 5 | ~~**Attributes**~~ DONE in slices 88 to 90 (attribute capture on funcs, statics, structs and fields; link attributes and `@panic_handler`; struct layout; `@interrupt` slot types) | | | |
 | 6 | ~~**Atomics / sync surface**~~ DONE in slices 84 to 87, including the `atomics` example itself; `panic_handler` moved to #5 | | | |
-| 7 | **Raw pointers and MMIO**: `Ptr` / `MutPtr.unchecked` as `reinterpret_cast`, `p.value` as `(*p)`, `Span.raw`, the MMIO view methods, `memcpy`. (The type spellings, by-value pointer params, `&x` and the cache intrinsics landed in slices 80, 84 and 86.) | `raw_mint` 8, `mmio` 8, `mmio_wire` 8, `ptr_deref` 14, `mem_intrinsics` 16, `addr_of` 6, `cache_tlb` 8 | 6 to 7 | medium |
+| 7 | ~~**Raw pointers and MMIO**~~ DONE in slices 80, 84, 86 and 92 (mints, spans, MMIO views, `p.value`, mem intrinsics, digit separators) | | | |
 | 8 | **Spans and iterator adapters**: `s.count` / `isEmpty` / `split` / `chunks` and the `zip` / `take` / `map` / `filter` adapter protocol | `split_demo` 12, `iter_combinators` 12, `map_filter` 16, `chunks_demo` 18 | 4 | medium |
 | 9 | **Medium one-offs** | `simd_demo` 6, `map_error` 7 (closure with a match body), `const_generic` 12 (array literal element type from a generic field), `tuple_params` 14 (tuple-pattern parameters), `docatch_where` 14, `parallel_demo` 14 (closure param types), `soa_demo` 20, `midtry` 27 (an `if` cond-hoist at an unannotated binding and mid-expression) | 1 each | varies |
-| 10 | **Typed system registers** (§14.12, missed by the September re-rank): `Sysreg.daif` as `__vstr::sysreg::daif`, and some registers lowered to dedicated `__vstr::sysreg::write_<reg>` shims | `sysreg` 14 | 1 | small |
+| 10 | ~~**Typed system registers**~~ DONE in slice 91 (`__vstr::sysreg::<name>`, barrier-gated `write_<reg>` unless `@no_auto_barrier`) | | | |
 
 **Atomics decision (answered 2026-11-14).** Unparked. The `atomics` example
 was only scoped out of slice 39 to keep that slice reviewable, then labelled
@@ -129,8 +129,8 @@ the example is now identical.
 `embed` 2, `inline_layout` 16 and `spans` 15). The bootstrap folds comptime
 functions and drops them from the output, and comptime is already a known
 unmirrored gap. `async_demo` (20) is a `select`, the same parked family as
-`channel_select_demo`. Counting those, 629 of the 879 remaining lines are
-parked and 250 are live (measured from the sweep report after slice 90).
+`channel_select_demo`. Counting those, 629 of the 801 remaining lines are
+parked and 172 are live (measured from the sweep report after slice 92).
 
 **A pattern worth checking first.** When many examples share the same small
 divergence count (44 `interp_*` demos at exactly 4 lines each), the cause is
@@ -168,7 +168,7 @@ generated output directly over reading the `<`/`>` markers.
 
 ### What codegen covers
 
-Ninety slices; the close-out roadmap is complete and the corpus burndown
+Ninety-two slices; the close-out roadmap is complete and the corpus burndown
 is active. The per-slice engineering log — every lowering, its bootstrap source
 line, and its gotchas — is in the `project_dogfood_compiler.md` memory file.
 The capability summary:
@@ -220,7 +220,10 @@ the sole statement of a return-position `else { … }` block (the bootstrap
 flattens it into nested returning ifs, vgen emits a value lambda; the
 `else if` spelling is fine); `PerCpu.new` takes its T from the
 argument rather than the call's expected type, so a literal argument under
-a wider `Box[PerCpu[T]]` annotation would differ; Soa methods and span `split`/`chunks`.
+a wider `Box[PerCpu[T]]` annotation would differ; `Ptr.unchecked` /
+`MutPtr.unchecked` know T only as the whole initializer of an annotated
+binding or a returned value (elsewhere they spell the bootstrap's
+defensive `void`); Soa methods and span `split`/`chunks`.
 
 **Known SHARED bootstrap gaps**, mirrored rather than fixed — both produce
 non-compiling C++ on BOTH sides, so the differential stays textual:
