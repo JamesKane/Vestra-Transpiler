@@ -1602,6 +1602,9 @@ func parseStmt(_ p: inout Ps) using Alloc -> Nd {
     }
     if isKind(p, TokKind.kwWhile) {
         advP(&p)
+        // §9 `while let x = e { B }` is `while true { if let x = e { B } else
+        // { break } }`, as the bootstrap parser desugars it.
+        if eat(p, TokKind.kwLet) { return parseWhileLet(&p) }
         let cond = bE(parseExpr(&p))
         let body = bE(parseBlock(&p))
         return Nd.whileS(cond, body)
@@ -2086,6 +2089,21 @@ func parseMatch(_ p: inout Ps) using Alloc -> Nd {
     }
     eat(p, TokKind.rbrace)
     return Nd.matchE(bE(scrut), arms)
+}
+
+func parseWhileLet(_ p: inout Ps) using Alloc -> Nd {
+    let letName = curText(p)
+    advP(&p)
+    eat(p, TokKind.assign)
+    let letInit = bE(parseExpr(&p))
+    let thenB = bE(parseBlock(&p))
+    var brk: Vec[Nd] = Vec.new()
+    brk.push(Nd.breakS(""))
+    let els = bE(Nd.block(brk))
+    let ifx = Nd.ifE(letName, letInit, Vec.new(), thenB, els)
+    var body: Vec[Nd] = Vec.new()
+    body.push(Nd.exprS(bE(ifx)))
+    return Nd.whileS(bE(Nd.boolLit(true)), bE(Nd.block(body)))
 }
 
 func parseIf(_ p: inout Ps) using Alloc -> Nd {
@@ -4486,6 +4504,38 @@ struct OwnEnv {
     var neverFns: Vec[String]   // global: functions whose result is Never
     var fnName: Vec[String]     // global: function name ...
     var fnRet: Vec[Nd]          // ... and its result type (wildcard when Unit)
+    var fieldName: Vec[String]  // global: parallel to fieldOwner / fieldTy
+    var staticName: Vec[String] // global: statics ...
+    var staticTy: Vec[Nd]       // ... and their types
+    var pName: Vec[String]      // per function: parameter name ...
+    var pMode: Vec[String]      // ... mode ("", "inout ", "sink ") ...
+    var pTy: Vec[Nd]            // ... and type
+    var locName: Vec[String]    // per function: local name ...
+    var locTy: Vec[Nd]          // ... and its declared (or constructed) type
+    var selfTy: String          // per method: the owning type ("" outside one)
+    var borrows: Vec[String]    // per function: `if let` bindings borrowed from a place
+    var fKeys: Vec[String]      // per path: places known to be empty (encoded keys) ...
+    var fIds: Vec[String]       // ... the locals their indices mention (" a b ") ...
+    var fStatic: Vec[Bool]      // ... and whether the root is a static
+}
+
+// §19.6 a storage place: a field / element path from a root this function
+// doesn't own outright (a static, `self`, a `read` / `inout` parameter, or a
+// path below any binding). `key` encodes it part by part ("r:name|.f|#i").
+struct OwnPlace {
+    var ok: Bool
+    var key: String
+    var text: String       // as the bootstrap renders it: `k.slots[i]`
+    var ids: String
+    var isStatic: Bool
+    var single: Bool       // a bare root, no field or element
+    var ty: Vec[Nd]        // its type, empty when unknown
+}
+
+struct OwnFacts {
+    var keys: Vec[String]
+    var ids: Vec[String]
+    var stat: Vec[Bool]
 }
 
 // One path's binding state, for the branch-aware merge (§10 / §5 phase 2).
@@ -4516,8 +4566,14 @@ func ownCollectDecl(_ env: inout OwnEnv, _ d: Nd) using Alloc {
             ownCollectFunc(env, name, params, r)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): ownCollectStruct(env, name, isLinear, fl)
         case .enumD(let vis, let name, let cs, let m, let generics): env.ctors.push(name)
+        case .staticD(let vis, let name, let ty, let v): ownCollectStatic(env, name, ty)
         default: noop()
     }
+}
+
+func ownCollectStatic(_ env: inout OwnEnv, _ name: String, _ ty: Vec[Nd]) using Alloc {
+    env.staticName.push(name)
+    env.staticTy.push(ty.get(0) ?? Nd.wildcard)
 }
 
 func ownCollectFunc(_ env: inout OwnEnv, _ name: String, _ params: Vec[Nd], _ r: Vec[Nd]) using Alloc {
@@ -4548,13 +4604,14 @@ func ownCollectStruct(_ env: inout OwnEnv, _ name: String, _ isLinear: Bool, _ f
 
 func ownCollectField(_ env: inout OwnEnv, _ owner: String, _ f: Nd) using Alloc {
     match f {
-        case .field(let k, let n, let ty): ownPushField(env, owner, ty)
+        case .field(let k, let n, let ty): ownPushField(env, owner, n, ty)
         default: noop()
     }
 }
 
-func ownPushField(_ env: inout OwnEnv, _ owner: String, _ ty: Vec[Nd]) using Alloc {
+func ownPushField(_ env: inout OwnEnv, _ owner: String, _ name: String, _ ty: Vec[Nd]) using Alloc {
     env.fieldOwner.push(owner)
+    env.fieldName.push(name)
     env.fieldTy.push(ty.get(0) ?? Nd.wildcard)
 }
 
@@ -4669,10 +4726,16 @@ func ownCheckDecl(_ env: inout OwnEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             ownCheckFunc(env, params, b)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): ownCheckMethods(env, m)
-        case .enumD(let vis, let name, let cs, let m, let generics): ownCheckMethods(env, m)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): ownCheckOwned(env, name, m)
+        case .enumD(let vis, let name, let cs, let m, let generics): ownCheckOwned(env, name, m)
         default: noop()
     }
+}
+
+func ownCheckOwned(_ env: inout OwnEnv, _ owner: String, _ methods: Vec[Nd]) using Alloc {
+    env.selfTy = own(owner)
+    ownCheckMethods(env, methods)
+    env.selfTy = own("")
 }
 
 func ownCheckMethods(_ env: inout OwnEnv, _ methods: Vec[Nd]) using Alloc {
@@ -4695,6 +4758,13 @@ func ownResetBindings(_ env: inout OwnEnv) using Alloc {
     while env.consumed.len() > 0 { let _ = env.consumed.pop() }
     while env.isLin.len() > 0 { let _ = env.isLin.pop() }
     while env.leakRep.len() > 0 { let _ = env.leakRep.pop() }
+    while env.pName.len() > 0 { let _ = env.pName.pop() }
+    while env.pMode.len() > 0 { let _ = env.pMode.pop() }
+    while env.pTy.len() > 0 { let _ = env.pTy.pop() }
+    while env.locName.len() > 0 { let _ = env.locName.pop() }
+    while env.locTy.len() > 0 { let _ = env.locTy.pop() }
+    while env.borrows.len() > 0 { let _ = env.borrows.pop() }
+    ownClearFacts(env)
 }
 
 // §5 / §19.6 a linear binding still live at the end of the function leaks (the
@@ -4764,7 +4834,7 @@ func ownCallLinear(_ env: inout OwnEnv, _ callee: Vec[Nd]) using Alloc -> Bool {
     if let c = callee.get(0) {
         return match c {
             case .ident(let n): ownIsLinearName(env, n) || ownFnRetLin(env, n)
-            case .member(let base, let m, let ch): streq(m, "take") && ownExprLinear(env, base)
+            case .member(let base, let m, let ch): streq(m, "take") && (ownExprLinear(env, base) || ownPlaceLinear(env, base))
             default: false
         }
     }
@@ -4773,7 +4843,10 @@ func ownCallLinear(_ env: inout OwnEnv, _ callee: Vec[Nd]) using Alloc -> Bool {
 
 func ownLocalLinear(_ env: inout OwnEnv, _ n: String) -> Bool {
     let idx = ownFind(env, n)
-    return idx >= 0 && (env.isLin.get(idx) ?? false)
+    if idx >= 0 && (env.isLin.get(idx) ?? false) { return true }
+    // A parameter carries no obligation itself, but its type is still linear.
+    let pi = ownFindIn(env.pName, n)
+    return pi >= 0 && ownIsLinTy(env, env.pTy.get(pi) ?? Nd.wildcard)
 }
 
 func ownIsNilBoxed(_ v: Vec[Nd]) -> Bool {
@@ -4797,9 +4870,16 @@ func ownRegisterParams(_ env: inout OwnEnv, _ params: Vec[Nd]) using Alloc {
 
 func ownRegisterParam(_ env: inout OwnEnv, _ p: Nd) using Alloc {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): ownRegister(env, nm, ty)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): ownRegisterParam2(env, nm, md, ty)
         default: noop()
     }
+}
+
+func ownRegisterParam2(_ env: inout OwnEnv, _ name: String, _ md: String, _ ty: Vec[Nd]) using Alloc {
+    env.pName.push(name)
+    env.pMode.push(md)
+    env.pTy.push(ty.get(0) ?? Nd.wildcard)
+    ownRegister(env, name, ty)
 }
 
 func ownRegister(_ env: inout OwnEnv, _ name: String, _ ty: Vec[Nd]) using Alloc {
@@ -4814,7 +4894,9 @@ func ownPush(_ env: inout OwnEnv, _ name: String, _ consumed: Bool, _ lin: Bool)
 
 // A `let` / `var` binding: tracked when its annotation is non-trivial or its
 // value is linear; a linear one initialized to `nil` holds nothing yet.
-func ownRegisterLet(_ env: inout OwnEnv, _ name: String, _ ty: Vec[Nd], _ lin: Bool, _ isNil: Bool) using Alloc {
+func ownRegisterLet(_ env: inout OwnEnv, _ name: String, _ ty: Vec[Nd], _ v: Vec[Nd], _ lin: Bool, _ isNil: Bool) using Alloc {
+    env.locName.push(name)
+    env.locTy.push(ownDeclTy(ty, v))
     if lin { ownPush(env, name, isNil, true) }
     else if ownNonTrivialBoxed(ty) { ownPush(env, name, false, false) }
 }
@@ -4918,6 +5000,450 @@ func ownIndex(_ env: inout OwnEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc
         ownExpr(env, idxs.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+}
+
+// ----- storage places (§19.6, the bootstrap's storage_place et al.) ---------
+func ownNoPlace() using Alloc -> OwnPlace {
+    return OwnPlace(ok: false, key: "", text: "", ids: "", isStatic: false, single: false, ty: Vec.new())
+}
+
+func ownPlace(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc -> OwnPlace {
+    if let n = v.get(0) {
+        return match n {
+            case .paren(let x): ownPlace(env, x)
+            case .member(let base, let m, let ch): ownPlaceMember(env, base, m, ch)
+            case .index(let base, let idxs): ownPlaceIndex(env, base, idxs)
+            case .selfE: ownPlaceRoot(env, own("self"), true)
+            case .ident(let x): ownPlaceRoot(env, x, true)
+            default: ownNoPlace()
+        }
+    }
+    return ownNoPlace()
+}
+
+// A root, bare (`single`) or under a path. A bare name is storage only when
+// this function doesn't own it: a static, `self`, a read / inout parameter.
+func ownPlaceRoot(_ env: inout OwnEnv, _ n: String, _ bare: Bool) using Alloc -> OwnPlace {
+    var ty: Vec[Nd] = Vec.new()
+    var known: Bool = false
+    var storage: Bool = false
+    var isStatic: Bool = false
+    if streq(n, "self") {
+        if streq(env.selfTy, "") { return ownNoPlace() }
+        ty.push(Nd.named(own(env.selfTy), false, Vec.new()))
+        known = true
+        storage = true
+    } else {
+        let pi = ownFindIn(env.pName, n)
+        let li = ownFindIn(env.locName, n)
+        let si = ownFindIn(env.staticName, n)
+        if li >= 0 { ty.push(env.locTy.get(li) ?? Nd.wildcard); known = true }
+        else if pi >= 0 {
+            ty.push(env.pTy.get(pi) ?? Nd.wildcard)
+            known = true
+            storage = !streq(env.pMode.get(pi) ?? own(""), "sink ")
+        } else if si >= 0 {
+            ty.push(env.staticTy.get(si) ?? Nd.wildcard)
+            known = true
+            storage = true
+            isStatic = true
+        }
+    }
+    if !known || (bare && !storage) { return ownNoPlace() }
+    var key: String = "r:"
+    key.append(n)
+    return OwnPlace(ok: true, key: key, text: own(n), ids: "", isStatic: isStatic, single: bare, ty: ty)
+}
+
+func ownFindIn(_ xs: Vec[String], _ n: String) -> Int {
+    var i: Int = xs.len() - 1
+    while i >= 0 {
+        if let x = xs.get(i) {
+            if streq(x, n) { return i }
+        }
+        i = i - 1
+    }
+    return -1
+}
+
+func ownPlaceBase(_ env: inout OwnEnv, _ base: Vec[Nd]) using Alloc -> OwnPlace {
+    if let n = base.get(0) {
+        return match n {
+            case .paren(let x): ownPlaceBase(env, x)
+            case .ident(let x): ownPlaceRoot(env, x, false)
+            case .selfE: ownPlaceRoot(env, own("self"), false)
+            default: ownPlace(env, base)
+        }
+    }
+    return ownNoPlace()
+}
+
+func ownPlaceMember(_ env: inout OwnEnv, _ base: Vec[Nd], _ m: String, _ chain: Bool) using Alloc -> OwnPlace {
+    if chain { return ownNoPlace() }
+    var b = ownPlaceBase(env, base)
+    if !b.ok { return b }
+    b.key.append("|.")
+    b.key.append(m)
+    b.text.append(".")
+    b.text.append(m)
+    b.single = false
+    b.ty = ownFieldTy(env, b.ty, m)
+    return b
+}
+
+func ownPlaceIndex(_ env: inout OwnEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc -> OwnPlace {
+    if idxs.len() != 1 { return ownNoPlace() }
+    var b = ownPlaceBase(env, base)
+    if !b.ok { return b }
+    var ids: String = ""
+    let r = ownRenderIndex(idxs.get(0) ?? Nd.wildcard, ids)
+    if streq(r, "") { return ownNoPlace() }
+    b.key.append("|#")
+    b.key.append(r)
+    b.text.append("[")
+    b.text.append(r)
+    b.text.append("]")
+    b.ids.append(ids)
+    b.single = false
+    b.ty = ownElemTy(b.ty)
+    return b
+}
+
+// An index the bootstrap compares textually: names, integer literals, fields
+// of those, + - * of those, and a one-argument conversion. "" otherwise.
+func ownRenderIndex(_ e: Nd, _ ids: inout String) using Alloc -> String {
+    return match e {
+        case .ident(let n): ownRenderId(n, ids)
+        case .intLit(let t): own(t)
+        case .paren(let x): ownRenderIndex(x.get(0) ?? Nd.wildcard, ids)
+        case .member(let base, let m, let ch): ownRenderMember(base, m, ids)
+        case .binary(let op, let l, let r): ownRenderBin(op, l, r, ids)
+        case .call(let callee, let args): ownRenderConv(callee, args, ids)
+        default: own("")
+    }
+}
+
+func ownRenderId(_ n: String, _ ids: inout String) using Alloc -> String {
+    ids.append(" ")
+    ids.append(n)
+    ids.append(" ")
+    return own(n)
+}
+
+func ownRenderMember(_ base: Vec[Nd], _ m: String, _ ids: inout String) using Alloc -> String {
+    let b = ownRenderIndex(base.get(0) ?? Nd.wildcard, ids)
+    if streq(b, "") { return own("") }
+    var s = b
+    s.append(".")
+    s.append(m)
+    return s
+}
+
+func ownRenderBin(_ op: String, _ l: Vec[Nd], _ r: Vec[Nd], _ ids: inout String) using Alloc -> String {
+    if !streq(op, "+") && !streq(op, "-") && !streq(op, "*") { return own("") }
+    let a = ownRenderIndex(l.get(0) ?? Nd.wildcard, ids)
+    let b = ownRenderIndex(r.get(0) ?? Nd.wildcard, ids)
+    if streq(a, "") || streq(b, "") { return own("") }
+    var s: String = "("
+    s.append(a)
+    s.append(" ")
+    s.append(op)
+    s.append(" ")
+    s.append(b)
+    s.append(")")
+    return s
+}
+
+func ownRenderConv(_ callee: Vec[Nd], _ args: Vec[Nd], _ ids: inout String) using Alloc -> String {
+    let f = ownIdentName(callee)
+    if streq(f, "") || args.len() != 1 { return own("") }
+    let a = ownRenderIndex(ownArgValue(args.get(0) ?? Nd.wildcard).get(0) ?? Nd.wildcard, ids)
+    if streq(a, "") { return own("") }
+    var s = f
+    s.append("(")
+    s.append(a)
+    s.append(")")
+    return s
+}
+
+func ownFieldTy(_ env: inout OwnEnv, _ bt: Vec[Nd], _ m: String) using Alloc -> Vec[Nd] {
+    var out: Vec[Nd] = Vec.new()
+    let sn = ownTyHead(bt)
+    if streq(sn, "") { return out }
+    var i: Int = 0
+    while i < env.fieldOwner.len() {
+        if streq(env.fieldOwner.get(i) ?? own(""), sn) && streq(env.fieldName.get(i) ?? own(""), m) {
+            out.push(env.fieldTy.get(i) ?? Nd.wildcard)
+            return out
+        }
+        i = i + 1
+    }
+    return out
+}
+
+func ownTyHead(_ t: Vec[Nd]) using Alloc -> String {
+    if let n = t.get(0) {
+        return match n {
+            case .named(let path, let g, let a): own(path)
+            default: own("")
+        }
+    }
+    return own("")
+}
+
+// The element of `[N]T` or `Vec[T]`.
+func ownElemTy(_ t: Vec[Nd]) using Alloc -> Vec[Nd] {
+    if let n = t.get(0) {
+        return match n {
+            case .vecT(let len, let e): e
+            case .named(let path, let g, let args): ownVecArg(path, args)
+            default: Vec.new()
+        }
+    }
+    return Vec.new()
+}
+
+func ownVecArg(_ path: String, _ args: Vec[Nd]) using Alloc -> Vec[Nd] {
+    var out: Vec[Nd] = Vec.new()
+    if streq(path, "Vec") && args.len() > 0 { out.push(args.get(0) ?? Nd.wildcard) }
+    return out
+}
+
+func ownTyLinear(_ env: inout OwnEnv, _ t: Vec[Nd]) -> Bool {
+    if let n = t.get(0) { return ownIsLinTy(env, n) }
+    return false
+}
+
+func ownTyIsOpt(_ t: Vec[Nd]) -> Bool {
+    if let n = t.get(0) {
+        return match n {
+            case .opt(let x): true
+            default: false
+        }
+    }
+    return false
+}
+
+// Is the expression a storage place holding a linear value?
+func ownPlaceLinear(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc -> Bool {
+    let pl = ownPlace(env, v)
+    return pl.ok && ownTyLinear(env, pl.ty)
+}
+
+// A declared type, or the struct a constructor call builds.
+func ownDeclTy(_ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc -> Nd {
+    if let t = ty.get(0) { return t }
+    if let e = v.get(0) {
+        return match e {
+            case .call(let callee, let args): Nd.named(ownIdentName(callee), false, Vec.new())
+            default: Nd.wildcard
+        }
+    }
+    return Nd.wildcard
+}
+
+func ownIsBorrowed(_ env: inout OwnEnv, _ n: String) -> Bool {
+    return !streq(n, "") && ownFindIn(env.borrows, n) >= 0
+}
+
+// Moving a linear value out of a storage place (or out of an `if let` that only
+// borrows it) is an error; the place would still hold it.
+func ownRejectMoveOut(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc {
+    let n = ownIdentName(v)
+    if ownIsBorrowed(env, n) {
+        var m: String = "'"
+        m.append(n)
+        m.append("' is borrowed from its place (an `if let` on a field or element doesn't move the value); move it out with `if let ")
+        m.append(n)
+        m.append(" = <place>.take()`")
+        env.bad.push(m)
+        return
+    }
+    let pl = ownPlace(env, v)
+    if !pl.ok || !ownTyLinear(env, pl.ty) { return }
+    var m: String = ""
+    if pl.single && !pl.isStatic {
+        m.append("can't move the linear value '")
+        m.append(pl.text)
+        m.append("': it's a `read` or `inout` parameter, so the caller still owns it; take it as `sink` to move it")
+    } else if ownTyIsOpt(pl.ty) {
+        m.append("can't move the linear value out of '")
+        m.append(pl.text)
+        m.append("': the place would still hold it; use '")
+        m.append(pl.text)
+        m.append(".take()', which moves it out and leaves the place empty")
+    } else {
+        m.append("can't move the linear value out of '")
+        m.append(pl.text)
+        m.append("': the place would still hold it; keep it in an Optional and move it out with '.take()', or move the value that owns the place")
+    }
+    env.bad.push(m)
+}
+
+// ----- empty-place facts -----------------------------------------------------
+func ownClearFacts(_ env: inout OwnEnv) using Alloc {
+    while env.fKeys.len() > 0 { let _ = env.fKeys.pop() }
+    while env.fIds.len() > 0 { let _ = env.fIds.pop() }
+    while env.fStatic.len() > 0 { let _ = env.fStatic.pop() }
+}
+
+func ownAddFact(_ env: inout OwnEnv, _ pl: OwnPlace) using Alloc {
+    env.fKeys.push(own(pl.key))
+    env.fIds.push(own(pl.ids))
+    env.fStatic.push(pl.isStatic)
+}
+
+func ownKnownEmpty(_ env: inout OwnEnv, _ key: String) -> Bool {
+    return ownFindIn(env.fKeys, key) >= 0
+}
+
+func ownFactsSnap(_ env: inout OwnEnv) using Alloc -> OwnFacts {
+    var f = OwnFacts(keys: Vec.new(), ids: Vec.new(), stat: Vec.new())
+    var i: Int = 0
+    while i < env.fKeys.len() {
+        f.keys.push(env.fKeys.get(i) ?? own(""))
+        f.ids.push(env.fIds.get(i) ?? own(""))
+        f.stat.push(env.fStatic.get(i) ?? false)
+        i = i + 1
+    }
+    return f
+}
+
+func ownFactsLoad(_ env: inout OwnEnv, _ f: OwnFacts) using Alloc {
+    ownClearFacts(env)
+    ownFactsAdd(env, f)
+}
+
+func ownFactsAdd(_ env: inout OwnEnv, _ f: OwnFacts) using Alloc {
+    var i: Int = 0
+    while i < f.keys.len() {
+        env.fKeys.push(f.keys.get(i) ?? own(""))
+        env.fIds.push(f.ids.get(i) ?? own(""))
+        env.fStatic.push(f.stat.get(i) ?? false)
+        i = i + 1
+    }
+}
+
+// Keep only the facts both exits agree on (in the then-exit's order).
+func ownFactsMeet(_ env: inout OwnEnv, _ thenF: OwnFacts) using Alloc {
+    let cur = ownFactsSnap(env)
+    ownClearFacts(env)
+    var i: Int = 0
+    while i < thenF.keys.len() {
+        let k = thenF.keys.get(i) ?? own("")
+        if ownFindIn(cur.keys, k) >= 0 {
+            env.fKeys.push(k)
+            env.fIds.push(thenF.ids.get(i) ?? own(""))
+            env.fStatic.push(thenF.stat.get(i) ?? false)
+        }
+        i = i + 1
+    }
+}
+
+// Drop the facts matching `drop`: 0 = may alias `key`, 1 = mention local `key`,
+// 2 = rooted at `key`, 3 = rooted at a static.
+func ownKillWhere(_ env: inout OwnEnv, _ drop: Int, _ key: String) using Alloc {
+    let cur = ownFactsSnap(env)
+    ownClearFacts(env)
+    var i: Int = 0
+    while i < cur.keys.len() {
+        let k = cur.keys.get(i) ?? own("")
+        let ids = cur.ids.get(i) ?? own("")
+        let st = cur.stat.get(i) ?? false
+        var kill: Bool = false
+        if drop == 0 { kill = ownMayAlias(k, key) }
+        else if drop == 1 { kill = streq(ownKeyRoot(k), key) || containsSub(ids, ownSpaced(key)) }
+        else if drop == 2 { kill = streq(ownKeyRoot(k), key) }
+        else { kill = st }
+        if !kill {
+            env.fKeys.push(k)
+            env.fIds.push(ids)
+            env.fStatic.push(st)
+        }
+        i = i + 1
+    }
+}
+
+func ownKillAliasing(_ env: inout OwnEnv, _ key: String) using Alloc { ownKillWhere(env, 0, key) }
+func ownKillMentioning(_ env: inout OwnEnv, _ n: String) using Alloc { ownKillWhere(env, 1, n) }
+func ownKillRooted(_ env: inout OwnEnv, _ n: String) using Alloc { ownKillWhere(env, 2, n) }
+func ownKillStatics(_ env: inout OwnEnv) using Alloc { ownKillWhere(env, 3, own("")) }
+
+func ownSpaced(_ n: String) using Alloc -> String {
+    var s: String = " "
+    s.append(n)
+    s.append(" ")
+    return s
+}
+
+// "r:k|.slots|#i" -> "k"
+func ownKeyRoot(_ key: String) using Alloc -> String {
+    var i: Int = 2
+    while i < key.len() {
+        if (key.byteAt(i) ?? 0) == 124 { return own(key.slice(2, i)) }   // '|'
+        i = i + 1
+    }
+    return own(key.slice(2, key.len()))
+}
+
+// Two places may be the same storage: one is a prefix of the other, or they
+// first differ at an element index (two different fields never are).
+func ownMayAlias(_ a: String, _ b: String) using Alloc -> Bool {
+    let pa = a.split("|")
+    let pb = b.split("|")
+    var n: Int = pa.len()
+    if pb.len() < n { n = pb.len() }
+    var i: Int = 0
+    while i < n {
+        let x = pa.get(i) ?? ""
+        let y = pb.get(i) ?? ""
+        let xi = (x.byteAt(0) ?? 0) == 35   // '#'
+        let yi = (y.byteAt(0) ?? 0) == 35
+        if xi != yi { return false }
+        if !streq(own(x), own(y)) { return xi }
+        i = i + 1
+    }
+    return true
+}
+
+// `if p == nil` (and `&&` chains of them) proves p empty in the then-branch;
+// `if p != nil` proves it in the else-branch.
+func ownNilFacts(_ env: inout OwnEnv, _ cond: Vec[Nd], _ wantNil: Bool, _ out: inout OwnFacts) using Alloc {
+    if let n = cond.get(0) {
+        match n {
+            case .paren(let x): ownNilFacts(env, x, wantNil, out)
+            case .binary(let op, let l, let r): ownNilBin(env, op, l, r, wantNil, out)
+            default: noop()
+        }
+    }
+}
+
+func ownNilBin(_ env: inout OwnEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd], _ wantNil: Bool, _ out: inout OwnFacts) using Alloc {
+    if wantNil && streq(op, "&&") {
+        ownNilFacts(env, l, true, out)
+        ownNilFacts(env, r, true, out)
+        return
+    }
+    if wantNil && !streq(op, "==") { return }
+    if !wantNil && !streq(op, "!=") { return }
+    var other: Vec[Nd] = Vec.new()
+    if ownIsNilBoxed(r) { other = l } else if ownIsNilBoxed(l) { other = r }
+    if other.len() == 0 { return }
+    let pl = ownPlace(env, other)
+    if pl.ok {
+        out.keys.push(own(pl.key))
+        out.ids.push(own(pl.ids))
+        out.stat.push(pl.isStatic)
+    }
+}
+
+// A loop body runs again after its own writes: no empty-place fact crosses into
+// it or out of it.
+func ownLoop(_ env: inout OwnEnv, _ head: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    ownClearFacts(env)
+    ownBoxed(env, head)
+    ownBoxed(env, body)
+    ownClearFacts(env)
 }
 
 // ----- branch-aware flow (the bootstrap's §10/§5 phase 2) -------------------
@@ -5093,24 +5619,47 @@ func ownLastNotLoopJump(_ stmts: Vec[Nd]) -> Bool {
 // then-branch must move on.
 func ownIf(_ env: inout OwnEnv, _ ln: String, _ li: Vec[Nd], _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc {
     var letOwned: Bool = false
-    if cond.len() > 0 { ownBoxed(env, cond) }
+    var borrowed: Bool = false
+    var thenF = OwnFacts(keys: Vec.new(), ids: Vec.new(), stat: Vec.new())
+    var elseF = OwnFacts(keys: Vec.new(), ids: Vec.new(), stat: Vec.new())
+    if cond.len() > 0 {
+        ownBoxed(env, cond)
+        ownNilFacts(env, cond, true, thenF)
+        ownNilFacts(env, cond, false, elseF)
+    }
     else if li.len() > 0 {
         ownBoxed(env, li)
-        if !streq(ln, "") && ownExprLinear(env, li) {
+        let lpl = ownPlace(env, li)
+        if !streq(ln, "") && lpl.ok && ownTyLinear(env, lpl.ty) {
+            env.borrows.push(own(ln))
+            borrowed = true
+        }
+        else if !streq(ln, "") && (ownExprLinear(env, li) || ownPlaceLinear(env, li)) {
+            if ownIsBorrowed(env, ownIdentName(li)) { ownRejectMoveOut(env, li) }
             ownConsumeBoxed(env, li)
             letOwned = true
         }
     }
+    let preF = ownFactsSnap(env)
     let pre = ownSnap(env)
+    ownFactsLoad(env, preF)
+    ownFactsAdd(env, thenF)
     if letOwned { ownPush(env, ln, false, true) }
     ownBoxed(env, thenB)
     if letOwned { ownEndIfLet(env, ln, thenB) }
+    // The binding (and so its borrow) is scoped to the then-branch.
+    if borrowed { let _ = env.borrows.pop() }
     let thenSt = ownSnap(env)
+    let thenExitF = ownFactsSnap(env)
     ownLoad(env, pre)
+    ownFactsLoad(env, preF)
+    ownFactsAdd(env, elseF)
     ownBoxed(env, els)
     let elseSt = ownSnap(env)
     let thenOut = ownDiverges(env, thenB)
     let elseOut = els.len() > 0 && ownDiverges(env, els)
+    if elseOut && !thenOut { ownFactsLoad(env, thenExitF) }
+    else if !thenOut { ownFactsMeet(env, thenExitF) }
     if thenOut && ownLeavesFn(env, thenB) { ownPathLeaks(env, thenSt) }
     if elseOut && ownLeavesFn(env, els) { ownPathLeaks(env, elseSt) }
     if !thenOut && !elseOut {
@@ -5196,6 +5745,7 @@ func ownMatch(_ env: inout OwnEnv, _ scr: Vec[Nd], _ arms: Vec[Nd]) using Alloc 
     }
     if states.len() > 0 { ownDivergence(env, pre, states) }
     ownLoad(env, merged)
+    ownClearFacts(env)
 }
 
 func ownArmGuard(_ env: inout OwnEnv, _ arm: Nd) using Alloc {
@@ -5244,8 +5794,8 @@ func ownStmt(_ env: inout OwnEnv, _ s: Nd) using Alloc {
         case .exprS(let e): ownBoxed(env, e)
         case .retS(let v): ownRet(env, v)
         case .assignS(let op, let t, let v): ownAssign(env, t, v)
-        case .whileS(let c, let b): ownPair(env, c, b)
-        case .forS(let pp, let it, let b): ownPair(env, it, b)
+        case .whileS(let c, let b): ownLoop(env, c, b)
+        case .forS(let pp, let it, let b): ownLoop(env, it, b)
         case .withS(let caps, let vals, let body): ownWith(env, vals, body)
         default: noop()
     }
@@ -5254,13 +5804,14 @@ func ownStmt(_ env: inout OwnEnv, _ s: Nd) using Alloc {
 // `let`/`var`: evaluate the value (a use-check on any place it reads), then the
 // value place is moved into the new binding, then register the binding itself.
 func ownLet(_ env: inout OwnEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
-    let lin = ownInitLinear(env, ty, v)   // before the initializer's move
+    let lin = ownInitLinear(env, ty, v) || ownPlaceLinear(env, v)   // before the initializer's move
     ownBoxed(env, v)
+    ownRejectMoveOut(env, v)
     ownConsumeBoxed(env, v)
     if let pn = pat.get(0) {
         match pn {
-            case .identP(let n): ownRegisterLet(env, n, ty, lin, ownIsNilBoxed(v))
-            case .bindP(let n): ownRegisterLet(env, n, ty, lin, ownIsNilBoxed(v))
+            case .identP(let n): ownRegisterLet(env, n, ty, v, lin, ownIsNilBoxed(v))
+            case .bindP(let n): ownRegisterLet(env, n, ty, v, lin, ownIsNilBoxed(v))
             default: noop()
         }
     }
@@ -5268,6 +5819,7 @@ func ownLet(_ env: inout OwnEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) us
 
 func ownRet(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc {
     ownBoxed(env, v)
+    ownRejectMoveOut(env, v)
     ownConsumeBoxed(env, v)
 }
 
@@ -5275,8 +5827,47 @@ func ownRet(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc {
 // check_place_assign, for locals.)
 func ownAssign(_ env: inout OwnEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     ownBoxed(env, v)
-    if ownExprLinear(env, v) { ownConsumeBoxed(env, v) }
+    if ownExprLinear(env, v) || ownPlaceLinear(env, v) {
+        ownRejectMoveOut(env, v)
+        ownConsumeBoxed(env, v)
+    }
+    let pl = ownPlace(env, t)
+    if pl.ok { ownAssignPlace(env, t, pl, ownIsNilBoxed(v)); return }
     ownAssignTarget(env, t, ownIsNilBoxed(v))
+}
+
+// Assigning to a storage place of a linear type drops what it holds, unless
+// it's an Optional known to be empty here.
+func ownAssignPlace(_ env: inout OwnEnv, _ t: Vec[Nd], _ pl: OwnPlace, _ isNil: Bool) using Alloc {
+    ownBoxed(env, t)
+    if ownTyLinear(env, pl.ty) {
+        let opt = ownTyIsOpt(pl.ty)
+        if !opt || !ownKnownEmpty(env, pl.key) {
+            if opt { env.bad.push(ownCouldDropMsg(pl.text)) } else { env.bad.push(ownPlaceDropMsg(pl.text)) }
+        }
+    }
+    ownKillAliasing(env, pl.key)
+    if isNil { ownAddFact(env, pl) }
+}
+
+func ownCouldDropMsg(_ t: String) using Alloc -> String {
+    var s: String = "assigning to '"
+    s.append(t)
+    s.append("' could drop the linear value it holds; assign only where it's known to be empty (inside `if ")
+    s.append(t)
+    s.append(" == nil`, or after '")
+    s.append(t)
+    s.append(".take()'), or use '")
+    s.append(t)
+    s.append(".put(v)', which checks at run time")
+    return s
+}
+
+func ownPlaceDropMsg(_ t: String) using Alloc -> String {
+    var s: String = "assigning to '"
+    s.append(t)
+    s.append("' drops the linear value it holds; move the old value out first")
+    return s
 }
 
 func ownAssignTarget(_ env: inout OwnEnv, _ t: Vec[Nd], _ isNil: Bool) using Alloc {
@@ -5295,6 +5886,7 @@ func ownAssignTargetE(_ env: inout OwnEnv, _ e: Nd, _ isNil: Bool) using Alloc {
 }
 
 func ownAssignLocal(_ env: inout OwnEnv, _ n: String, _ isNil: Bool) using Alloc {
+    ownKillMentioning(env, n)
     let idx = ownFind(env, n)
     if idx < 0 { return }
     if env.isLin.get(idx) ?? false {
@@ -5331,6 +5923,7 @@ func ownCall(_ env: inout OwnEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
         ownCallArg(env, fname, isCtor, i, args.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    ownKillStatics(env)   // any call may write a static
 }
 
 // `o.take()` empties a linear local Optional; `o.put(v)` fills it (moving a
@@ -5349,6 +5942,8 @@ func ownOptOn(_ env: inout OwnEnv, _ base: Vec[Nd], _ m: String, _ args: Vec[Nd]
     let isTake = streq(m, "take") && args.len() == 0
     let isPut = streq(m, "put") && args.len() == 1
     if !isTake && !isPut { return false }
+    let pl = ownPlace(env, base)
+    if pl.ok && ownTyIsOpt(pl.ty) { ownOptOnPlace(env, base, pl, isTake, args); return true }
     let bn = ownIdentName(base)
     if streq(bn, "") { return false }
     let idx = ownFind(env, bn)
@@ -5360,6 +5955,22 @@ func ownOptOn(_ env: inout OwnEnv, _ base: Vec[Nd], _ m: String, _ args: Vec[Nd]
     let j = ownFind(env, bn)
     if j >= 0 { env.consumed.set(j, false) }
     return true
+}
+
+func ownOptOnPlace(_ env: inout OwnEnv, _ base: Vec[Nd], _ pl: OwnPlace, _ isTake: Bool, _ args: Vec[Nd]) using Alloc {
+    ownBoxed(env, base)
+    if isTake {
+        ownKillAliasing(env, pl.key)
+        ownAddFact(env, pl)
+        return
+    }
+    let a = ownArgValue(args.get(0) ?? Nd.wildcard)
+    ownBoxed(env, a)
+    if ownExprLinear(env, a) || ownPlaceLinear(env, a) {
+        ownRejectMoveOut(env, a)
+        ownConsumeBoxed(env, a)
+    }
+    ownKillAliasing(env, pl.key)
 }
 
 func ownIdentName(_ v: Vec[Nd]) using Alloc -> String {
@@ -5382,8 +5993,21 @@ func ownArgValue(_ a: Nd) using Alloc -> Vec[Nd] {
 
 func ownCallArg(_ env: inout OwnEnv, _ fname: String, _ isCtor: Bool, _ idx: Int, _ a: Nd) using Alloc {
     match a {
-        case .arg(let label, let isInout, let val): ownArgVal(env, fname, isCtor, idx, val)
+        case .arg(let label, let isInout, let val): ownArgAll(env, fname, isCtor, idx, isInout, val)
         default: noop()
+    }
+}
+
+// A callee handed `&place` may fill or empty anything under it.
+func ownArgAll(_ env: inout OwnEnv, _ fname: String, _ isCtor: Bool, _ idx: Int, _ isInout: Bool, _ val: Vec[Nd]) using Alloc {
+    ownArgVal(env, fname, isCtor, idx, val)
+    if !isCtor && (isInout || streq(ownModeOf(env, fname, idx), "inout ")) {
+        let pl = ownPlace(env, val)
+        if pl.ok { ownKillRooted(env, ownKeyRoot(pl.key)) }
+        else {
+            let n = ownIdentName(val)
+            if !streq(n, "") { ownKillRooted(env, n) }
+        }
     }
 }
 
@@ -5391,7 +6015,10 @@ func ownArgVal(_ env: inout OwnEnv, _ fname: String, _ isCtor: Bool, _ idx: Int,
     ownBoxed(env, val)
     var isSink: Bool = isCtor
     if !isSink && streq(ownModeOf(env, fname, idx), "sink ") { isSink = true }
-    if isSink { ownConsumeBoxed(env, val) }
+    if isSink {
+        ownRejectMoveOut(env, val)
+        ownConsumeBoxed(env, val)
+    }
 }
 
 func ownConsumeBoxed(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc {
@@ -7453,7 +8080,11 @@ func main() -> Int32 {
                                       ctors: Vec.new(), bad: Vec.new(),
                                       linears: Vec.new(), isLin: Vec.new(), leakRep: Vec.new(),
                                       fieldOwner: Vec.new(), fieldTy: Vec.new(), neverFns: Vec.new(),
-                                      fnName: Vec.new(), fnRet: Vec.new())
+                                      fnName: Vec.new(), fnRet: Vec.new(),
+                                      fieldName: Vec.new(), staticName: Vec.new(), staticTy: Vec.new(),
+                                      pName: Vec.new(), pMode: Vec.new(), pTy: Vec.new(),
+                                      locName: Vec.new(), locTy: Vec.new(), selfTy: "", borrows: Vec.new(),
+                                      fKeys: Vec.new(), fIds: Vec.new(), fStatic: Vec.new())
                     ownCheck(&oenv, u)
                     var o: Int = 0
                     while o < oenv.bad.len() {

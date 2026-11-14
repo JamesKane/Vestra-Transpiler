@@ -1642,6 +1642,9 @@ func parseStmt(_ p: inout Ps) using Alloc -> Nd {
     }
     if isKind(p, TokKind.kwWhile) {
         advP(&p)
+        // §9 `while let x = e { B }` is `while true { if let x = e { B } else
+        // { break } }`, as the bootstrap parser desugars it.
+        if eat(p, TokKind.kwLet) { return parseWhileLet(&p) }
         let cond = bE(parseExpr(&p))
         let body = bE(parseBlock(&p))
         return Nd.whileS(cond, body)
@@ -2136,6 +2139,21 @@ func parseMatch(_ p: inout Ps) using Alloc -> Nd {
     }
     eat(p, TokKind.rbrace)
     return Nd.matchE(bE(scrut), arms)
+}
+
+func parseWhileLet(_ p: inout Ps) using Alloc -> Nd {
+    let letName = curText(p)
+    advP(&p)
+    eat(p, TokKind.assign)
+    let letInit = bE(parseExpr(&p))
+    let thenB = bE(parseBlock(&p))
+    var brk: Vec[Nd] = Vec.new()
+    brk.push(Nd.breakS(""))
+    let els = bE(Nd.block(brk))
+    let ifx = Nd.ifE(letName, letInit, Vec.new(), thenB, els)
+    var body: Vec[Nd] = Vec.new()
+    body.push(Nd.exprS(bE(ifx)))
+    return Nd.whileS(bE(Nd.boolLit(true)), bE(Nd.block(body)))
 }
 
 func parseIf(_ p: inout Ps) using Alloc -> Nd {

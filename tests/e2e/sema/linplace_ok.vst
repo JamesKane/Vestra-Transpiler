@@ -1,0 +1,67 @@
+// Linear values in storage places, used correctly (§19.6, F17).
+linear struct Slot {
+    var badge: UInt64
+}
+struct Table {
+    var slots: [4]Slot?
+    var one: Slot
+    var used: UInt64
+}
+func give(_ s: sink Slot) { }
+func retire(_ t: sink Table) { }
+func g(_ t: inout Table) { }
+
+func a1(_ t: sink Table) {
+    let u = t
+    retire(u)
+}
+func a2(_ t: inout Table) {
+    if let x = t.slots[1].take() {
+        give(x)
+    }
+}
+func a3(_ t: Table) -> UInt64 {
+    var b: UInt64 = 0
+    if let x = t.slots[0] {
+        b = x.badge
+    }
+    return b
+}
+func a4(_ t: inout Table, _ s: sink Slot) {
+    if t.slots[0] == nil {
+        t.used = t.used + 1
+        t.slots[0] = s
+    } else {
+        give(s)
+    }
+}
+func a5(_ t: inout Table, _ s: sink Slot) {
+    if t.slots[0] != nil {
+        give(s)
+        return
+    }
+    t.slots[0] = s
+}
+func a6(_ t: inout Table, _ s: sink Slot) {
+    if let x = t.slots[0].take() {
+        give(x)
+    }
+    t.slots[0] = s
+}
+func a7(_ t: inout Table, _ s: sink Slot) {
+    t.slots[2].put(s)
+}
+func a8() {
+    var o: Slot? = nil
+    o = Slot(badge: 1)
+    if let x = o {
+        give(x)
+    }
+}
+func a9(_ c: Bool, _ s: sink Slot) {
+    if c {
+        give(s)
+        return
+    }
+    give(s)
+}

@@ -1,0 +1,66 @@
+// Linear values in storage places, misused (§19.6, F17).
+linear struct Slot {
+    var badge: UInt64
+}
+struct Table {
+    var slots: [4]Slot?
+    var one: Slot
+    var used: UInt64
+}
+func give(_ s: sink Slot) { }
+func retire(_ t: sink Table) { }
+func g(_ t: inout Table) { }
+
+func b1(_ t: inout Table) {
+    let x = t.slots[0].take()
+}
+func b2(_ t: inout Table) -> Slot? {
+    return t.slots[1]
+}
+func b3(_ t: inout Table) {
+    give(t.one)
+}
+func b4(_ s: Slot) {
+    give(s)
+}
+func b5(_ t: inout Table) {
+    if let x = t.slots[0] {
+        give(x)
+    }
+}
+func b6(_ t: inout Table) {
+    if let x = t.slots[0].take() {
+        let b = x.badge
+    }
+}
+func b7(_ t: inout Table, _ s: sink Slot) {
+    t.slots[0] = s
+}
+func b8(_ t: inout Table) {
+    t.slots[0] = nil
+}
+func b9(_ t: inout Table, _ i: Int, _ j: Int, _ s: sink Slot) {
+    if t.slots[i] == nil {
+        t.slots[j] = s
+    } else {
+        give(s)
+    }
+}
+func b10(_ t: inout Table, _ s: sink Slot) {
+    if t.slots[0] == nil {
+        g(&t)
+        t.slots[0] = s
+    } else {
+        give(s)
+    }
+}
+func b11(_ t: inout Table, _ s: sink Slot) {
+    t.one = s
+}
+func b12(_ c: Bool, _ s: sink Slot) {
+    let k = s
+    if c {
+        return
+    }
+    give(k)
+}
