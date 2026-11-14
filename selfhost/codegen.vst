@@ -9607,6 +9607,7 @@ func emitStr(_ s: Str) using Alloc, Log {
 // calls in the curated corpus are struct constructions; method calls have a
 // member callee (not an identifier) and so never match.
 func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
+    if tryEmitSysStatic(env, callee, args) { return }
     if tryEmitBoxNew(env, callee, args) { return }
     if tryEmitDeriveDefault(env, callee, args) { return }
     if tryEmitPayloadCase(env, callee, args) { return }
@@ -9631,6 +9632,48 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     print("(")
     emitCallArgList(env, "", fname, args)
     print(")")
+}
+
+// Static calls on two runtime namespaces, mirroring cpp_emitter.cpp:
+//   * §A7 (§14.14) `Scheduler.swapContext(saving, loading)` ->
+//     `__vstr::scheduler_swap_context(&saving, &loading)` (sema takes the
+//     Context values; the shim wants pointers).
+//   * §A11 (§14.8) `PerCpu.new(v)` -> `std::make_unique<__vstr::PerCpu<T>>(
+//     __vstr::PerCpu<T>{v})`. The bootstrap reads T off the call's
+//     Box[PerCpu[T]] type and falls back to the argument's; vgen has no
+//     expected type at a call, so T is the argument's (as for Box.new).
+func tryEmitSysStatic(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if callee.len() == 0 { return false }
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let name, let chain): emitSysStaticOn(env, identBaseName(base), name, args)
+        default: false
+    }
+}
+
+func emitSysStaticOn(_ env: inout TyEnv, _ ns: Str, _ name: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if streq(ns, "Scheduler") && streq(name, "swapContext") && args.len() == 2 {
+        print("__vstr::scheduler_swap_context(&")
+        emitArg(env, args.get(0) ?? Nd.wildcard)
+        print(", &")
+        emitArg(env, args.get(1) ?? Nd.wildcard)
+        print(")")
+        return true
+    }
+    if streq(ns, "PerCpu") && streq(name, "new") && args.len() == 1 {
+        let a = args.get(0) ?? Nd.wildcard
+        var t: String = "__vstr::PerCpu<"
+        t.append(cppOfSpelling(tyInferArg(env, args)))
+        t.append(">")
+        print("std::make_unique<")
+        print(t)
+        print(">(")
+        print(t)
+        print("{")
+        emitArg(env, a)
+        print("})")
+        return true
+    }
+    return false
 }
 
 // §10 `Box.new(v)` -> `std::make_unique<T>(std::move(v))`, T the argument's

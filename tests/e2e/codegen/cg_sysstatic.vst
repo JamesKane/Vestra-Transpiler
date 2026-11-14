@@ -1,0 +1,31 @@
+// Static calls on two runtime namespaces. §A7 `Scheduler.swapContext(a, b)`
+// takes Context values and lowers to the pointer-taking
+// `__vstr::scheduler_swap_context(&a, &b)`. §A11 `PerCpu.new(v)` heap-
+// allocates a `__vstr::PerCpu<T>` around `v`, T read off the argument (a
+// typed parameter, a struct construction).
+@noinit static saved: Context
+@noinit static next: Context
+
+struct Stats {
+    var hits: UInt32
+    var misses: UInt32
+}
+
+func bounce() {
+    Scheduler.swapContext(saved, next)
+    Scheduler.swapContext(next, saved)
+}
+
+func counter(_ seed: UInt64) -> UInt64 {
+    with Alloc {
+        let pc: Box[PerCpu[UInt64]] = PerCpu.new(seed)
+        return pc.value.mine()
+    }
+}
+
+func stats() -> UInt32 {
+    with Alloc {
+        let ps: Box[PerCpu[Stats]] = PerCpu.new(Stats(hits: 1, misses: 2))
+        return ps.value.mine().hits
+    }
+}
