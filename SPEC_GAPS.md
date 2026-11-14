@@ -89,7 +89,6 @@ Each gap has one of four kinds:
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §4, §1 | `static` immutability is not enforced | unsound | An assignment, an index write or an `&` argument on a non-`Atomic` `static` is accepted. (`let`, `read`-parameter and pattern-binding immutability is enforced.) |
 | §4 | Integer overflow does not trap in debug | unsound | `a + b` lowers to plain C++ `+` on `int32_t`. No checked arithmetic exists anywhere in `src/`. |
 | §4 | `&+ &- &*` always wrap | unsound | They lower to plain `+`, which is UB on signed types (`cpp_emitter.cpp:679`, "signed UB, TODO"). |
 | §4 | Division by zero traps | unsound | Lowers to a raw `a / b`. |
@@ -103,7 +102,6 @@ Each gap has one of four kinds:
 | §3 | A block's tail value is its result | missing (partial) | `{ self.n }` in a method, or `{ K }` with an untyped const, gives "can reach the end of its body without returning". |
 | §3, §17.1 | `'\u{...}'` char escapes | missing | "unterminated character literal". |
 | §3 | Identifiers that are C++ keywords | unsound | A Vestra name such as `mutable` or `class` is emitted verbatim, and the C++ doesn't compile. |
-| §4 | Several `let _ = e` in one scope | unsound | Each lowers to the same `_bind` temporary, a C++ redefinition error. |
 | §6, §17.1 | Byte-char literal `b'/'` | missing | "undefined name 'b'". |
 | §17.1 | Unicode identifiers | missing | `café` gives "unexpected character". |
 

@@ -9,8 +9,7 @@ const answer = 42
 const width: Int32 = 16
 
 func bump() -> UInt64 {
-    ticks = ticks + 1
-    return ticks
+    return UInt64(width) + 1
 }
 
 func room() -> Int32 {

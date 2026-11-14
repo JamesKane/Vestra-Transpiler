@@ -4798,7 +4798,36 @@ func tyCtorLabelMsg(_ n: Int) using Alloc -> String {
 
 // `Box.new(v)` types as Box[<v's type>] (unknown if v's is); any other call
 // types by its callee alone.
+// Annex §10.5 `MutSpan.raw(at: p, count: n)` views what `p` points at:
+// MutSpan[T] over a MutPtr[T] (Span[T] over a Ptr[T]).
+func tyInferRawSpan(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc -> String {
+    if args.len() != 2 { return own("") }
+    let isMut = calleeIsStaticOn(callee, "MutSpan", "raw")
+    if !isMut && !calleeIsStaticOn(callee, "Span", "raw") { return own("") }
+    let pt = tyInferArg(env, args)
+    if streq(pt, "") { return own("") }
+    let inner = tyBracketInner(pt)
+    if streq(inner, "") { return own("") }
+    var s: String = ""
+    if isMut { s.append("MutSpan[") } else { s.append("Span[") }
+    s.append(inner)
+    s.append("]")
+    return s
+}
+
+func calleeIsStaticOn(_ callee: Vec[Nd], _ ns: Str, _ name: Str) using Alloc -> Bool {
+    if let c = callee.get(0) {
+        return match c {
+            case .member(let base, let m, let ch): streq(m, name) && streq(identBaseName(base), ns)
+            default: false
+        }
+    }
+    return false
+}
+
 func tyInferCallArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc -> String {
+    let rs = tyInferRawSpan(env, callee, args)
+    if !streq(rs, "") { return rs }
     let ad = tyInferAdapter(env, exCalleeNameBoxed(callee), args)
     if !streq(ad, "") { return ad }
     if !isBoxNewCallee(callee) || args.len() != 1 { return tyInferCall(env, callee) }
@@ -8775,10 +8804,28 @@ func emitJump(_ indent: Str, _ kw: Str) using Alloc, Log {
     print(";\n")
 }
 
+func patIsWild(_ pat: Vec[Nd]) -> Bool {
+    if let p = pat.get(0) {
+        return match p {
+            case .wildcard: true
+            default: false
+        }
+    }
+    return false
+}
+
 // `let`/`var` lower identically: an annotated binding keeps its C++ type, an
 // inferred one uses `auto` (Vestra's immutability is not re-expressed in C++).
 func emitBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
     if patIsTuple(pat) { emitTupleBinding(env, indent, pat, value); return }
+    // `let _ = e` evaluates and discards, as the bootstrap lowers it.
+    if patIsWild(pat) && value.len() > 0 {
+        print(indent)
+        print("(void)(")
+        emitBoxed(env, value)
+        print(");\n")
+        return
+    }
     if valIsMatch(value) { emitMatchBinding(env, indent, pat, ty, value); return }
     if valIsVecLit(value) { emitVecLitBinding(env, indent, pat, ty, value); return }
     print(indent)

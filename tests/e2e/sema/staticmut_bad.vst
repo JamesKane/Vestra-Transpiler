@@ -1,0 +1,18 @@
+// §1 / §4 a static holds an immutable value or an Atomic: assigning it, an
+// element or field of it, or lending it `&` is an error; an Atomic changes
+// through its methods.
+struct P {
+    var a: Int32
+}
+func bump(_ p: inout P) { p.a = 1 }
+static g: UInt64 = 0
+static arr: [2]Int32 = [0, 0]
+static gp: P = P(a: 0)
+static n: Atomic[UInt64] = 0
+func f() {
+    g = 4
+    arr[0] = 1
+    gp.a = 2
+    bump(&gp)
+    n.store(1, .seqCst)
+}

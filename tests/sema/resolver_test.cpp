@@ -1520,9 +1520,19 @@ TEST_CASE("@stack_protector with no argument is rejected") {
 
 TEST_CASE("Padded[T] resolves and .value returns T") {
     CHECK(check_errors("@noinit static slot: Padded[UInt64]\n"
-                       "func read_it() -> UInt64 { return slot.value }\n"
-                       "func write_it(_ v: UInt64) { slot.value = v }\n")
+                       "func read_it() -> UInt64 { return slot.value }\n")
           == 0);
+    // A static holds an immutable value (§4): the write goes through `&slot`.
+    auto r = check_detail("@noinit static slot: Padded[UInt64]\n"
+                          "func write_it(_ v: UInt64) { slot.value = v }\n");
+    CHECK(r.first_message.find("'slot' is a static, which holds an immutable value")
+          != std::string::npos);
+}
+
+TEST_CASE("§4 a static can't be written; an Atomic static changes through its methods") {
+    auto r = check_detail("static g: UInt64 = 0\nfunc f() { g = 1 }\n");
+    CHECK(r.first_message.find("'g' is a static") != std::string::npos);
+    CHECK(check_errors("static n: Atomic[UInt64] = 0\nfunc f() { n.store(1, .seqCst) }\n") == 0);
 }
 
 TEST_CASE("Padded[T] composes with Atomic for the per-hart counter shape") {

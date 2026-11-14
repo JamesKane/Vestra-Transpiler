@@ -52,8 +52,11 @@ func worker() using Asm -> Never {
     Scheduler.swapContext(workerTask, mainTask)
     while true { }
 }
-func startWorker() using Asm {
-    workerTask = Context.start(entry: worker, stack: (&workerStack).address + 4096)
+func startWorker() using Asm, RawMemory {
+    // A static holds an immutable value (§4): write the storage through its
+    // address (Annex §4.5).
+    let w: MutPtr[Context] = MutPtr.unchecked(fromAddress: (&workerTask).address)
+    w.value = Context.start(entry: worker, stack: (&workerStack).address + 4096)
     Scheduler.swapContext(mainTask, workerTask)
 }
 // §14.5.3 a compiler-emitted vector table over a canonical trap frame.

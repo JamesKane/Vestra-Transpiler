@@ -42,7 +42,8 @@ func ping() using Asm -> Never {
     }
 }
 
-public func startPing() using Asm {
-    pingCtx = Context.start(entry: ping, stack: (&pingStack).address + 512)
+public func startPing() using Asm, RawMemory {
+    let c: MutPtr[Context] = MutPtr.unchecked(fromAddress: (&pingCtx).address)
+    c.value = Context.start(entry: ping, stack: (&pingStack).address + 512)
     Scheduler.swapContext(bootCtx, pingCtx)
 }

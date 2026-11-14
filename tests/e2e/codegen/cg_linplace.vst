@@ -59,3 +59,8 @@ func caught(_ x: Int32) -> UInt64 {
     }
     return r
 }
+// `let _ = e` discards; two in one scope must not collide.
+func discards(_ o: Held?) {
+    let _ = which(o)
+    let _ = which(o)
+}

@@ -816,6 +816,17 @@ std::optional<OwnershipChecker::PlaceKey> OwnershipChecker::storage_place(const 
             if (m.is_optional_chain || resolution_->qualified_name_of(cur) != nullptr) {
                 return std::nullopt;
             }
+            // A raw pointer's pointee (`p.value`) is RawMemory's: whether it
+            // holds a value is the caller's assertion (Annex §10.5), so the
+            // linear-place rules don't track it. Writing a fresh value into
+            // uninitialized @noinit storage is the common case.
+            if (m.member == "value") {
+                auto bt = resolution_->type_of(m.base.get());
+                if (bt != nullptr
+                    && (bt->kind() == TypeKind::Ptr || bt->kind() == TypeKind::MutPtr)) {
+                    return std::nullopt;
+                }
+            }
             rev.push_back(PlaceComponent{false, m.member, {}});
             cur = &strip_parens(*m.base);
         } else if (cur->kind == ast::NodeKind::IndexExpr) {

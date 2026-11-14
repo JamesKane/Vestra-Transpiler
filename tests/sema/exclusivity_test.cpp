@@ -311,14 +311,17 @@ const char* kElems = "struct D {\n    var a: UInt64\n    var b: UInt64\n}\n"
                      "func peek(_ x: inout [4]D, _ y: UInt64) { }\n";
 }  // namespace
 
-TEST_CASE("two inouts to one element of a static conflict") {
-    auto r = check(std::string(kElems) + "func f() {\n    both(&ds[0], &ds[0])\n}\n");
+TEST_CASE("two inouts to one element conflict") {
+    // (A static can't be lent `inout` at all: it holds an immutable value.)
+    auto r = check(std::string(kElems) + "func f(_ k: inout [4]D) {\n    both(&k[0], &k[0])\n}\n");
     CHECK(r.error_count == 1);
-    CHECK(r.first_message.find("'ds[0]' is borrowed twice") != std::string::npos);
+    CHECK(r.first_message.find("'k[0]' is borrowed twice") != std::string::npos);
 }
 
 TEST_CASE("elements conflict unless their indices are distinct constants") {
-    CHECK(check(std::string(kElems) + "func f() {\n    both(&ds[0], &ds[1])\n}\n").error_count == 0);
+    CHECK(check(std::string(kElems) + "func f(_ k: inout [4]D) {\n    both(&k[0], &k[1])\n}\n")
+              .error_count
+          == 0);
     auto r = check(std::string(kElems)
                    + "func f(_ k: inout [4]D, _ i: Int, _ j: Int) {\n    both(&k[i], &k[j])\n}\n");
     CHECK(r.first_message.find("'k[i]' and 'k[j]' overlap") != std::string::npos);

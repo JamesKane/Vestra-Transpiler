@@ -2948,6 +2948,10 @@ func addBuiltins(_ env: inout Env) using Alloc {
     addName(env, "tau")
     addName(env, "Vec")
     addName(env, "HashMap")
+    addName(env, "Ptr")       // §14.1 Ptr.unchecked / MutPtr.unchecked
+    addName(env, "MutPtr")
+    addName(env, "Span")      // Annex §10.5 Span.raw / MutSpan.raw
+    addName(env, "MutSpan")
     addName(env, "String")
     addName(env, "Str")
     addName(env, "Box")
@@ -3449,6 +3453,8 @@ func tnSeedBuiltins(_ env: inout TnEnv) using Alloc {
     env.types.push("Option"); env.types.push("Result"); env.types.push("Atomic")
     env.types.push("Soa"); env.types.push("Channel"); env.types.push("Future")
     env.types.push("Duration"); env.types.push("Self"); env.types.push("Never")
+    env.types.push("Ptr"); env.types.push("MutPtr")   // §14.1 raw pointers
+    env.types.push("Padded"); env.types.push("PerCpu") // Annex §14.8
 }
 
 func tnCollectType(_ env: inout TnEnv, _ d: Nd) using Alloc {
@@ -6094,6 +6100,8 @@ struct TyEnv {
     var muFlag: Vec[Bool]       // ... may it be written? ...
     var muKind: Vec[Int]        // ... 0 local, 1 parameter
     var muMarks: Vec[Int]       // scope starts in muName
+    var stName: Vec[String]     // global: statics ...
+    var stAtomic: Vec[Bool]     // ... and whether each is an Atomic (the only writable kind)
 }
 
 func tyCheck(_ env: inout TyEnv, _ u: NUnit) using Alloc {
@@ -6116,8 +6124,15 @@ func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
             tyRecordFunc(env, name, params, r)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyRecordStructDecl(env, name, fl, m)
         case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumDecl(env, name, cs, m)
+        case .staticD(let vis, let name, let ty, let v): tyRecordStatic(env, name, ty)
         default: noop()
     }
+}
+
+func tyRecordStatic(_ env: inout TyEnv, _ name: String, _ ty: Vec[Nd]) using Alloc {
+    env.stName.push(own(name))
+    let sp = tyAnnSpelling(ty)
+    env.stAtomic.push(tyStartsWith(sp, "Atomic[") || tyStartsWith(sp, "AtomicTaggedPointer["))
 }
 
 func tyRecordEnumDecl(_ env: inout TyEnv, _ name: String, _ cases: Vec[Nd], _ methods: Vec[Nd]) using Alloc {
@@ -6717,9 +6732,40 @@ func muCheckMember(_ env: inout TyEnv, _ base: Vec[Nd], _ m: String) using Alloc
 
 func muCheckIndex(_ env: inout TyEnv, _ base: Vec[Nd]) using Alloc {
     let bt = tyInferBoxed(env, base)
-    // An unknown base (a span from chunks / split, say) may be a view: don't pile on.
-    if streq(bt, "") || tyStartsWith(bt, "MutSpan[") || tyStartsWith(bt, "Span[") { return }
+    // An unknown base (a span from chunks / split, say) may be a view: don't pile
+    // on. A static is never a view, typed or not.
+    if streq(bt, "") && !muIsStatic(env, base) { return }
+    if tyStartsWith(bt, "MutSpan[") || tyStartsWith(bt, "Span[") { return }
     muCheck(env, base)
+}
+
+func muIsStatic(_ env: inout TyEnv, _ base: Vec[Nd]) using Alloc -> Bool {
+    if let n = base.get(0) {
+        return match n {
+            case .ident(let x): muStaticIdx(env, x) >= 0
+            default: false
+        }
+    }
+    return false
+}
+
+func muStaticIdx(_ env: inout TyEnv, _ x: String) using Alloc -> Int {
+    if muLocalIdx(env, x) >= 0 { return -1 }   // a local of the same name shadows it
+    var k: Int = 0
+    while k < env.stName.len() {
+        if streq(env.stName.get(k) ?? own(""), x) { return k }
+        k = k + 1
+    }
+    return -1
+}
+
+func muLocalIdx(_ env: inout TyEnv, _ x: String) using Alloc -> Int {
+    var i: Int = env.muName.len() - 1
+    while i >= 0 {
+        if streq(env.muName.get(i) ?? own(""), x) { return i }
+        i = i - 1
+    }
+    return -1
 }
 
 func muCheckRoot(_ env: inout TyEnv, _ x: String) using Alloc {
@@ -6734,6 +6780,24 @@ func muCheckRoot(_ env: inout TyEnv, _ x: String) using Alloc {
         }
         i = i - 1
     }
+    // §1 / §4 a static holds an immutable value or an Atomic.
+    var k: Int = 0
+    while k < env.stName.len() {
+        if streq(env.stName.get(k) ?? own(""), x) {
+            if !(env.stAtomic.get(k) ?? false) { env.bad.push(muStaticMsg(x)) }
+            return
+        }
+        k = k + 1
+    }
+}
+
+func muStaticMsg(_ x: String) using Alloc -> String {
+    var s: String = "'"
+    s.append(x)
+    s.append("' is a static, which holds an immutable value; keep shared mutable state in an `Atomic`, or in `@noinit` storage reached through `&")
+    s.append(x)
+    s.append("` under `RawMemory`")
+    return s
 }
 
 func muLetMsg(_ x: String) using Alloc -> String {
@@ -8509,7 +8573,8 @@ func main() -> Int32 {
                                      symName: Vec.new(), symType: Vec.new(),
                                      curRet: own(""), bad: Vec.new(),
                                      mInout: Vec.new(), muName: Vec.new(), muFlag: Vec.new(),
-                                     muKind: Vec.new(), muMarks: Vec.new())
+                                     muKind: Vec.new(), muMarks: Vec.new(),
+                                     stName: Vec.new(), stAtomic: Vec.new())
                     tyCheck(&tenv, u)
                     var ti: Int = 0
                     while ti < tenv.bad.len() {

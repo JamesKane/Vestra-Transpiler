@@ -123,6 +123,14 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
             emit_tuple_pat_followons(os, followons, indent);
             break;
         }
+        // `let _ = e` evaluates and discards: `(void)(e);`. (A named
+        // temporary would collide with the next one in the same scope.)
+        if (l.pattern && l.pattern->kind == ast::NodeKind::WildcardPat && l.value) {
+            os << "(void)(";
+            emit_expr(os, *l.value);
+            os << ");\n";
+            break;
+        }
         // Vestra's `let` is "no reassignment" — but it does allow consumption
         // (move). C++'s `const` is stricter (no rebind AND no move-from), so
         // we use plain `auto` / `T` here. Sema rejects assignment to `let`
@@ -184,6 +192,12 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
             }
             os << ";\n";
             emit_tuple_pat_followons(os, followons, indent);
+            break;
+        }
+        if (v.pattern && v.pattern->kind == ast::NodeKind::WildcardPat && v.value) {
+            os << "(void)(";
+            emit_expr(os, *v.value);
+            os << ");\n";
             break;
         }
         if (v.type) {

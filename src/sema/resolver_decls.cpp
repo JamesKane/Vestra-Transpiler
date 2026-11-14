@@ -1159,7 +1159,29 @@ void Resolver::check_mutable_place(const ast::Expr& target, diag::SourceRange si
     }
     const auto& name = static_cast<const ast::IdentExpr&>(*root).name;
     const auto* sym = scopes_.current().lookup(name);
-    if (sym == nullptr || sym->is_mutable) {
+    if (sym == nullptr) {
+        return;
+    }
+    // §1 / §4 a `static` holds an immutable value or an `Atomic`; changing
+    // shared state goes through the atomic's methods.
+    if (sym->kind == SymbolKind::Static) {
+        if (sym->type != nullptr
+            && (sym->type->kind() == TypeKind::Atomic
+                || sym->type->kind() == TypeKind::AtomicTaggedPointer)) {
+            return;
+        }
+        if (in_interrupt_handler()) {
+            return;  // check_interrupt_static_write names the ISR rule instead
+        }
+        error_at(site,
+                 std::format("'{}' is a static, which holds an immutable value; keep shared "
+                             "mutable state in an `Atomic`, or in `@noinit` storage reached "
+                             "through `&{}` under `RawMemory`",
+                             name,
+                             name));
+        return;
+    }
+    if (sym->is_mutable) {
         return;
     }
     if (sym->kind == SymbolKind::Parameter) {

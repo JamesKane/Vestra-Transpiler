@@ -116,9 +116,7 @@ first, in both front ends (bootstrap and `selfhost/sema.vst`, held to
 identical diagnostics), because the new backend will trust whatever sema
 accepts. Ordered by how likely each is to let a wrong program through:
 
-1. **Immutability:** `static` immutability (only an immutable value or an
-   `Atomic`; Gaps §4). `let` and `read` parameters are done.
-2. **Move checking:**
+1. **Move checking:**
    - moves inside loop bodies;
    - field-level moves;
    - `copy` restricted to copyable types;
@@ -127,29 +125,31 @@ accepts. Ordered by how likely each is to let a wrong program through:
    - linear leaks on a `try` error path, and discarded linear results.
 
    (Gaps §5, §19.6)
-3. **Escape analysis for views:** `Span`, `MutSpan`, `Str`, futures,
+2. **Escape analysis for views:** `Span`, `MutSpan`, `Str`, futures,
    raw-minted and MMIO views may not outlive their scope, their `RawMemory` /
    `Mmio` discharge, a channel, or a `spawn` (Gaps §10, §11, Annex §10.5,
    §14.11.1).
-4. **Capability rows through every call form:** method calls, function
+3. **Capability rows through every call form:** method calls, function
    values, closure bodies, and `with InterruptsOff` callees; `RawMemory`
    for pointer dereference; unknown capability names rejected (Gaps §8,
    §14.1, Annex §14.13).
-5. **Unknown names are errors:** attributes, protocol bounds, `derive`
+4. **Unknown names are errors:** attributes, protocol bounds, `derive`
    names, `cfg.has` features, `@repr` kinds (Gaps headline 3).
-6. **Generics checked against bounds:** operations on `T` gated by its
+5. **Generics checked against bounds:** operations on `T` gated by its
    bounds, transitive bound checking, bounds at inferred construction (Gaps
    §7).
-7. **Atomics:** ordering legality (`load(.release)` is an error), CAS
+6. **Atomics:** ordering legality (`load(.release)` is an error), CAS
    arguments bound by label, not by position (Annex §14.9).
-8. **Patterns:** exhaustiveness through nested patterns and guarded arms; a
+7. **Patterns:** exhaustiveness through nested patterns and guarded arms; a
    bare identifier pattern matches an existing value (Gaps §6).
-9. **Comptime purity:** no capabilities or runtime calls in `comptime`;
+8. **Comptime purity:** no capabilities or runtime calls in `comptime`;
    every `@when` branch type-checked; `cfg` follows the build target, not the
    compiler's host (Gaps §12.1, §12.6).
-10. **Argument labels enforced** (Gaps §7).
-11. **Smaller unsound items:**
-    - `@noinit` limited to `Trivial` types;
+9. **Argument labels enforced** (Gaps §7).
+10. **Smaller unsound items:**
+    - `@noinit` limited to `Trivial` types (the spike's `sys.kernel`, a
+      table of linear capabilities, then moves to `Trivial` byte storage
+      viewed through a `MutPtr`);
     - `@repr(union)` limited to `Trivial` types;
     - `MmioView[T]` requires `T: Primitive`;
     - `compilerFence(.relaxed)` rejected;
