@@ -8363,10 +8363,13 @@ func emitGuardArm(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ enumName: Str, _ 
 func emitGuardArmParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ enumName: Str, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd], _ k: Int) using Alloc, Log {
     print(i8)
     if k == 0 { print("if (") } else { print("else if (") }
-    print("__vstr_m == ")
-    print(enumName)
-    print("::")
-    print(armCaseName(pat))
+    if isOrPat(pat) { emitGuardOrPred(enumName, pat) }
+    else {
+        print("__vstr_m == ")
+        print(enumName)
+        print("::")
+        print(armCaseName(pat))
+    }
     if guard.len() > 0 {
         print(" && (")
         emitBoxed(env, guard)
@@ -8379,6 +8382,28 @@ func emitGuardArmParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ enumName: St
     print(";\n")
     print(i8)
     print("}\n")
+}
+
+// An or-pattern arm of the guard chain folds its alternatives into one `||`
+// predicate; a non-enum alternative contributes `false`, as in the bootstrap.
+func emitGuardOrPred(_ enumName: Str, _ pat: Vec[Nd]) using Alloc, Log {
+    let alts = patAltList(pat)
+    print("(")
+    var i: Int = 0
+    while i < alts.len() {
+        if i > 0 { print(" || ") }
+        let a = alts.get(i) ?? Nd.wildcard
+        if isEnumPNode(a) {
+            print("__vstr_m == ")
+            print(enumName)
+            print("::")
+            print(altCaseName(a))
+        } else {
+            print("false")
+        }
+        i = i + 1
+    }
+    print(")")
 }
 
 func emitGuardDefault(_ env: inout TyEnv, _ i8: Str, _ arm: Nd) using Alloc, Log {
@@ -8409,11 +8434,18 @@ func emitMatchArmParts(_ env: inout TyEnv, _ armIndent: Str, _ enumName: Str, _ 
     if isDefault || isWildcardPat(pat) {
         print("default:\n")
     } else {
-        print("case ")
-        print(enumName)
-        print("::")
-        print(armCaseName(pat))
-        print(":\n")
+        // `case .a | .b:` stacks one label per alternative above the return.
+        let alts = armEnumAlts(pat)
+        var i: Int = 0
+        while i < alts.len() {
+            if i > 0 { print(armIndent) }
+            print("case ")
+            print(enumName)
+            print("::")
+            print(altCaseName(alts.get(i) ?? Nd.wildcard))
+            print(":\n")
+            i = i + 1
+        }
     }
     print(deeper(armIndent))
     print("return ")
@@ -8491,13 +8523,28 @@ func distinctCaseNames(_ arms: Vec[Nd]) using Alloc -> Vec[String] {
     var i: Int = 0
     while i < arms.len() {
         let a = arms.get(i) ?? Nd.wildcard
-        if !armIsDefault(a) {
-            let cn = armCase(a)
-            if !nameListHas(names, cn) { names.push(cn) }
-        }
+        if !armIsDefault(a) { pushArmCaseNames(&names, a) }
         i = i + 1
     }
     return names
+}
+
+// An or-pattern arm contributes each alternative's case, in order.
+func pushArmCaseNames(_ names: inout Vec[String], _ arm: Nd) using Alloc {
+    let alts = armAlts(arm)
+    var i: Int = 0
+    while i < alts.len() {
+        let cn = altCaseName(alts.get(i) ?? Nd.wildcard)
+        if !nameListHas(names, cn) { names.push(cn) }
+        i = i + 1
+    }
+}
+
+func armAlts(_ arm: Nd) using Alloc -> Vec[Nd] {
+    return match arm {
+        case .matchArm(let isDef, let pat, let guard, let body): armEnumAlts(pat)
+        default: emptyNdBox()
+    }
 }
 
 func nameListHas(_ xs: Vec[String], _ n: Str) -> Bool {
@@ -8507,13 +8554,6 @@ func nameListHas(_ xs: Vec[String], _ n: Str) -> Bool {
         i = i + 1
     }
     return false
-}
-
-func armCase(_ arm: Nd) using Alloc -> String {
-    return match arm {
-        case .matchArm(let isDef, let pat, let guard, let body): armCaseName(pat)
-        default: own("")
-    }
 }
 
 // One case group: the if-constexpr branch header, a scope per arm of the case,
@@ -8530,9 +8570,8 @@ func emitVisitGroup(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ i16: Str, _ enu
     var j: Int = 0
     while j < arms.len() {
         let a = arms.get(j) ?? Nd.wildcard
-        if !armIsDefault(a) && streq(armCase(a), cn) {
-            emitVisitScope(env, i12, i16, enumName, a)
-            lastGuarded = armGuarded(a)
+        if !armIsDefault(a) {
+            if emitVisitScopes(env, i12, i16, enumName, cn, a) { lastGuarded = armGuarded(a) }
         }
         j = j + 1
     }
@@ -8541,11 +8580,31 @@ func emitVisitGroup(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ i16: Str, _ enu
     }
 }
 
-func emitVisitScope(_ env: inout TyEnv, _ i12: Str, _ i16: Str, _ enumName: Str, _ arm: Nd) using Alloc, Log {
-    match arm {
-        case .matchArm(let isDef, let pat, let guard, let body): emitVisitScopeParts(env, i12, i16, enumName, pat, guard, body)
-        default: noop()
+// One scope per alternative of the arm that names case `cn` (an or-pattern
+// arm shares its body across the cases it covers, each scope binding through
+// its own alternative). True when any scope was emitted.
+func emitVisitScopes(_ env: inout TyEnv, _ i12: Str, _ i16: Str, _ enumName: Str, _ cn: Str, _ arm: Nd) using Alloc, Log -> Bool {
+    return match arm {
+        case .matchArm(let isDef, let pat, let guard, let body): emitVisitAltScopes(env, i12, i16, enumName, cn, pat, guard, body)
+        default: false
     }
+}
+
+func emitVisitAltScopes(_ env: inout TyEnv, _ i12: Str, _ i16: Str, _ enumName: Str, _ cn: Str, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log -> Bool {
+    let alts = armEnumAlts(pat)
+    var any: Bool = false
+    var i: Int = 0
+    while i < alts.len() {
+        let alt = alts.get(i) ?? Nd.wildcard
+        if streq(altCaseName(alt), cn) {
+            var one: Vec[Nd] = Vec.new()
+            one.push(alt)
+            emitVisitScopeParts(env, i12, i16, enumName, one, guard, body)
+            any = true
+        }
+        i = i + 1
+    }
+    return any
 }
 
 func emitVisitScopeParts(_ env: inout TyEnv, _ i12: Str, _ i16: Str, _ enumName: Str, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
@@ -8660,6 +8719,67 @@ func emitOneBinding(_ env: inout TyEnv, _ i16: Str, _ enumName: Str, _ cname: St
 func armCaseName(_ pat: Vec[Nd]) using Alloc -> String {
     if pat.len() == 0 { return own("") }
     return match pat.get(0) ?? Nd.wildcard {
+        case .enumP(let cname, let children): own(cname)
+        default: own("")
+    }
+}
+
+// §17.7 an arm's enum alternatives: `.a(x)` is the one-element list [.a(x)],
+// `.a(x) | .b(x)` is [.a(x), .b(x)]. An or-pattern with any non-enum
+// alternative (and any other pattern) has none, as in the bootstrap's
+// all_enum test.
+func armEnumAlts(_ pat: Vec[Nd]) using Alloc -> Vec[Nd] {
+    let alts = patAltList(pat)
+    if allEnumP(alts) { return alts }
+    return Vec.new()
+}
+
+// The alternatives of an or-pattern, or the pattern itself as a one-element
+// list.
+func patAltList(_ pat: Vec[Nd]) using Alloc -> Vec[Nd] {
+    if pat.len() == 0 { return Vec.new() }
+    return match pat.get(0) ?? Nd.wildcard {
+        case .orP(let alts): ndsCopy(alts)
+        default: elemBoxCopy(pat)
+    }
+}
+
+func ndsCopy(_ xs: Vec[Nd]) using Alloc -> Vec[Nd] {
+    var out: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < xs.len() {
+        out.push(xs.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    return out
+}
+
+func allEnumP(_ xs: Vec[Nd]) -> Bool {
+    var i: Int = 0
+    while i < xs.len() {
+        if !isEnumPNode(xs.get(i) ?? Nd.wildcard) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+func isEnumPNode(_ p: Nd) -> Bool {
+    return match p {
+        case .enumP(let cname, let children): true
+        default: false
+    }
+}
+
+func isOrPat(_ pat: Vec[Nd]) -> Bool {
+    if pat.len() == 0 { return false }
+    return match pat.get(0) ?? Nd.wildcard {
+        case .orP(let alts): true
+        default: false
+    }
+}
+
+func altCaseName(_ p: Nd) using Alloc -> String {
+    return match p {
         case .enumP(let cname, let children): own(cname)
         default: own("")
     }

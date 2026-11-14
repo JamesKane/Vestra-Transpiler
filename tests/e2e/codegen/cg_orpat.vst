@@ -1,0 +1,64 @@
+// §17.7 or-patterns over enum cases, in each match lowering. A bare enum
+// with no guards stacks one `case` label per alternative; with a guard it
+// takes the if-chain, folding the alternatives into one `||` predicate. A
+// payload enum expands an or-arm into one scope per alternative, each in its
+// own case group and binding through its own payload field; a case named
+// both in an or-arm and a later arm groups the two scopes together.
+enum Light {
+    case red
+    case amber
+    case green
+    case off
+}
+
+enum Ev {
+    case down(Int32)
+    case up(Int32)
+    case move(x: Int32, y: Int32)
+    case quit
+}
+
+func stops(_ l: Light) -> Bool {
+    return match l {
+        case .red | .amber: true
+        case .green | .off: false
+    }
+}
+
+func stopsOr(_ l: Light) -> Int32 {
+    return match l {
+        case .red | .amber | .off: 1
+        default: 0
+    }
+}
+
+func gated(_ l: Light, _ night: Bool) -> Int32 {
+    return match l {
+        case .red | .amber where night: 2
+        case .green: 1
+        default: 0
+    }
+}
+
+func key(_ e: Ev) -> Int32 {
+    return match e {
+        case .down(let k) | .up(let k): k
+        case .move(let x, let y): x + y
+        case .quit: -1
+    }
+}
+
+func keyPos(_ e: Ev) -> Int32 {
+    return match e {
+        case .down(let k) | .up(let k) where k > 0: k
+        case .up(let k): 0 - k
+        default: 0
+    }
+}
+
+func coord(_ e: Ev) -> Int32 {
+    return match e {
+        case .move(let a, let b) | .down(let a): a
+        default: 0
+    }
+}
