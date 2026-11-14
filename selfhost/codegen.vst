@@ -2963,6 +2963,11 @@ struct TyEnv {
     var pMode: Vec[String]      // ... -> parameter mode ("", "inout ", "sink " — parser spelling)
     var structs: Vec[String]    // global: struct names (construction yields that type)
     var genTypes: Vec[String]   // global: GENERIC struct/enum names (construction needs the instantiated C++ name)
+    var gpOwner: Vec[String]    // global: generic-parameter rows — owning struct / function name ...
+    var gpName: Vec[String]     // ... -> parameter name, in declaration order
+    var bindFn: String          // per-call: the generic callee whose result binding is pending ...
+    var bindName: Vec[String]   // ... -> generic parameter names bound from the expected type ...
+    var bindVal: Vec[String]    // ... -> their spellings
     var sFldStruct: Vec[String] // global: per-field rows — owning struct ...
     var sFldName: Vec[String]   // ... field name ...
     var sFldType: Vec[String]   // ... -> field type spelling (embeds excluded)
@@ -3028,7 +3033,7 @@ func tyCheck(_ env: inout TyEnv, _ u: NUnit) using Alloc {
 func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b, let attrs):
-            tyRecordFunc(env, name, params, t, r)
+            tyRecordFuncG(env, name, g, params, t, r)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics, let attrs): tyRecordStructDecl(env, name, fl, m, generics)
         case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumDecl(env, name, cs, m, generics)
         case .deriveD(let protocols, let target): tyRecordDerive(env, protocols, target)
@@ -3263,6 +3268,7 @@ func tyEnumHasCase(_ env: inout TyEnv, _ enumName: String, _ caseName: String) -
 
 func tyRecordStructDecl(_ env: inout TyEnv, _ name: String, _ fields: Vec[Nd], _ methods: Vec[Nd], _ generics: Vec[Nd]) using Alloc {
     if generics.len() > 0 { env.genTypes.push(name) }
+    tyRecordGenParams(env, name, generics)
     tyRecordStruct(env, name, fields)
     tyRecordMethods(env, name, methods)
 }
@@ -3388,6 +3394,93 @@ func tyFieldType(_ env: inout TyEnv, _ structName: String, _ label: String) usin
         i = i + 1
     }
     return own("")
+}
+
+// §7 a generic struct's / function's parameter names, in order, so an
+// instantiation spelling (`Buffer[Int32, 4]`) can substitute into a member's
+// declared spelling (`[N]T` -> `[4]Int32`).
+func tyRecordGenParams(_ env: inout TyEnv, _ owner: Str, _ generics: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < generics.len() {
+        env.gpOwner.push(own(owner))
+        env.gpName.push(genName(generics.get(i) ?? Nd.wildcard))
+        i = i + 1
+    }
+}
+
+func tyGenNames(_ env: inout TyEnv, _ owner: Str) using Alloc -> Vec[String] {
+    var out: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < env.gpOwner.len() {
+        if streq(env.gpOwner.get(i) ?? own(""), owner) { out.push(env.gpName.get(i) ?? own("")) }
+        i = i + 1
+    }
+    return out
+}
+
+// The arguments of an instantiation spelling: `Buffer[Int32, 4]` ->
+// [Int32, 4] (bracket-depth-aware, via the tuple splitter).
+func tyInstArgs(_ sp: String) using Alloc -> Vec[String] {
+    var t: String = "("
+    t.append(tyBracketInner(sp))
+    t.append(")")
+    return tyTupleParts(t)
+}
+
+// Replace each identifier token of `sp` that names a parameter with its
+// value: `[N]T` under N=4, T=Int32 -> `[4]Int32`.
+func tySubstSp(_ sp: Str, _ names: Vec[String], _ vals: Vec[String]) using Alloc -> String {
+    var out: String = ""
+    var i: Int = 0
+    while i < sp.len() {
+        let c = sp.byteAt(i) ?? 0
+        if isIdentStartByte(c) {
+            var j: Int = i
+            while j < sp.len() && isIdentByte(sp.byteAt(j) ?? 0) { j = j + 1 }
+            let tok = sp.slice(i, j)
+            out.append(substTok(tok, names, vals))
+            i = j
+        } else {
+            out.append(sp.slice(i, i + 1))
+            i = i + 1
+        }
+    }
+    return out
+}
+
+func substTok(_ tok: Str, _ names: Vec[String], _ vals: Vec[String]) using Alloc -> String {
+    var k: Int = 0
+    while k < names.len() {
+        if streq(names.get(k) ?? own(""), tok) { return own(vals.get(k) ?? own(tok)) }
+        k = k + 1
+    }
+    return own(tok)
+}
+
+func isIdentStartByte(_ c: UInt8) -> Bool {
+    return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+}
+
+func isIdentByte(_ c: UInt8) -> Bool {
+    return isIdentStartByte(c) || (c >= 48 && c <= 57)
+}
+
+// A field of an instantiated generic struct, its declared spelling with the
+// instantiation substituted; "" when `bt` is not such an instantiation.
+func tyInstFieldType(_ env: inout TyEnv, _ bt: String, _ name: String) using Alloc -> String {
+    if !spHasBracket(bt) { return own("") }
+    let base = genBaseOf(bt)
+    if !tyIsGenType(env, base) || !tyHasField(env, base, name) { return own("") }
+    let names = tyGenNames(env, base)
+    let vals = tyInstArgs(bt)
+    let ft = tyFieldType(env, base, name)
+    if names.len() != vals.len() { return own(ft) }
+    return tySubstSp(ft, names, vals)
+}
+
+func tyRecordFuncG(_ env: inout TyEnv, _ name: String, _ g: Vec[Nd], _ params: Vec[Nd], _ thr: Vec[Nd], _ result: Vec[Nd]) using Alloc {
+    tyRecordGenParams(env, name, g)
+    tyRecordFunc(env, name, params, thr, result)
 }
 
 func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ thr: Vec[Nd], _ result: Vec[Nd]) using Alloc {
@@ -4390,6 +4483,8 @@ func tyBracketInner(_ s: String) using Alloc -> String {
 func tyInferMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain: Bool) using Alloc -> String {
     if chain { return tyInferChainMember(env, base, name) }
     let bt = tyInferBoxed(env, base)
+    let inst = tyInstFieldType(env, bt, name)
+    if !streq(inst, "") { return inst }
     if tyHasField(env, bt, name) { return tyFieldType(env, bt, name) }
     // §3 `q.value` on an opaque newtype types as its underlying.
     if streq(name, "value") && tyIsOpaque(env, bt) { return typeSpelling(tyOpaqueUnder(env, bt)) }
@@ -5067,7 +5162,7 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
     var env = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(), funcThr: Vec.new(),
                     pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(), pTyNode: Vec.new(),
                     pMode: Vec.new(),
-                    structs: Vec.new(), genTypes: Vec.new(),
+                    structs: Vec.new(), genTypes: Vec.new(), gpOwner: Vec.new(), gpName: Vec.new(), bindFn: own(""), bindName: Vec.new(), bindVal: Vec.new(),
                     sFldStruct: Vec.new(), sFldName: Vec.new(),
                     sFldType: Vec.new(), mStruct: Vec.new(), mName: Vec.new(),
                     mRet: Vec.new(), mpOwner: Vec.new(), mpName: Vec.new(),
@@ -8112,9 +8207,13 @@ func emitBindingValue(_ env: inout TyEnv, _ ty: Vec[Nd], _ value: Vec[Nd]) using
     }
     let to = tyAnnSpelling(ty)
     if tryEmitLeadingDot(env, to, value) { return }
+    // An annotated initializer binds a generic callee's result parameter, as
+    // a return does (see emitReturnValue); scoped to this value.
+    tyBindFromExpected(env, value, to)
     let from = tyInferBoxed(env, value)
     if needsStrCoercion(from, to) { emitMaybeCoerced(env, true, value) }
     else { emitMovedValue(env, value) }
+    tyClearBinding(env)
 }
 
 func valIsNewCall(_ v: Vec[Nd]) using Alloc -> Bool {
@@ -8414,9 +8513,13 @@ func emitReturnValue(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc, Log {
     let to = own(env.curRet)
     if tryEmitRawMint(env, to, v) { return }
     if tryEmitLeadingDot(env, to, v) { return }
+    // The binding lives only for this value's own call (cleared after, so a
+    // later call to the same function elsewhere does not inherit it).
+    tyBindFromExpected(env, v, to)
     let from = tyInferBoxed(env, v)
     let wrap = needsStrCoercion(from, to)
     emitMaybeCoerced(env, wrap, v)
+    tyClearBinding(env)
 }
 
 // A construction of a GENERIC struct or enum needs the INSTANTIATED C++ type
@@ -8462,12 +8565,13 @@ func emitGenericCtor(_ env: inout TyEnv, _ tb: Vec[Nd], _ v: Vec[Nd]) using Allo
 func emitGenericCtorCall(_ env: inout TyEnv, _ tb: Vec[Nd], _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
     if isStructCtor(callee, args) {
         let sn = identBaseName(callee)
+        let instSp = tyAnnSpelling(tb)
         emitTypeBoxed(tb)
         print("{")
         var i: Int = 0
         while i < args.len() {
             if i > 0 { print(", ") }
-            emitCtorField(env, sn, args.get(i) ?? Nd.wildcard)
+            emitGenCtorField(env, sn, instSp, args.get(i) ?? Nd.wildcard)
             i = i + 1
         }
         print("}")
@@ -11226,6 +11330,13 @@ func emitCallArgVal(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int, 
 }
 
 func emitCallArgInner(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int, _ val: Vec[Nd]) using Alloc, Log {
+    if valIsVecLit(val) && streq(owner, "") && !streq(fname, "") {
+        let el = argVecElem(env, fname, idx)
+        if !streq(el, "") {
+            emitVecLitSpelled(env, val, el)
+            return
+        }
+    }
     if valIsClosure(val) && !streq(fname, "") {
         let tn = callArgTypeNode(env, owner, fname, idx)
         if nodeIsFnTy(tn) { emitClosureArgTy(env, tn, val); return }
@@ -11246,6 +11357,46 @@ func emitCallArgInner(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int
     if tryEmitLeadingDot(env, to, val) { return }
     let from = tyInferBoxed(env, val)
     emitMaybeCoerced(env, needsStrCoercion(from, to), val)
+}
+
+// An array-literal argument's element type: the parameter's `[N]E` element,
+// with the callee's generic parameters substituted from any binding the
+// expected result type supplied (`return firstElem([5, 6, 7])` in an Int32
+// function binds T = Int32); "" while it still names a generic parameter.
+func argVecElem(_ env: inout TyEnv, _ fname: Str, _ idx: Int) using Alloc -> String {
+    var ps = tyParamType(env, own(fname), idx)
+    if streq(env.bindFn, fname) { ps = tySubstSp(ps, env.bindName, env.bindVal) }
+    if !tyIsArray(ps) { return own("") }
+    let el = tyArrayElem(ps)
+    if nameListHas(tyGenNames(env, fname), el) { return own("") }
+    return el
+}
+
+// §7 expected-type propagation into a generic call's own result: when the
+// callee's result is one of its generic parameters, the slot's type binds it.
+func tyBindFromExpected(_ env: inout TyEnv, _ v: Vec[Nd], _ expected: Str) using Alloc {
+    tyClearBinding(env)
+    if streq(expected, "") || v.len() == 0 { return }
+    let fname = exCalleeOfCall(v.get(0) ?? Nd.wildcard)
+    if streq(fname, "") { return }
+    let r = tyFuncRet(env, fname)
+    if !nameListHas(tyGenNames(env, fname), r) { return }
+    env.bindFn = own(fname)
+    env.bindName.push(own(r))
+    env.bindVal.push(own(expected))
+}
+
+func tyClearBinding(_ env: inout TyEnv) using Alloc {
+    env.bindFn = own("")
+    while env.bindName.len() > 0 { let _ = env.bindName.pop() }
+    while env.bindVal.len() > 0 { let _ = env.bindVal.pop() }
+}
+
+func exCalleeOfCall(_ e: Nd) using Alloc -> String {
+    return match e {
+        case .call(let callee, let args): exCalleeNameBoxed(callee)
+        default: own("")
+    }
 }
 
 func nodeIsNamedGen(_ tn: Nd) -> Bool {
@@ -11341,6 +11492,52 @@ func emitCtorField(_ env: inout TyEnv, _ sn: Str, _ a: Nd) using Alloc, Log {
         case .arg(let label, let isInout, let val): emitCtorFieldParts(env, sn, label, val)
         default: noop()
     }
+}
+
+// A generic construction's array-literal field initializer takes the
+// INSTANTIATED field's element type (`Buffer[Int32, 4]`'s `data: [N]T` ->
+// `std::array<std::int32_t, 4>`); anything else is an ordinary field.
+func emitGenCtorField(_ env: inout TyEnv, _ sn: Str, _ instSp: Str, _ a: Nd) using Alloc, Log {
+    match a {
+        case .arg(let label, let isInout, let val): emitGenCtorFieldParts(env, sn, instSp, label, val)
+        default: noop()
+    }
+}
+
+func emitGenCtorFieldParts(_ env: inout TyEnv, _ sn: Str, _ instSp: Str, _ label: Str, _ val: Vec[Nd]) using Alloc, Log {
+    let fi = tyInstFieldType(env, own(instSp), own(label))
+    if valIsVecLit(val) && tyIsArray(fi) {
+        print(".")
+        print(label)
+        print(" = ")
+        emitVecLitSpelled(env, val, tyArrayElem(fi))
+        return
+    }
+    emitCtorFieldParts(env, sn, label, val)
+}
+
+// An array literal whose element type is known only as a spelling.
+func emitVecLitSpelled(_ env: inout TyEnv, _ val: Vec[Nd], _ elemSp: Str) using Alloc, Log {
+    match val.get(0) ?? Nd.wildcard {
+        case .vecLit(let elems): emitVecLitSpelledParts(env, elems, elemSp)
+        default: noop()
+    }
+}
+
+func emitVecLitSpelledParts(_ env: inout TyEnv, _ elems: Vec[Nd], _ elemSp: Str) using Alloc, Log {
+    print("std::array<")
+    print(cppOfSpelling(own(elemSp)))
+    print(", ")
+    print(intToStr(elems.len()))
+    print(">{")
+    let noTy: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < elems.len() {
+        if i > 0 { print(", ") }
+        emitVecElem(env, elems.get(i) ?? Nd.wildcard, noTy)
+        i = i + 1
+    }
+    print("}")
 }
 
 // A field initializer coerces into a String-typed field.

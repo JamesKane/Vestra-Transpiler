@@ -1,0 +1,54 @@
+// §7 generic substitution. A field of an instantiated generic struct types
+// as its declared spelling with the instantiation substituted (`Ring[Int16,
+// 3]`'s `slots: [N]T` is `[3]Int16`, so indexing it is a plain subscript),
+// and a construction's array-literal field takes that element type. An
+// array-literal argument takes its parameter's element type; for a generic
+// callee whose result is a type parameter, the expected type (a return or an
+// annotated binding) binds it first. Two-parameter instantiations substitute
+// positionally.
+struct Ring[T, const N: Int] {
+    var slots: [N]T
+    var head: Int
+}
+
+struct Pair2[A, B] {
+    var a: [2]A
+    var b: B
+}
+
+func ring() -> Ring[Int16, 3] {
+    return Ring(slots: [1, 2, 3], head: 0)
+}
+
+func peek(_ r: Ring[Int16, 3]) -> Int16 {
+    return r.slots[r.head] + r.slots[2]
+}
+
+func pair() -> Pair2[UInt8, Bool] {
+    return Pair2(a: [7, 8], b: true)
+}
+
+func firstA(_ p: Pair2[UInt8, Bool]) -> UInt8 {
+    return p.a[1]
+}
+
+func total(_ xs: [4]Int64) -> Int64 {
+    return xs[0] + xs[3]
+}
+
+func viaParam() -> Int64 {
+    return total([1, 2, 3, 4])
+}
+
+func pick[T, const N: Int](_ xs: [N]T) -> T {
+    return xs[0]
+}
+
+func viaReturn() -> UInt16 {
+    return pick([9, 10, 11])
+}
+
+func viaLet() -> Int8 {
+    let v: Int8 = pick([1, 2])
+    return v
+}
