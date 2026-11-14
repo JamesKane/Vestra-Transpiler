@@ -1,466 +1,210 @@
 # Vestra Transpiler
 
-A Vestra-to-C++26 transpiler, written in Modern C++26.
+A compiler for Vestra, the systems language specified in
+[`VESTRA_DRAFT.md`](VESTRA_DRAFT.md), that translates Vestra source to C++26.
 
-Vestra is the systems language specified in [`VESTRA_DRAFT.md`](VESTRA_DRAFT.md). The
-spec is a draft (3.2) describing a Swift-ish language with no GC, ownership-by-mode,
-algebraic-effect-style capabilities, typed errors, structured concurrency, and
-compile-time metaprogramming. This repo is the *implementation*, intended to grow
-toward end-to-end coverage of that spec.
+Vestra is a Swift-flavoured systems language with no garbage collector:
+ownership by parameter mode, capabilities as an effect row, typed errors,
+structured concurrency, and compile-time metaprogramming. Its kernel-facing
+surface (atomics, MMIO, raw memory, interrupts, boot code) is consolidated in
+[`VESTRA_ANNEX_A.md`](VESTRA_ANNEX_A.md).
 
-This is **v0.5**: a working front end and a usable codegen. The end-to-end pipeline
-(transpile → host-compile → run) works on a substantial subset of the spec —
-Optional, Result, do/catch, optional chaining, for-in over Iterator, tuple literals
-+ destructuring, `Box[T]` with the `Alloc` capability check, opaque types, struct +
-enum derives (Eq / Hash / Debug / Clone / Display), layout attributes (@repr /
-@align / @bits), and the §12.1 comptime fold + §12.2 reflection chain all ship.
-What's shipped, with commit references, lives in [`HANDOFF.md`](HANDOFF.md); the
-forward-looking phase menu is in [`ROADMAP.md`](ROADMAP.md).
+The repository holds two compilers:
+
+- **The bootstrap compiler** (`vestra`), written in C++26. It is the complete,
+  working implementation: lexer, parser, a full semantic checker, and a C++
+  emitter. Every program in [`examples/`](examples/) transpiles, compiles and
+  runs through it.
+- **The self-hosted compiler**, the same compiler rewritten in Vestra under
+  [`selfhost/`](selfhost/). It is built by the bootstrap compiler and proved
+  phase by phase with differential tests: given the same input, it must
+  produce byte-for-byte the same output as `vestra`. This is the active line
+  of work.
+
+## Status
+
+*As of 2026-11-14. [`HANDOFF.md`](HANDOFF.md) carries the live numbers.*
+
+| Self-hosted phase | Source | Proven against `vestra` by | State |
+|---|---|---|---|
+| Lexer | `selfhost/lexer.vst` | the `--dump-tokens` token stream | done |
+| Parser | `selfhost/parser.vst` | the `--dump-ast` canonical AST print | done (142 of 143 examples) |
+| Sema | `selfhost/sema.vst` | `vestra check` diagnostics | done, every diagnostic family |
+| Codegen | `selfhost/codegen.vst` | the generated `.cpp` and `.hpp` | **127 of 150 examples identical** |
+
+The codegen target is the whole `examples/` corpus byte-identical. Of the
+remaining divergence, most sits in families deliberately left for last
+(compile-time quote/splice, `select`, and comptime folding, which the
+bootstrap evaluates away).
+
+The test suite has **1564 tests**, all passing: unit tests for each layer,
+155 end-to-end runs of the examples, and 274 self-hosting differentials.
 
 ## Quick start
 
 ```bash
-# Configure with the default Debug preset
-cmake --preset debug
+cmake --preset debug              # configure into build/debug (Ninja)
+cmake --build build/debug         # build the library, the CLI and the tests
+ctest --test-dir build/debug -j8  # run the suite
 
-# Build everything (library + CLI + tests)
-cmake --build build/debug
-
-# Run all 339 tests, including the end-to-end pipeline
-ctest --test-dir build/debug --output-on-failure
-
-# Transpile the example
-build/debug/vestra build examples/hello.vst -o /tmp/vestra-out
-cat /tmp/vestra-out/hello.hpp
+# Transpile, compile and run a program
+build/debug/vestra build examples/args_demo.vst -o /tmp/vestra-out
+c++ -std=c++26 -I/tmp/vestra-out /tmp/vestra-out/args_demo.cpp -o /tmp/args_demo
+/tmp/args_demo hello world        # prints each argument
 ```
 
-A successful test run ends with:
+A clean test run ends with `100% tests passed out of 1564`.
 
-```
-100% tests passed, 0 tests failed out of 339
-```
+A module-less `func main()` becomes the C++ entry point, as in `args_demo`.
+Most examples are modules with no entry point; their end-to-end tests link
+them against a small C++ driver in `tests/e2e/main_<name>.cpp`.
 
 ## Requirements
 
-- **CMake ≥ 3.25** and **Ninja**
-- A **C++26** compiler — tested with Apple Clang 21 (Xcode 26) /
-  LLVM Clang 19+ / GCC 15+. We use `std::format`, `std::span`,
-  `std::println`, `std::expected`, designated initializers, and
-  `[[nodiscard]]` heavily; older toolchains will not build the
-  project.
-- (Optional) **clang-format**, **clang-tidy**, **ccache** — auto-detected by CMake.
+- **A C++26 compiler.** Tested with Apple Clang 21 (Xcode 26); LLVM Clang 19+
+  and GCC 15+ should work. The code leans on `std::format`, `std::print`,
+  `std::expected`, `std::span` and designated initializers, so older
+  toolchains will not build it.
+- **CMake and Ninja.** The build declares CMake 3.25, but configuring
+  `cxx_std_26` needs a CMake recent enough to know the C++26 feature; CMake 4
+  is what is tested. (An IDE's bundled CMake can lag behind and fail at
+  configure time; use the system one.)
+- Optional: **clang-format**, **clang-tidy** and **ccache**, picked up
+  automatically.
+
+## Using the compiler
+
+| Command | What it does |
+|---|---|
+| `vestra build FILE.vst -o DIR` | Check, then transpile to `DIR/FILE.hpp` and `.cpp`. Imports are followed and each module gets its own pair. Refuses to emit C++ if sema reports errors. |
+| `vestra check FILE.vst` | Parse and run the semantic checks only; print any diagnostics. |
+| `vestra fmt FILE.vst` | Pretty-print the source in canonical form. |
+| `vestra expand FILE.vst` | Print the source after declaration-macro expansion. |
+| `vestra audit FILE.vst --sysreg \| --no-libc \| --safety` | List every site that crosses a discipline boundary (system-register writes and their barriers, `extern` symbols under the freestanding profile, unsafe capability grants and their `// Safety:` comments). |
+
+Useful `build` flags: `-I DIR` (import search root), `--target=aarch64|x86_64|riscv64`
+with `--target-features=...`, `--no-libc` (freestanding), `--dump-tokens` and
+`--dump-ast` (inspect the front end), and `--skip-check` (bypass sema, a debug
+aid). `vestra help` lists them all.
+
+## How the bootstrap compiler works
+
+```
+.vst source
+  │  lex      hand-written lexer: every keyword and operator, numeric literals
+  │           with separators, interpolated strings, newline-as-terminator rules
+  ▼
+  │  parse    recursive descent for declarations and statements, a Pratt
+  │           parser for expressions, error recovery to the next declaration
+  ▼
+  │  sema     name resolution and bidirectional type checking, then ownership
+  │           (move tracking), the Law of Exclusivity, capability checking,
+  │           generics, and the comptime folder (incl. @when and reflection)
+  ▼
+  │  codegen  a C++26 header + source per module
+  ▼
+.hpp + .cpp
+```
+
+The C++ is roughly 31,000 lines across `src/` and `include/vestra/`, about
+12,500 of them in sema and 8,200 in codegen. Every phase reports through a
+shared diagnostic reporter, and the AST uses a single `NodeKind` discriminator
+so each visitor is an exhaustive switch.
+
+## What the language covers today
+
+The bootstrap compiler implements a large subset of the spec end to end.
+Each feature has an example under `examples/` and an end-to-end test that
+compiles and runs it.
+
+- **Core:** functions, structs with methods, enums (plain and payload-carrying),
+  modules and multi-file imports, `let` / `var`, loops including `for` over
+  ranges, containers and user iterators, tuples and destructuring, string
+  interpolation, opaque newtypes.
+- **Ownership and safety:** `read` / `inout` / `sink` parameter modes with
+  move tracking, use-after-move diagnostics, the Law of Exclusivity, and
+  capability rows (`using Alloc`, `with X { ... }`) checked at every call.
+- **Types:** `T?` with `??`, `if let`, `!` and optional chaining; `Box[T]`;
+  `Vec`, `HashMap`, `Span` and `MutSpan`; generic functions, structs and
+  enums with protocol bounds, `where` clauses and const generics.
+- **Errors:** `throws(E)` as `std::expected`, the `try` family, `throw`,
+  `do` / `catch` with typed and guarded handlers, `.mapError`.
+- **Pattern matching:** exhaustive `match` with payload bindings, guards,
+  or-patterns, tuple and value patterns, in any expression position.
+- **Concurrency:** `async` / `await`, `spawn`, channels, `select`, `parallel`.
+- **Metaprogramming:** the comptime folder, `@when` conditional compilation,
+  reflection over fields, `@embed` (with an optional content-hashed manifest),
+  quote / splice and declaration macros, and `derive` for Eq, Hash, Clone,
+  Default, Debug and Display.
+- **Systems (Annex A):** atomics and memory orderings, `PerCpu` and `Padded`
+  storage, raw pointers and spans, MMIO views, typed system registers with
+  automatic barriers, interrupt handlers and vector tables, boot and naked
+  functions, link attributes (`@section`, `@symbol`, `@weak`, ...), struct
+  layout (`@repr(packed)`, `@align`, `@bits`, unions), sync / cache / TLB
+  intrinsics, a custom panic handler, SIMD, `Soa[T]`, and a freestanding
+  (no-libc) profile.
+
+## Self-hosting
+
+Each self-hosted phase is a single `.vst` file. The bootstrap compiler
+transpiles it to C++, the host compiler builds it into its own binary (`vlex`,
+`vparse`, `vsema`, `vgen`), and that binary is run against the bootstrap on the
+same inputs. Later phases carry a copy of the earlier front end, so
+`codegen.vst` (about 11,400 lines) contains its own lexer, parser and the
+ported type checker.
+
+The codegen corpus is measured with:
+
+```bash
+./scripts/sweep_codegen_corpus.sh --build --report build/sweep/before.txt
+# ... make a change ...
+./scripts/sweep_codegen_corpus.sh --build --compare build/sweep/before.txt
+```
+
+`--compare` reports the identical-example count, the total divergent lines
+(counted from minimal diffs), and any example that got worse.
+[`HANDOFF.md`](HANDOFF.md) has the workflow, the ranked list of what is left,
+and the known gaps.
 
 ## Project layout
 
 ```
 .
-├── CMakeLists.txt                 — top-level build (C++26, warnings, sanitizers)
-├── CMakePresets.json              — debug / release / asan / tsan / tidy presets
-├── .clang-format / .clang-tidy    — style and lint configuration
-├── cmake/
-│   ├── CompilerWarnings.cmake     — -Wall -Wextra ... -Werror per target
-│   ├── Sanitizers.cmake           — VESTRA_SANITIZE=address+undefined etc.
-│   ├── StaticAnalyzers.cmake      — optional clang-format / clang-tidy targets
-│   └── Dependencies.cmake         — FetchContent for doctest
-├── include/vestra/                — public headers, one subdir per layer
-│   ├── diag/                        source manager + diagnostics
-│   ├── lex/                         tokens + lexer
-│   ├── ast/                         AST nodes + pretty-printer
-│   ├── parse/                       recursive-descent + Pratt parser
-│   ├── codegen/                     C++ emitter
-│   └── driver/                      CLI driver
-├── src/                           — implementations mirroring include/
+├── src/, include/vestra/   the bootstrap compiler: diag, lex, parse, ast,
+│                           sema, codegen, driver
+├── selfhost/               the self-hosted compiler (lexer, parser, sema, codegen)
+├── examples/               150 Vestra programs, the end-to-end and codegen corpus
 ├── tests/
-│   ├── lex/                         lexer tests
-│   ├── parse/                       parser + printer tests
-│   ├── codegen/                     emitter tests
-│   ├── e2e/                         end-to-end harness (transpile + compile + run)
-│   └── CMakeLists.txt
-└── examples/
-    └── hello.vst                  — the integration test input
+│   ├── lex/ parse/ sema/ codegen/   unit tests (doctest)
+│   └── e2e/                drivers for running examples, plus the self-hosting
+│                           fixtures (e2e/codegen, e2e/sema)
+├── scripts/                the codegen corpus sweep
+├── cmake/                  warnings, sanitizers, static analysis, dependencies
+├── VESTRA_DRAFT.md         the language specification
+├── VESTRA_ANNEX_A.md       the kernel-completeness annex
+├── ROADMAP.md              candidate next phases for the bootstrap compiler
+├── HANDOFF.md              where the active work stands and how it proceeds
+└── WHY_VESTRA_VS_*.md      comparisons with Rust, C++26 and Embedded Swift
 ```
-
-## Architecture
-
-The transpiler is a classic layered front end with a single codegen pass:
-
-```
-.vst source
-    │
-    ▼
-┌──────────────────┐  SourceManager owns the buffer; SourceLoc/SourceRange
-│  diag            │  point into it; DiagnosticReporter renders to stderr
-└──────────────────┘
-    │
-    ▼
-┌──────────────────┐  Hand-rolled lexer covering all §17.1 keywords/operators,
-│  lex             │  with §3 newline-as-terminator rules (suppress in brackets,
-│  → Token stream  │  suppress at binary-operator boundaries).
-└──────────────────┘
-    │
-    ▼
-┌──────────────────┐  Recursive descent for declarations/statements, Pratt
-│  parse           │  for expressions (precedence table follows §17.7).
-│  → AST           │  Each error is a Diagnostic + resync to the next decl.
-└──────────────────┘
-    │
-    ▼
-┌──────────────────┐  Two-pass resolver: collect top-level decls → walk
-│  sema            │  bodies, resolving identifiers and computing types.
-│  → Resolution    │  Side tables map every Expr* to its TypePtr and bound
-│                  │  Symbol; bidirectional checking lets literals adapt.
-│                  │  Then ownership/move tracking flags use-after-move
-│                  │  on sink calls and `return` (phase 1 of §5/§19.2),
-│                  │  the Law of Exclusivity (§5.4 / §19.3) checks
-│                  │  every call (overlapping &-borrows of a single
-│                  │  place are rejected when any one is `inout`), and
-│                  │  capability resolution (§8 / §19.7) verifies every
-│                  │  `using` row is satisfied by either the caller's
-│                  │  own row or an enclosing `with` block, and
-│                  │  generics (§7) are type-checked with opaque T's
-│                  │  inside the body, inferred at call sites, and
-│                  │  emitted as C++ templates for the host compiler
-│                  │  to monomorphize. The comptime folder (§12.1)
-│                  │  evaluates pure constant expressions and calls
-│                  │  to `comptime func` declarations, stashing the
-│                  │  result in the resolution side table so codegen
-│                  │  can substitute the folded literal. Conditional
-│                  │  compilation (§12.6) reuses that folder to
-│                  │  evaluate `@when(predicate)` attributes —
-│                  │  gated-out decls are invisible to every later
-│                  │  pass and never reach codegen.
-└──────────────────┘
-    │
-    ▼
-┌──────────────────┐  Walks the AST and emits C++23 — primitives map to
-│  codegen         │  <cstdint>, modules to nested namespaces, structs to
-│  → .hpp + .cpp   │  structs, enums to enum class or std::variant; emits
-│                  │  C++26 (templates, std::move at sink calls, etc).
-└──────────────────┘
-    │
-    ▼
-.hpp + .cpp under the chosen output directory
-```
-
-The AST (`include/vestra/ast/nodes.hpp`) uses a `Decl` / `Stmt` / `Expr` / `Type` /
-`Pattern` base hierarchy with a `NodeKind` discriminator so every visitor is an
-exhaustive switch — no virtual dispatch beyond the destructor.
 
 ## Quality gates
 
-All of these run by default in `debug`:
+On by default in the `debug` preset:
 
-- `-Werror` with a strict warning set (`cmake/CompilerWarnings.cmake`) — including
-  `-Wconversion`, `-Wsign-conversion`, `-Wshadow`, `-Wold-style-cast`,
-  `-Wnull-dereference`, `-Wimplicit-fallthrough`.
-- `[[nodiscard]]` on every observer + return value where loss-of-result would be
-  a bug; verified by clang-tidy's `modernize-use-nodiscard`.
+- `-Werror` over a strict warning set (`cmake/CompilerWarnings.cmake`),
+  including `-Wconversion`, `-Wsign-conversion`, `-Wshadow`,
+  `-Wold-style-cast` and `-Wimplicit-fallthrough`.
+- `[[nodiscard]]` wherever dropping a result would be a bug.
 
-Available on demand:
+On demand:
 
-- **Sanitizers**: `cmake --preset asan` (ASan + UBSan) or `--preset tsan`. The
-  underlying knob is `-DVESTRA_SANITIZE=address+undefined` and is composable.
-- **clang-tidy**: `cmake --preset tidy` enables build-time linting; or
-  `cmake --build build/debug --target tidy` to lint the whole tree against
-  `compile_commands.json`.
-- **clang-format**: `cmake --build build/debug --target format` (rewrites) or
-  `target format-check` (CI-friendly dry run).
-- **ccache**: auto-detected; speeds repeated builds.
-
-## What works today (v0)
-
-- **Lexer** — all §17.1 keywords and operators; numeric literals with underscores,
-  hex/oct/binary/exponent; strings with escapes; byte strings; char literals;
-  §4 interpolated strings split into Begin/Part/(splice)/Part/End tokens with
-  splice paren depth tracked on a stack; nested block comments;
-  newline-as-terminator with continuation rules.
-- **Parser** — modules, imports, funcs (with generics, params, effects clause,
-  result), structs, enums, protocols, extensions, opaque types, const/static,
-  derive; statements (let/var/return/break/continue/while/for/assignment),
-  Pratt-parsed expressions honouring §17.7, types (named with generics, optional,
-  vector, tuple, function, some/dyn).
-- **AST pretty-printer** — emits canonical Vestra source; doubles as `vestra fmt`.
-- **Sema (name resolution + type checking)** — two-pass resolver builds a
-  scope chain over the global namespace + function/block scopes; reports
-  undefined names, duplicate definitions, type mismatches, wrong arg counts,
-  bad operator operands. Bidirectional checking lets integer/float literals
-  adopt annotated types (`let x: Int32 = 42` works). Member access types
-  struct fields (with `embed` flattening per §6); struct construction
-  (`Point(x: 1, y: 2)`) checks labels + missing fields; enum case
-  construction (`Color.red` and leading-dot `.red` against expected type);
-  match arm typing with exhaustiveness checking for enum scrutinees;
-  visibility plumbing in place (private/internal/package/public on every
-  Symbol). `vestra check` runs sema alone; `vestra build` refuses to emit
-  C++ if sema reports errors (override with `--skip-check`).
-- **C++ emitter** — funcs (parameter modes → const&/&/&&), primitives →
-  `<cstdint>` aliases, modules → nested namespaces, structs → structs +
-  designated-initializer construction, bare enums → `enum class`, payloaded
-  enums → `std::variant` wrappers, let/var, while, for, binary/unary ops,
-  calls, member access, `Enum::case` lowering for both `Color.red` and
-  leading-dot `.red`, and `match` over bare enums as a `switch` inside an
-  IIFE. The emitter consumes the resolver's side table when available, so
-  context-sensitive lowering (struct vs function call, enum case spelling,
-  match scrutinee type) is correct.
-- **Ownership / move tracking (phase 1)** — every non-trivial binding
-  (Local / Parameter) is flow-tracked through its function. Passing a
-  bare identifier to a `sink` parameter or `return`ing it consumes the
-  binding. Subsequent uses are rejected with a diagnostic that names
-  both the use and the original move site. `copy x` reads x without
-  consuming it (the copy becomes the consumed value). Reassigning a
-  consumed `var` revives it. Trivial primitives (numerics, Bool, Char,
-  Unit) are exempt and freely reusable. Phase 1 is intentionally linear
-  — it does not yet merge state across `if` / `match` branches.
-- **Law of Exclusivity (phase 1)** — at every call, the live borrows
-  of each storage location must be either all `read` or exactly one
-  `inout` (§5.4, §19.3). A *Place* is a root binding plus a path of
-  field selectors; two places overlap iff they share a root and one
-  path is a prefix of the other. So `swap(&p.x, &p.y)` is fine
-  (clause 3 — disjoint fields), but `swap(&p, &p.x)` is a parent/child
-  overlap and gets rejected with the original borrow site as a note.
-  Sink arguments are consumes (handled by ownership), not borrows.
-  Phase 2 needs cross-statement liveness, partition primitives (clause
-  4), and index-based subviews.
-- **Capability resolution (phase 1)** — §8's `using` rows are
-  propagated and verified. Every function call requires the caller to
-  have each of the callee's `using` capabilities in scope, either by
-  declaring the same row or via an enclosing `with X = value { ... }`
-  block. `async func` adds an implicit `Async`; `await` and `spawn`
-  both require `Async` in scope. The canonical capabilities (Alloc,
-  Log, Async, Net, Clock, Rand, Mmio, Asm, RawMemory, Extern) are
-  registered as built-in symbols so `using Alloc` resolves cleanly
-  without a real standard library. Phase 2 needs: type-checking the
-  value bound in `with`, row polymorphism over a generic capability
-  variable, capability narrowing (`Mmio.narrowed(to:)`), and gating
-  unsafe operations (Ptr.load → RawMemory, asm → Asm, etc.) once
-  those primitives exist.
-- **Generics (phase 1)** — §7 monomorphization via C++ templates. The
-  generic body type-checks once with opaque `GenericParam`-kind type
-  placeholders for each `[T]`. At each call site, types are inferred
-  by unifying parameter types against argument types — including
-  `expected` propagation from the outer context, so
-  `let x: Int32 = identity(7)` correctly resolves T to Int32 instead
-  of letting the literal default to Int. Codegen emits each generic
-  function as a header-only C++ template (`template <class T> ...`),
-  and the host C++ compiler does the actual per-instantiation
-  monomorphization. Phase 2: const generics (`[const N: Int]`),
-  generic structs/enums, where-clause refinement, and protocol-bound
-  enforcement.
-- **Conditional compilation (§12.6 phase 1)** — `@when(predicate) decl`
-  is gated by the comptime folder. A built-in `cfg` value exposes
-  `cfg.os`, `cfg.arch`, `cfg.endian`, `cfg.pointerBits`, and
-  `cfg.profile`, populated from the host at compile time. Predicates
-  use any pure comptime expression: `@when(cfg.os == .macos)`,
-  `@when(cfg.pointerBits == 64 && cfg.endian == .little)`, etc.
-  When a predicate folds to `false` the decl is invisible to every
-  later sema pass and never reaches codegen — the generated C++
-  contains only the live arm, no `#ifdef` ladder. A predicate that
-  can't be folded (e.g. references a runtime function) is treated
-  as live, so a non-foldable @when never silently deletes code.
-  Phase 2: manifest-declared `cfg.has("simd")` and `cfg.option(...)`,
-  `comptime if` for declaration-position selection, and the §12.6
-  every-branch type-check guarantee.
-
-- **Comptime folding (§12.1 phases 1+2+3+4+5+6+7 + §12.2 reflection phases 1+2+3)** — a tree-walking evaluator
-  for the pure subset of Vestra. **Phase 1** folds `const` initializers
-  and `comptime { ... }` blocks at compile time: literals, references
-  to earlier folded consts, unary + binary arithmetic and logic
-  (short-circuiting `&&`/`||`), comparisons, and `if`-expressions
-  (only the chosen branch is evaluated, per §19.9). **Phase 2** adds
-  calls to `comptime func` declarations: the folder looks the callee
-  up in the global scope, binds each argument to the corresponding
-  parameter, folds the body recursively (`return` in a single-stmt
-  body is treated as the block's value), and caps recursion at 64
-  frames. So
-  `comptime func factorial(_ n: Int) -> Int { return if n <= 1 { 1 } else { n * factorial(n - 1) } }`
-  combined with `const Fact10: Int = comptime { factorial(10) }`
-  reaches the generated header as `inline constexpr ... Fact10 = 3628800;`.
-  Calls into non-`comptime` funcs, struct construction, member access,
-  and side-effecting forms remain unfoldable — codegen falls back to
-  the source expression. **Phase 5** adds a small comptime stdlib:
-  `sin`, `cos`, `tan`, `sqrt` (each `(Float64) -> Float64`) plus
-  the constants `tau`, `pi`, `e`. The resolver registers these as
-  built-in Float64 symbols so they type-check at every call site; the
-  folder dispatches each call to the host's `<cmath>`. **Phase 6** adds
-  primitive-type-as-callable conversions: a bare numeric primitive
-  name in callee position (`Float64(i)`, `Int32(x)`, `UInt8(255)`, …)
-  is an explicit cast. The resolver routes this past normal name
-  lookup, the folder applies the right Int↔Float retag at fold time,
-  and the emitter lowers it as `static_cast<T>(arg)` for runtime
-  paths. With phases 5+6 in place `examples/sin_table.vst` matches
-  the §12.1 spec example one-to-one. **Phase 7** adds `@embed("path")`
-  — the spec's only documented exception to fold-time purity. The
-  parser recognizes `@embed` as an intrinsic-call expression, the
-  driver wires up a path-resolving reader that opens files relative
-  to the source-file directory, the folder consumes the bytes and
-  produces a `Vector<UInt8>` value, and the resolver pins the
-  expression's type to `[N]UInt8` from the read size. The folded
-  vector flows through the existing codegen brace-init path and
-  surfaces as `inline constexpr std::array<std::uint8_t, N> = {{…}}`
-  in the emitted header. **§12.2 reflection** now covers three
-  phases. Phase 1 promoted `StructName.fields` to `[N]Field`; phase
-  2 added `Field.name`; **phase 3** adds `Field.type` — a comptime
-  `Type` value with its own `.name: Str`. The resolver synthesizes
-  both `Type` and `Field` StructDecls at startup (Type carries
-  `name: Str`, Field carries `name: Str, type: Type`) and the folder
-  emits Field values whose `elements` vector mirrors that declaration
-  order positionally, so adding a member to the Field decl is a
-  one-place change (the dispatch walks the decl by name to find the
-  matching index). Composite field types (vectors, optionals,
-  tuples) round-trip through a small in-folder `type_display_name`
-  printer, so `Box.fields[0].type.name` over `var bytes: [4]UInt8`
-  reads back as `"[4]UInt8"`. Both `Type` and `Field` remain
-  comptime-only — the canonical runtime pattern extracts what's
-  needed (names + type strings, etc.) into `[N]Str` tables inside
-  the same `comptime { … }` block. Later phases extend Field with
-  `offset` + attributes, and put `derive(Eq, Hash, Clone, …)`
-  reflective defaults on top of the .type machinery.
-- **`derive(Eq, Hash, Debug)` (§12.3)** — `derive(Eq) for Point` (or
-  `for Shape`) injects a `[[nodiscard]] bool operator==(const T&) const noexcept = default;`
-  into the emitted struct/enum body for field-by-field structural
-  equality. `derive(Hash)` emits a `template <> struct std::hash<Q::T>`
-  specialization (at global scope, after the user's namespace
-  closes — `std::hash` lives in `::std`) with a boost-style
-  hash-combine over each field's `std::hash`. `derive(Debug)` emits
-  a `template <> struct std::formatter<Q::T>` so the value drops
-  straight into `std::format("{}", v)`, `std::println("{}", v)`,
-  and the §4 string-interpolation lowering — three shapes covered
-  (struct → `Point{x: 1, y: 2}`, bare enum → `Color.green`,
-  payloaded variant-enum via `std::visit` →
-  `Shape::circle{radius: 1.5}`). The codegen builds a target →
-  derived-protocols index from every top-level `derive(...)` decl
-  up front, so it works whether the `derive` appears before or
-  after the type itself. For payloaded enums the Eq flag also adds
-  a defaulted `operator==` to each `case_t` (std::variant's compare
-  requires every alternative to be equality-comparable).
-  `derive(Eq, Hash) for Point` makes `Point` immediately usable as
-  a `std::unordered_map` key; `derive(Debug)` lets it surface
-  cleanly in any format-aware sink. Clone rides on the same index
-  in later phases; payloaded-enum Hash needs `std::visit`-driven
-  hashing and is a follow-on.
-- **Match expression lowering** — `match e { case .a: …  case .b(let x): …  case _: … }`
-  lowers two ways depending on the scrutinee's enum shape: a bare
-  enum becomes a `switch (e) { case Enum::a: return …; }` IIFE; a
-  payloaded enum becomes `std::visit([&](auto&& alt) -> auto { if
-  constexpr (std::is_same_v<…, Shape::circle_t>) { auto&& r =
-  alt.radius; return …; } else if constexpr (…) { … } else {
-  std::unreachable(); } }, scrutinee.value)`. Payload bindings
-  (`let r`, `let w`, `let h`) become `auto&&` aliases over the
-  matching field name (or `_0`, `_1`, … for positional payloads).
-  Sum-type enum *construction* lowers the matching way:
-  `Shape.circle(radius: 1.0)` → `Shape{Shape::circle_t{1.0}}` and
-  `Shape.point` → `Shape{Shape::point_t{}}`, so both ends of the
-  enum surface compile cleanly. Sema's exhaustiveness check
-  (already in place) means the trailing `std::unreachable()` arm
-  is dead code; it exists only to keep the C++ compiler quiet when
-  the user hasn't written a `default`.
-- **End-to-end** — `vestra build` parses, sema-checks (including
-  ownership), and produces `.hpp/.cpp` that compiles and runs for
-  every `examples/*.vst` file (the `e2e_*_run` CTest cases verify
-  each). Sink-mode parameters lower to C++ `T&&` with `std::move(...)`
-  at the call site, and `let` bindings emit as `auto` (not `const
-  auto`) so ownership transfers are actually expressible.
-
-### Post-v0 phases shipped after this section
-
-The list above was the original v0 surface. Since then the following
-have landed end-to-end (each entry has a single commit + an `examples/`
-program + an e2e test pinning the lowering):
-
-- **§9 Optional end-to-end** — `T?`, `nil`, `??`, `if let`, postfix
-  `!` (UnaryOp::Unwrap), implicit `T → T?` wrap. Lowers to
-  `std::optional<T>` with `value_or` / `.value()` / `has_value()`
-  dispatch.
-- **§9 Result / throws / try / throw** — `throws(E)` widens the
-  external return to `Result<T, E>` (TypeKind::Result), lowers to
-  `std::expected<T, E>`. The three try forms emit propagation /
-  Optional / `.value()`; mid-expression `try` hoists to a stmt-
-  position let-binding so the propagation actually escapes.
-  `throw e` lowers to `return std::unexpected{e};`.
-- **§9 do / catch inline error handling** — `do { body } catch
-  (NAME: E) { handler }` lowers to nested IIFEs over `std::expected`.
-  Bare `catch NAME` infers E from the body's try-calls.
-- **§9 optional chaining** — `a?.b?.c` lowers to
-  `std::optional::transform` (plain field) or `and_then` (flattens
-  when the field already returns Optional). Chains compose.
-- **§5 `for x in xs`** — Range form (`a..b` / `a..<b`) lowers to a
-  counted C++ for-loop; Iterator form (any value with `next() ->
-  Element?`) lowers to `while-true / next() / break`. Struct
-  methods are now emitted inline so user-defined iterators work.
-- **§6 tuple types + literals + destructuring** — `(T1, T2)`,
-  `(e1, e2)`, `let (a, b) = expr`. Lowers to `std::tuple<…>` /
-  `std::tuple{…}` / C++17 structured bindings.
-- **§3 opaque type** — `opaque type Q = T` lowers to `enum class Q
-  : T {}` (distinct, ops-free). `Q(t)` and `q.value` are the two
-  explicit boundary crossings.
-- **§4 layout attributes** — `@repr(packed)`,
-  `@repr(align(N))` / `@align(N)`, `@bits(N)`. Lower to
-  `__attribute__((packed))`, `alignas(N)`, and C++ bit-fields.
-- **§4 Display protocol** — interpolation splices now must be
-  Display-conformant (primitive, or derive(Display) / derive(Debug)).
-  `derive(Display)` shares the formatter spec with `derive(Debug)`.
-- **§10 Box[T] + Alloc capability** — `Box[T]` (TypeKind::Box) →
-  `std::unique_ptr<T>`. `Box.new(v)` → `std::make_unique<T>(v)`,
-  capability-checked: callers without `using Alloc` in scope are
-  rejected with `missing capability 'Alloc'`. `box.value` → `*box`.
-- **§12.3 derive(Clone)** — surfaces a synthetic `.clone() -> T` on
-  struct + sum-type enum nominals; bare enums use implicit copy.
-  Lowers to `[[nodiscard]] T clone() const { return *this; }`.
-- **§12.3 derive(Hash) for payloaded enums** — sum-type wrappers
-  get a std::hash spec built from std::visit + constexpr-if; alt
-  index seeds the combine so equal payload bytes across cases don't
-  collide.
-
-For the full chronological log with commit hashes and rationale, see
-[`HANDOFF.md`](HANDOFF.md).
-
-## Roadmap
-
-The forward-looking phase menu — what's a clean next step, what's
-blocked on what, and rough sizing — lives in
-[`ROADMAP.md`](ROADMAP.md). The high-level groupings are:
-
-- **Tier S** (closes a current v0.5 gap): mid-expression `try`
-  inside conditional arms, nested tuple destructuring at codegen,
-  tuple patterns in function params / match arms, Optional in
-  Display splices, `derive(Default)`.
-- **Tier A** (bounded next-phase candidates): `.mapError(_ f)` on
-  Result, `Span[T]` non-owning view, `panic` / `abort` lowering,
-  `with X = expr { ... }` capability-supplying blocks, opaque-type
-  derive support + `T(q)` extraction, guarded `do ... catch ...
-  where`, range / or-patterns / tuple patterns inside `match`,
-  generics phase 2 (const generics, generic structs, where-clauses).
-- **Tier B** (bigger swings): `async` / `spawn` / `select` /
-  `parallel` (§11), `Channel[T]`, ownership / exclusivity /
-  capability phase 2, SIMD lowering (§13), content-hashed `@embed`
-  manifest, quote / splice / declaration macros (§12.4),
-  `Iterator` combinators, `Soa[T]`.
-
-Each phase is sized for a single session and lands one §-block of the
-spec; the acceptance test is "the relevant `examples/*.vst` file
-transpiles to C++ that compiles and produces the right answer."
-
-For the chronological log of what's already shipped (commit hashes
-+ one-line summaries + v0.5 limitations), see
-[`HANDOFF.md`](HANDOFF.md).
-
-## Common commands
-
-| Command                                              | What it does                       |
-|------------------------------------------------------|------------------------------------|
-| `cmake --preset debug`                               | Configure a Debug build            |
-| `cmake --build build/debug`                          | Build everything                   |
-| `ctest --test-dir build/debug --output-on-failure`   | Run all tests                      |
-| `cmake --preset asan && cmake --build build/asan`    | Build with ASan + UBSan            |
-| `cmake --build build/debug --target format`          | Rewrite all sources via clang-format |
-| `cmake --build build/debug --target tidy`            | Lint the whole tree                |
-| `build/debug/vestra build foo.vst -o out/`           | Transpile a Vestra source file     |
-| `build/debug/vestra check foo.vst`                   | Run sema only; report any errors   |
-| `build/debug/vestra fmt foo.vst`                     | Pretty-print to stdout             |
-| `build/debug/vestra build foo.vst --dump-tokens`     | Inspect the token stream           |
-| `build/debug/vestra build foo.vst --dump-ast`        | Inspect the parsed AST             |
-| `build/debug/vestra build foo.vst --skip-check`      | Bypass sema (debug aid only)       |
+| Command | What it does |
+|---|---|
+| `cmake --preset asan && cmake --build build/asan` | Build with AddressSanitizer + UBSan (`--preset tsan` for ThreadSanitizer) |
+| `cmake --build build/debug --target format` | Rewrite sources with clang-format (`format-check` for a dry run) |
+| `cmake --build build/debug --target tidy` | Lint the tree with clang-tidy (the target exists when clang-tidy is installed; `--preset tidy` lints during the build) |
 
 ## License
 
-BSD 2-Clause — see [LICENSE](LICENSE). Each source file carries a
-matching `SPDX-License-Identifier: BSD-2-Clause` header.
+BSD 2-Clause; see [LICENSE](LICENSE). Each source file carries a matching
+`SPDX-License-Identifier: BSD-2-Clause` header.
