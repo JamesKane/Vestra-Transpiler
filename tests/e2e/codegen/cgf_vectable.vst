@@ -30,3 +30,19 @@ public func vbar() -> UInt64 {
 func onPanic(_ message: Str, _ file: StrConst, _ line: Int) -> Never {
     while true { }
 }
+
+// §14.14 a fresh task's context, switched to with Scheduler.swapContext.
+@noinit static bootCtx: Context
+@noinit static pingCtx: Context
+@align(16) @noinit static pingStack: [64]UInt64
+
+func ping() using Asm -> Never {
+    while true {
+        Scheduler.swapContext(pingCtx, bootCtx)
+    }
+}
+
+public func startPing() using Asm {
+    pingCtx = Context.start(entry: ping, stack: (&pingStack).address + 512)
+    Scheduler.swapContext(bootCtx, pingCtx)
+}

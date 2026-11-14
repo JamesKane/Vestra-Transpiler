@@ -1,0 +1,61 @@
+// §19.6 linear values in places (F17), §12.1 folded consts, a do/catch binding
+// and a match inside an if-let, as vgen lowers them against the bootstrap.
+linear struct Slot {
+    var badge: UInt64
+}
+struct Table {
+    var slots: [4]Slot?
+    var used: UInt64
+}
+enum Held {
+    case client(UInt32)
+    case none
+}
+enum No {
+    case dead
+}
+const BASE: UInt64 = 0x0900_0000
+const SHIFT: UInt64 = BASE >> 4
+const WIDE: Int32 = (1 << 8) - 1
+const NEG: Int = -3
+func give(_ s: sink Slot) { }
+func fresh() -> Table {
+    return Table(slots: [nil, nil, nil, nil], used: 0)
+}
+func takeOne(_ t: inout Table) {
+    if let x = t.slots[0].take() {
+        give(x)
+    }
+}
+func putOne(_ t: inout Table, _ s: sink Slot) {
+    t.slots[1].put(s)
+}
+func peek(_ t: Table) -> UInt64 {
+    var b: UInt64 = 0
+    if let x = t.slots[2] {
+        b = x.badge
+    }
+    return b
+}
+func which(_ o: Held?) -> UInt32 {
+    if let h = o {
+        return match h {
+            case .client(let e): e
+            case .none: 0
+        }
+    }
+    return 9
+}
+func risky(_ x: Int32) throws(No) -> UInt64 {
+    if x < 0 { throw No.dead }
+    return 1
+}
+func caught(_ x: Int32) -> UInt64 {
+    let r = do {
+        let v = try risky(x)
+        v + 1
+    } catch (e: No) {
+        0
+    }
+    return r
+}

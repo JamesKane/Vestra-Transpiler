@@ -3042,6 +3042,10 @@ struct TyEnv {
     var hasModule: Bool         // global: unit declares `module ...` (an entry `main` only exists OUTSIDE a module)
     var tpN: Int                // file-global `__vstr_tp_unused_<N>` tuple-wildcard counter (monotonic, matches the bootstrap)
     var noLibc: Bool            // global: `--no-libc`, the §15.5 freestanding profile
+    var linears: Vec[String]    // global: §5 linear struct names, closed over fields
+    var cfName: Vec[String]     // global: §12.1 folded consts, in order ...
+    var cfVal: Vec[Int]         // ... and their integer values
+    var pCurName: Vec[String]   // per-function: its parameter names (a storage place for if-let)
     var modLabel: String        // global: the module path `_`-joined, plus `_` (symbol prefixes)
     var bad: Vec[String]
 }
@@ -3064,7 +3068,8 @@ func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b, let attrs):
             tyRecordFuncG(env, name, g, params, t, r)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics, let attrs): tyRecordStructDecl(env, name, fl, m, generics)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics, let attrs):
+            tyRecordStructLin(env, name, fl, m, generics, isLinear)
         case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumDecl(env, name, cs, m, generics)
         case .deriveD(let protocols, let target): tyRecordDerive(env, protocols, target)
         case .opaqueD(let vis, let name, let under): tyRecordOpaque(env, name, under)
@@ -3294,6 +3299,11 @@ func tyEnumHasCase(_ env: inout TyEnv, _ enumName: String, _ caseName: String) -
         i = i + 1
     }
     return false
+}
+
+func tyRecordStructLin(_ env: inout TyEnv, _ name: String, _ fields: Vec[Nd], _ methods: Vec[Nd], _ generics: Vec[Nd], _ isLinear: Bool) using Alloc {
+    tyRecordStructDecl(env, name, fields, methods, generics)
+    if isLinear { env.linears.push(own(name)) }
 }
 
 func tyRecordStructDecl(_ env: inout TyEnv, _ name: String, _ fields: Vec[Nd], _ methods: Vec[Nd], _ generics: Vec[Nd]) using Alloc {
@@ -3685,6 +3695,7 @@ func tyResetSyms(_ env: inout TyEnv) using Alloc {
 }
 
 func tyRegisterParams(_ env: inout TyEnv, _ params: Vec[Nd]) using Alloc {
+    while env.pCurName.len() > 0 { let _ = env.pCurName.pop() }
     var i: Int = 0
     while i < params.len() {
         tyRegisterParam(env, params.get(i) ?? Nd.wildcard)
@@ -3694,9 +3705,14 @@ func tyRegisterParams(_ env: inout TyEnv, _ params: Vec[Nd]) using Alloc {
 
 func tyRegisterParam(_ env: inout TyEnv, _ p: Nd) using Alloc {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): tyAddSym(env, nm, ty)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): tyAddParamSym(env, nm, ty)
         default: noop()
     }
+}
+
+func tyAddParamSym(_ env: inout TyEnv, _ nm: String, _ ty: Vec[Nd]) using Alloc {
+    env.pCurName.push(own(nm))
+    tyAddSym(env, nm, ty)
 }
 
 // Register a binding's type from its annotation (empty annotation => untracked).
@@ -4550,9 +4566,33 @@ func tyInferChainMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String) usi
 // operand winning (`Int32 + Int` -> Int32), or unknown when the operand rule is
 // violated. Unknown operands stay permissive so a partly-inferred condition is
 // tolerated. Other operators (??, ranges) are unknown.
+// An expression of number literals alone (`48`, `-1`, `(2 * 3)`, `1 + 2`).
+func tyIsNumLitTree(_ e: Vec[Nd]) -> Bool {
+    if let n = e.get(0) {
+        return match n {
+            case .intLit(let t): true
+            case .floatLit(let t): true
+            case .paren(let x): tyIsNumLitTree(x)
+            case .unary(let op, let x): streq(op, "-") && tyIsNumLitTree(x)
+            case .binary(let op, let a, let b): (streq(op, "+") || streq(op, "-") || streq(op, "*") || streq(op, "/") || streq(op, "%")) && tyIsNumLitTree(a) && tyIsNumLitTree(b)
+            default: false
+        }
+    }
+    return false
+}
+
+// As sema types it: an operand of number literals alone takes the other
+// operand's numeric type, whichever side it is on.
+func tyLitAdapt(_ mine: String, _ other: String, _ m: Vec[Nd], _ o: Vec[Nd]) using Alloc -> String {
+    if tyIsNumLitTree(m) && !tyIsNumLitTree(o) && tyIsNumeric(other) { return own(other) }
+    return own(mine)
+}
+
 func tyInferBinary(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc -> String {
-    let lt = tyInferBoxed(env, l)
-    let rt = tyInferBoxed(env, r)
+    let lt0 = tyInferBoxed(env, l)
+    let rt0 = tyInferBoxed(env, r)
+    let lt = tyLitAdapt(lt0, rt0, l, r)
+    let rt = tyLitAdapt(rt0, lt, r, l)
     // §13 element-wise arithmetic over two `[N]T` operands of one type yields
     // that vector type.
     if isVecArithOp(op) && tyIsArray(lt) && streq(lt, rt) { return own(lt) }
@@ -4843,6 +4883,8 @@ func tyInferMethodCall(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ ch
     if chain { return own("") }
     let bt = tyInferBoxed(env, base)
     if streq(bt, "") { return own("") }
+    // `o.take()` on an Optional yields the same Optional.
+    if streq(name, "take") && (bt.byteAt(bt.len() - 1) ?? 0) == 63 { return bt }
     let r = tyMethodRet(env, bt, name)
     if !streq(r, "") { return r }
     return tyBuiltinMethodRet(bt, name)
@@ -5228,6 +5270,9 @@ func buildTyEnv(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc -> TyEnv
                     hasModule: u.hasMod,
                     tpN: 0,
                     noLibc: noLibc,
+                    linears: Vec.new(),
+                    cfName: Vec.new(), cfVal: Vec.new(),
+                    pCurName: Vec.new(),
                     modLabel: modLabelOf(u.hasMod, u.modPath),
                     bad: Vec.new())
     // §5 imported modules' declarations first, under their qualified C++ names
@@ -5248,7 +5293,71 @@ func buildTyEnv(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc -> TyEnv
         m = m + 1
     }
     tyComputeMoveOnly(&env)
+    tyCloseLinears(&env)
     return env
+}
+
+// §5 a struct with a field of a linear type is linear (Linearity::decl_is_linear).
+func tyCloseLinears(_ env: inout TyEnv) using Alloc {
+    var changed: Bool = true
+    while changed {
+        changed = false
+        var i: Int = 0
+        while i < env.sFldStruct.len() {
+            let owner = env.sFldStruct.get(i) ?? own("")
+            if !tyInList(env.linears, owner) && tySpLinear(env, env.sFldType.get(i) ?? own("")) {
+                env.linears.push(owner)
+                changed = true
+            }
+            i = i + 1
+        }
+    }
+}
+
+func tyInList(_ xs: Vec[String], _ n: Str) -> Bool {
+    var i: Int = 0
+    while i < xs.len() {
+        if let x = xs.get(i) { if streq(x, n) { return true } }
+        i = i + 1
+    }
+    return false
+}
+
+// Is a type spelling linear: a linear struct, or an Optional / array / tuple /
+// generic instance over one.
+func tySpLinear(_ env: inout TyEnv, _ sp0: Str) using Alloc -> Bool {
+    let sp = tyTrimSp(sp0)
+    let n = sp.len()
+    if n == 0 { return false }
+    if (sp.byteAt(n - 1) ?? 0) == 63 { return tySpLinear(env, sp.slice(0, n - 1)) }   // T?
+    if (sp.byteAt(0) ?? 0) == 91 {                                                     // [N]T
+        var i: Int = 1
+        while i < n && (sp.byteAt(i) ?? 0) != 93 { i = i + 1 }
+        return tySpLinear(env, sp.slice(i + 1, n))
+    }
+    if (sp.byteAt(0) ?? 0) == 40 { return tySpAnyLinear(env, sp.slice(1, n - 1)) }  // (A, B)
+    var b: Int = 0
+    while b < n && (sp.byteAt(b) ?? 0) != 91 { b = b + 1 }
+    if b < n { return tyInList(env.linears, sp.slice(0, b)) || tySpAnyLinear(env, sp.slice(b + 1, n - 1)) }
+    return tyInList(env.linears, sp)
+}
+
+// Any of a top-level comma list of spellings linear?
+func tySpAnyLinear(_ env: inout TyEnv, _ list: Str) using Alloc -> Bool {
+    var depth: Int = 0
+    var start: Int = 0
+    var i: Int = 0
+    while i < list.len() {
+        let c = list.byteAt(i) ?? 0
+        if c == 91 || c == 40 { depth = depth + 1 }
+        if c == 93 || c == 41 { depth = depth - 1 }
+        if c == 44 && depth == 0 {
+            if tySpLinear(env, list.slice(start, i)) { return true }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    return tySpLinear(env, list.slice(start, list.len()))
 }
 
 // §10 move-only nominals: a struct/enum becomes move-only once any field or
@@ -5444,7 +5553,7 @@ func emitLinkPrefix(_ attrs: Vec[Nd]) using Alloc, Log {
         print("\")]] ")
     }
     if attrHas(attrs, "interrupt") { print("[[gnu::used]] ") }
-    if attrHas(attrs, "boot") { print("[[gnu::naked]] ") }
+    if attrHas(attrs, "boot") || attrHas(attrs, "naked") { print("[[gnu::naked]] ") }   // §14.7, F3
     if streq(attrDot(attrs, "stack_protector"), "none") { print("[[gnu::no_stack_protector]] ") }
     let im = attrDot(attrs, "inline")
     if streq(im, "always") { print("[[gnu::always_inline]] ") }
@@ -6359,7 +6468,7 @@ func emitHppDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
         case .enumD(let vis, let name, let cases, let methods, let generics):
             emitGenEnumDecl(env, generics, name, cases, methods)
         case .constD(let vis, let name, let ty, let value):
-            emitGlobalDef(env, "inline constexpr ", name, ty, value)
+            emitConstDef(env, name, ty, value)
         case .staticD(let vis, let name, let ty, let value, let attrs):
             emitStaticOrTable(env, name, ty, value)
         case .opaqueD(let vis, let name, let under): emitOpaqueDecl(name, under)
@@ -6432,6 +6541,133 @@ func attrIntOf(_ attrs: Vec[Nd], _ name: Str) using Alloc -> String {
 
 func emitGlobalDef(_ env: inout TyEnv, _ prefix: Str, _ name: Str, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
     emitGlobalDefSym(env, prefix, name, ty, value, "")
+}
+
+// §12.1 a const's initializer folds at compile time (the bootstrap's folder,
+// hinted by the annotation): an integer prints in decimal, `u`-suffixed for an
+// unsigned type. Anything this folder doesn't evaluate prints as written.
+func emitConstDef(_ env: inout TyEnv, _ name: Str, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    let sp = tyAnnSpelling(ty)
+    let intTy = streq(sp, "") || tyIsIntSp(sp)
+    if intTy && value.len() > 0 {
+        var ok: Bool = true
+        let v = cfFold(env, value.get(0) ?? Nd.wildcard, ok)
+        let uns = tyIsUnsignedSp(sp)
+        if ok && !(uns && v < 0) {
+            env.cfName.push(own(name))
+            env.cfVal.push(v)
+            print("inline constexpr ")
+            if ty.len() > 0 { emitTypeBoxed(ty) } else { print("auto") }
+            print(" ")
+            print(name)
+            print(" = ")
+            if v < 0 { print("-"); print(intToStr(0 - v)) } else { print(intToStr(v)) }
+            if uns { print("u") }
+            print(";\n")
+            return
+        }
+    }
+    emitGlobalDef(env, "inline constexpr ", name, ty, value)
+}
+
+func tyIsIntSp(_ sp: Str) -> Bool {
+    return streq(sp, "Int") || streq(sp, "Int8") || streq(sp, "Int16") || streq(sp, "Int32")
+        || streq(sp, "Int64") || tyIsUnsignedSp(sp)
+}
+
+func tyIsUnsignedSp(_ sp: Str) -> Bool {
+    return streq(sp, "UInt") || streq(sp, "UInt8") || streq(sp, "UInt16") || streq(sp, "UInt32")
+        || streq(sp, "UInt64")
+}
+
+// Fold an integer constant expression; `ok` turns false on anything else.
+func cfFold(_ env: inout TyEnv, _ e: Nd, _ ok: inout Bool) using Alloc -> Int {
+    return match e {
+        case .intLit(let t): cfParseInt(t, ok)
+        case .paren(let x): cfFold(env, x.get(0) ?? Nd.wildcard, ok)
+        case .unary(let op, let x): cfUnary(env, op, x, ok)
+        case .binary(let op, let a, let b): cfBinary(env, op, a, b, ok)
+        case .ident(let n): cfLookup(env, n, ok)
+        case .call(let callee, let args): cfConv(env, callee, args, ok)
+        default: cfFail(ok)
+    }
+}
+
+func cfFail(_ ok: inout Bool) -> Int { ok = false; return 0 }
+
+func cfLookup(_ env: inout TyEnv, _ n: Str, _ ok: inout Bool) -> Int {
+    var i: Int = env.cfName.len() - 1
+    while i >= 0 {
+        if let x = env.cfName.get(i) { if streq(x, n) { return env.cfVal.get(i) ?? 0 } }
+        i = i - 1
+    }
+    ok = false
+    return 0
+}
+
+// `UInt64(x)` and the other integer conversions fold their argument.
+func cfConv(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd], _ ok: inout Bool) using Alloc -> Int {
+    let f = identBaseName(callee)
+    if !tyIsIntSp(f) || args.len() != 1 { ok = false; return 0 }
+    let a = argValue(args.get(0) ?? Nd.wildcard)
+    return cfFold(env, a.get(0) ?? Nd.wildcard, ok)
+}
+
+func cfUnary(_ env: inout TyEnv, _ op: Str, _ x: Vec[Nd], _ ok: inout Bool) using Alloc -> Int {
+    let v = cfFold(env, x.get(0) ?? Nd.wildcard, ok)
+    if streq(op, "-") { return 0 - v }
+    if streq(op, "~") { return ~v }
+    ok = false
+    return 0
+}
+
+func cfBinary(_ env: inout TyEnv, _ op: Str, _ a: Vec[Nd], _ b: Vec[Nd], _ ok: inout Bool) using Alloc -> Int {
+    let x = cfFold(env, a.get(0) ?? Nd.wildcard, ok)
+    let y = cfFold(env, b.get(0) ?? Nd.wildcard, ok)
+    if !ok { return 0 }
+    if streq(op, "+") { return x + y }
+    if streq(op, "-") { return x - y }
+    if streq(op, "*") { return x * y }
+    if streq(op, "/") && y != 0 { return x / y }
+    if streq(op, "%") && y != 0 { return x % y }
+    if streq(op, "<<") && y >= 0 && y < 63 { return x << y }
+    if streq(op, ">>") && y >= 0 && y < 64 { return x >> y }
+    if streq(op, "&") { return x & y }
+    if streq(op, "|") { return x | y }
+    if streq(op, "^") { return x ^ y }
+    ok = false
+    return 0
+}
+
+// Decimal, `0x`, `0b` or `0o`, with `_` separators.
+func cfParseInt(_ t: Str, _ ok: inout Bool) -> Int {
+    var base: Int = 10
+    var i: Int = 0
+    if t.len() > 2 && (t.byteAt(0) ?? 0) == 48 {
+        let p = t.byteAt(1) ?? 0
+        if p == 120 || p == 88 { base = 16; i = 2 }
+        else if p == 98 || p == 66 { base = 2; i = 2 }
+        else if p == 111 || p == 79 { base = 8; i = 2 }
+    }
+    var v: Int = 0
+    var any: Bool = false
+    while i < t.len() {
+        let c = Int(t.byteAt(i) ?? 0)
+        var d: Int = -1
+        if c >= 48 && c <= 57 { d = c - 48 }
+        else if c >= 97 && c <= 102 { d = c - 87 }
+        else if c >= 65 && c <= 70 { d = c - 55 }
+        else if c != 95 { ok = false; return 0 }
+        if d >= base { ok = false; return 0 }
+        if d >= 0 {
+            if v > (9223372036854775807 - d) / base { ok = false; return 0 }
+            v = v * base + d
+            any = true
+        }
+        i = i + 1
+    }
+    if !any { ok = false }
+    return v
 }
 
 func emitGlobalDefSym(_ env: inout TyEnv, _ prefix: Str, _ name: Str, _ ty: Vec[Nd], _ value: Vec[Nd], _ sym: Str) using Alloc, Log {
@@ -8256,6 +8492,52 @@ func valIsDoCatch(_ v: Vec[Nd]) using Alloc -> Bool {
     }
 }
 
+// The type node of a do/catch's value, from its body's trailing expression
+// (a plain or `::`-qualified type name); empty when not known.
+func doCatchInferredTy(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc -> Vec[Nd] {
+    var out: Vec[Nd] = Vec.new()
+    if let n = v.get(0) {
+        match n {
+            case .doCatchE(let db, let en, let et, let cb): doCatchTyInto(env, db, out)
+            default: noop()
+        }
+    }
+    return out
+}
+
+func doCatchTyInto(_ env: inout TyEnv, _ db: Vec[Nd], _ out: inout Vec[Nd]) using Alloc {
+    // The body's own bindings type its trailing value (`let v = try f(); v + 1`).
+    if let b = db.get(0) {
+        match b {
+            case .block(let stmts): doCatchBindLeading(env, stmts)
+            default: noop()
+        }
+    }
+    let sp = tyInferBoxed(env, blockTrailing(db))
+    if streq(sp, "") || spHasBracket(own(sp)) || containsSub(sp, "?") || containsSub(sp, "(") { return }
+    out.push(Nd.named(own(sp), false, Vec.new()))
+}
+
+func doCatchBindLeading(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i + 1 < stmts.len() {
+        match stmts.get(i) ?? Nd.wildcard {
+            case .letS(let p, let t, let v): doCatchBindOne(env, p, t, v)
+            case .varS(let p, let t, let v): doCatchBindOne(env, p, t, v)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func doCatchBindOne(_ env: inout TyEnv, _ p: Vec[Nd], _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    let n = patName(p)
+    if streq(n, "") { return }
+    var sp: String = tyAnnSpelling(t)
+    if streq(sp, "") { sp = tyInferBoxed(env, v) }
+    if !streq(sp, "") { tyAddSymSpelling(&env, own(n), sp) }
+}
+
 func emitDoCatchValue(_ env: inout TyEnv, _ tyB: Vec[Nd], _ v: Vec[Nd]) using Alloc, Log {
     match v.get(0) ?? Nd.wildcard {
         case .doCatchE(let db, let en, let et, let cb): emitDoCatchParts(env, tyB, db, en, et, cb)
@@ -8729,6 +9011,12 @@ func emitBindingValue(_ env: inout TyEnv, _ ty: Vec[Nd], _ value: Vec[Nd]) using
         emitDoCatchValue(env, tb, value)
         return
     }
+    // Unannotated, the value's type is the do-body's trailing value's (sema
+    // types the expression from it).
+    if ty.len() == 0 && valIsDoCatch(value) {
+        let tb = doCatchInferredTy(env, value)
+        if tb.len() > 0 { emitDoCatchValue(env, tb, value); return }
+    }
     if ty.len() > 0 && valIsNewCall(value) {
         emitTypeBoxed(ty)
         print("{}")
@@ -8982,13 +9270,37 @@ func emitIfHead(_ env: inout TyEnv, _ ln: Str, _ li: Vec[Nd], _ cond: Vec[Nd]) u
         print(") { ")
         return
     }
-    print("if (auto __vstr_opt = ")
+    if ifLetBorrows(env, li) { print("if (auto& __vstr_opt = ") } else { print("if (auto __vstr_opt = ") }
     emitBoxed(env, li)
     print("; __vstr_opt.has_value()) { auto&& ")
     print(ln)
     print(" = *__vstr_opt; ")
     let it = tyInferBoxed(env, li)
     tyAddSymSpelling(&env, own(ln), tyUnwrapOpt(it))
+}
+
+// §9 / §19.6 an `if let` on a storage place (a field, an element, a static or a
+// parameter) of a linear type borrows it: `auto&`, not a copy (F17).
+func ifLetBorrows(_ env: inout TyEnv, _ li: Vec[Nd]) using Alloc -> Bool {
+    if !ifLetInitIsPlace(env, li) { return false }
+    return tySpLinear(env, tyInferBoxed(env, li))
+}
+
+func ifLetInitIsPlace(_ env: inout TyEnv, _ li: Vec[Nd]) using Alloc -> Bool {
+    if let n = li.get(0) {
+        return match n {
+            case .paren(let x): ifLetInitIsPlace(env, x)
+            case .member(let b, let m, let c): true
+            case .index(let b, let i): true
+            case .ident(let x): tyIsParamOrGlobal(env, x)
+            default: false
+        }
+    }
+    return false
+}
+
+func tyIsParamOrGlobal(_ env: inout TyEnv, _ x: Str) -> Bool {
+    return tyInList(env.gName, x) || tyInList(env.pCurName, x)
 }
 
 // The else branch is either a block or — for `else if` — another if, which the
@@ -9580,7 +9892,10 @@ func emitOnePatBinding(_ ind: Str, _ n: Str, _ base: Str) using Alloc, Log {
     print(";\n")
 }
 
-func emitMatchValueParts(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyStr: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+// The bootstrap writes every value-match lowering (switch, if-chain, visit) at
+// a fixed indent, wherever the match sits, so the caller's indent is ignored.
+func emitMatchValueParts(_ env: inout TyEnv, _ callerIndent: Str, _ ty: Vec[Nd], _ tyStr: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
+    let indent = "    "
     let enumName = tyInferBoxed(env, scrut)
     if !tyIsEnumName(env, enumName) {
         emitValueMatch(env, indent, ty, tyStr, scrut, arms)
@@ -10368,6 +10683,13 @@ func emitInferredElemTy(_ env: inout TyEnv, _ elems: Vec[Nd]) using Alloc, Log {
 // builtin containers keeping their std:: mappings), anything else is the
 // scalar mapping.
 func cppOfSpelling(_ sp: String) using Alloc -> String {
+    // `T?` -> `std::optional<T>` (an `[8]Slot?` field's element, F17).
+    if sp.len() > 1 && (sp.byteAt(sp.len() - 1) ?? 0) == 63 {
+        var o: String = "std::optional<"
+        o.append(cppOfSpelling(own(sp.slice(0, sp.len() - 1))))
+        o.append(">")
+        return o
+    }
     if tyIsTuple(sp) {
         let parts = tyTupleParts(sp)
         var t: String = "std::tuple<"
@@ -10885,6 +11207,50 @@ func emitStr(_ s: Str) using Alloc, Log {
 // which lowers to designated initializers `Name{.field = value, ...}`. Labeled
 // calls in the curated corpus are struct constructions; method calls have a
 // member callee (not an identifier) and so never match.
+// §19.6 `o.take()` / `o.put(v)` on an Optional: `__vstr::opt_take(o)` /
+// `__vstr::opt_put(o, v)`, a named `v` moved in (F17).
+func tryEmitOptTakePut(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let name, let chain): emitOptTakePut(env, base, name, chain, args)
+        default: false
+    }
+}
+
+func emitOptTakePut(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if chain { return false }
+    let isTake = streq(name, "take") && args.len() == 0
+    let isPut = streq(name, "put") && args.len() == 1
+    if !isTake && !isPut { return false }
+    let bt = tyInferBoxed(env, base)
+    if bt.len() == 0 || (bt.byteAt(bt.len() - 1) ?? 0) != 63 { return false }   // T?
+    print("__vstr::opt_")
+    print(name)
+    print("(")
+    emitBoxed(env, base)
+    if isPut {
+        print(", ")
+        let v = argValue(args.get(0) ?? Nd.wildcard)
+        let lv = ndIsLvalue(v)
+        if lv { print("std::move(") }
+        emitBoxed(env, v)
+        if lv { print(")") }
+    }
+    print(")")
+    return true
+}
+
+func ndIsLvalue(_ v: Vec[Nd]) -> Bool {
+    if let n = v.get(0) {
+        return match n {
+            case .ident(let x): true
+            case .member(let b, let m, let c): true
+            case .index(let b, let i): true
+            default: false
+        }
+    }
+    return false
+}
+
 func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
     if tryEmitSysregWrite(env, callee, args) { return }
     if tryEmitRawCall(env, callee, args) { return }
@@ -10900,6 +11266,7 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     let fname = identBaseName(callee)
     if tryEmitPrint(env, fname, args) { return }
     if tryEmitBuiltin(env, fname, args) { return }
+    if tryEmitOptTakePut(env, callee, args) { return }
     if tryEmitBuiltinMethod(env, callee, args) { return }
     let owner = calleeMethodOwner(env, callee)
     if !streq(owner, "") {
@@ -11092,6 +11459,15 @@ func tryEmitSysStatic(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) us
 }
 
 func emitSysStaticOn(_ env: inout TyEnv, _ ns: Str, _ name: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    // §14.14 `Context.start(entry: f, stack: top)`.
+    if streq(ns, "Context") && streq(name, "start") && args.len() == 2 {
+        print("__vstr::context_start(")
+        emitArg(env, args.get(0) ?? Nd.wildcard)
+        print(", static_cast<std::uint64_t>(")
+        emitArg(env, args.get(1) ?? Nd.wildcard)
+        print("))")
+        return true
+    }
     if streq(ns, "Scheduler") && streq(name, "swapContext") && args.len() == 2 {
         print("__vstr::scheduler_swap_context(&")
         emitArg(env, args.get(0) ?? Nd.wildcard)
@@ -12203,6 +12579,9 @@ func emitCtorFieldParts(_ env: inout TyEnv, _ sn: Str, _ label: Str, _ val: Vec[
     print(" = ")
     let to = tyFieldType(env, own(sn), own(label))
     if tryEmitLeadingDot(env, to, val) { return }
+    // An array-literal field takes its element type from the field, as the
+    // bootstrap does (`[8]Slot?` = [nil, ...] has no element to infer from).
+    if valIsVecLit(val) && tyIsArray(to) { emitVecLitSpelled(env, val, tyArrayElem(to)); return }
     let from = tyInferBoxed(env, val)
     if needsStrCoercion(from, to) { emitMaybeCoerced(env, true, val) }
     else { emitMovedValue(env, val) }
