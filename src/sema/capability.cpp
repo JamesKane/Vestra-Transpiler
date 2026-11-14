@@ -26,8 +26,40 @@ constexpr std::string_view AsyncCap = "Async";
 // ============================================================================
 
 void CapabilityChecker::check() {
+    // §14.13 rule 5 find the functions that wait for an interrupt: walk every
+    // body with diagnostics discarded until no new one is found.
+    {
+        diag::DiagnosticReporter sink(reporter_->sources(), static_cast<std::size_t>(-1));
+        auto* real = reporter_;
+        reporter_ = &sink;
+        for (std::size_t before = static_cast<std::size_t>(-1); before != waits_.size();) {
+            before = waits_.size();
+            for (const auto& d : unit_->decls) {
+                check_decl(*d);
+            }
+        }
+        reporter_ = real;
+        scopes_.clear();
+    }
     for (const auto& d : unit_->decls) {
         check_decl(*d);
+    }
+}
+
+void CapabilityChecker::note_wait_call(const ast::FuncDecl& callee, diag::SourceRange site) {
+    if (!waits_.contains(&callee)) {
+        return;
+    }
+    if (current_func_ != nullptr) {
+        waits_.insert(current_func_);
+    }
+    if (in_scope("InterruptsOff")) {
+        reporter_->report(
+            diag::Diagnostic::error(
+                std::format("'{}' waits for an interrupt, so calling it inside `with "
+                            "InterruptsOff` is a deadlock (§14.13 rule 5)",
+                            callee.name))
+                .at(site));
     }
 }
 
@@ -517,11 +549,20 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
         }
         // The callee may be a Func we know; if so, enforce its using row.
         const auto* sym = resolution_->symbol_of(c.callee.get());
+        if (c.callee != nullptr && c.callee->kind == ast::NodeKind::IdentExpr
+            && current_func_ != nullptr) {
+            const auto& n = static_cast<const ast::IdentExpr&>(*c.callee).name;
+            if (n == "waitForInterrupt" || n == "waitForEvent") {
+                waits_.insert(current_func_);
+            }
+        }
         if (sym != nullptr && sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Func) {
             require_callee(static_cast<const ast::FuncDecl&>(*sym->decl), c.range);
+            note_wait_call(static_cast<const ast::FuncDecl&>(*sym->decl), c.range);
         } else if (const auto* m = method_callee(c)) {
             // §8 / §19.7 a method's row is enforced like a function's.
             require_callee(*m, c.range);
+            note_wait_call(*m, c.range);
         } else if (auto ft = resolution_->type_of(c.callee.get());
                    ft != nullptr && ft->kind() == TypeKind::Function) {
             // §8 / §19.10 a call through a function value discharges the

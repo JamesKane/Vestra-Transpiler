@@ -1,0 +1,14 @@
+// Annex §14.13 rule 5 a helper that waits is fine outside `with InterruptsOff`,
+// and a helper that doesn't wait is fine inside it.
+func idle() using Asm {
+    waitForInterrupt()
+}
+func quiet() -> Int32 { return 1 }
+func spin() using Asm -> Int32 {
+    idle()
+    var n: Int32 = 0
+    with InterruptsOff {
+        n = quiet()
+    }
+    return n
+}

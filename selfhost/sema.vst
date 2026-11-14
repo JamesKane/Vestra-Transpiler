@@ -2932,6 +2932,8 @@ func reportUndef(_ env: inout Env, _ n: String) using Alloc {
 
 func addBuiltins(_ env: inout Env) using Alloc {
     addName(env, "print")
+    addName(env, "waitForInterrupt")   // Annex §14.12 intrinsics
+    addName(env, "waitForEvent")
     addName(env, "println")
     addName(env, "eprint")
     addName(env, "eprintln")
@@ -3838,6 +3840,8 @@ struct CapEnv {
     var selfTy: String          // the type whose methods are being checked ("" outside)
     var lvNames: Vec[String]    // per-function: bindings with a known type ...
     var lvTypes: Vec[String]    // ... and the head of that type (`S`, `Ptr`, `MutPtr`)
+    var curFn: String           // the function being checked (`Type.method` for a method)
+    var waits: Vec[String]      // §14.13 rule 5 functions that wait for an interrupt
 }
 
 func containsSub(_ s: String, _ sub: Str) -> Bool {
@@ -3918,11 +3922,58 @@ func checkCapabilities(_ env: inout CapEnv, _ u: NUnit) using Alloc {
         collectFuncCaps(env, u.decls.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    // §14.13 rule 5 find the functions that wait for an interrupt (directly or
+    // through a callee): walk every body, diagnostics discarded, to a fixed point.
+    var before: Int = -1
+    while before != env.waits.len() {
+        before = env.waits.len()
+        var k: Int = 0
+        while k < u.decls.len() {
+            checkDeclCaps(env, u.decls.get(k) ?? Nd.wildcard)
+            k = k + 1
+        }
+    }
+    while env.bad.len() > 0 { let _ = env.bad.pop() }
+    while env.active.len() > 0 { let _ = env.active.pop() }
     var j: Int = 0
     while j < u.decls.len() {
         checkDeclCaps(env, u.decls.get(j) ?? Nd.wildcard)
         j = j + 1
     }
+}
+
+func capSetFn(_ env: inout CapEnv, _ name: String) using Alloc {
+    if streq(env.selfTy, "") { env.curFn = own(name); return }
+    var q: String = own(env.selfTy)
+    q.append(".")
+    q.append(name)
+    env.curFn = q
+}
+
+func capMarkWaits(_ env: inout CapEnv) using Alloc {
+    let f = own(env.curFn)
+    if !streq(f, "") && !esInList(env.waits, f) { env.waits.push(f) }
+}
+
+// A call to `callee` (a user function, or `Type.method`) that waits.
+func capNoteWaitCall(_ env: inout CapEnv, _ callee: String) using Alloc {
+    if !esInList(env.waits, callee) { return }
+    capMarkWaits(env)
+    if capInScope(env, "InterruptsOff") {
+        var m: String = "'"
+        m.append(capBareName(callee))
+        m.append("' waits for an interrupt, so calling it inside `with InterruptsOff` is a deadlock (§14.13 rule 5)")
+        env.bad.push(m)
+    }
+}
+
+func capBareName(_ q: String) using Alloc -> String {
+    var i: Int = q.len() - 1
+    while i >= 0 {
+        if (q.byteAt(i) ?? 0) == 46 { return own(q.slice(i + 1, q.len())) }
+        i = i - 1
+    }
+    return own(q)
 }
 
 func collectFuncCaps(_ env: inout CapEnv, _ d: Nd) using Alloc {
@@ -3998,7 +4049,7 @@ func addRow(_ env: inout CapEnv, _ name: String, _ path: String) using Alloc {
 func checkDeclCaps(_ env: inout CapEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let pp, let caps, let t, let r, let b):
-            checkFuncBodyP(env, mods, pp, caps, b)
+            capFuncDecl(env, mods, name, pp, caps, b)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): checkMethodsCaps(env, name, m)
         case .enumD(let vis, let name, let cs, let m, let generics): checkMethodsCaps(env, name, m)
         default: noop()
@@ -4013,6 +4064,11 @@ func checkMethodsCaps(_ env: inout CapEnv, _ tyName: String, _ methods: Vec[Nd])
         i = i + 1
     }
     env.selfTy = own("")
+}
+
+func capFuncDecl(_ env: inout CapEnv, _ mods: String, _ name: String, _ pp: Vec[Nd], _ caps: Vec[Nd], _ b: Vec[Nd]) using Alloc {
+    capSetFn(env, name)
+    checkFuncBodyP(env, mods, pp, caps, b)
 }
 
 func checkFuncBodyP(_ env: inout CapEnv, _ mods: String, _ params: Vec[Nd], _ caps: Vec[Nd], _ body: Vec[Nd]) using Alloc {
@@ -4271,9 +4327,20 @@ func checkCalleeCaps(_ env: inout CapEnv, _ callee: Nd, _ args: Vec[Nd]) using A
 }
 
 func checkIdentCallee(_ env: inout CapEnv, _ name: String) using Alloc {
+    if streq(name, "waitForInterrupt") || streq(name, "waitForEvent") { capDirectWait(env, name) }
     if capCallLocal(env, name) { return }
-    if userFuncContains(env, name) { requireFuncCaps(env, name) }
+    if userFuncContains(env, name) { requireFuncCaps(env, name); capNoteWaitCall(env, name) }
     else { requireBuiltinCap(env, name) }
+}
+
+func capDirectWait(_ env: inout CapEnv, _ name: String) using Alloc {
+    capMarkWaits(env)
+    if capInScope(env, "InterruptsOff") {
+        var m: String = "`"
+        m.append(name)
+        m.append("` inside `with InterruptsOff` is a deadlock — the wake depends on the asynchronous exception the region masks (§14.13 rule 5)")
+        env.bad.push(m)
+    }
 }
 
 func requireFuncCaps(_ env: inout CapEnv, _ name: String) using Alloc {
@@ -4306,6 +4373,7 @@ func checkMemberCallee(_ env: inout CapEnv, _ base: Vec[Nd], _ member: String) u
         q.append(".")
         q.append(member)
         requireFuncCaps(env, q)
+        capNoteWaitCall(env, q)
     }
     if streq(member, "new") {
         match base.get(0) ?? Nd.wildcard {
@@ -10284,7 +10352,8 @@ func main() -> Int32 {
                     }
                     var cenv = CapEnv(active: Vec.new(), fcNames: Vec.new(), fcCaps: Vec.new(),
                                       userFuncs: Vec.new(), bad: Vec.new(),
-                                      selfTy: own(""), lvNames: Vec.new(), lvTypes: Vec.new())
+                                      selfTy: own(""), lvNames: Vec.new(), lvTypes: Vec.new(),
+                                      curFn: own(""), waits: Vec.new())
                     checkCapabilities(&cenv, u)
                     var k: Int = 0
                     while k < cenv.bad.len() {

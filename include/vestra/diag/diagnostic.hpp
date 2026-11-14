@@ -69,6 +69,7 @@ public:
     void render_to(std::ostream& os) const;
     void render_to(std::ostream& os, const Diagnostic& d) const;
 
+    const SourceManager& sources() const noexcept { return *sm_; }
     std::size_t error_count() const noexcept { return error_count_; }
     std::size_t warning_count() const noexcept { return warning_count_; }
     bool has_errors() const noexcept { return error_count_ > 0; }

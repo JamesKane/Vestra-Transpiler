@@ -120,22 +120,20 @@ accepts. Ordered by how likely each is to let a wrong program through:
    admitted while the builtin `split` and `args()` return one; the decision is
    a lazy `split` iterator or tracking sources through the container).
 
-2. **`with InterruptsOff` callees:** a helper that waits for an interrupt
-   is caught only when called directly (Annex §14.13 rule 5).
-3. **Unknown names are errors:** attributes, protocol bounds, `derive`
+2. **Unknown names are errors:** attributes, protocol bounds, `derive`
    names, `cfg.has` features, `@repr` kinds (Gaps headline 3).
-4. **Generics checked against bounds:** operations on `T` gated by its
+3. **Generics checked against bounds:** operations on `T` gated by its
    bounds, transitive bound checking, bounds at inferred construction (Gaps
    §7).
-5. **Atomics:** ordering legality (`load(.release)` is an error), CAS
+4. **Atomics:** ordering legality (`load(.release)` is an error), CAS
    arguments bound by label, not by position (Annex §14.9).
-6. **Patterns:** exhaustiveness through nested patterns and guarded arms; a
+5. **Patterns:** exhaustiveness through nested patterns and guarded arms; a
    bare identifier pattern matches an existing value (Gaps §6).
-7. **Comptime purity:** no capabilities or runtime calls in `comptime`;
+6. **Comptime purity:** no capabilities or runtime calls in `comptime`;
    every `@when` branch type-checked; `cfg` follows the build target, not the
    compiler's host (Gaps §12.1, §12.6).
-8. **Argument labels enforced** (Gaps §7).
-9. **Smaller unsound items:**
+7. **Argument labels enforced** (Gaps §7).
+8. **Smaller unsound items:**
     - `@noinit` limited to `Trivial` types (the spike's `sys.kernel`, a
       table of linear capabilities, then moves to `Trivial` byte storage
       viewed through a `MutPtr`);

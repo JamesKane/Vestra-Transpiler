@@ -85,6 +85,10 @@ private:
     std::vector<std::unordered_set<std::string>> scopes_;
     // The function whose body is being checked.
     const ast::FuncDecl* current_func_ = nullptr;
+    // §14.13 rule 5 the functions that wait for an interrupt, directly or
+    // through a callee (a fixed point computed before the checking pass).
+    std::unordered_set<const ast::FuncDecl*> waits_;
+    void note_wait_call(const ast::FuncDecl& callee, diag::SourceRange site);
 };
 
 }  // namespace vestra::sema

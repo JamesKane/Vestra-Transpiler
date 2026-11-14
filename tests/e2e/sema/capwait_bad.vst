@@ -1,0 +1,21 @@
+// Annex §14.13 rule 5 waiting for an interrupt inside `with InterruptsOff` is a
+// deadlock, directly or through a helper (or a helper's helper, or a method).
+func idle() using Asm {
+    waitForInterrupt()
+}
+func deeper() using Asm {
+    idle()
+}
+struct Core {
+    var id: Int32
+    func park() using Asm {
+        deeper()
+    }
+}
+func spin(_ c: Core) using Asm {
+    with InterruptsOff {
+        waitForEvent()
+        deeper()
+        c.park()
+    }
+}
