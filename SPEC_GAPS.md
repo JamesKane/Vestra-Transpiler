@@ -51,20 +51,13 @@ Each gap has one of four kinds:
    - `??` evaluates its right side eagerly.
    - An illegal atomic ordering such as `load(.release)` is passed straight
      through to `std::memory_order_release`.
-3. **Unknown names are accepted silently.** This now covers only `@repr`
-   kinds. A misspelling becomes a no-op, and several spec features "work"
-   only in the sense that they are ignored. (Attributes, generic bounds,
-   `derive` names and the `cfg` fields, cases and features of an `@when`
-   predicate are now checked: an unknown one is an error, and one the spec
-   defines but the compiler doesn't implement reports "is not supported
-   yet".)
-4. **Unfoldable comptime constructs degrade to a warning.** `build` prints
+3. **Unfoldable comptime constructs degrade to a warning.** `build` prints
    "codegen does not yet support: expression" and emits
    `/* unsupported: expression */`. The output then either fails to compile
    or silently drops a statement. `comptime if` / `comptime match` in a body,
    `Type.structOf`, `as` reinterpretation and comptime calls to runtime
    functions all end up here.
-5. **Annex A kernel lowerings exist only with `--no-libc`.** Building with
+4. **Annex A kernel lowerings exist only with `--no-libc`.** Building with
    `--target=aarch64` without `--no-libc` uses the hosted prelude:
    - system registers become memory cells;
    - `swapContext` is a no-op;
@@ -77,7 +70,7 @@ Each gap has one of four kinds:
    - 10 of the 12 `vestra audit` modes do not exist.
 
    The Annex A acceptance criterion cannot be met today.
-6. **Large parts of the §18 standard library do not exist**, and the builtin
+5. **Large parts of the §18 standard library do not exist**, and the builtin
    `Ordering` collides with the spec's comparison `Ordering`.
 
 ---
@@ -120,7 +113,7 @@ Each gap has one of four kinds:
 | §6 | No moving a field out of a `deinit` type | unsound | `take(r.b)` is accepted. |
 | §6 | `embed` fields | missing (partial) | Memberwise init rejects the embed label ("not constructible (yet)", `resolver_call.cpp:1223`). The explicit `e.t.p` path fails. Ambiguous promoted names are not diagnosed. |
 | §6 | Opaque types inherit no operations | unsound | `==` between two values of an opaque `EntityId` is accepted. |
-| §6 | `@repr(wire)` byte order | weaker | Emits a plain struct. An unknown `@repr(bogus)` is accepted. |
+| §6 | `@repr(wire)` byte order | missing | "@repr(wire) is not supported yet". |
 | §6 | Exhaustiveness of nested patterns | unsound | Leaving out `.p(.y)` is accepted. |
 | §6 | Guarded arms do not count toward coverage | unsound | `.a(let r) where r > 0` plus `.b` passes as exhaustive. |
 | §6, §17.6 | Slice patterns and struct patterns | missing | "expected pattern". |

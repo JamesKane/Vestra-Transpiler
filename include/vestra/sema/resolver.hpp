@@ -399,6 +399,7 @@ private:
     // §12.6 an `@when` predicate's `cfg` fields, `cfg.has` features and the
     // cases compared against `cfg.arch` / `cfg.os` / `cfg.endian`.
     void check_cfg_names(const ast::Expr& e);
+    void check_repr_kind(const ast::Expr* e);
     // A generic bound must name a protocol the checker knows or one in scope.
     void check_bound_names();
     // A `derive` must name one the compiler implements (§12.3).

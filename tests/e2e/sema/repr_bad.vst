@@ -1,0 +1,19 @@
+// An unknown `@repr` kind used to be accepted and ignored, and `@repr(wire)`
+// emitted a plain struct with host byte order.
+
+@repr(Packed)
+struct A {
+    var x: UInt32
+}
+
+@repr(wire)
+struct B {
+    var x: UInt32
+}
+
+@repr(C, aligned(8))
+struct D {
+    var x: UInt32
+}
+
+func main() -> Int32 { return 0 }

@@ -1141,6 +1141,7 @@ func skipAttrsNaked(_ p: inout Ps) using Alloc -> Bool {
         p.attrs.push(curText(p))
         if streq(curRaw(p), "naked") || streq(curRaw(p), "boot") { naked = true }
         let isWhen = streq(curRaw(p), "when")
+        let isRepr = streq(curRaw(p), "repr")
         advP(&p)  // name (identifier or reserved word)
         if isKind(p, TokKind.lparen) {
             var depth: Int = 0
@@ -1155,6 +1156,7 @@ func skipAttrsNaked(_ p: inout Ps) using Alloc -> Bool {
                 if go { args.push(curT(p)); advP(&p) }
             }
             if isWhen { cfgScan(p.cfgBad, args) }
+            if isRepr { reprScan(p.cfgBad, args) }
         }
         skipNL(&p)
     }
@@ -10384,6 +10386,35 @@ func cfgScan(_ bad: inout Vec[String], _ ts: Vec[Token]) using Alloc {
         }
         i = i + 1
     }
+}
+
+// §6 each top-level item of `@repr(...)` (the tokens after its '(') must be a
+// layout kind: C, packed, union, align(N); `wire` is not implemented.
+func reprScan(_ bad: inout Vec[String], _ ts: Vec[Token]) using Alloc {
+    var depth: Int = 0
+    var i: Int = 0
+    var start: Bool = true
+    while i < ts.len() {
+        let t = ts.get(i) ?? eofTok()
+        let k = spelling(t.kind)
+        if streq(k, "(") { depth = depth + 1 }
+        else if streq(k, ")") { depth = depth - 1 }
+        else if depth == 1 && streq(k, ",") { start = true }
+        else if depth == 1 && start {
+            start = false
+            if !streq(k, "string literal") && !streq(k, "integer literal") { reprKind(bad, t.text) }
+        }
+        i = i + 1
+    }
+}
+
+func reprKind(_ bad: inout Vec[String], _ n: Str) using Alloc {
+    if streq(n, "C") || streq(n, "packed") || streq(n, "union") || streq(n, "align") { return }
+    if streq(n, "wire") { bad.push(own("@repr(wire) is not supported yet")); return }
+    var m: String = "unknown @repr kind '"
+    m.append(n)
+    m.append("'")
+    bad.push(m)
 }
 
 func cfgCaseAt(_ bad: inout Vec[String], _ ts: Vec[Token], _ i: Int, _ field: Str) using Alloc {

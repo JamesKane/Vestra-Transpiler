@@ -1,0 +1,26 @@
+// The layout kinds the emitter implements.
+
+@repr(C)
+struct Header {
+    var tag: UInt32
+    var len: UInt32
+}
+
+@repr(packed)
+struct Wire {
+    var a: UInt8
+    var b: UInt32
+}
+
+@repr(align(64))
+struct Line {
+    var v: UInt64
+}
+
+@repr(union)
+struct Overlay {
+    var word: UInt32
+    var bytes: [4]UInt8
+}
+
+func main() -> Int32 { return 0 }

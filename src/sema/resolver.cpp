@@ -897,7 +897,46 @@ void Resolver::check_attribute_names() {
     for (const auto* a : attrs) {
         if (a->name == "when" && a->predicate != nullptr) {
             check_cfg_names(*a->predicate);
+        } else if (a->name == "repr") {
+            check_repr_kind(a->predicate.get());
+            for (const auto& x : a->extra_args) {
+                check_repr_kind(x.get());
+            }
         }
+    }
+}
+
+void Resolver::check_repr_kind(const ast::Expr* e) {
+    // §6 layout kinds: `C`, `packed`, `union`, `align(N)`; `wire` (fixed byte
+    // order) is spec-defined but would emit a plain struct.
+    std::string_view name;
+    diag::SourceRange range;
+    if (e == nullptr) {
+        return;
+    }
+    if (e->kind == ast::NodeKind::IdentExpr) {
+        name = static_cast<const ast::IdentExpr&>(*e).name;
+        range = e->range;
+    } else if (e->kind == ast::NodeKind::CallExpr) {
+        const auto& c = static_cast<const ast::CallExpr&>(*e);
+        if (c.callee == nullptr || c.callee->kind != ast::NodeKind::IdentExpr) {
+            return;
+        }
+        name = static_cast<const ast::IdentExpr&>(*c.callee).name;
+        range = c.callee->range;
+        if (name == "align") {
+            return;
+        }
+    } else {
+        return;
+    }
+    if (name == "C" || name == "packed" || name == "union") {
+        return;
+    }
+    if (name == "wire") {
+        error_at(range, "@repr(wire) is not supported yet");
+    } else {
+        error_at(range, std::format("unknown @repr kind '{}'", name));
     }
 }
 

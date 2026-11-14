@@ -120,19 +120,19 @@ accepts. Ordered by how likely each is to let a wrong program through:
    admitted while the builtin `split` and `args()` return one; the decision is
    a lazy `split` iterator or tracking sources through the container).
 
-2. **Unknown names are errors:** `@repr` kinds (Gaps headline 3).
-3. **Generics checked against bounds:** operations on `T` gated by its
+2. **Generics checked against bounds:** operations on `T` gated by its
    bounds, transitive bound checking, bounds at inferred construction (Gaps
    §7).
-4. **Atomics:** ordering legality (`load(.release)` is an error), CAS
+3. **Atomics:** ordering legality (`load(.release)` is an error), CAS
    arguments bound by label, not by position (Annex §14.9).
-5. **Patterns:** exhaustiveness through nested patterns and guarded arms; a
+4. **Patterns:** exhaustiveness through nested patterns and guarded arms; a
    bare identifier pattern matches an existing value (Gaps §6).
-6. **Comptime purity:** no capabilities or runtime calls in `comptime`;
+5. **Comptime purity:** no capabilities or runtime calls in `comptime`;
    every `@when` branch type-checked; `cfg` follows the build target, not the
-   compiler's host (Gaps §12.1, §12.6).
-7. **Argument labels enforced** (Gaps §7).
-8. **Smaller unsound items:**
+   compiler's host, and `cfg.has` folds against `--target-features` (Gaps
+   §12.1, §12.6).
+6. **Argument labels enforced** (Gaps §7).
+7. **Smaller unsound items:**
     - `@noinit` limited to `Trivial` types (the spike's `sys.kernel`, a
       table of linear capabilities, then moves to `Trivial` byte storage
       viewed through a `MutPtr`);
