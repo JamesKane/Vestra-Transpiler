@@ -4428,6 +4428,9 @@ func tyInferChainMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String) usi
 func tyInferBinary(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc -> String {
     let lt = tyInferBoxed(env, l)
     let rt = tyInferBoxed(env, r)
+    // §13 element-wise arithmetic over two `[N]T` operands of one type yields
+    // that vector type.
+    if isVecArithOp(op) && tyIsArray(lt) && streq(lt, rt) { return own(lt) }
     if isCmpOp(op) { return tyCmpResult(lt, rt) }
     if isLogOp(op) { return tyLogResult(lt, rt) }
     if isArithOp(op) { return tyNumResult(lt, rt, false) }
@@ -11489,11 +11492,35 @@ func tyIsOptional(_ sp: Str) -> Bool {
 // `l ?? r` lowers to `(l).value_or(r)`.
 func emitBinary(_ env: inout TyEnv, _ op: Str, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc, Log {
     if streq(op, "??") { emitCoalesce(env, l, r); return }
+    // §13 vector arithmetic: `a * x + y` over `[N]T` operands lowers each
+    // operator to the runtime's element-wise helper (cpp_emitter.cpp keys on
+    // the expression's Vector result type).
+    if isVecArithOp(op) && tyIsArray(tyInferBinary(env, op, l, r)) {
+        print("__vstr::")
+        print(vecOpName(op))
+        print("(")
+        emitBoxed(env, l)
+        print(", ")
+        emitBoxed(env, r)
+        print(")")
+        return
+    }
     emitBoxed(env, l)
     print(" ")
     print(op)
     print(" ")
     emitBoxed(env, r)
+}
+
+func isVecArithOp(_ op: Str) -> Bool {
+    return streq(op, "+") || streq(op, "-") || streq(op, "*") || streq(op, "/")
+}
+
+func vecOpName(_ op: Str) using Alloc -> String {
+    if streq(op, "+") { return own("vec_add") }
+    if streq(op, "-") { return own("vec_sub") }
+    if streq(op, "*") { return own("vec_mul") }
+    return own("vec_div")
 }
 
 func emitCoalesce(_ env: inout TyEnv, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc, Log {

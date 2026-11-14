@@ -1,0 +1,17 @@
+// §13 element-wise vector arithmetic: `+ - * /` over two `[N]T` operands of
+// one type lower to `__vstr::vec_add` / `vec_sub` / `vec_mul` / `vec_div`,
+// nesting with the expression. The result is itself `[N]T`, so indexing it
+// takes the plain array subscript (no size_t cast).
+func blend(_ a: [4]Float32, _ b: [4]Float32, _ c: [4]Float32) -> [4]Float32 {
+    return (a - b) / c + a * b
+}
+
+func lane2(_ a: [2]Int64, _ b: [2]Int64) -> Int64 {
+    let d = a - b
+    let q = a / b
+    return d[0] + d[1] + q[1]
+}
+
+func scalarStill(_ x: Int32, _ y: Int32) -> Int32 {
+    return x * y + x - y / 2
+}
