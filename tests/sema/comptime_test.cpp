@@ -239,14 +239,24 @@ TEST_CASE("phase 2: a regular (non-comptime) func is not foldable") {
     CHECK_FALSE(v.has_value());
 }
 
-TEST_CASE("phase 2: arg-count mismatch bails the fold rather than misfolding") {
-    auto v = resolver_fold("comptime func add(_ a: Int, _ b: Int) -> Int { return a + b }\n"
-                           "const Bad: Int = comptime { add(1) }\n",
-                           "Bad");
-    // The check_call sema pass will have already flagged this as an arity
-    // error; the folder's job here is just not to corrupt anything in the
-    // process. Absence from the side table is the contract.
-    CHECK_FALSE(v.has_value());
+TEST_CASE("phase 2: an arg-count mismatch in a comptime block is a type error") {
+    // §12.1 a `comptime { }` body is type-checked like any expression, so
+    // the call's arity error is reported (the folder then bails rather than
+    // misfolding).
+    vestra::diag::SourceManager sm;
+    vestra::diag::DiagnosticReporter rep(sm);
+    auto fid = sm.add_in_memory("<test>",
+                                "comptime func add(_ a: Int, _ b: Int) -> Int { return a + b }\n"
+                                "const Bad: Int = comptime { add(1) }\n");
+    vestra::lex::Lexer lex(sm, fid, rep);
+    auto tokens = lex.tokenize();
+    vestra::parse::Parser p(tokens, rep);
+    auto unit = p.parse_unit();
+    REQUIRE_FALSE(rep.has_errors());
+    vestra::sema::TypeArena arena;
+    vestra::sema::Resolver res(unit, arena, rep);
+    res.resolve();
+    CHECK(rep.error_count() == 1);
 }
 
 // ---- §12.6: cfg + @when conditional compilation ---------------------------

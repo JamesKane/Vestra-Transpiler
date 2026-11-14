@@ -1,0 +1,15 @@
+// §12.1 comptime code is pure: it calls only comptime functions and the
+// builtins that need no capability, and a runtime function may call print.
+
+comptime func square(_ n: Int) -> Int { return n * n }
+
+comptime func area(_ w: Int, _ h: Int) -> Int { return square(w) + h }
+
+const Side: Int = comptime { square(4) }
+const Box: Int = comptime { area(2, 3) }
+
+func report() using Log {
+    println("ok")
+}
+
+func main() -> Int32 { return 0 }

@@ -185,8 +185,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §12.1 | `comptime` is pure (no capabilities, no environment) | unsound | `comptime func f() using Clock` folds, and so does `using RawMemory`. `print()` inside `comptime {}` passes. |
-| §12.1 | A comptime call to a runtime function is an error | unsound | `const X = comptime { rt() }` checks, then emits `X = /* unsupported */;` with only a warning. |
+| §12.1 | `comptime` purity beyond calls | weaker | A `comptime func` can't declare capabilities, and comptime code can't call a runtime function or a capability-gated builtin (`print`, `readFile`, `memcpy`, ...). Other unfoldable comptime code still degrades to a warning (headline 3). |
 | §12.1, §12.6 | `comptime if` / `comptime match` | missing | Rejected at module scope. The statement-arm `match` fails to parse. In a body it checks OK, then lowers to `/* unsupported */`, which silently dropped an assignment in one probe. |
 | §12.6 rule 1 | Every `@when` branch is type-checked | unsound | An unselected `@when(linux)` body that references an undefined name checks OK. |
 | §12.6 | `cfg.os` for a hosted cross build | weaker | `cfg.arch`, `cfg.pointerBits`, `cfg.has` and `cfg.profile` follow `--target`, `--target-features` and `--profile`; `cfg.os` is `.freestanding` under `--no-libc` and otherwise the compiler's host OS, since `--target` names only an architecture. `cfg.endian` is always `.little` (every supported target is). |

@@ -877,6 +877,7 @@ enum Nd {
     case matchE(Vec[Nd], Vec[Nd])           // scrutinee (boxed), arms — still prints /*?expr*/ (no C++ printer case), but carries the match for sema
     case matchArm(Bool, Vec[Nd], Vec[Nd], Vec[Nd]) // isDefault, pattern (empty if default), guard (empty if none), body — all boxed
     case exoticE                            // comptime, closure, select, etc — /*?expr*/
+    case comptimeE(Vec[Nd])                 // comptime { … } / comptime EXPR — prints /*?expr*/, carries the body for sema
     case vecLit(Vec[Nd])                    // [e1, e2, ...] array/vector literal — prints /*?expr*/ (no C++ case), carries elements for sema
     case tupleLit(Vec[Nd])                  // (e1, e2, ...) tuple literal — prints /*?expr*/ (no C++ case), carries elements for sema
     case closureE(Vec[Nd], Vec[Nd])         // { params => body } — params (ident nodes) + body stmts; prints /*?expr*/ (no C++ case), carries both for sema
@@ -1875,8 +1876,9 @@ func parsePrimary(_ p: inout Ps) using Alloc -> Nd {
     if isKind(p, TokKind.kwDo) { return parseDoCatch(&p) }
     if isKind(p, TokKind.kwComptime) {
         advP(&p)
-        if isKind(p, TokKind.lbrace) { let b = parseBlock(&p) } else { let e = parseExpr(&p) }
-        return Nd.exoticE
+        var inner: Vec[Nd] = Vec.new()
+        if isKind(p, TokKind.lbrace) { inner.push(parseBlock(&p)) } else { inner.push(parseExpr(&p)) }
+        return Nd.comptimeE(inner)
     }
     if isKind(p, TokKind.at) {
         // @embed(...) / @macro(...) — both print /*?expr*/ in the C++ printer.
@@ -3055,6 +3057,7 @@ func resolveDecl(_ env: inout Env, _ d: Nd) using Alloc {
             resolveMethods(env, methods)
         case .enumD(let vis, let name, let cases, let methods, let generics):
             resolveMethods(env, methods)
+        case .constD(let vis, let name, let ty, let v): resolveBoxed(env, v)
         default: noop()
     }
 }
@@ -3129,6 +3132,7 @@ func resolveExpr(_ env: inout Env, _ e: Nd) using Alloc {
         case .tupleLit(let elems): resolveExprList(env, elems)
         case .interpE(let parts, let exprs): resolveExprList(env, exprs)
         case .closureE(let params, let body): resolveClosure(env, params, body)
+        case .comptimeE(let inner): resolveBoxed(env, inner)
         default: noop()
     }
 }
@@ -6981,7 +6985,10 @@ struct TyEnv {
     var fgBound: Vec[String]    // ... -> bound as written
     var prName: Vec[String]     // global: `protocol P: Q, R` refinement rows: P ...
     var prRef: Vec[String]      // ... -> Q
+    var ctDepth: Int            // §12.1 > 0 inside a comptime func body or comptime block
+    var ctFns: Vec[String]      // global: the unit's comptime func names
 }
+
 
 func tyCheck(_ env: inout TyEnv, _ u: NUnit) using Alloc {
     var i: Int = 0
@@ -7204,6 +7211,7 @@ func tyRecordFuncV(_ env: inout TyEnv, _ mods: String, _ name: String, _ g: Vec[
                    _ caps: Vec[Nd], _ thr: Vec[Nd], _ result: Vec[Nd]) using Alloc {
     tyRecordFunc(env, name, params, result)
     tyRecordFuncBounds(env, name, g)
+    if containsSub(mods, "comptime ") { env.ctFns.push(own(name)) }
     if g.len() > 0 || thr.len() > 0 { env.funcSpell.push(own("")); return }
     var ps: Vec[Nd] = Vec.new()
     var i: Int = 0
@@ -7446,7 +7454,7 @@ func tyIsStruct(_ env: inout TyEnv, _ name: String) -> Bool {
 func tyCheckDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
-            tyCheckFuncG(env, mods, name, g, params, r, b)
+            tyCheckFuncG(env, mods, name, g, params, caps, r, b)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyCheckStructG(env, generics, fl, m)
         case .enumD(let vis, let name, let cs, let m, let generics): tyCheckEnumG(env, generics, m)
         case .constD(let vis, let name, let ty, let v): tyCheckConst(env, ty, v)
@@ -7457,11 +7465,81 @@ func tyCheckDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
 // §7 a declaration's generic parameters are in scope (with their bounds) while
 // its body, or its methods' bodies, are checked.
 func tyCheckFuncG(_ env: inout TyEnv, _ mods: String, _ name: String, _ g: Vec[Nd], _ params: Vec[Nd],
-                  _ result: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+                  _ caps: Vec[Nd], _ result: Vec[Nd], _ body: Vec[Nd]) using Alloc {
     let mark = env.gName.len()
+    let isCt = containsSub(mods, "comptime ")
+    if isCt { tyComptimeCaps(env, name, caps) }
+    let prevCt = env.ctDepth
+    env.ctDepth = 0
+    if isCt { env.ctDepth = 1 }
     tyGenPush(env, g)
     tyCheckFuncAll(env, mods, name, params, result, body)
     tyGenPop(env, mark)
+    env.ctDepth = prevCt
+}
+
+// §12.1 comptime is pure, so a `comptime func` declares no capabilities.
+func tyComptimeCaps(_ env: inout TyEnv, _ name: String, _ caps: Vec[Nd]) using Alloc {
+    var row: Vec[String] = Vec.new()
+    tyRowNames(caps, row)
+    var i: Int = 0
+    while i < row.len() {
+        var s: String = "comptime function '"
+        s.append(name)
+        s.append("' can't use the capability '")
+        s.append(row.get(i) ?? own(""))
+        s.append("'; comptime code is pure")
+        env.bad.push(s)
+        i = i + 1
+    }
+}
+
+// §12.1 a call in comptime code must be to a comptime function and can't need
+// a capability. (A builtin named here is one the capability checker gates.)
+func tyComptimeCall(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc {
+    if env.ctDepth == 0 { return }
+    match callee.get(0) ?? Nd.wildcard {
+        case .ident(let n): tyComptimeCallee(env, n)
+        default: noop()
+    }
+}
+
+func tyComptimeCallee(_ env: inout TyEnv, _ n: String) using Alloc {
+    if tyArity(env, n) >= 0 {
+        if !esInList(env.ctFns, n) {
+            var s: String = "comptime code can't call the runtime function '"
+            s.append(n)
+            s.append("'")
+            env.bad.push(s)
+        }
+        return
+    }
+    if tySymKnown(env, n) { return }
+    var cap: String = ""
+    if streq(n, "print") || streq(n, "println") || streq(n, "eprint") || streq(n, "eprintln") { cap = "Log" }
+    if streq(n, "readFile") || streq(n, "writeFile") { cap = "Fs" }
+    if streq(n, "args") { cap = "Alloc" }
+    if streq(n, "memcpy") || streq(n, "memset") || streq(n, "memmove") || streq(n, "cleanData")
+        || streq(n, "invalidateData") || streq(n, "cleanInvalidateData") || streq(n, "zeroData")
+        || streq(n, "publishInstructions") { cap = "RawMemory" }
+    if cap.len() > 0 {
+        var s: String = "comptime code can't call '"
+        s.append(n)
+        s.append("': it needs the capability '")
+        s.append(cap)
+        s.append("'")
+        env.bad.push(s)
+    }
+}
+
+// A local / parameter binding of this name shadows a builtin.
+func tySymKnown(_ env: inout TyEnv, _ n: String) using Alloc -> Bool {
+    var i: Int = 0
+    while i < env.symName.len() {
+        if streq(env.symName.get(i) ?? own(""), n) { return true }
+        i = i + 1
+    }
+    return false
 }
 
 func tyCheckStructG(_ env: inout TyEnv, _ g: Vec[Nd], _ fl: Vec[Nd], _ m: Vec[Nd]) using Alloc {
@@ -8192,6 +8270,7 @@ func tySymType(_ env: inout TyEnv, _ name: String) using Alloc -> String {
 }
 
 func tyCheckConst(_ env: inout TyEnv, _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    tyBoxed(env, v)
     let ann = tyAnnSpelling(ty)
     if streq(ann, "") { return }
     let vt = tyInferBoxed(env, v)
@@ -8226,8 +8305,16 @@ func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
         case .throwE(let inner): tyBoxed(env, inner)
         case .matchE(let scrut, let arms): tyMatch(env, scrut, arms)
         case .doCatchE(let db, let en, let et, let cb): tyPair(env, db, cb)
+        case .comptimeE(let inner): tyComptimeE(env, inner)
         default: noop()
     }
+}
+
+// §12.1 a `comptime { }` body is checked as pure code (see tyComptimeCall).
+func tyComptimeE(_ env: inout TyEnv, _ inner: Vec[Nd]) using Alloc {
+    env.ctDepth = env.ctDepth + 1
+    tyBoxed(env, inner)
+    env.ctDepth = env.ctDepth - 1
 }
 
 // Walk a match: descend the scrutinee and every arm body, and require each arm's
@@ -8870,6 +8957,7 @@ func tyGuardMsg(_ got: String) using Alloc -> String {
 func tyExprCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
     tyBoxed(env, callee)
     tyAtomicCall(env, callee, args)
+    tyComptimeCall(env, callee)
     var i: Int = 0
     while i < args.len() {
         tyExpr(env, args.get(i) ?? Nd.wildcard)
@@ -11372,7 +11460,7 @@ func main() -> Int32 {
                                      esAsync: false, esAwaits: 0, esAwName: Vec.new(), esAwAt: Vec.new(), esAwRep: Vec.new(),
                                      gName: Vec.new(), gBound: Vec.new(), gSeq: Vec.new(), gNext: 0,
                                      fgFn: Vec.new(), fgName: Vec.new(), fgBound: Vec.new(),
-                                     prName: Vec.new(), prRef: Vec.new())
+                                     prName: Vec.new(), prRef: Vec.new(), ctDepth: 0, ctFns: Vec.new())
                     tyRefines(&tenv, p.toks)
                     tyCheck(&tenv, u)
                     var ti: Int = 0

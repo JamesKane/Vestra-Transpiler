@@ -1002,6 +1002,15 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         }
         break;
     }
+    case ast::NodeKind::ComptimeExpr: {
+        // §12.1 a `comptime { }` block is checked like any expression, as
+        // pure code: see check_comptime_call.
+        const auto& ce = static_cast<const ast::ComptimeExpr&>(e);
+        ++comptime_depth_;
+        t = ce.inner ? check_expr(*ce.inner, expected) : types_->error();
+        --comptime_depth_;
+        break;
+    }
     case ast::NodeKind::EmbedExpr: {
         // §12.1 `@embed("path")` types as `[N]UInt8` where N is the file's
         // size at compile time. We ask the folder to read the file now;

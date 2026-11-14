@@ -617,11 +617,32 @@ void Resolver::check_func(const ast::FuncDecl& f) {
         }
     }
 
+    // §12.1 comptime is pure: no environment, clock, network or unsafe
+    // capability, so a `comptime func` declares none.
+    if (f.is_comptime) {
+        for (const auto& cap : f.effects.using_caps) {
+            if (cap != nullptr && cap->kind == ast::NodeKind::NamedType
+                && !static_cast<const ast::NamedType&>(*cap).path.empty()) {
+                error_at(cap->range,
+                         std::format("comptime function '{}' can't use the capability '{}'; "
+                                     "comptime code is pure",
+                                     f.name,
+                                     static_cast<const ast::NamedType&>(*cap).path.back()));
+            }
+        }
+    }
+
     if (!f.body) {
         return;  // protocol requirement / extern stub — nothing to check
     }
 
     ScopeStack::Guard g(scopes_);
+    struct ComptimeRestore {
+        int& depth;
+        int prev;
+        ~ComptimeRestore() { depth = prev; }
+    } restore_comptime{comptime_depth_, comptime_depth_};
+    comptime_depth_ = f.is_comptime ? 1 : 0;
 
     // Bind generic parameters as opaque types in the function's scope.
     for (const auto& gp : f.generics) {

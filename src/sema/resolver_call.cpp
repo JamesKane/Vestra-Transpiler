@@ -1245,6 +1245,9 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
     if (c.callee->kind == ast::NodeKind::MemberExpr) {
         check_atomic_call(c);
     }
+    if (comptime_depth_ > 0 && quote_depth_ == 0) {
+        check_comptime_call(c, callee_type);
+    }
 
     // Struct construction: `Point(x: 10, y: 32)` parses as a CallExpr whose
     // callee evaluates to the nominal Struct type. Dispatch by-label against
@@ -1582,6 +1585,55 @@ void Resolver::check_atomic_call(const ast::CallExpr& c) {
                              "ordering '.{}'",
                              failure,
                              success));
+    }
+}
+
+// §12.1 a call in comptime code runs in the compiler, so it must be to a
+// comptime function, and can't need a capability (`print` needs Log).
+void Resolver::check_comptime_call(const ast::CallExpr& c, TypePtr callee_type) {
+    std::string name;
+    if (c.callee->kind == ast::NodeKind::IdentExpr) {
+        name = static_cast<const ast::IdentExpr&>(*c.callee).name;
+        const auto* sym = scopes_.current().lookup(name);
+        // The builtins the capability checker gates by name (capability.cpp).
+        if (sym != nullptr && sym->kind == SymbolKind::Func && sym->decl == nullptr) {
+            std::string_view cap;
+            if (name == "print" || name == "println" || name == "eprint" || name == "eprintln") {
+                cap = "Log";
+            } else if (name == "readFile" || name == "writeFile") {
+                cap = "Fs";
+            } else if (name == "args") {
+                cap = "Alloc";
+            } else if (name == "memcpy" || name == "memset" || name == "memmove"
+                       || name == "cleanData" || name == "invalidateData"
+                       || name == "cleanInvalidateData" || name == "zeroData"
+                       || name == "publishInstructions") {
+                cap = "RawMemory";
+            }
+            if (!cap.empty()) {
+                error_at(c.range,
+                         std::format("comptime code can't call '{}': it needs the capability '{}'",
+                                     name,
+                                     cap));
+                return;
+            }
+        }
+        if (sym != nullptr && sym->kind == SymbolKind::Func && sym->decl != nullptr
+            && sym->decl->kind == ast::NodeKind::Func
+            && !static_cast<const ast::FuncDecl&>(*sym->decl).is_comptime) {
+            error_at(c.range,
+                     std::format("comptime code can't call the runtime function '{}'", name));
+            return;
+        }
+    } else if (c.callee->kind == ast::NodeKind::MemberExpr) {
+        name = static_cast<const ast::MemberExpr&>(*c.callee).member;
+    }
+    if (callee_type != nullptr && callee_type->kind() == TypeKind::Function
+        && !callee_type->caps().empty()) {
+        error_at(c.range,
+                 std::format("comptime code can't call '{}': it needs the capability '{}'",
+                             name,
+                             callee_type->caps().front()));
     }
 }
 

@@ -120,8 +120,8 @@ accepts. Ordered by how likely each is to let a wrong program through:
    admitted while the builtin `split` and `args()` return one; the decision is
    a lazy `split` iterator or tracking sources through the container).
 
-2. **Comptime purity:** no capabilities or runtime calls in `comptime`;
-   every `@when` branch type-checked (Gaps §12.1, §12.6).
+2. **`@when` branches:** every branch type-checked, not only the selected
+   one (Gaps §12.6 rule 1).
 3. **Argument labels enforced** (Gaps §7).
 4. **Smaller unsound items:**
     - `@noinit` limited to `Trivial` types (the spike's `sys.kernel`, a

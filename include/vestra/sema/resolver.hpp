@@ -493,6 +493,11 @@ private:
     // §12.4 — nesting depth of `quote { … }`. A `$`-splice is only legal
     // when this is > 0.
     int quote_depth_ = 0;
+    // §12.1 > 0 while a `comptime func` body or a `comptime { }` block is
+    // checked: such code is pure, so it may call only comptime functions and
+    // nothing that needs a capability.
+    int comptime_depth_ = 0;
+    void check_comptime_call(const ast::CallExpr& c, TypePtr callee_type);
     // Comptime folder + the const environment it folds against. The env
     // accumulates name→value pairs as we successfully fold each top-level
     // const, so later consts can reference earlier ones. The folder gets

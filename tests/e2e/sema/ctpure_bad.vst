@@ -1,0 +1,22 @@
+// §12.1 comptime code used to accept capabilities, runtime calls and I/O,
+// then emit `/* unsupported */` or fold the call away silently.
+
+func runtimeValue() -> Int { return 3 }
+
+comptime func timed() using Clock -> Int { return 1 }
+
+comptime func viaRuntime() -> Int { return runtimeValue() + 1 }
+
+comptime func noisy() -> Int {
+    println("folding")
+    return 2
+}
+
+const A: Int = comptime { runtimeValue() }
+
+const B: Int = comptime {
+    print("x")
+    4
+}
+
+func main() -> Int32 { return 0 }
