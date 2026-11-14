@@ -6958,6 +6958,7 @@ struct TyEnv {
     var ecpEnum: Vec[String]    // global: per-payload-field rows — enum ...
     var ecpCase: Vec[String]    // ... case ...
     var ecpType: Vec[String]    // ... -> field type spelling, in order
+    var ecpLabel: Vec[String]   // ... and its label ("" if positional)
     var esBad: Vec[String]      // §19.4 escape errors (printed after the flow passes, as the bootstrap's pass runs last)
     var esFn: String            // per-function: its name
     var esLocals: Vec[String]   // per-function: every let / var it declares
@@ -6987,6 +6988,10 @@ struct TyEnv {
     var prRef: Vec[String]      // ... -> Q
     var ctDepth: Int            // §12.1 > 0 inside a comptime func body or comptime block
     var ctFns: Vec[String]      // global: the unit's comptime func names
+    var pLabel: Vec[String]     // parallel to pFn: each parameter's argument label ("" for `_`)
+    var mlOwner: Vec[String]    // global: per-method-parameter rows — owner ...
+    var mlName: Vec[String]     // ... method ...
+    var mlLabel: Vec[String]    // ... -> argument label, in order
 }
 
 
@@ -7044,11 +7049,16 @@ func tyPushCaseAll(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ pay: 
     var i: Int = 0
     while i < pay.len() {
         match pay.get(i) ?? Nd.wildcard {
-            case .payElem(let label, let ty): tyPushPay(env, enumName, cn, tyAnnSpelling(ty))
-            default: tyPushPay(env, enumName, cn, own(""))
+            case .payElem(let label, let ty): tyPushPayL(env, enumName, cn, tyAnnSpelling(ty), label)
+            default: tyPushPayL(env, enumName, cn, own(""), own(""))
         }
         i = i + 1
     }
+}
+
+func tyPushPayL(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ sp: String, _ label: String) using Alloc {
+    tyPushPay(env, enumName, cn, sp)
+    env.ecpLabel.push(own(label))
 }
 
 func tyPushPay(_ env: inout TyEnv, _ enumName: String, _ cn: String, _ sp: String) using Alloc {
@@ -7135,9 +7145,32 @@ func tyRecordMethods(_ env: inout TyEnv, _ owner: String, _ methods: Vec[Nd]) us
 func tyRecordMethod(_ env: inout TyEnv, _ owner: String, _ m: Nd) using Alloc {
     match m {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
-            tyPushMethodM(env, owner, name, g, r, containsSub(mods, "inout"))
+            tyPushMethodAll(env, owner, name, g, params, r, containsSub(mods, "inout"))
         default: noop()
     }
+}
+
+func tyPushMethodAll(_ env: inout TyEnv, _ owner: String, _ name: String, _ g: Vec[Nd], _ params: Vec[Nd],
+                     _ r: Vec[Nd], _ isInout: Bool) using Alloc {
+    tyPushMethodM(env, owner, name, g, r, isInout)
+    tyPushMethodLabels(env, owner, name, params)
+}
+
+func tyPushMethodLabels(_ env: inout TyEnv, _ owner: String, _ name: String, _ params: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < params.len() {
+        match params.get(i) ?? Nd.wildcard {
+            case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyPushMl(env, owner, name, tyWantLabel(lo, lbl, nm))
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func tyPushMl(_ env: inout TyEnv, _ owner: String, _ name: String, _ label: String) using Alloc {
+    env.mlOwner.push(own(owner))
+    env.mlName.push(own(name))
+    env.mlLabel.push(label)
 }
 
 func tyPushMethodM(_ env: inout TyEnv, _ owner: String, _ name: String, _ gens: Vec[Nd], _ result: Vec[Nd], _ isInout: Bool) using Alloc {
@@ -7395,9 +7428,22 @@ func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ resul
 
 func tyRecordParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ p: Nd) using Alloc {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyPushParam(env, name, idx, tyAnnSpelling(ty))
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyPushParamL(env, name, idx, tyAnnSpelling(ty), tyWantLabel(lo, lbl, nm))
         default: noop()
     }
+}
+
+func tyPushParamL(_ env: inout TyEnv, _ name: String, _ idx: Int, _ sp: String, _ label: String) using Alloc {
+    tyPushParam(env, name, idx, sp)
+    env.pLabel.push(label)
+}
+
+// §7 a parameter's argument label: none for `_`, else the external label or
+// the parameter's own name.
+func tyWantLabel(_ omitted: Bool, _ label: String, _ name: String) using Alloc -> String {
+    if omitted { return own("") }
+    if label.len() > 0 { return own(label) }
+    return own(name)
 }
 
 func tyPushParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ sp: String) using Alloc {
@@ -9112,12 +9158,14 @@ func tyCasStrongMsg(_ f: String, _ su: String) using Alloc -> String {
 // constructors (no entry in funcName) are left to later slices.
 func tyCheckCallArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
     let fname = exCalleeNameBoxed(callee)
+    tyCheckMethodLabels(env, callee, args)
     let arity = tyArity(env, fname)
     if arity >= 0 {
         if arity != args.len() {
             env.bad.push(tyArityMsg(arity, args.len()))
             return
         }
+        tyCheckLabels(env, fname, tyFnLabels(env, fname), args)
         var i: Int = 0
         while i < args.len() {
             tyCheckArg(env, fname, i, args.get(i) ?? Nd.wildcard)
@@ -9127,6 +9175,116 @@ func tyCheckCallArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) usi
         return
     }
     if tyIsStruct(env, fname) { tyCheckCtor(env, fname, args) }
+}
+
+// §7 the free function's parameter labels, in order.
+func tyFnLabels(_ env: inout TyEnv, _ fname: String) using Alloc -> Vec[String] {
+    var out: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < env.pFn.len() {
+        if streq(env.pFn.get(i) ?? own(""), fname) { out.push(own(env.pLabel.get(i) ?? own(""))) }
+        i = i + 1
+    }
+    return out
+}
+
+// `recv.m(...)` on a known struct / enum receiver: the method's labels.
+func tyCheckMethodLabels(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let name, let chain): tyCheckMethodLabelsOn(env, base, name, chain, args)
+        default: noop()
+    }
+}
+
+func tyCheckMethodLabelsOn(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain: Bool, _ args: Vec[Nd]) using Alloc {
+    if chain { return }
+    let en = tyIdentName(base)
+    if !streq(en, "") && tyIsEnum(env, en) {
+        tyCheckCaseLabels(env, en, name, args)
+        return
+    }
+    let bt = tyInferBoxed(env, base)
+    if streq(bt, "") { return }
+    var want: Vec[String] = Vec.new()
+    var found: Bool = false
+    var i: Int = 0
+    while i < env.mlOwner.len() {
+        if streq(env.mlOwner.get(i) ?? own(""), bt) && streq(env.mlName.get(i) ?? own(""), name) {
+            want.push(own(env.mlLabel.get(i) ?? own("")))
+            found = true
+        }
+        i = i + 1
+    }
+    if found && want.len() == args.len() { tyCheckLabels(env, name, want, args) }
+}
+
+func tyIdentName(_ base: Vec[Nd]) using Alloc -> String {
+    return match base.get(0) ?? Nd.wildcard {
+        case .ident(let n): own(n)
+        default: own("")
+    }
+}
+
+// `Enum.case(...)`: a label that is given must be the payload field's
+// (unlabeled payload arguments stay positional).
+func tyCheckCaseLabels(_ env: inout TyEnv, _ en: String, _ cn: String, _ args: Vec[Nd]) using Alloc {
+    var want: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < env.ecpEnum.len() {
+        if streq(env.ecpEnum.get(i) ?? own(""), en) && streq(env.ecpCase.get(i) ?? own(""), cn) {
+            want.push(own(env.ecpLabel.get(i) ?? own("")))
+        }
+        i = i + 1
+    }
+    if want.len() != args.len() { return }
+    var k: Int = 0
+    while k < args.len() {
+        match args.get(k) ?? Nd.wildcard {
+            case .arg(let label, let io, let v): tyCheckCaseLabel(env, cn, k, want.get(k) ?? own(""), label)
+            default: noop()
+        }
+        k = k + 1
+    }
+}
+
+func tyCheckCaseLabel(_ env: inout TyEnv, _ cn: String, _ i: Int, _ want: String, _ got: String) using Alloc {
+    if got.len() == 0 { return }
+    tyCheckLabel(env, cn, i, want, got)
+}
+
+func tyCheckLabels(_ env: inout TyEnv, _ fname: String, _ want: Vec[String], _ args: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < args.len() && i < want.len() {
+        match args.get(i) ?? Nd.wildcard {
+            case .arg(let label, let io, let v): tyCheckLabel(env, fname, i, want.get(i) ?? own(""), label)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func tyCheckLabel(_ env: inout TyEnv, _ fname: String, _ i: Int, _ want: String, _ got: String) using Alloc {
+    if streq(got, want) { return }
+    var s: String = "argument "
+    s.append(intToStr(i + 1))
+    s.append(" of '")
+    s.append(fname)
+    if got.len() == 0 {
+        s.append("' is missing its label '")
+        s.append(want)
+        s.append(":'")
+    } else if want.len() == 0 {
+        s.append("' takes no label; remove '")
+        s.append(got)
+        s.append(":'")
+    } else {
+        s.append("' is labeled '")
+        s.append(got)
+        s.append(":', but the parameter's label is '")
+        s.append(want)
+        s.append(":'")
+    }
+    env.bad.push(s)
 }
 
 // §6 struct construction: each labeled argument must name a field whose type
@@ -11452,7 +11610,7 @@ func main() -> Int32 {
                                      mInout: Vec.new(), muName: Vec.new(), muFlag: Vec.new(),
                                      muKind: Vec.new(), muMarks: Vec.new(),
                                      stName: Vec.new(), stAtomic: Vec.new(), stSpell: Vec.new(),
-                                     ecpEnum: Vec.new(), ecpCase: Vec.new(), ecpType: Vec.new(),
+                                     ecpEnum: Vec.new(), ecpCase: Vec.new(), ecpType: Vec.new(), ecpLabel: Vec.new(),
                                      esBad: Vec.new(), esFn: own(""), esLocals: Vec.new(), esSinks: Vec.new(),
                                      esVName: Vec.new(), esVOrig: Vec.new(), esRaw: 0, esMmio: 0,
                                      esDepth: 0, esLocDepth: Vec.new(), esVDepth: Vec.new(),
@@ -11460,7 +11618,8 @@ func main() -> Int32 {
                                      esAsync: false, esAwaits: 0, esAwName: Vec.new(), esAwAt: Vec.new(), esAwRep: Vec.new(),
                                      gName: Vec.new(), gBound: Vec.new(), gSeq: Vec.new(), gNext: 0,
                                      fgFn: Vec.new(), fgName: Vec.new(), fgBound: Vec.new(),
-                                     prName: Vec.new(), prRef: Vec.new(), ctDepth: 0, ctFns: Vec.new())
+                                     prName: Vec.new(), prRef: Vec.new(), ctDepth: 0, ctFns: Vec.new(),
+                                     pLabel: Vec.new(), mlOwner: Vec.new(), mlName: Vec.new(), mlLabel: Vec.new())
                     tyRefines(&tenv, p.toks)
                     tyCheck(&tenv, u)
                     var ti: Int = 0

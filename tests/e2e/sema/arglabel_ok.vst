@@ -1,0 +1,25 @@
+// §7 every parameter has an argument label: its name by default, an external
+// label when one is written, and none for `_`.
+
+func rotate(_ x: Int32, axis: Int32) -> Int32 { return x + axis }
+
+func move(by amount: Int32) -> Int32 { return amount }
+
+struct Acc {
+    var v: Int32
+    func add(_ d: Int32, scale: Int32) -> Int32 { return self.v + d * scale }
+}
+
+enum Shape { case circle(radius: Int32)  case rect(w: Int32, h: Int32) }
+
+func shapes() -> Int32 {
+    let a = Shape.circle(radius: 5)
+    let b = Shape.rect(w: 1, h: 2)
+    let c = Shape.rect(3, 4)
+    return 0
+}
+
+func main() -> Int32 {
+    let a = Acc(v: 1)
+    return rotate(1, axis: 2) + move(by: 3) + a.add(4, scale: 5)
+}

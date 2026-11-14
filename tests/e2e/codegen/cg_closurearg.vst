@@ -3,11 +3,11 @@
 // lambda's parameter types (the closure itself writes none). Covers a closure
 // alongside other arguments, a two-parameter closure, and a multi-statement
 // closure body in argument position.
-func apply(f: (Int32) -> Int32, x: Int32) -> Int32 {
+func apply(_ f: (Int32) -> Int32, _ x: Int32) -> Int32 {
     return f(x)
 }
 
-func combine(f: (Int32, Int32) -> Int32) -> Int32 {
+func combine(_ f: (Int32, Int32) -> Int32) -> Int32 {
     return f(2, 3)
 }
 

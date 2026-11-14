@@ -1430,6 +1430,60 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
         return callee_type->result() != nullptr ? callee_type->result() : types_->error();
     }
 
+    // §7 every parameter has an argument label (its name, an explicit
+    // external label, or none for `_`), and the call must supply exactly it.
+    {
+        const ast::FuncDecl* label_fn = fn;
+        if (label_fn == nullptr && c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            if (auto bt = resolution_.type_of(mem.base.get())) {
+                (void)lookup_method(bt, mem.member, &label_fn);
+            }
+        }
+        if (label_fn != nullptr && label_fn->params.size() == c.args.size()) {
+            check_argument_labels(*label_fn, c);
+        }
+        // `Enum.case(...)`: a label that is given must be the payload
+        // field's, so reordered labels can't silently swap fields
+        // (unlabeled payload arguments stay positional).
+        if (label_fn == nullptr && c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            const Symbol* es = mem.base && mem.base->kind == ast::NodeKind::IdentExpr
+                                   ? scopes_.current().lookup(
+                                         static_cast<const ast::IdentExpr&>(*mem.base).name)
+                                   : nullptr;
+            if (es != nullptr && es->kind == SymbolKind::Enum && es->decl != nullptr
+                && es->decl->kind == ast::NodeKind::Enum) {
+                const auto& ed = static_cast<const ast::EnumDecl&>(*es->decl);
+                if (const auto* ec = lookup_enum_case(ed, mem.member);
+                    ec != nullptr && ec->payload.size() == c.args.size()) {
+                    for (std::size_t i = 0; i < c.args.size(); ++i) {
+                        const auto& got = c.args[i].label;
+                        const auto& want = ec->payload[i].first;
+                        if (got.empty() || got == want) {
+                            continue;
+                        }
+                        if (want.empty()) {
+                            error_at(c.args[i].value->range,
+                                     std::format("argument {} of '{}' takes no label; remove '{}:'",
+                                                 i + 1,
+                                                 mem.member,
+                                                 got));
+                        } else {
+                            error_at(c.args[i].value->range,
+                                     std::format("argument {} of '{}' is labeled '{}:', but the "
+                                                 "parameter's label is '{}:'",
+                                                 i + 1,
+                                                 mem.member,
+                                                 got,
+                                                 want));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Seed bindings from the surrounding context: if the call's result type
     // is a generic placeholder (or contains one) and we know the type the
     // caller expects, bind from that. Lets `let x: Int32 = identity(7)` work
@@ -1634,6 +1688,35 @@ void Resolver::check_comptime_call(const ast::CallExpr& c, TypePtr callee_type) 
                  std::format("comptime code can't call '{}': it needs the capability '{}'",
                              name,
                              callee_type->caps().front()));
+    }
+}
+
+void Resolver::check_argument_labels(const ast::FuncDecl& fn, const ast::CallExpr& c) {
+    for (std::size_t i = 0; i < fn.params.size() && i < c.args.size(); ++i) {
+        const auto& p = fn.params[i];
+        const std::string want = p.label_omitted ? std::string{}
+                                 : p.label.empty() ? p.name
+                                                   : p.label;
+        const std::string& got = c.args[i].label;
+        if (got == want || (want.empty() && p.pattern != nullptr)) {
+            continue;
+        }
+        const auto& at = c.args[i].value->range;
+        if (got.empty()) {
+            error_at(at,
+                     std::format("argument {} of '{}' is missing its label '{}:'", i + 1, fn.name, want));
+        } else if (want.empty()) {
+            error_at(at,
+                     std::format("argument {} of '{}' takes no label; remove '{}:'", i + 1, fn.name, got));
+        } else {
+            error_at(at,
+                     std::format("argument {} of '{}' is labeled '{}:', but the parameter's label is "
+                                 "'{}:'",
+                                 i + 1,
+                                 fn.name,
+                                 got,
+                                 want));
+        }
     }
 }
 

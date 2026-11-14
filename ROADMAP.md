@@ -120,8 +120,7 @@ accepts. Ordered by how likely each is to let a wrong program through:
    admitted while the builtin `split` and `args()` return one; the decision is
    a lazy `split` iterator or tracking sources through the container).
 
-2. **Argument labels enforced** (Gaps §7).
-3. **Smaller unsound items:**
+2. **Smaller unsound items:**
     - `@noinit` limited to `Trivial` types (the spike's `sys.kernel`, a
       table of linear capabilities, then moves to `Trivial` byte storage
       viewed through a `MutPtr`);

@@ -326,6 +326,8 @@ private:
     // §14.9 ordering legality and CAS argument labels on an Atomic /
     // AtomicTaggedPointer method call.
     void check_atomic_call(const ast::CallExpr& c);
+    // §7 the call's argument labels against the callee's parameters.
+    void check_argument_labels(const ast::FuncDecl& fn, const ast::CallExpr& c);
 
     // §6 exhaustiveness over a pattern matrix; see resolver_match.cpp.
     std::optional<std::vector<std::string>>

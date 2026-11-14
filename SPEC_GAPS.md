@@ -122,7 +122,7 @@ Each gap has one of four kinds:
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §7 | Argument labels are enforced | unsound | `rotate(1, axis: 2)` and `rotate(1, 2)` are both accepted. |
+| §7 | Argument labels on every call | weaker | Calls to a declared function or method must supply exactly each parameter's label. A call through a function value isn't checked (function types carry no labels), and enum-case payload labels are optional: `Shape.rect(3, 4)` is accepted, though a label that is given must be the payload field's. |
 | §17.2 | Default arguments `= expr` | missing | "call expects 2 argument(s), got 1". |
 | §17.5 | Explicit type arguments on a function call, `id[Int32](1)` | missing | They work only on struct and enum construction. |
 | §7 | A const generic `N` as a value in the body | missing | "undefined name 'N'". |

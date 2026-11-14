@@ -1,0 +1,27 @@
+// §7 argument labels used to be ignored: a missing, extra or wrong label all
+// bound by position.
+
+func rotate(_ x: Int32, axis: Int32) -> Int32 { return x + axis }
+
+func move(by amount: Int32) -> Int32 { return amount }
+
+struct Acc {
+    var v: Int32
+    func add(_ d: Int32, scale: Int32) -> Int32 { return self.v + d * scale }
+}
+
+enum Shape { case circle(radius: Int32)  case rect(w: Int32, h: Int32) }
+
+func shapes() -> Int32 {
+    let b = Shape.rect(h: 1, w: 2)
+    return 0
+}
+
+func main() -> Int32 {
+    let a = Acc(v: 1)
+    let p = rotate(1, 2)
+    let q = rotate(x: 1, axis: 2)
+    let r = move(amount: 3)
+    let s = a.add(4, 5)
+    return p + q + r + s
+}
