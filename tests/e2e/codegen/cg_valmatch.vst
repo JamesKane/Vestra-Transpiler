@@ -41,12 +41,12 @@ func guarded(_ n: Int32) -> Int32 {
     }
 }
 
-// An identifier pattern always matches and introduces a binding, so the
+// A `let` pattern always matches and introduces a binding, so the
 // predicate is `true` and the body sees `auto&& v = __vstr_m;`.
 func viaBinding(_ n: Int32) -> Int32 {
     return match n {
         case 0: 0
-        case v: v + 1
+        case let v: v + 1
     }
 }
 

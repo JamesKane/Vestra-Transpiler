@@ -235,6 +235,9 @@ void Resolver::bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type, 
         std::string_view name;
         if (sub->kind == ast::NodeKind::IdentPat) {
             name = static_cast<const ast::IdentPat&>(*sub).name;
+            if (in_match_pattern_) {
+                reject_bare_name_pattern(name, sub->range);
+            }
         } else if (sub->kind == ast::NodeKind::BindPat) {
             name = static_cast<const ast::BindPat&>(*sub).name;
         } else if (sub->kind == ast::NodeKind::WildcardPat) {
@@ -420,7 +423,9 @@ TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
             saw_default = true;
             seen_catchall = true;
         } else if (arm.pattern) {
+            in_match_pattern_ = true;
             check_pattern(*arm.pattern, scrutinee_type);
+            in_match_pattern_ = false;
             // §6 a guarded arm covers nothing: its guard may fail.
             if (!arm.guard) {
                 cover_rows.push_back({arm.pattern.get()});
@@ -636,6 +641,14 @@ TypePtr Resolver::check_select(const ast::SelectExpr& sel, TypePtr expected) {
     return result_type != nullptr ? result_type : types_->unit();
 }
 
+void Resolver::reject_bare_name_pattern(std::string_view name, diag::SourceRange range) {
+    error_at(range,
+             std::format("a bare name in a pattern matches an existing value, which is not "
+                         "supported yet; write 'let {}' to bind '{}'",
+                         name,
+                         name));
+}
+
 void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
     switch (p.kind) {
     case ast::NodeKind::WildcardPat:
@@ -699,6 +712,9 @@ void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
         // Plain identifier patterns match by name; in match-arm position we
         // treat them as a binding to the scrutinee's type.
         const auto& ip = static_cast<const ast::IdentPat&>(p);
+        if (in_match_pattern_) {
+            reject_bare_name_pattern(ip.name, p.range);
+        }
         Symbol sym;
         sym.name = ip.name;
         sym.kind = SymbolKind::Local;

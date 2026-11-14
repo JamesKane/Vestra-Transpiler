@@ -114,7 +114,7 @@ Each gap has one of four kinds:
 | §6 | `@repr(wire)` byte order | missing | "@repr(wire) is not supported yet". |
 | §6 | Exhaustiveness beyond enum scrutinees | weaker | Checked only when the scrutinee is an enum (through nested enum, `Bool` and wildcard payload patterns). A match on an integer, `Bool`, tuple or optional with no `default` is not checked, and a tuple sub-pattern counts only when all its elements are wildcards. |
 | §6, §17.6 | Slice patterns and struct patterns | missing | "expected pattern". |
-| §17.6 | A bare identifier pattern matches an existing value | divergent | `case k:` binds a fresh `k`, which always matches. |
+| §17.6 | A bare identifier pattern matches an existing value | missing | `case k:` (or `.a(k)`) in a match arm is "a bare name in a pattern matches an existing value, which is not supported yet". It used to bind a fresh `k`, which always matched. `let k` binds. |
 | §6 | `match self` inside an enum method | divergent (bug) | "enum pattern '.a' used against non-enum type &lt;error&gt;". |
 | §7, §9, §18 | `.none` as the empty optional | missing | "'.none' has no contextual type". Only `nil` works. |
 

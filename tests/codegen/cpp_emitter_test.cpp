@@ -114,7 +114,7 @@ TEST_CASE("an or-pattern over payloaded-enum cases expands to one branch per cas
     SemaEmitFixture f("enum E { case a(Int32); case b(Int32); case c }\n"
                       "func f(_ e: E) -> Int32 {\n"
                       "    return match e {\n"
-                      "        case .a(x) | .b(x): x\n"
+                      "        case .a(let x) | .b(let x): x\n"
                       "        case .c: 0\n"
                       "    }\n"
                       "}\n");

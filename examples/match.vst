@@ -54,7 +54,7 @@ enum Event {
 // A key event (down or up) yields its keycode; quit yields -1.
 func keycode(_ e: Event) -> Int32 {
     return match e {
-        case .keyDown(n) | .keyUp(n): n
+        case .keyDown(let n) | .keyUp(let n): n
         case .quit: -1
     }
 }

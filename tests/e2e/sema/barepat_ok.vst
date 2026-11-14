@@ -1,0 +1,21 @@
+// §17.6 match-arm patterns bind with `let`; a `let` destructuring and a
+// `for` loop variable bind with a bare name.
+
+enum Key { case down(Int32)  case up(Int32)  case none }
+
+func code(_ k: Key) -> Int32 {
+    return match k {
+        case .down(let n) | .up(let n): n
+        case .none: 0
+    }
+}
+
+func pick(_ p: (Int32, Int32), _ q: (Int32, Int32)) -> Int32 {
+    let (a, b) = q
+    return match p {
+        case (0, let y): y + a
+        case let v: b
+    }
+}
+
+func main() -> Int32 { return code(Key.none) + pick((1, 2), (3, 4)) }

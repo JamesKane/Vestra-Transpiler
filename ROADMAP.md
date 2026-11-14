@@ -120,14 +120,12 @@ accepts. Ordered by how likely each is to let a wrong program through:
    admitted while the builtin `split` and `args()` return one; the decision is
    a lazy `split` iterator or tracking sources through the container).
 
-2. **Patterns:** a bare identifier pattern matches an existing value (Gaps
-   §17.6).
-3. **Comptime purity:** no capabilities or runtime calls in `comptime`;
+2. **Comptime purity:** no capabilities or runtime calls in `comptime`;
    every `@when` branch type-checked; `cfg` follows the build target, not the
    compiler's host, and `cfg.has` folds against `--target-features` (Gaps
    §12.1, §12.6).
-4. **Argument labels enforced** (Gaps §7).
-5. **Smaller unsound items:**
+3. **Argument labels enforced** (Gaps §7).
+4. **Smaller unsound items:**
     - `@noinit` limited to `Trivial` types (the spike's `sys.kernel`, a
       table of linear capabilities, then moves to `Trivial` byte storage
       viewed through a `MutPtr`);
@@ -187,7 +185,7 @@ SPEC_GAPS):
    generics as values and in array lengths (`[N + 1]T`) (Gaps §7, §17).
 4. **Errors and optionals:** `.none`; several `catch` clauses and pattern
    catches (Gaps §9).
-3. **Comptime and reflection:**
+2. **Comptime and reflection:**
    - `comptime if` / `comptime match`;
    - `Type` as a value and `Type.structOf`;
    - reflection of enum cases, signatures and attributes;
@@ -195,7 +193,8 @@ SPEC_GAPS):
    - macro hygiene, the builder API, `error(at:)`, statement quotes.
 
    (Gaps §12)
-6. **Patterns:** slice patterns and struct patterns (Gaps §6).
+6. **Patterns:** slice patterns and struct patterns; a bare identifier that
+   matches an existing value, `case k:` (Gaps §6, §17.6).
 7. **Structs:** `embed` construction and promotion; `@repr(wire)` byte order;
    `@padding`, anonymous `embed _:`, flexible array members (Gaps §6, Annex
    §6.8).

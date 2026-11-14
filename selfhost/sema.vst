@@ -3413,6 +3413,7 @@ func bindPattern(_ env: inout Env, _ p: Nd) using Alloc {
         case .bindP(let n): addBinding(env, n)
         case .tupleP(let elems): bindPatList(env, elems)
         case .enumP(let cname, let children): bindPatList(env, children)
+        case .orP(let alts): bindPattern(env, alts.get(0) ?? Nd.wildcard)   // alternatives bind the same names
         default: noop()
     }
 }
@@ -8814,8 +8815,38 @@ func tyArm(_ env: inout TyEnv, _ a: Nd) using Alloc {
     }
 }
 
+// §17.6 in a match arm a bare identifier matches an existing value (`let x`
+// binds), which isn't lowered yet: each one is an error.
+func tyBareNames(_ env: inout TyEnv, _ pat: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < pat.len() {
+        tyBareName(env, pat.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func tyBareName(_ env: inout TyEnv, _ p: Nd) using Alloc {
+    match p {
+        case .identP(let n): env.bad.push(tyBareMsg(n))
+        case .enumP(let cn, let ch): tyBareNames(env, ch)
+        case .orP(let alts): tyBareNames(env, alts)
+        case .tupleP(let xs): tyBareNames(env, xs)
+        default: noop()
+    }
+}
+
+func tyBareMsg(_ n: String) using Alloc -> String {
+    var s: String = "a bare name in a pattern matches an existing value, which is not supported yet; write 'let "
+    s.append(n)
+    s.append("' to bind '")
+    s.append(n)
+    s.append("'")
+    return s
+}
+
 // A match arm's pattern bindings are `let`s, scoped to the arm.
 func tyArmMu(_ env: inout TyEnv, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    tyBareNames(env, pat)
     muEnter(env)
     muPat(env, pat)
     tyArmParts(env, guard, body)

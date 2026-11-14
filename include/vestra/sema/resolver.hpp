@@ -483,6 +483,11 @@ private:
     // the `@retry_loop` function-level escape; users must spell out
     // the loop at the call site.
     int weak_cas_loop_depth_ = 0;
+    // §17.6 set while a match arm's pattern is checked: there a bare
+    // identifier matches an existing value (`let x` binds), which v0.5
+    // does not lower yet.
+    bool in_match_pattern_ = false;
+    void reject_bare_name_pattern(std::string_view name, diag::SourceRange range);
     // §12.4 — nesting depth of `quote { … }`. A `$`-splice is only legal
     // when this is > 0.
     int quote_depth_ = 0;
