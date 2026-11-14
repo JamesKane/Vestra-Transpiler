@@ -1,0 +1,16 @@
+// §8 a method's `using` row is met by the caller; a raw pointer is
+// dereferenced under `RawMemory`.
+struct S {
+    var n: Int32
+    func mk(_ k: Int32) using Alloc -> Int32 { return k }
+    func plain() -> Int32 { return 1 }
+}
+func okMethod(_ s: S) using Alloc -> Int32 {
+    return s.mk(3)
+}
+func okDeref(_ p: Ptr[Int32]) using RawMemory -> Int32 {
+    return p.value
+}
+func selfCall(_ s: S) using Alloc -> Int32 {
+    return s.mk(1)
+}

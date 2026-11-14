@@ -1,0 +1,5 @@
+// §8 a `using` row or `with` names a known capability.
+func unknown() using Frobnicator { }
+func unknownWith() {
+    with Gizmo { }
+}

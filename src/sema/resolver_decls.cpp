@@ -676,6 +676,15 @@ void Resolver::check_func(const ast::FuncDecl& f) {
     do_catch_infer_stack_.clear();
 
     check_naked_body(f);
+    // §8 a `using` row names capabilities: a builtin one, or a declared type.
+    for (const auto& cap : f.effects.using_caps) {
+        if (cap != nullptr && cap->kind == ast::NodeKind::NamedType) {
+            const auto& nt = static_cast<const ast::NamedType&>(*cap);
+            if (nt.path.size() == 1 && scopes_.current().lookup(nt.path[0]) == nullptr) {
+                error_at(cap->range, std::format("unknown capability '{}'", nt.path[0]));
+            }
+        }
+    }
     if (target_.freestanding) {
         for (const auto& cap : f.effects.using_caps) {
             if (cap != nullptr && cap->kind == ast::NodeKind::NamedType) {
@@ -1496,6 +1505,14 @@ void Resolver::check_stmt(const ast::Stmt& s) {
         // binding into the scope at the value's type; then recurse
         // into the body.
         const auto& w = static_cast<const ast::WithStmt&>(s);
+        for (const auto& b : w.bindings) {
+            if (b.cap_type != nullptr && b.cap_type->kind == ast::NodeKind::NamedType) {
+                const auto& nt = static_cast<const ast::NamedType&>(*b.cap_type);
+                if (nt.path.size() == 1 && scopes_.current().lookup(nt.path[0]) == nullptr) {
+                    error_at(b.cap_type->range, std::format("unknown capability '{}'", nt.path[0]));
+                }
+            }
+        }
         if (target_.freestanding) {
             for (const auto& b : w.bindings) {
                 if (b.cap_type != nullptr && b.cap_type->kind == ast::NodeKind::NamedType) {

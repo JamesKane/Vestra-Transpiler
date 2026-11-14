@@ -3513,7 +3513,7 @@ func tnDeclare(_ env: inout TnEnv, _ d: Nd) using Alloc {
 func tnBody(_ env: inout TnEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
-            tnFuncFull(env, gens, params, res, body)
+            tnFuncFull(env, gens, params, caps, res, body)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tnTypeMethods(env, generics, m)
         case .enumD(let vis, let name, let cs, let m, let generics): tnTypeMethods(env, generics, m)
         default: noop()
@@ -3537,10 +3537,11 @@ func tnSig(_ env: inout TnEnv, _ gens: Vec[Nd], _ params: Vec[Nd], _ res: Vec[Nd
     tnLeaveGens(env)
 }
 
-func tnFuncFull(_ env: inout TnEnv, _ gens: Vec[Nd], _ params: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+func tnFuncFull(_ env: inout TnEnv, _ gens: Vec[Nd], _ params: Vec[Nd], _ caps: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc {
     tnEnterGens(env, gens)
     tnParamTypes(env, params)
     tnTypeBoxed(env, res)
+    tnCapNames(env, caps)
     tnBodyLocals(env, body)
     tnLeaveGens(env)
 }
@@ -3752,9 +3753,41 @@ func tnStmt(_ env: inout TnEnv, _ s: Nd) using Alloc {
         case .retS(let v): tnNestedBoxed(env, v)
         case .whileS(let c, let b): tnNestedBoxed(env, b)
         case .forS(let pat, let it, let b): tnNestedBoxed(env, b)
-        case .withS(let caps, let vals, let body): tnNestedBoxed(env, body)
+        case .withS(let caps, let vals, let body): tnWith(env, caps, body)
         default: noop()
     }
+}
+
+func tnWith(_ env: inout TnEnv, _ caps: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    tnCapNames(env, caps)
+    tnNestedBoxed(env, body)
+}
+
+// §8 a `using` row or `with` binding names a capability: a builtin one, or a
+// declared type.
+func tnCapNames(_ env: inout TnEnv, _ caps: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < caps.len() {
+        match caps.get(i) ?? Nd.wildcard {
+            case .named(let path, let g, let a): tnCapName(env, path)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func tnCapName(_ env: inout TnEnv, _ path: String) using Alloc {
+    if containsSub(path, ".") || tnKnown(env, path) || tnBuiltinCap(path) { return }
+    var m: String = "unknown capability '"
+    m.append(path)
+    m.append("'")
+    env.bad.push(m)
+}
+
+func tnBuiltinCap(_ n: String) -> Bool {
+    return streq(n, "Alloc") || streq(n, "Log") || streq(n, "Async") || streq(n, "Net")
+        || streq(n, "Clock") || streq(n, "Rand") || streq(n, "Fs") || streq(n, "Mmio")
+        || streq(n, "Asm") || streq(n, "RawMemory") || streq(n, "Extern") || streq(n, "InterruptsOff")
 }
 
 func tnLetVar(_ env: inout TnEnv, _ ty: Vec[Nd], _ val: Vec[Nd]) using Alloc {
@@ -3802,6 +3835,9 @@ struct CapEnv {
     var fcCaps: Vec[String]
     var userFuncs: Vec[String]
     var bad: Vec[String]
+    var selfTy: String          // the type whose methods are being checked ("" outside)
+    var lvNames: Vec[String]    // per-function: bindings with a known type ...
+    var lvTypes: Vec[String]    // ... and the head of that type (`S`, `Ptr`, `MutPtr`)
 }
 
 func containsSub(_ s: String, _ sub: Str) -> Bool {
@@ -3893,17 +3929,43 @@ func collectFuncCaps(_ env: inout CapEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let pp, let caps, let t, let r, let b):
             recordFunc(env, name, mods, caps)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): collectMethodCaps(env, m)
-        case .enumD(let vis, let name, let cs, let m, let generics): collectMethodCaps(env, m)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): collectMethodCaps(env, name, m)
+        case .enumD(let vis, let name, let cs, let m, let generics): collectMethodCaps(env, name, m)
         default: noop()
     }
 }
 
-func collectMethodCaps(_ env: inout CapEnv, _ methods: Vec[Nd]) using Alloc {
+func collectMethodCaps(_ env: inout CapEnv, _ tyName: String, _ methods: Vec[Nd]) using Alloc {
     var i: Int = 0
     while i < methods.len() {
-        collectFuncCaps(env, methods.get(i) ?? Nd.wildcard)
+        let md = methods.get(i) ?? Nd.wildcard
+        collectFuncCaps(env, md)
+        collectQualified(env, tyName, md)
         i = i + 1
+    }
+}
+
+// A method's row again under `Type.method`, for calls on a typed receiver.
+func collectQualified(_ env: inout CapEnv, _ tyName: String, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let pp, let caps, let t, let r, let b):
+            recordQualified(env, tyName, name, mods, caps)
+        default: noop()
+    }
+}
+
+func recordQualified(_ env: inout CapEnv, _ tyName: String, _ name: String, _ mods: String, _ caps: Vec[Nd]) using Alloc {
+    var q: String = own(tyName)
+    q.append(".")
+    q.append(name)
+    var i: Int = 0
+    while i < caps.len() {
+        capRowFor(env, q, caps.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    if containsSub(mods, "async") {
+        env.fcNames.push(own(q))
+        env.fcCaps.push("Async")
     }
 }
 
@@ -3936,19 +3998,89 @@ func addRow(_ env: inout CapEnv, _ name: String, _ path: String) using Alloc {
 func checkDeclCaps(_ env: inout CapEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let pp, let caps, let t, let r, let b):
-            checkFuncBody(env, mods, caps, b)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): checkMethodsCaps(env, m)
-        case .enumD(let vis, let name, let cs, let m, let generics): checkMethodsCaps(env, m)
+            checkFuncBodyP(env, mods, pp, caps, b)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): checkMethodsCaps(env, name, m)
+        case .enumD(let vis, let name, let cs, let m, let generics): checkMethodsCaps(env, name, m)
         default: noop()
     }
 }
 
-func checkMethodsCaps(_ env: inout CapEnv, _ methods: Vec[Nd]) using Alloc {
+func checkMethodsCaps(_ env: inout CapEnv, _ tyName: String, _ methods: Vec[Nd]) using Alloc {
+    env.selfTy = own(tyName)
     var i: Int = 0
     while i < methods.len() {
         checkDeclCaps(env, methods.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    env.selfTy = own("")
+}
+
+func checkFuncBodyP(_ env: inout CapEnv, _ mods: String, _ params: Vec[Nd], _ caps: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    while env.lvNames.len() > 0 { let _ = env.lvNames.pop() }
+    while env.lvTypes.len() > 0 { let _ = env.lvTypes.pop() }
+    var i: Int = 0
+    while i < params.len() {
+        match params.get(i) ?? Nd.wildcard {
+            case .param(let lo, let lbl, let nm, let ne, let md, let ty): capNoteLocal(env, nm, ty)
+            default: noop()
+        }
+        i = i + 1
+    }
+    checkFuncBody(env, mods, caps, body)
+}
+
+// Record a binding whose type is spelled (a parameter, an annotated let / var).
+func capNoteLocal(_ env: inout CapEnv, _ nm: String, _ ty: Vec[Nd]) using Alloc {
+    if let t = ty.get(0) {
+        match t {
+            case .named(let path, let g, let a): capPushLocal(env, nm, path)
+            default: noop()
+        }
+    }
+}
+
+func capPushLocal(_ env: inout CapEnv, _ nm: String, _ head: String) using Alloc {
+    env.lvNames.push(own(nm))
+    env.lvTypes.push(own(head))
+}
+
+func capPatName(_ p: Vec[Nd]) using Alloc -> String {
+    if let n = p.get(0) {
+        return match n {
+            case .ident(let x): own(x)
+            default: own("")
+        }
+    }
+    return own("")
+}
+
+func capLetLocal(_ env: inout CapEnv, _ p: Vec[Nd], _ ty: Vec[Nd]) using Alloc {
+    let nm = capPatName(p)
+    if streq(nm, "") { return }
+    // A binding without a spelled type shadows any earlier one.
+    if ty.len() == 0 { capPushLocal(env, nm, "") } else { capNoteLocal(env, nm, ty) }
+}
+
+// The type head of a receiver expression: a known binding or `self`.
+func capTypeOf(_ env: inout CapEnv, _ base: Vec[Nd]) using Alloc -> String {
+    if let n = base.get(0) {
+        return match n {
+            case .ident(let x): capLocalType(env, x)
+            case .selfE: own(env.selfTy)
+            case .paren(let inner): capTypeOf(env, inner)
+            default: own("")
+        }
+    }
+    return own("")
+}
+
+func capLocalType(_ env: inout CapEnv, _ x: String) using Alloc -> String {
+    var i: Int = env.lvNames.len() - 1
+    while i >= 0 {
+        if streq(env.lvNames.get(i) ?? own(""), x) { return env.lvTypes.get(i) ?? own("") }
+        i = i - 1
+    }
+    return own("")
 }
 
 func checkFuncBody(_ env: inout CapEnv, _ mods: String, _ caps: Vec[Nd], _ body: Vec[Nd]) using Alloc {
@@ -3975,7 +4107,7 @@ func checkCapExpr(_ env: inout CapEnv, _ e: Nd) using Alloc {
         case .paren(let x): checkCapBoxed(env, x)
         case .unary(let op, let x): checkCapBoxed(env, x)
         case .binary(let op, let l, let r): checkCapPair(env, l, r)
-        case .member(let base, let n, let c): checkCapBoxed(env, base)
+        case .member(let base, let n, let c): checkCapMember(env, base, n)
         case .index(let base, let idxs): checkCapIndex(env, base, idxs)
         case .ifE(let ln, let li, let cond, let thenB, let els): checkCapIf(env, li, cond, thenB, els)
         case .block(let stmts): checkCapBlock(env, stmts)
@@ -3984,6 +4116,15 @@ func checkCapExpr(_ env: inout CapEnv, _ e: Nd) using Alloc {
         case .arg(let l, let io, let v): checkCapBoxed(env, v)
         case .doCatchE(let db, let en, let et, let cb): checkCapPair(env, db, cb)
         default: noop()
+    }
+}
+
+// §14.1 / Annex §14.6.3 dereferencing a raw pointer needs RawMemory.
+func checkCapMember(_ env: inout CapEnv, _ base: Vec[Nd], _ n: String) using Alloc {
+    checkCapBoxed(env, base)
+    if streq(n, "value") {
+        let t = capTypeOf(env, base)
+        if streq(t, "Ptr") || streq(t, "MutPtr") { require(env, "RawMemory") }
     }
 }
 
@@ -4013,8 +4154,8 @@ func checkCapBlock(_ env: inout CapEnv, _ stmts: Vec[Nd]) using Alloc {
 
 func checkCapStmt(_ env: inout CapEnv, _ s: Nd) using Alloc {
     match s {
-        case .letS(let p, let ty, let v): checkCapBoxed(env, v)
-        case .varS(let p, let ty, let v): checkCapBoxed(env, v)
+        case .letS(let p, let ty, let v): checkCapLet(env, p, ty, v)
+        case .varS(let p, let ty, let v): checkCapLet(env, p, ty, v)
         case .exprS(let e): checkCapBoxed(env, e)
         case .retS(let v): checkCapBoxed(env, v)
         case .assignS(let op, let t, let v): checkCapPair(env, t, v)
@@ -4023,6 +4164,11 @@ func checkCapStmt(_ env: inout CapEnv, _ s: Nd) using Alloc {
         case .withS(let caps, let vals, let body): checkWith(env, caps, vals, body)
         default: noop()
     }
+}
+
+func checkCapLet(_ env: inout CapEnv, _ p: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    checkCapBoxed(env, v)
+    capLetLocal(env, p, ty)
 }
 
 func checkWith(_ env: inout CapEnv, _ caps: Vec[Nd], _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc {
@@ -4089,6 +4235,14 @@ func requireBuiltinCap(_ env: inout CapEnv, _ name: String) using Alloc {
 }
 
 func checkMemberCallee(_ env: inout CapEnv, _ base: Vec[Nd], _ member: String) using Alloc {
+    // §8 a method's row is enforced like a function's.
+    let t = capTypeOf(env, base)
+    if !streq(t, "") {
+        var q: String = own(t)
+        q.append(".")
+        q.append(member)
+        requireFuncCaps(env, q)
+    }
     if streq(member, "new") {
         match base.get(0) ?? Nd.wildcard {
             case .ident(let b): requireAllocCtor(env, b)
@@ -9909,7 +10063,8 @@ func main() -> Int32 {
                         x = x + 1
                     }
                     var cenv = CapEnv(active: Vec.new(), fcNames: Vec.new(), fcCaps: Vec.new(),
-                                      userFuncs: Vec.new(), bad: Vec.new())
+                                      userFuncs: Vec.new(), bad: Vec.new(),
+                                      selfTy: own(""), lvNames: Vec.new(), lvTypes: Vec.new())
                     checkCapabilities(&cenv, u)
                     var k: Int = 0
                     while k < cenv.bad.len() {

@@ -518,26 +518,11 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
         // The callee may be a Func we know; if so, enforce its using row.
         if (const auto* sym = resolution_->symbol_of(c.callee.get())) {
             if (sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Func) {
-                const auto& callee = static_cast<const ast::FuncDecl&>(*sym->decl);
-                for (const auto& cap : required_caps(callee)) {
-                    if (!in_scope(cap)) {
-                        missing_capability(cap, c.range);
-                    }
-                    // §A7 (§14.13 rule 3): functions that need
-                    // Alloc or Async are rejected inside the
-                    // InterruptsOff region even when those caps
-                    // *are* in scope of the enclosing function.
-                    // The region is the more restrictive context.
-                    if (in_scope("InterruptsOff") && (cap == "Alloc" || cap == "Async")) {
-                        reporter_->report(
-                            diag::Diagnostic::error(
-                                std::format("call to a function with `using {}` inside `with "
-                                            "InterruptsOff` (§14.13 rule 3)",
-                                            cap))
-                                .at(c.range));
-                    }
-                }
+                require_callee(static_cast<const ast::FuncDecl&>(*sym->decl), c.range);
             }
+        } else if (const auto* m = method_callee(c)) {
+            // §8 / §19.7 a method's row is enforced like a function's.
+            require_callee(*m, c.range);
         }
         break;
     }
@@ -588,9 +573,20 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
         check_expr(*b.rhs);
         break;
     }
-    case ast::NodeKind::MemberExpr:
-        check_expr(*static_cast<const ast::MemberExpr&>(e).base);
+    case ast::NodeKind::MemberExpr: {
+        const auto& m = static_cast<const ast::MemberExpr&>(e);
+        check_expr(*m.base);
+        // §14.1 / Annex §14.6.3 dereferencing a raw pointer is gated on
+        // RawMemory, reading or writing.
+        if (m.member == "value") {
+            auto bt = resolution_->type_of(m.base.get());
+            if (bt != nullptr && (bt->kind() == TypeKind::Ptr || bt->kind() == TypeKind::MutPtr)
+                && !in_scope("RawMemory")) {
+                missing_capability("RawMemory", e.range);
+            }
+        }
         break;
+    }
     case ast::NodeKind::IndexExpr: {
         const auto& ix = static_cast<const ast::IndexExpr&>(e);
         check_expr(*ix.base);
@@ -705,6 +701,52 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+void CapabilityChecker::require_callee(const ast::FuncDecl& callee, diag::SourceRange site) {
+    for (const auto& cap : required_caps(callee)) {
+        if (!in_scope(cap)) {
+            missing_capability(cap, site);
+        }
+        // §A7 (§14.13 rule 3): functions that need Alloc or Async are
+        // rejected inside the InterruptsOff region even when those caps *are*
+        // in scope of the enclosing function. The region is the more
+        // restrictive context.
+        if (in_scope("InterruptsOff") && (cap == "Alloc" || cap == "Async")) {
+            reporter_->report(diag::Diagnostic::error(
+                                  std::format("call to a function with `using {}` inside `with "
+                                              "InterruptsOff` (§14.13 rule 3)",
+                                              cap))
+                                  .at(site));
+        }
+    }
+}
+
+const ast::FuncDecl* CapabilityChecker::method_callee(const ast::CallExpr& c) const {
+    if (c.callee == nullptr || c.callee->kind != ast::NodeKind::MemberExpr) {
+        return nullptr;
+    }
+    const auto& m = static_cast<const ast::MemberExpr&>(*c.callee);
+    auto bt = resolution_->type_of(m.base.get());
+    if (bt == nullptr || bt->nominal_decl() == nullptr) {
+        return nullptr;
+    }
+    const auto* d = bt->nominal_decl();
+    const std::vector<ast::DeclPtr>* methods = nullptr;
+    if (d->kind == ast::NodeKind::Struct) {
+        methods = &static_cast<const ast::StructDecl*>(d)->methods;
+    } else if (d->kind == ast::NodeKind::Enum) {
+        methods = &static_cast<const ast::EnumDecl*>(d)->methods;
+    }
+    if (methods == nullptr) {
+        return nullptr;
+    }
+    for (const auto& md : *methods) {
+        if (md->kind == ast::NodeKind::Func && static_cast<const ast::FuncDecl&>(*md).name == m.member) {
+            return static_cast<const ast::FuncDecl*>(md.get());
+        }
+    }
+    return nullptr;
+}
 
 std::vector<std::string> CapabilityChecker::required_caps(const ast::FuncDecl& callee) const {
     std::vector<std::string> caps;

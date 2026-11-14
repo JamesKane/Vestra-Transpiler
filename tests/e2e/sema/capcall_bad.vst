@@ -1,0 +1,16 @@
+// §8 a method call must meet the method's `using` row; §14.1 dereferencing a
+// raw pointer (reading or writing) needs `RawMemory`.
+struct S {
+    var n: Int32
+    func mk(_ k: Int32) using Alloc -> Int32 { return k }
+    func plain() -> Int32 { return 1 }
+}
+func viaMethod(_ s: S) -> Int32 {
+    return s.mk(3) + s.plain()
+}
+func deref(_ p: Ptr[Int32]) -> Int32 {
+    return p.value
+}
+func write(_ p: MutPtr[Int32]) {
+    p.value = 3
+}

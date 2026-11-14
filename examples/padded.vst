@@ -37,11 +37,14 @@ module examples.padded
 
 // Static `Padded[UInt64]` — the simplest demo. The `.value`
 // accessor reads / writes through the wrapper; the padding
-// sits at the tail and is invisible at the source level.
+// sits at the tail and is invisible at the source level. A static
+// holds an immutable value (§4), so the write goes through the
+// storage's address under `RawMemory` (Annex §4.5).
 @noinit static cell: Padded[UInt64]
 
-func set_cell(_ v: UInt64) {
-    cell.value = v
+func set_cell(_ v: UInt64) using RawMemory {
+    let p: MutPtr[Padded[UInt64]] = MutPtr.unchecked(fromAddress: (&cell).address)
+    p.value.value = v
 }
 
 func get_cell() -> UInt64 {

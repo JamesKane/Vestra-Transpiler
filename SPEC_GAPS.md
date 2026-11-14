@@ -42,9 +42,8 @@ Each gap has one of four kinds:
    - A move inside a loop body is not caught.
    - Views (`Span`, `MutSpan`, `Str`), futures and raw-minted spans can escape
      their scope.
-   - Capability rows are not checked through method calls, function values
-     or closure bodies.
-   - Raw-pointer dereference needs no `RawMemory`.
+   - Capability rows are not checked through function values or closure
+     bodies.
 2. **Generated C++ can have undefined or reordered behaviour where Vestra
    defines it.**
    - Signed overflow, including `&+`, which is defined to wrap.
@@ -56,8 +55,7 @@ Each gap has one of four kinds:
      through to `std::memory_order_release`.
 3. **Unknown names are accepted silently.** These include unknown attributes
    (`@bogus`, `@deterministic`, `@retry_loop`), unknown protocol bounds
-   (`T: Ord`, `T: Send`), unknown `derive` names, unknown capabilities and
-   unknown `cfg.has(...)` features. A misspelling becomes a no-op, and several
+   (`T: Ord`, `T: Send`), unknown `derive` names and unknown `cfg.has(...)` features. A misspelling becomes a no-op, and several
    spec features "work" only in the sense that they are ignored.
 4. **Unfoldable comptime constructs degrade to a warning.** `build` prints
    "codegen does not yet support: expression" and emits
@@ -154,14 +152,12 @@ Each gap has one of four kinds:
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §8, §19.7 | The `using` row is checked through method calls | unsound | `s.mk(3)`, where `mk` is `using Alloc`, is accepted in a capability-free function (`capability.cpp:519` checks only `Func` symbols). |
 | §8, §19.10 | The row is checked through function values | unsound | `let h = f; h(3)` is accepted. |
 | §8 | Closure bodies are capability-checked | unsound | `run({ x => f(x) })` is accepted. |
 | §8 | Row polymorphism, `(T) using C -> U ... using C` | missing | "cannot infer generic parameter 'C'". |
 | §8, §19.7 | `with Cap = value` binds and passes a real value | divergent (v0.5) | Capabilities are a set of names. The bound value is not type-checked (`with Alloc = 42` passes), and codegen discards it as `(void)(...)`. No hidden parameter is passed. |
 | §8 | A capability name is a value in scope (`Log.info(...)`) | missing | "no field or method 'info'". |
 | §8 | An unused `using` capability warns | missing | No warning is given. |
-| §8 | Unknown capability names | unsound | `using Frobnicator` is accepted. |
 | §8, §15 | `vestra audit` extracts each function's row | missing | No `--capabilities` mode exists. |
 
 ### §9: errors and optionals
@@ -241,7 +237,6 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §14.1, Annex §14.6.3 | Raw-pointer dereference requires `RawMemory` | unsound | `p.value` on `Ptr` and `p.value = 3` on `MutPtr` both pass without it. Only minting is gated, and the exemption is deliberate (`resolver_members.cpp:852`). |
 | §14.1 | `Ptr.load()`, unchecked indexing | missing | |
 | §14.2 | `Mmio.narrowed(to:)`, `MmioRegion(base:size:)` minting | missing | The `Mmio` capability carries no value (`capability.hpp:32`). |
 | §14.3 | `Volatile[T]`, `Volatile(in:at:)` | missing | "unknown type". The annex's `MmioView` is the substitute. |

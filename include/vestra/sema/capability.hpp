@@ -70,6 +70,10 @@ private:
 
     // Report a missing capability at `site`.
     void missing_capability(std::string_view name, diag::SourceRange site);
+    // §8 the method `c` calls (on a struct or enum receiver), if any.
+    [[nodiscard]] const ast::FuncDecl* method_callee(const ast::CallExpr& c) const;
+    // Enforce `callee`'s using row at `site` (and the InterruptsOff rule 3).
+    void require_callee(const ast::FuncDecl& callee, diag::SourceRange site);
 
     const ast::CompilationUnit* unit_;
     const Resolution* resolution_;
