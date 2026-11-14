@@ -1,0 +1,35 @@
+// §A8 (§14.5.3) an `@interrupt(T)` slot type is `void(*)(T&)`, and an array
+// literal of handler names (or of plain function pointers) keeps a bare
+// brace list, the declared `std::array` supplying the shape. A static's
+// array-literal initializer takes its element type from the annotation (not
+// the literals' own `Int`), as a `let` does.
+struct Frame {
+    var pc: UInt64
+}
+
+@interrupt
+func onSync(_ f: inout Frame) {
+    f.pc = f.pc + 4
+}
+
+@interrupt
+func onIrq(_ f: inout Frame) {
+    f.pc = 0
+}
+
+func twice(_ x: Int32) -> Int32 { return x * 2 }
+func thrice(_ x: Int32) -> Int32 { return x * 3 }
+
+static vectors: [2]@interrupt(Frame) = [onSync, onIrq]
+static ops: [2](Int32) -> Int32 = [twice, thrice]
+static weights: [3]Int32 = [1, 2, 3]
+
+// A typed local of the slot type takes the declarator form `void(*h)(Frame&)`.
+func pick() {
+    let h: @interrupt(Frame) = onSync
+}
+
+func apply(_ v: Int32) -> Int32 {
+    let local: [2](Int32) -> Int32 = [thrice, twice]
+    return ops[0](v) + local[1](v) + weights[2]
+}

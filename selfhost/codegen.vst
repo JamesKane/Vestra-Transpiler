@@ -875,6 +875,7 @@ enum Nd {
     case matchE(Vec[Nd], Vec[Nd])           // scrutinee (boxed), arms — still prints /*?expr*/ (no C++ printer case), but carries the match for sema
     case matchArm(Bool, Vec[Nd], Vec[Nd], Vec[Nd]) // isDefault, pattern (empty if default), guard (empty if none), body — all boxed
     case exoticE                            // comptime, closure, select, etc — /*?expr*/
+    case intrT(Vec[Nd])                     // §A8 `@interrupt(T)` vector-table slot type: the trap-frame type (printed /*?type*/)
     case vecLit(Vec[Nd])                    // [e1, e2, ...] array/vector literal — prints /*?expr*/ (no C++ case), carries elements for sema
     case tupleLit(Vec[Nd])                  // (e1, e2, ...) tuple literal — prints /*?expr*/ (no C++ case), carries elements for sema
     case closureE(Vec[Nd], Vec[Nd])         // { params => body } — params (ident nodes) + body stmts; prints /*?expr*/ (no C++ case), carries both for sema
@@ -1493,12 +1494,17 @@ func parseTypeBase(_ p: inout Ps) using Alloc -> Nd {
     if eat(p, TokKind.kwDyn) { return Nd.dynT(bT(parseType(&p))) }
     if isKind(p, TokKind.at) {
         // §A8 @interrupt(T) in type position — InterruptType prints /*?type*/.
+        // Only `interrupt` is admitted there (the bootstrap errors on any
+        // other name); anything else, such as a quote splice reaching type
+        // position, stays the opaque placeholder.
         advP(&p)  // '@'
+        let isIntr = streq(curText(p), "interrupt")
         advP(&p)  // 'interrupt'
         eatV(p, TokKind.lparen)
         let t = parseType(&p)
         eatV(p, TokKind.rparen)
-        return Nd.exoticE
+        if !isIntr { return Nd.exoticE }
+        return Nd.intrT(bT(t))
     }
     if isKind(p, TokKind.lbracket) { return parseVectorType(&p) }
     if isKind(p, TokKind.lparen) { return parseParenType(&p) }
@@ -5923,7 +5929,11 @@ func emitGlobalDefSym(_ env: inout TyEnv, _ prefix: Str, _ name: Str, _ ty: Vec[
     emitAsmLabel(sym)
     if value.len() > 0 {
         print(" = ")
-        emitBoxed(env, value)
+        // An array-literal initializer takes its element type from the
+        // annotation, as a `let` does (the bootstrap types the literal from
+        // its declaration).
+        if valIsVecLit(value) { emitVecLitVal(env, annElemBox(ty), value) }
+        else { emitBoxed(env, value) }
     }
     print(";\n")
 }
@@ -6662,7 +6672,36 @@ func emitType(_ t: Nd) using Alloc, Log {
         case .fnT(let params, let caps, let thr, let res): emitFnPtr(res, "", params)
         case .vecT(let len, let elem): emitVecType(len, elem)
         case .tupleT(let elems): emitTupleType(elems)
+        case .intrT(let tf): emitIntrType("", tf)
         default: print("/*?type*/")
+    }
+}
+
+// §A8 (§14.5.3) an `@interrupt(T)` slot is `void(*)(T&)` (the handler
+// mutates the trap frame in place); with a declarator name, `void(*n)(T&)`.
+func emitIntrType(_ name: Str, _ tf: Vec[Nd]) using Alloc, Log {
+    print("void(*")
+    print(name)
+    print(")(")
+    if tf.len() > 0 {
+        emitTypeBoxed(tf)
+        print("&")
+    }
+    print(")")
+}
+
+func isIntrTy(_ ty: Vec[Nd]) -> Bool {
+    if ty.len() == 0 { return false }
+    return match ty.get(0) ?? Nd.wildcard {
+        case .intrT(let tf): true
+        default: false
+    }
+}
+
+func emitIntrDecl(_ ty: Vec[Nd], _ name: Str) using Alloc, Log {
+    match ty.get(0) ?? Nd.wildcard {
+        case .intrT(let tf): emitIntrType(name, tf)
+        default: noop()
     }
 }
 
@@ -7725,6 +7764,7 @@ func isWildcardNode(_ n: Nd) -> Bool {
 // `<type> <name>`, or the `R(*name)(A)` declarator for a function type.
 func emitTypeWithName(_ ty: Vec[Nd], _ nm: Str) using Alloc, Log {
     if isFnTy(ty) { emitFnPtrDecl(ty, nm); return }
+    if isIntrTy(ty) { emitIntrDecl(ty, nm); return }
     emitTypeBoxed(ty)
     print(" ")
     print(nm)
@@ -7751,9 +7791,10 @@ func emitBinding(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ ty: Vec[Nd
     if valIsMatch(value) { emitMatchBinding(env, indent, pat, ty, value); return }
     if valIsVecLit(value) { emitVecLitBinding(env, indent, pat, ty, value); return }
     print(indent)
-    if isFnTy(ty) {
-        // A function-typed binding needs the declarator form `<res>(*<name>)(...)`.
-        emitFnPtrDecl(ty, patName(pat))
+    if isFnTy(ty) || isIntrTy(ty) {
+        // A function-typed (or §A8 @interrupt slot) binding needs the
+        // declarator form `<res>(*<name>)(...)`.
+        emitTypeWithName(ty, patName(pat))
     } else {
         if ty.len() > 0 { emitTypeBoxed(ty) } else { print("auto") }
         print(" ")
@@ -9513,11 +9554,18 @@ func emitTupleLit(_ env: inout TyEnv, _ elems: Vec[Nd]) using Alloc, Log {
 // element's inferred type. A nested literal element threads the expected
 // element type's own element.
 func emitVecLit(_ env: inout TyEnv, _ elems: Vec[Nd], _ elemTy: Vec[Nd]) using Alloc, Log {
-    print("std::array<")
-    if elemTy.len() > 0 { emitTypeBoxed(elemTy) } else { emitInferredElemTy(env, elems) }
-    print(", ")
-    print(intToStr(elems.len()))
-    print(">{")
+    // A function-pointer or §A8 @interrupt element keeps the bare brace list:
+    // the declared target type supplies the shape, and each element (a bare
+    // function name) decays to a pointer through it.
+    if isFnTy(elemTy) || isIntrTy(elemTy) {
+        print("{")
+    } else {
+        print("std::array<")
+        if elemTy.len() > 0 { emitTypeBoxed(elemTy) } else { emitInferredElemTy(env, elems) }
+        print(", ")
+        print(intToStr(elems.len()))
+        print(">{")
+    }
     var i: Int = 0
     while i < elems.len() {
         if i > 0 { print(", ") }
