@@ -536,7 +536,7 @@ TypePtr Resolver::function_type_of(const ast::FuncDecl& f) {
         TypePtr err = resolve_type(*f.effects.throws_type);
         result = types_->make_result(result, err);
     }
-    return types_->make_function(std::move(params), result);
+    return types_->make_function(std::move(params), result, row_of(f.effects, f.is_async));
 }
 
 // ============================================================================

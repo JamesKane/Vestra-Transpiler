@@ -3,6 +3,7 @@
 
 #include "vestra/sema/types.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <format>
 #include <memory>
@@ -239,7 +240,12 @@ std::string Type::describe() const {
             }
             s += parts_[i] ? parts_[i]->describe() : "?";
         }
-        s += ") -> ";
+        s += ")";
+        for (std::size_t i = 0; i < caps_.size(); ++i) {
+            s += i == 0 ? " using " : ", ";
+            s += caps_[i];
+        }
+        s += " -> ";
         s += result_ ? result_->describe() : "Unit";
         return s;
     }
@@ -592,6 +598,18 @@ TypePtr TypeArena::make_function(std::vector<TypePtr> params, TypePtr result) {
     return p;
 }
 
+TypePtr TypeArena::make_function(std::vector<TypePtr> params,
+                                 TypePtr result,
+                                 std::vector<std::string> caps) {
+    auto t = std::unique_ptr<Type>(new Type(TypeKind::Function));
+    t->parts_ = std::move(params);
+    t->result_ = result;
+    t->caps_ = std::move(caps);
+    auto* p = t.get();
+    owned_.push_back(std::move(t));
+    return p;
+}
+
 TypePtr TypeArena::make_tuple(std::vector<TypePtr> elements) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::Tuple));
     t->parts_ = std::move(elements);
@@ -887,6 +905,15 @@ bool TypeArena::assignable(TypePtr from, TypePtr to) noexcept {
         && from->result() != nullptr && from->result()->kind() == TypeKind::Unit
         && equal(from->parts()[0], to->inner())) {
         return true;
+    }
+    // §8 a function value flows only into a function type whose `using` row
+    // covers its own: calling through the slot discharges the slot's row.
+    if (from->kind() == TypeKind::Function && to->kind() == TypeKind::Function) {
+        for (const auto& c : from->caps()) {
+            if (std::ranges::find(to->caps(), c) == to->caps().end()) {
+                return false;
+            }
+        }
     }
     // §4 string lattice. A string literal is `StrConst`; the borrowed view
     // `Str` and the owning `String` are wider. Every narrowing→widening step

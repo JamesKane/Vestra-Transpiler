@@ -249,6 +249,8 @@ private:
 
     // Resolve an `ast::Type` node into a `sema::TypePtr`.
     TypePtr resolve_type(const ast::Type& t);
+    // §8 the capability names of a `using` row (plus Async for an async func).
+    [[nodiscard]] static std::vector<std::string> row_of(const ast::Effects& e, bool is_async);
 
     // §7 — interpret an index-expression entry as a type, for explicit type
     // arguments at a construction site (`Pair[Int32](...)`, whose `Int32`

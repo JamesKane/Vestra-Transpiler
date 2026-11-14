@@ -516,13 +516,17 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
             check_expr(*a.value);
         }
         // The callee may be a Func we know; if so, enforce its using row.
-        if (const auto* sym = resolution_->symbol_of(c.callee.get())) {
-            if (sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Func) {
-                require_callee(static_cast<const ast::FuncDecl&>(*sym->decl), c.range);
-            }
+        const auto* sym = resolution_->symbol_of(c.callee.get());
+        if (sym != nullptr && sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Func) {
+            require_callee(static_cast<const ast::FuncDecl&>(*sym->decl), c.range);
         } else if (const auto* m = method_callee(c)) {
             // §8 / §19.7 a method's row is enforced like a function's.
             require_callee(*m, c.range);
+        } else if (auto ft = resolution_->type_of(c.callee.get());
+                   ft != nullptr && ft->kind() == TypeKind::Function) {
+            // §8 / §19.10 a call through a function value discharges the
+            // row its type carries.
+            require_row(ft->caps(), c.range);
         }
         break;
     }
@@ -693,8 +697,17 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
             check_expr(*el);
         }
         break;
+    case ast::NodeKind::ClosureExpr:
+        // §8 a closure runs with the authority of the place it is written: its
+        // body is checked against the capabilities in scope there.
+        for (const auto& st : static_cast<const ast::ClosureExpr&>(e).body) {
+            if (st) {
+                check_stmt(*st);
+            }
+        }
+        break;
     default:
-        break;  // literals / SelfExpr / LeadingDotExpr / closures — no embedded calls in phase 1
+        break;  // literals / SelfExpr / LeadingDotExpr — no embedded calls
     }
 }
 
@@ -703,7 +716,11 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
 // ============================================================================
 
 void CapabilityChecker::require_callee(const ast::FuncDecl& callee, diag::SourceRange site) {
-    for (const auto& cap : required_caps(callee)) {
+    require_row(required_caps(callee), site);
+}
+
+void CapabilityChecker::require_row(const std::vector<std::string>& row, diag::SourceRange site) {
+    for (const auto& cap : row) {
         if (!in_scope(cap)) {
             missing_capability(cap, site);
         }

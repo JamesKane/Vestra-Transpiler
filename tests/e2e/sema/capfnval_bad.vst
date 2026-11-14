@@ -1,0 +1,16 @@
+// §8 a call through a function value discharges its row, and a closure body is
+// checked against the capabilities where it is written.
+func mk(_ k: Int32) using Alloc -> Int32 { return k }
+func plain(_ k: Int32) -> Int32 { return k }
+func run(_ f: (Int32) -> Int32) -> Int32 { return f(1) }
+func runA(_ f: (Int32) using Alloc -> Int32) using Alloc -> Int32 { return f(1) }
+func viaValue() -> Int32 {
+    let h = mk
+    return h(3)
+}
+func viaParam(_ f: (Int32) using Alloc -> Int32) -> Int32 {
+    return f(3)
+}
+func closureBody() -> Int32 {
+    return run({ x => mk(x) })
+}

@@ -387,7 +387,7 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
             ps.push_back(p ? resolve_type(*p) : types_->error());
         }
         TypePtr r = f.result ? resolve_type(*f.result) : types_->unit();
-        return types_->make_function(std::move(ps), r);
+        return types_->make_function(std::move(ps), r, row_of(f.effects, false));
     }
     case ast::NodeKind::SomeType: {
         const auto& s = static_cast<const ast::SomeType&>(t);
@@ -641,6 +641,22 @@ TypePtr Resolver::resolve_member_type_with_generics(const std::vector<ast::Gener
         ++idx;
     }
     return resolve_type(member_type);
+}
+
+std::vector<std::string> Resolver::row_of(const ast::Effects& e, bool is_async) {
+    std::vector<std::string> row;
+    for (const auto& c : e.using_caps) {
+        if (c != nullptr && c->kind == ast::NodeKind::NamedType) {
+            const auto& nt = static_cast<const ast::NamedType&>(*c);
+            if (!nt.path.empty()) {
+                row.push_back(nt.path.front());
+            }
+        }
+    }
+    if (is_async && std::ranges::find(row, "Async") == row.end()) {
+        row.emplace_back("Async");
+    }
+    return row;
 }
 
 }  // namespace vestra::sema

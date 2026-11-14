@@ -42,8 +42,6 @@ Each gap has one of four kinds:
    - A move inside a loop body is not caught.
    - Views (`Span`, `MutSpan`, `Str`), futures and raw-minted spans can escape
      their scope.
-   - Capability rows are not checked through function values or closure
-     bodies.
 2. **Generated C++ can have undefined or reordered behaviour where Vestra
    defines it.**
    - Signed overflow, including `&+`, which is defined to wrap.
@@ -152,8 +150,7 @@ Each gap has one of four kinds:
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §8, §19.10 | The row is checked through function values | unsound | `let h = f; h(3)` is accepted. |
-| §8 | Closure bodies are capability-checked | unsound | `run({ x => f(x) })` is accepted. |
+| §8 | A closure's row | unsound (partial) | A closure body is checked against the capabilities where it is written, and its type carries no row, so a closure made inside a `with` block and called after the block has ended still uses that block's authority. |
 | §8 | Row polymorphism, `(T) using C -> U ... using C` | missing | "cannot infer generic parameter 'C'". |
 | §8, §19.7 | `with Cap = value` binds and passes a real value | divergent (v0.5) | Capabilities are a set of names. The bound value is not type-checked (`with Alloc = 42` passes), and codegen discards it as `(void)(...)`. No hidden parameter is passed. |
 | §8 | A capability name is a value in scope (`Log.info(...)`) | missing | "no field or method 'info'". |

@@ -120,8 +120,8 @@ accepts. Ordered by how likely each is to let a wrong program through:
    admitted while the builtin `split` and `args()` return one; the decision is
    a lazy `split` iterator or tracking sources through the container).
 
-2. **Capability rows through every call form:** function values, closure
-   bodies, and `with InterruptsOff` callees (Gaps §8, Annex §14.13).
+2. **`with InterruptsOff` callees:** a helper that waits for an interrupt
+   is caught only when called directly (Annex §14.13 rule 5).
 3. **Unknown names are errors:** attributes, protocol bounds, `derive`
    names, `cfg.has` features, `@repr` kinds (Gaps headline 3).
 4. **Generics checked against bounds:** operations on `T` gated by its

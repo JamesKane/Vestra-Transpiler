@@ -4034,9 +4034,38 @@ func capNoteLocal(_ env: inout CapEnv, _ nm: String, _ ty: Vec[Nd]) using Alloc 
     if let t = ty.get(0) {
         match t {
             case .named(let path, let g, let a): capPushLocal(env, nm, path)
+            case .fnT(let ps, let caps, let thr, let res): capPushFnRow(env, nm, caps)
             default: noop()
         }
     }
+}
+
+// A binding of function type: record its row as "fnrow:A,B".
+func capPushFnRow(_ env: inout CapEnv, _ nm: String, _ caps: Vec[Nd]) using Alloc {
+    var t: String = "fnrow:"
+    var i: Int = 0
+    while i < caps.len() {
+        match caps.get(i) ?? Nd.wildcard {
+            case .named(let path, let g, let a): capAppendRow(t, path)
+            default: noop()
+        }
+        i = i + 1
+    }
+    capPushLocal(env, nm, t)
+}
+
+func capAppendRow(_ t: inout String, _ path: String) using Alloc {
+    if !streq(t, "fnrow:") { t.append(",") }
+    t.append(path)
+}
+
+// `let h = f` for a user function f: "fnof:f".
+func capFnOf(_ env: inout CapEnv, _ v: Vec[Nd]) using Alloc -> String {
+    let x = esIdentOf(v)
+    if streq(x, "") || !userFuncContains(env, x) { return own("") }
+    var t: String = "fnof:"
+    t.append(x)
+    return t
 }
 
 func capPushLocal(_ env: inout CapEnv, _ nm: String, _ head: String) using Alloc {
@@ -4048,17 +4077,49 @@ func capPatName(_ p: Vec[Nd]) using Alloc -> String {
     if let n = p.get(0) {
         return match n {
             case .ident(let x): own(x)
+            case .identP(let x): own(x)
+            case .bindP(let x): own(x)
             default: own("")
         }
     }
     return own("")
 }
 
-func capLetLocal(_ env: inout CapEnv, _ p: Vec[Nd], _ ty: Vec[Nd]) using Alloc {
+func capLetLocal(_ env: inout CapEnv, _ p: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     let nm = capPatName(p)
     if streq(nm, "") { return }
     // A binding without a spelled type shadows any earlier one.
-    if ty.len() == 0 { capPushLocal(env, nm, "") } else { capNoteLocal(env, nm, ty) }
+    if ty.len() == 0 { capPushLocal(env, nm, capFnOf(env, v)) } else { capNoteLocal(env, nm, ty) }
+}
+
+// A call through a function-typed binding discharges its row; true if `name`
+// is such a binding (or any local, which shadows a function of that name).
+func capCallLocal(_ env: inout CapEnv, _ name: String) using Alloc -> Bool {
+    var i: Int = env.lvNames.len() - 1
+    while i >= 0 {
+        if streq(env.lvNames.get(i) ?? own(""), name) {
+            let t = env.lvTypes.get(i) ?? own("")
+            capRequireLocal(env, t)
+            return true
+        }
+        i = i - 1
+    }
+    return false
+}
+
+func capRequireLocal(_ env: inout CapEnv, _ t: String) using Alloc {
+    if tyStartsWith(t, "fnof:") { requireFuncCaps(env, own(t.slice(5, t.len()))); return }
+    if !tyStartsWith(t, "fnrow:") { return }
+    let names = own(t.slice(6, t.len()))
+    var start: Int = 0
+    var i: Int = 0
+    while i <= names.len() {
+        if i == names.len() || (names.byteAt(i) ?? 0) == 44 {
+            if i > start { require(env, own(names.slice(start, i))) }
+            start = i + 1
+        }
+        i = i + 1
+    }
 }
 
 // The type head of a receiver expression: a known binding or `self`.
@@ -4115,6 +4176,8 @@ func checkCapExpr(_ env: inout CapEnv, _ e: Nd) using Alloc {
         case .addrOf(let x): checkCapBoxed(env, x)
         case .arg(let l, let io, let v): checkCapBoxed(env, v)
         case .doCatchE(let db, let en, let et, let cb): checkCapPair(env, db, cb)
+        // §8 a closure runs with the authority of the place it is written.
+        case .closureE(let ps, let body): checkCapBlock(env, body)
         default: noop()
     }
 }
@@ -4168,7 +4231,7 @@ func checkCapStmt(_ env: inout CapEnv, _ s: Nd) using Alloc {
 
 func checkCapLet(_ env: inout CapEnv, _ p: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     checkCapBoxed(env, v)
-    capLetLocal(env, p, ty)
+    capLetLocal(env, p, ty, v)
 }
 
 func checkWith(_ env: inout CapEnv, _ caps: Vec[Nd], _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc {
@@ -4208,6 +4271,7 @@ func checkCalleeCaps(_ env: inout CapEnv, _ callee: Nd, _ args: Vec[Nd]) using A
 }
 
 func checkIdentCallee(_ env: inout CapEnv, _ name: String) using Alloc {
+    if capCallLocal(env, name) { return }
     if userFuncContains(env, name) { requireFuncCaps(env, name) }
     else { requireBuiltinCap(env, name) }
 }
@@ -6771,6 +6835,7 @@ struct TyEnv {
     var funcName: Vec[String]   // global: function name ...
     var funcRet: Vec[String]    // ... -> return-type spelling ("Unit" if none) ...
     var funcArity: Vec[Int]     // ... -> declared parameter count
+    var funcSpell: Vec[String]  // ... -> its type as a value ("(P) using C -> R"; "" if generic / throwing)
     var pFn: Vec[String]        // global: per-parameter rows — function name ...
     var pIdx: Vec[Int]          // ... parameter index ...
     var pType: Vec[String]      // ... -> parameter type spelling
@@ -6833,7 +6898,7 @@ func tyCheck(_ env: inout TyEnv, _ u: NUnit) using Alloc {
 func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
-            tyRecordFunc(env, name, params, r)
+            tyRecordFuncV(env, mods, name, g, params, caps, t, r)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyRecordStructDecl(env, name, fl, m)
         case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumDecl(env, name, cs, m)
         case .staticD(let vis, let name, let ty, let v): tyRecordStatic(env, name, ty)
@@ -7000,6 +7065,151 @@ func tyFieldType(_ env: inout TyEnv, _ structName: String, _ label: String) usin
         i = i + 1
     }
     return own("")
+}
+
+func tyRecordFuncV(_ env: inout TyEnv, _ mods: String, _ name: String, _ g: Vec[Nd], _ params: Vec[Nd],
+                   _ caps: Vec[Nd], _ thr: Vec[Nd], _ result: Vec[Nd]) using Alloc {
+    tyRecordFunc(env, name, params, result)
+    if g.len() > 0 || thr.len() > 0 { env.funcSpell.push(own("")); return }
+    var ps: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < params.len() {
+        match params.get(i) ?? Nd.wildcard {
+            case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyPushFirst(ps, ty)
+            default: noop()
+        }
+        i = i + 1
+    }
+    var row: Vec[String] = Vec.new()
+    tyRowNames(caps, row)
+    if containsSub(mods, "async") && !esInList(row, "Async") { row.push("Async") }
+    env.funcSpell.push(tyFnSpell(ps, row, result))
+}
+
+func tyPushFirst(_ out: inout Vec[Nd], _ ty: Vec[Nd]) using Alloc {
+    out.push(ty.get(0) ?? Nd.wildcard)
+}
+
+func tyRowNames(_ caps: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < caps.len() {
+        match caps.get(i) ?? Nd.wildcard {
+            case .named(let path, let g, let a): out.push(own(path))
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+// §8 a function type spells as the bootstrap's describe(): "(P, Q) using A, B -> R".
+func tyFnSpell(_ ps: Vec[Nd], _ row: Vec[String], _ result: Vec[Nd]) using Alloc -> String {
+    var s: String = "("
+    var i: Int = 0
+    while i < ps.len() {
+        if i > 0 { s.append(", ") }
+        let sp = typeSpelling(ps.get(i) ?? Nd.wildcard)
+        if streq(sp, "") { return own("") }
+        s.append(sp)
+        i = i + 1
+    }
+    s.append(")")
+    var j: Int = 0
+    while j < row.len() {
+        if j == 0 { s.append(" using ") } else { s.append(", ") }
+        s.append(row.get(j) ?? own(""))
+        j = j + 1
+    }
+    s.append(" -> ")
+    if result.len() == 0 { s.append("Unit") } else {
+        let r = typeSpelling(result.get(0) ?? Nd.wildcard)
+        if streq(r, "") { return own("") }
+        s.append(r)
+    }
+    return s
+}
+
+func tyFnTSpelling(_ ps: Vec[Nd], _ caps: Vec[Nd], _ result: Vec[Nd]) using Alloc -> String {
+    var row: Vec[String] = Vec.new()
+    tyRowNames(caps, row)
+    return tyFnSpell(ps, row, result)
+}
+
+// §8 a function value fits a function type of the same shape whose row covers its own.
+func tyFnAssignable(_ from: String, _ to: String) using Alloc -> Bool {
+    let fc = tyFnClose(from)
+    let tc = tyFnClose(to)
+    if fc < 0 || tc < 0 { return false }
+    if !streq(own(from.slice(0, fc + 1)), own(to.slice(0, tc + 1))) { return false }
+    let fr = tyFnAfterRow(from, fc)
+    let tr = tyFnAfterRow(to, tc)
+    if !streq(own(from.slice(fr, from.len())), own(to.slice(tr, to.len()))) { return false }
+    let frow = own(from.slice(fc + 1, fr))
+    let trow = own(to.slice(tc + 1, tr))
+    return tyRowCovered(frow, trow)
+}
+
+// The index of the ')' closing the leading '('.
+func tyFnClose(_ s: String) -> Int {
+    var depth: Int = 0
+    var i: Int = 0
+    while i < s.len() {
+        let c = Int(s.byteAt(i) ?? 0)
+        if c == 40 || c == 91 { depth = depth + 1 }
+        if c == 41 || c == 93 {
+            depth = depth - 1
+            if depth == 0 { return i }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// The index where " -> R" starts after the row (just past the ')' when no row).
+func tyFnAfterRow(_ s: String, _ close: Int) -> Int {
+    var i: Int = close + 1
+    while i + 3 < s.len() {
+        if (s.byteAt(i) ?? 0) == 32 && (s.byteAt(i + 1) ?? 0) == 45 && (s.byteAt(i + 2) ?? 0) == 62 {
+            return i
+        }
+        i = i + 1
+    }
+    return close + 1
+}
+
+// Every name in " using A, B" (from) appears in to's row.
+func tyRowCovered(_ frow: String, _ trow: String) using Alloc -> Bool {
+    if frow.len() < 7 { return true }
+    let names = own(frow.slice(7, frow.len()))
+    var start: Int = 0
+    var i: Int = 0
+    while i <= names.len() {
+        if i == names.len() || (names.byteAt(i) ?? 0) == 44 {
+            let nm = own(names.slice(start, i))
+            if !tyRowHas(trow, nm) { return false }
+            start = i + 2
+            i = i + 2
+        } else {
+            i = i + 1
+        }
+    }
+    return true
+}
+
+func tyRowHas(_ trow: String, _ nm: String) using Alloc -> Bool {
+    if trow.len() < 7 { return false }
+    let names = own(trow.slice(7, trow.len()))
+    var start: Int = 0
+    var i: Int = 0
+    while i <= names.len() {
+        if i == names.len() || (names.byteAt(i) ?? 0) == 44 {
+            if streq(own(names.slice(start, i)), nm) { return true }
+            start = i + 2
+            i = i + 2
+        } else {
+            i = i + 1
+        }
+    }
+    return false
 }
 
 func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ result: Vec[Nd]) using Alloc {
@@ -7595,6 +7805,12 @@ func tySymType(_ env: inout TyEnv, _ name: String) using Alloc -> String {
             if streq(n, name) { return env.symType.get(i) ?? own("") }
         }
         i = i + 1
+    }
+    // A function named as a value.
+    var j: Int = 0
+    while j < env.funcName.len() {
+        if streq(env.funcName.get(j) ?? own(""), name) { return env.funcSpell.get(j) ?? own("") }
+        j = j + 1
     }
     return own("")
 }
@@ -9345,6 +9561,7 @@ func typeSpelling(_ t: Nd) using Alloc -> String {
         case .named(let path, let hasG, let args): tyNamedSpelling(path, hasG, args)
         case .opt(let inner): tyOptSpelling(inner)
         case .vecT(let len, let elem): tyVecTSpelling(len, elem)
+        case .fnT(let ps, let caps, let thr, let res): tyFnTSpelling(ps, caps, res)
         default: own("")
     }
 }
@@ -9436,6 +9653,9 @@ func tyHasFloatLit(_ e: Vec[Nd]) -> Bool {
 func tyAssignable(_ from: String, _ to: String) using Alloc -> Bool {
     if streq(from, "") || streq(to, "") { return true }   // unknown: don't pile on
     if streq(from, to) { return true }
+    if tyStartsWith(from, "(") && tyStartsWith(to, "(") && containsSub(from, " -> ") && containsSub(to, " -> ") {
+        return tyFnAssignable(from, to)
+    }
     if tyIsArray(from) && tyIsArray(to) { return tyArrayAssignable(from, to) }
     // §10 a `[N]T` is viewable as a Span[T] / MutSpan[T]; a MutSpan[T] widens
     // to a Span[T] (types.cpp's assignable).
@@ -10013,7 +10233,7 @@ func main() -> Int32 {
                     // its errors gate too), then ownership, exclusivity, capability.
                     if env.bad.len() > 0 || env.dups.len() > 0 || env.throwBad.len() > 0
                         || env.modBad.len() > 0 || tnenv.bad.len() > 0 || hosted.len() > 0 { return 1 }
-                    var tenv = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(),
+                    var tenv = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(), funcSpell: Vec.new(),
                                      pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(),
                                      structs: Vec.new(), sFldStruct: Vec.new(), sFldName: Vec.new(),
                                      sFldType: Vec.new(), mStruct: Vec.new(), mName: Vec.new(),

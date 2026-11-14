@@ -1,0 +1,13 @@
+// §8 a function value carries its `using` row; a closure runs with the
+// authority of the place it is written.
+func mk(_ k: Int32) using Alloc -> Int32 { return k }
+func plain(_ k: Int32) -> Int32 { return k }
+func run(_ f: (Int32) -> Int32) -> Int32 { return f(1) }
+func runA(_ f: (Int32) using Alloc -> Int32) using Alloc -> Int32 { return f(1) }
+func okValue() using Alloc -> Int32 {
+    let h = mk
+    return h(3) + runA(mk) + run(plain) + runA(plain)
+}
+func okClosure() using Alloc -> Int32 {
+    return runA({ x => mk(x) })
+}

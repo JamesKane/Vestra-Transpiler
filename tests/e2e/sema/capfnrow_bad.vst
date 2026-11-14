@@ -1,0 +1,13 @@
+// §8 a function value can't flow into a function type whose row is missing
+// one of its capabilities.
+func mk(_ k: Int32) using Alloc -> Int32 { return k }
+func plain(_ k: Int32) -> Int32 { return k }
+func run(_ f: (Int32) -> Int32) -> Int32 { return f(1) }
+func runA(_ f: (Int32) using Alloc -> Int32) using Alloc -> Int32 { return f(1) }
+func dropRow() -> Int32 {
+    return run(mk)
+}
+func dropLet() -> Int32 {
+    let g: (Int32) -> Int32 = mk
+    return g(1)
+}

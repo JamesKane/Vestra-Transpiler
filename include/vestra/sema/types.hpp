@@ -215,6 +215,8 @@ public:
     // §7 generics phase 2 — the integer carried by a ConstValue.
     [[nodiscard]] std::int64_t const_value() const noexcept { return length_; }
     [[nodiscard]] const std::vector<TypePtr>& parts() const noexcept { return parts_; }
+    // §8 a Function type's `using` row (capability names, Async included).
+    [[nodiscard]] const std::vector<std::string>& caps() const noexcept { return caps_; }
     [[nodiscard]] TypePtr result() const noexcept { return result_; }
     [[nodiscard]] const ast::Decl* nominal_decl() const noexcept { return decl_; }
     [[nodiscard]] std::string_view generic_name() const noexcept { return name_; }
@@ -237,6 +239,7 @@ private:
     TypePtr inner_ = nullptr;          // Optional / Vector element
     std::int64_t length_ = 0;          // Vector length (0 if symbolic)
     std::vector<TypePtr> parts_;       // Function params / Tuple elements
+    std::vector<std::string> caps_;    // Function `using` row
     TypePtr result_ = nullptr;         // Function result
     const ast::Decl* decl_ = nullptr;  // Nominal target
     std::string name_;                 // GenericParam name
@@ -329,6 +332,9 @@ public:
     // §7 generics phase 2 — a compile-time integer generic argument.
     [[nodiscard]] TypePtr make_const_value(std::int64_t value);
     [[nodiscard]] TypePtr make_function(std::vector<TypePtr> params, TypePtr result);
+    [[nodiscard]] TypePtr make_function(std::vector<TypePtr> params,
+                                        TypePtr result,
+                                        std::vector<std::string> caps);
     [[nodiscard]] TypePtr make_tuple(std::vector<TypePtr> elements);
 
     [[nodiscard]] TypePtr make_nominal(TypeKind k, const ast::Decl* decl);
