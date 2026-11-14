@@ -1,0 +1,29 @@
+// §19.2 `copy` is well-formed only on a Copyable type: not linear, no
+// `deinit`, no Box, directly or through a field, payload or element.
+linear struct T {
+    let id: Int32
+}
+struct D {
+    var n: Int32
+    deinit { }
+}
+struct HasBox {
+    var b: Box[Int32]
+}
+struct Plain {
+    var n: Int32
+    var s: String
+}
+enum E {
+    case b(Box[Int32])
+    case n(Int32)
+}
+func close(_ t: sink T) { }
+func f(_ t: T, _ d: D, _ h: HasBox, _ p: Plain, _ e: E, _ o: Box[Int32]?) {
+    let a = copy t
+    let b = copy d
+    let c = copy h
+    let g = copy p
+    let k = copy e
+    let m = copy o
+}

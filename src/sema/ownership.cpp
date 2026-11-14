@@ -244,12 +244,23 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
         }
         break;
     }
-    case ast::NodeKind::CopyExpr:
+    case ast::NodeKind::CopyExpr: {
         // `copy x` is a read of x — recurse so we still validate that x is
         // live, but never trigger a consume on it. The copied value itself
         // is a fresh temporary, not tracked.
-        check_expr(*static_cast<const ast::CopyExpr&>(e).inner);
+        const auto& cx = static_cast<const ast::CopyExpr&>(e);
+        check_expr(*cx.inner);
+        // §19.2 well-formed only where the type is Copyable.
+        auto t = resolution_->type_of(cx.inner.get());
+        if (auto why = non_copyable_reason(t); !why.empty()) {
+            reporter_->report(diag::Diagnostic::error(std::format("can't `copy` a value of type {}: "
+                                                                  "it {}, so it is never duplicated",
+                                                                  t->describe(),
+                                                                  why))
+                                  .at(e.range));
+        }
         break;
+    }
     case ast::NodeKind::AwaitExpr:
         check_expr(*static_cast<const ast::AwaitExpr&>(e).inner);
         break;
@@ -1368,6 +1379,71 @@ bool OwnershipChecker::leaves_function(const ast::Expr* e) const {
     }
     const auto k = b.stmts.back()->kind;
     return k != ast::NodeKind::BreakStmt && k != ast::NodeKind::ContinueStmt;
+}
+
+std::string OwnershipChecker::non_copyable_reason(TypePtr t, int depth) const {
+    if (t == nullptr || depth > 16) {
+        return {};
+    }
+    if (is_linear_type(t)) {
+        return "is linear";
+    }
+    switch (t->kind()) {
+    case TypeKind::Box:
+        return "owns a Box";
+    case TypeKind::Optional:
+    case TypeKind::Vector:
+    case TypeKind::Vec:
+    case TypeKind::Padded:
+        return non_copyable_reason(t->inner(), depth + 1);
+    case TypeKind::Tuple:
+    case TypeKind::HashMap:
+        if (auto r = non_copyable_reason(t->inner(), depth + 1); !r.empty()) {
+            return r;
+        }
+        for (auto p : t->parts()) {
+            if (auto r = non_copyable_reason(p, depth + 1); !r.empty()) {
+                return r;
+            }
+        }
+        return {};
+    case TypeKind::Struct: {
+        const auto* d = t->nominal_decl();
+        if (d == nullptr || d->kind != ast::NodeKind::Struct) {
+            return {};
+        }
+        const auto& s = static_cast<const ast::StructDecl&>(*d);
+        if (s.deinit_body != nullptr) {
+            return "has a deinit";
+        }
+        for (const auto& f : s.fields) {
+            if (auto ft = resolution_->types()->member_type(f.type.get())) {
+                if (auto r = non_copyable_reason(ft, depth + 1); !r.empty()) {
+                    return r;
+                }
+            }
+        }
+        return {};
+    }
+    case TypeKind::Enum: {
+        const auto* d = t->nominal_decl();
+        if (d == nullptr || d->kind != ast::NodeKind::Enum) {
+            return {};
+        }
+        for (const auto& c : static_cast<const ast::EnumDecl&>(*d).cases) {
+            for (const auto& [label, pt] : c.payload) {
+                if (auto ct = resolution_->types()->member_type(pt.get())) {
+                    if (auto r = non_copyable_reason(ct, depth + 1); !r.empty()) {
+                        return r;
+                    }
+                }
+            }
+        }
+        return {};
+    }
+    default:
+        return {};
+    }
 }
 
 void OwnershipChecker::report_loop_moves(const BindingMap& pre, const ast::Expr* body) {

@@ -109,7 +109,6 @@ Each gap has one of four kinds:
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §5, §19.2 | `copy` is rejected on non-copyable types | unsound | `copy` of a `Box`, a linear value or a `deinit` type is accepted. `CopyExpr` is never checked (`ownership.cpp:236`). |
 | §5 | Small `Trivial` structs copy implicitly | divergent | `is_trivial` covers only primitive scalars (`ownership.cpp:688`). Passing `struct P { var a: Int32 }` to `sink` twice is an error. |
 | §5, §19.4 | Inferred lifetimes for returned views | unsound | `return id(localArray)` as `Span[Int32]` is accepted. |
 | §19.3 | Exclusivity across an `inout` method receiver | unsound | `p.bump(&p.a)` is accepted. |

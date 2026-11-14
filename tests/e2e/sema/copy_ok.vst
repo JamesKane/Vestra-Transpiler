@@ -1,0 +1,16 @@
+// §19.2 `copy` of a resource-free value: a struct of strings and scalars, an
+// enum with scalar payloads, an Optional of one.
+struct Plain {
+    var n: Int32
+    var s: String
+}
+enum E {
+    case a(UInt32)
+    case b
+}
+func f(_ p: Plain, _ e: E, _ o: Plain?) -> Int32 {
+    let g = copy p
+    let k = copy e
+    let m = copy o
+    return g.n
+}

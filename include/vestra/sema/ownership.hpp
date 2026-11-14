@@ -172,6 +172,10 @@ private:
     // §5 / §19.2 a binding from outside a loop, live on entry and still moved
     // at the end of the body, is moved again (or used) by the next iteration.
     void report_loop_moves(const BindingMap& pre, const ast::Expr* body);
+    // §19.2 why a type isn't Copyable ("" when it is): it's linear, has a
+    // `deinit`, or owns a `Box`, directly or through a field / payload /
+    // element.
+    [[nodiscard]] std::string non_copyable_reason(TypePtr t, int depth = 0) const;
 
     const ast::CompilationUnit* unit_;
     const Resolution* resolution_;

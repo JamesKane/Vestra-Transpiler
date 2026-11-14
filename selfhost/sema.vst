@@ -4520,6 +4520,9 @@ struct OwnEnv {
     var locTy: Vec[Nd]          // ... and its declared (or constructed) type
     var selfTy: String          // per method: the owning type ("" outside one)
     var borrows: Vec[String]    // per function: `if let` bindings borrowed from a place
+    var deinitTys: Vec[String]  // global: struct names that declare a `deinit`
+    var payOwner: Vec[String]   // global: enum payload rows — owning enum ...
+    var payTy: Vec[Nd]          // ... and the payload type
     var fKeys: Vec[String]      // per path: places known to be empty (encoded keys) ...
     var fIds: Vec[String]       // ... the locals their indices mention (" a b ") ...
     var fStatic: Vec[Bool]      // ... and whether the root is a static
@@ -4570,11 +4573,129 @@ func ownCollectDecl(_ env: inout OwnEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             ownCollectFunc(env, name, params, r)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): ownCollectStruct(env, name, isLinear, fl)
-        case .enumD(let vis, let name, let cs, let m, let generics): env.ctors.push(name)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): ownCollectStructD(env, name, isLinear, fl, dn)
+        case .enumD(let vis, let name, let cs, let m, let generics): ownCollectEnum(env, name, cs)
         case .staticD(let vis, let name, let ty, let v): ownCollectStatic(env, name, ty)
         default: noop()
     }
+}
+
+func ownCollectStructD(_ env: inout OwnEnv, _ name: String, _ isLinear: Bool, _ fl: Vec[Nd], _ dn: Vec[Nd]) using Alloc {
+    ownCollectStruct(env, name, isLinear, fl)
+    if dn.len() > 0 { env.deinitTys.push(own(name)) }
+}
+
+func ownCollectEnum(_ env: inout OwnEnv, _ name: String, _ cs: Vec[Nd]) using Alloc {
+    env.ctors.push(name)
+    var i: Int = 0
+    while i < cs.len() {
+        match cs.get(i) ?? Nd.wildcard {
+            case .enumCase(let cn, let pay): ownCollectPay(env, name, pay)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func ownCollectPay(_ env: inout OwnEnv, _ owner: String, _ pay: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < pay.len() {
+        match pay.get(i) ?? Nd.wildcard {
+            case .payElem(let l, let t): ownPushPay(env, owner, t)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func ownPushPay(_ env: inout OwnEnv, _ owner: String, _ t: Vec[Nd]) using Alloc {
+    env.payOwner.push(own(owner))
+    env.payTy.push(t.get(0) ?? Nd.wildcard)
+}
+
+// §19.2 why a type isn't Copyable ("" when it is): linear, a `deinit`, or a
+// Box, directly or through a field / payload / element (the bootstrap's
+// non_copyable_reason).
+func ownNoCopy(_ env: inout OwnEnv, _ t: Nd, _ depth: Int) using Alloc -> String {
+    if depth > 16 { return own("") }
+    if ownIsLinTy(env, t) { return own("is linear") }
+    return match t {
+        case .named(let path, let g, let args): ownNoCopyNamed(env, path, args, depth)
+        case .opt(let x): ownNoCopyV(env, x, depth)
+        case .vecT(let n, let x): ownNoCopyV(env, x, depth)
+        case .tupleT(let xs): ownNoCopyV(env, xs, depth)
+        default: own("")
+    }
+}
+
+func ownNoCopyV(_ env: inout OwnEnv, _ xs: Vec[Nd], _ depth: Int) using Alloc -> String {
+    var i: Int = 0
+    while i < xs.len() {
+        let r = ownNoCopy(env, xs.get(i) ?? Nd.wildcard, depth + 1)
+        if !streq(r, "") { return r }
+        i = i + 1
+    }
+    return own("")
+}
+
+func ownNoCopyNamed(_ env: inout OwnEnv, _ path: String, _ args: Vec[Nd], _ depth: Int) using Alloc -> String {
+    if streq(path, "Box") { return own("owns a Box") }
+    if ownFindIn(env.deinitTys, path) >= 0 { return own("has a deinit") }
+    let a = ownNoCopyV(env, args, depth)
+    if !streq(a, "") { return a }
+    var i: Int = 0
+    while i < env.fieldOwner.len() {
+        if streq(env.fieldOwner.get(i) ?? own(""), path) {
+            let r = ownNoCopy(env, env.fieldTy.get(i) ?? Nd.wildcard, depth + 1)
+            if !streq(r, "") { return r }
+        }
+        i = i + 1
+    }
+    var j: Int = 0
+    while j < env.payOwner.len() {
+        if streq(env.payOwner.get(j) ?? own(""), path) {
+            let r = ownNoCopy(env, env.payTy.get(j) ?? Nd.wildcard, depth + 1)
+            if !streq(r, "") { return r }
+        }
+        j = j + 1
+    }
+    return own("")
+}
+
+// The declared type of `copy`'s operand, when known (a local, a parameter, or
+// a field path over one).
+func ownCopyCheck(_ env: inout OwnEnv, _ inner: Vec[Nd]) using Alloc {
+    var ty: Vec[Nd] = Vec.new()
+    let n = ownIdentName(inner)
+    if !streq(n, "") {
+        let li = ownFindIn(env.locName, n)
+        let pi = ownFindIn(env.pName, n)
+        if li >= 0 { ty.push(env.locTy.get(li) ?? Nd.wildcard) }
+        else if pi >= 0 { ty.push(env.pTy.get(pi) ?? Nd.wildcard) }
+    } else {
+        let fp = ownFieldPath(env, inner.get(0) ?? Nd.wildcard)
+        if fp.ok { ty = ndsCopyO(fp.ty) }
+    }
+    let t = ty.get(0) ?? Nd.wildcard
+    if ty.len() == 0 { return }
+    let why = ownNoCopy(env, t, 0)
+    if streq(why, "") { return }
+    var m: String = "can't `copy` a value of type "
+    m.append(typeSpelling(t))
+    m.append(": it ")
+    m.append(why)
+    m.append(", so it is never duplicated")
+    env.bad.push(m)
+}
+
+func ndsCopyO(_ xs: Vec[Nd]) using Alloc -> Vec[Nd] {
+    var out: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < xs.len() {
+        out.push(xs.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    return out
 }
 
 func ownCollectStatic(_ env: inout OwnEnv, _ name: String, _ ty: Vec[Nd]) using Alloc {
@@ -4830,6 +4951,7 @@ func ownExprLinear(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc -> Bool {
             case .call(let callee, let args): ownCallLinear(env, callee)
             case .ident(let n): ownLocalLinear(env, n)
             case .paren(let x): ownExprLinear(env, x)
+            case .prefixE(let kw, let x): streq(kw, "copy ") && ownExprLinear(env, x)
             default: false
         }
     }
@@ -4985,7 +5107,7 @@ func ownExpr(_ env: inout OwnEnv, _ e: Nd) using Alloc {
     match e {
         case .ident(let n): ownUse(env, n)
         case .call(let callee, let args): ownCall(env, callee, args)
-        case .prefixE(let kw, let inner): ownBoxed(env, inner)
+        case .prefixE(let kw, let inner): ownPrefix(env, kw, inner)
         case .paren(let x): ownBoxed(env, x)
         case .unary(let op, let x): ownBoxed(env, x)
         case .binary(let op, let l, let r): ownPair(env, l, r)
@@ -5000,6 +5122,11 @@ func ownExpr(_ env: inout OwnEnv, _ e: Nd) using Alloc {
         case .doCatchE(let db, let en, let et, let cb): ownPair(env, db, cb)
         default: noop()
     }
+}
+
+func ownPrefix(_ env: inout OwnEnv, _ kw: String, _ inner: Vec[Nd]) using Alloc {
+    ownBoxed(env, inner)
+    if streq(kw, "copy ") { ownCopyCheck(env, inner) }
 }
 
 func ownIndex(_ env: inout OwnEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc {
@@ -8834,6 +8961,7 @@ func main() -> Int32 {
                                       fieldName: Vec.new(), staticName: Vec.new(), staticTy: Vec.new(),
                                       pName: Vec.new(), pMode: Vec.new(), pTy: Vec.new(),
                                       locName: Vec.new(), locTy: Vec.new(), selfTy: "", borrows: Vec.new(),
+                                      deinitTys: Vec.new(), payOwner: Vec.new(), payTy: Vec.new(),
                                       fKeys: Vec.new(), fIds: Vec.new(), fStatic: Vec.new())
                     ownCheck(&oenv, u)
                     var o: Int = 0
