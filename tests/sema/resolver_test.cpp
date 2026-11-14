@@ -2926,3 +2926,12 @@ TEST_CASE("a @boot body can't call ordinary code: it holds only asm (§14.7)") {
     auto r = check_detail("func ordinary() { }\n@boot\nfunc start() using Asm {\n    ordinary()\n}\n");
     CHECK(r.first_message.find("may contain only asm") != std::string::npos);
 }
+
+TEST_CASE("a pointer's address is a UInt64, with no capability (F6)") {
+    CHECK(check_errors("static tbl: [4]UInt64 = [0, 0, 0, 0]\nfunc h() { }\n"
+                       "func a() -> UInt64 {\n    return (&tbl).address + (&h).address\n}\n")
+          == 0);
+    CHECK(check_detail("func a(_ x: UInt64) -> UInt64 {\n    return x.address\n}\n")
+              .first_message.find("no field or method 'address'")
+          != std::string::npos);
+}

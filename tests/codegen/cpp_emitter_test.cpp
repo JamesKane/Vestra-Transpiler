@@ -3431,3 +3431,12 @@ TEST_CASE("the Sysreg table's gated writes get the post-write barrier (F4)") {
     CHECK(f.out.header.find("inline void write_icc_sre_el1(std::uint64_t v) noexcept {")
           != std::string::npos);
 }
+
+TEST_CASE("p.address and @align on a static lower to C++ (F6)") {
+    SemaEmitFixture f("@align(4096) @noinit static l1: [512]UInt64\n"
+                      "func base() -> UInt64 {\n    return (&l1).address\n}\n");
+    CHECK(f.out.header.find("alignas(4096) inline std::array<std::uint64_t, 512> l1;")
+          != std::string::npos);
+    CHECK(f.out.source.find("static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>((&l1)))")
+          != std::string::npos);
+}

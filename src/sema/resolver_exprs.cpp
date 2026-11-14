@@ -503,6 +503,23 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
                                      "cells, not memory cells with a linkage symbol "
                                      "(§14.12.2)",
                                      mem.member));
+            } else if (auto qt = check_qualified_module_ref(mem); qt != nullptr) {
+                // §5 / §14.6.3 `&module.decl`: the address of an imported
+                // static or function, as for a local one.
+                const auto* sym = resolution_.symbol_of(a.inner.get());
+                if (sym != nullptr && sym->kind == SymbolKind::Static && !qt->is_error()) {
+                    resolution_.set_type(a.inner.get(), qt);
+                    t = types_->make_ptr(qt);
+                    break;
+                }
+                if (sym != nullptr && sym->kind == SymbolKind::Func && !qt->is_error()) {
+                    resolution_.set_type(a.inner.get(), qt);
+                    t = qt;
+                    break;
+                }
+                if (!qt->is_error()) {
+                    error_at(e.range, "&decl operand must be a static or func identifier");
+                }
             } else {
                 error_at(e.range, "&decl operand must be a static or func identifier");
             }

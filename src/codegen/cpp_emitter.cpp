@@ -107,6 +107,8 @@ struct LinkAttrs {
     std::string inline_mode;  // "always" / "never" / "hint"; empty when not set
     bool weak = false;
     bool noinit = false;
+    // §4 `@align(N)` on a static (a page table, a DMA buffer): `alignas(N)`.
+    std::int64_t align = 0;
     // §A8 (§14.5.2) — @interrupt marks a function as an ISR. v0.5
     // emits `[[gnu::used]]` so dead-code elimination doesn't drop a
     // handler that's only referenced from a hand-written vector
@@ -150,6 +152,8 @@ LinkAttrs read_link_attrs(const std::vector<ast::Attribute>& attrs) {
             out.weak = true;
         } else if (a.name == "noinit") {
             out.noinit = true;
+        } else if (a.name == "align") {
+            out.align = int_from_attr_arg(a.predicate.get());
         } else if (a.name == "interrupt") {
             out.interrupt = true;
         } else if (a.name == "boot" || a.name == "naked") {
@@ -797,6 +801,9 @@ void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl
         const auto& s = static_cast<const ast::StaticDecl&>(d);
         const auto la = read_link_attrs(s.attributes);
         emit_link_attr_prefix(hdr, la);
+        if (la.align > 0) {
+            hdr << "alignas(" << la.align << ") ";
+        }
         hdr << "inline ";
         if (s.type) {
             emit_type(hdr, *s.type);
@@ -3976,6 +3983,18 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 } else {
                     os << nominal_prefix(&enum_decl) << enum_decl.name << "::" << m.member;
                 }
+                break;
+            }
+        }
+        // §14.6.3 `p.address`: a pointer (or function pointer) as an integer.
+        if (resolution_ != nullptr && m.member == "address") {
+            auto bt = resolution_->type_of(m.base.get());
+            if (bt != nullptr
+                && (bt->kind() == sema::TypeKind::Ptr || bt->kind() == sema::TypeKind::MutPtr
+                    || bt->kind() == sema::TypeKind::Function)) {
+                os << "static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(";
+                emit_expr(os, *m.base);
+                os << "))";
                 break;
             }
         }

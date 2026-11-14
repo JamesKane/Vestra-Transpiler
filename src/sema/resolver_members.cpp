@@ -812,6 +812,15 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m, TypePtr expected) {
         return types_->make_optional(member_type);
     };
 
+    // §14.6.3 a pointer's address as an integer (F6): what a page-table
+    // descriptor, TTBR or VBAR holds. Reading it needs no capability, like
+    // taking the address (`&decl`); only dereferencing needs RawMemory.
+    // The inverse is `Ptr.unchecked(fromAddress:)`.
+    if (m.member == "address"
+        && (lookup_base->kind() == TypeKind::Ptr || lookup_base->kind() == TypeKind::MutPtr
+            || lookup_base->kind() == TypeKind::Function)) {
+        return finish(types_->primitive(TypeKind::UInt64));
+    }
     if (lookup_base->kind() == TypeKind::Vector && m.member == "length") {
         return finish(types_->primitive(TypeKind::Int));
     }

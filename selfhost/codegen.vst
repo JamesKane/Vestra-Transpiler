@@ -6098,7 +6098,26 @@ func emitOpaqueDecl(_ name: Str, _ under: Vec[Nd]) using Alloc, Log {
 func emitStaticDef(_ env: inout TyEnv, _ name: Str, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
     let attrs = ndsCopy(env.curAttrs)
     emitLinkPrefix(attrs)
+    // §4 `@align(N)` on a static -> `alignas(N)`, as the bootstrap emits.
+    let al = attrIntOf(attrs, "align")
+    if !streq(al, "") {
+        print("alignas(")
+        print(al)
+        print(") ")
+    }
     emitGlobalDefSym(env, "inline ", name, ty, value, attrStr(attrs, "symbol"))
+}
+
+// The integer argument of the last `@name(N)` among `attrs`, or "".
+func attrIntOf(_ attrs: Vec[Nd], _ name: Str) using Alloc -> String {
+    var out: String = ""
+    var i: Int = 0
+    while i < attrs.len() {
+        let a = attrs.get(i) ?? Nd.wildcard
+        if streq(attrNameOf(a), name) { out = attrArgInt(a) }
+        i = i + 1
+    }
+    return out
 }
 
 func emitGlobalDef(_ env: inout TyEnv, _ prefix: Str, _ name: Str, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {

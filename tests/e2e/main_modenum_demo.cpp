@@ -14,6 +14,7 @@ int main() {
     assert(demo::kern::caught(5) == 5);
     assert(demo::kern::caught(-1) == 1001);                         // catch (e: kern.ipc.No)
     assert(demo::kern::nested());                                   // k.domains[i].held across modules
+    assert(demo::kern::freshAddress() == reinterpret_cast<std::uintptr_t>(&kern::ipc::fresh));
     std::puts("modenum_demo OK");
     return 0;
 }

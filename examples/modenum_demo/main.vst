@@ -52,3 +52,8 @@ public func nested() -> Bool {
     let k = kern.ipc.fresh()
     return k.domains[0].alive && payloadOf(k.domains[1].held) == 999 && codeOf(k.last) == 2
 }
+
+// §14.6.3 the address of an imported function (`&module.decl`), as an integer.
+public func freshAddress() -> UInt64 {
+    return (&kern.ipc.fresh).address
+}
