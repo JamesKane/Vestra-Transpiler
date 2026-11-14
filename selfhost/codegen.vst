@@ -10487,14 +10487,54 @@ func tryEmitMapError(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) usi
     }
 }
 
+// A closure argument takes the receiver's error type as its parameter and
+// the enclosing function's error type as its result (a `try x.mapError(f)`
+// propagates into that `throws(E)`), the types the bootstrap's resolver
+// gives it; a function name or other value passes through.
 func emitMapErrorOn(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool, _ args: Vec[Nd]) using Alloc, Log -> Bool {
     if chain || !streq(name, "mapError") { return false }
     print("(")
     emitBoxed(env, base)
     print(").transform_error(")
-    emitArgList(env, args)
+    let a = args.get(0) ?? Nd.wildcard
+    let errBox = vecElemOrEmpty(baseCallThrows(env, base))
+    if argIsClosure(a) && errBox.len() > 0 && env.curThrowsNode.len() > 0 {
+        let res = elemBoxCopy(env.curThrowsNode)
+        emitClosureVal(env, argValue(a), errBox, res)
+    } else {
+        emitArgList(env, args)
+    }
     print(")")
     return true
+}
+
+// The `throws(E)` node of the function a call receiver names, or wildcard.
+func baseCallThrows(_ env: inout TyEnv, _ base: Vec[Nd]) using Alloc -> Nd {
+    if base.len() == 0 { return Nd.wildcard }
+    return match base.get(0) ?? Nd.wildcard {
+        case .call(let callee, let cargs): tyFuncThrows(env, exCalleeNameBoxed(callee))
+        default: Nd.wildcard
+    }
+}
+
+func vecElemOrEmpty(_ n: Nd) using Alloc -> Vec[Nd] {
+    var b: Vec[Nd] = Vec.new()
+    if !isWildcardNode(n) { b.push(n) }
+    return b
+}
+
+func argIsClosure(_ a: Nd) using Alloc -> Bool {
+    return match a {
+        case .arg(let label, let isInout, let val): valIsClosure(val)
+        default: false
+    }
+}
+
+func argValue(_ a: Nd) using Alloc -> Vec[Nd] {
+    return match a {
+        case .arg(let label, let isInout, let val): ndsCopy(val)
+        default: emptyNdBox()
+    }
 }
 
 // §5 a call through an imported-module qualifier. A Capitalized member is a
@@ -11377,18 +11417,32 @@ func emitArg(_ env: inout TyEnv, _ a: Nd) using Alloc, Log {
 // is a statement list whose final expression becomes the lambda's `return` (when
 // the closure yields a value); earlier statements emit inline, separated by the
 // `;\n` their normal emission already carries.
+// Each typed parameter registers at its type, and for the body the closure's
+// own result type stands in for the enclosing function's, so a value-position
+// match (or a leading dot) inside it types against the closure; the outer
+// result type is restored after.
 func emitClosure(_ env: inout TyEnv, _ cparams: Vec[Nd], _ body: Vec[Nd], _ ptypes: Vec[Nd], _ resTy: Vec[Nd]) using Alloc, Log {
     print("[&](")
     var i: Int = 0
     while i < cparams.len() {
         if i > 0 { print(", ") }
-        if i < ptypes.len() { emitType(ptypes.get(i) ?? Nd.wildcard) } else { print("auto") }
+        let pn = identName(cparams.get(i) ?? Nd.ident(""))
+        if i < ptypes.len() {
+            let pt = ptypes.get(i) ?? Nd.wildcard
+            tyAddSymSpelling(&env, pn, typeSpelling(pt))
+            emitType(pt)
+        } else {
+            print("auto")
+        }
         print(" ")
-        print(identName(cparams.get(i) ?? Nd.ident("")))
+        print(pn)
         i = i + 1
     }
     print(") { ")
+    let outer = elemBoxCopy(env.curRetNode)
+    if resTy.len() > 0 { tySetRetNode(&env, resTy) }
     emitClosureBody(env, body, resTy)
+    tySetRetNode(&env, outer)
     print(" }")
 }
 

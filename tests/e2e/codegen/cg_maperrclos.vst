@@ -1,0 +1,39 @@
+// §9 `.mapError` with a closure lowers to `.transform_error([&](E e) { ... })`:
+// the closure's parameter is the receiver call's error type, and its result
+// is the enclosing function's error type, so a value-position match in the
+// body types its lambda against that (not the function's own result). A
+// function name passes straight through.
+enum LowErr {
+    case empty
+    case tooBig
+}
+
+enum HighErr {
+    case wrapped
+    case fatal
+}
+
+func low(_ n: Int32) throws(LowErr) -> Int32 {
+    if n == 0 { throw LowErr.empty }
+    if n > 99 { throw LowErr.tooBig }
+    return n
+}
+
+func lift(_ e: LowErr) -> HighErr {
+    return HighErr.wrapped
+}
+
+func byName(_ n: Int32) throws(HighErr) -> Int32 {
+    return try low(n).mapError(lift)
+}
+
+func byMatch(_ n: Int32) throws(HighErr) -> Int32 {
+    return try low(n).mapError({ e => match e {
+        case .empty: HighErr.wrapped
+        case .tooBig: HighErr.fatal
+    } })
+}
+
+func byConst(_ n: Int32) throws(HighErr) -> Int32 {
+    return try low(n).mapError({ e => HighErr.fatal })
+}
