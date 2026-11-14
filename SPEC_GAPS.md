@@ -192,7 +192,6 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 |---|---|---|---|
 | §11 | A real concurrent runtime | divergent (v0.5) | Single-threaded cooperative scheduler. `parallel` runs its chunks sequentially (`cpp_emitter_prelude.cpp:144`). |
 | §11.2 | `parallel(over: world.chunks(8)) { slice in ... }` is an ordinary library function | divergent | It is a builtin, `parallel(data, chunks, body)`. The spec's trailing-closure form fails to parse. |
-| §11.2, §19.4 | The `parallel` body cannot leak its slice | unsound | `ch.send(slice)` inside the body is accepted. |
 | §11.1, §19.8 | `send` takes its argument by `sink` | unsound | `ch.send(b); return b.n` is accepted. A linear value sent on a channel still reports "never consumed". The prelude copies. |
 | §11.1 | Bounded channels | weaker | Unbounded. `Channel.new(capacity: 4)` is accepted, and the capacity is silently dropped. |
 | §11.1 | `select` send-when-ready arm | missing | "select event must be a Future[T] or a channel receive". |
