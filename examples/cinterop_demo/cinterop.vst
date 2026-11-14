@@ -17,6 +17,6 @@ import c "clib.h"
 @extern("C") func cdemo_value() -> Int32
 
 // Call the C function pulled in by the include.
-func answer() -> Int32 {
+func answer() using Extern -> Int32 {
     return cdemo_value()
 }

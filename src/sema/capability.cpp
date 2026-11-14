@@ -7,6 +7,7 @@
 #include "vestra/diag/diagnostic.hpp"
 #include "vestra/sema/resolver.hpp"
 
+#include <algorithm>
 #include <format>
 #include <string>
 #include <string_view>
@@ -338,9 +339,54 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
         // (clean / invalidate / cleanInvalidate / zero) and
         // publishInstructions all read or write memory through the
         // user-supplied Span range, so they're gated on RawMemory
-        // the same way the §A3 mints are. invalidateAllInstructions
-        // and the TLB ops act on architectural state alone, so they
-        // need only Asm (which v0.5 doesn't yet enforce).
+        // the same way the §A3 mints are. Every §14.10 intrinsic is an
+        // instruction sequence, so all of them need Asm as well (Annex
+        // §14.10: `using Asm` on each); `nop()` alone is ungated.
+        if (c.callee && c.callee->kind == ast::NodeKind::IdentExpr) {
+            static const std::unordered_set<std::string_view> asm_builtins = {
+                "memoryBarrier",
+                "syncBarrier",
+                "instructionBarrier",
+                "compilerFence",
+                "waitForInterrupt",
+                "waitForEvent",
+                "signalEvent",
+                "relax",
+                "cleanData",
+                "invalidateData",
+                "cleanInvalidateData",
+                "zeroData",
+                "publishInstructions",
+                "invalidateAllInstructions",
+                "tlbInvalidateAll",
+                "tlbInvalidatePage",
+                "tlbInvalidateAsid",
+            };
+            const auto& callee_id = static_cast<const ast::IdentExpr&>(*c.callee);
+            const auto* callee_sym = resolution_ != nullptr ? resolution_->symbol_of(c.callee.get())
+                                                            : nullptr;
+            const bool builtin = callee_sym == nullptr || callee_sym->decl == nullptr;
+            if (builtin && asm_builtins.contains(callee_id.name) && !in_scope("Asm")) {
+                missing_capability("Asm", c.range);
+            }
+        }
+        // §14.6 calling a foreign function (an `@extern` declaration with no
+        // Vestra body) is gated on Extern: it is outside every Vestra
+        // guarantee. An `@extern("C")` function *defined* in Vestra is still
+        // Vestra code, and calling it isn't.
+        if (c.callee && resolution_ != nullptr) {
+            const auto* sym = resolution_->symbol_of(c.callee.get());
+            if (sym != nullptr && sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Func) {
+                const auto& fd = static_cast<const ast::FuncDecl&>(*sym->decl);
+                const bool foreign = fd.body == nullptr
+                                     && std::ranges::any_of(fd.attributes, [](const ast::Attribute& at) {
+                                            return at.name == "extern";
+                                        });
+                if (foreign && !in_scope("Extern")) {
+                    missing_capability("Extern", c.range);
+                }
+            }
+        }
         if (c.callee && c.callee->kind == ast::NodeKind::IdentExpr) {
             static const std::unordered_set<std::string_view> raw_memory_builtins = {
                 "cleanData",

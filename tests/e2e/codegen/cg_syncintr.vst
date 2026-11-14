@@ -5,7 +5,7 @@
 // enumerator; spans, addresses and flags pass through.
 static gate: Atomic[UInt32] = 0
 
-func publish(_ v: UInt32) {
+func publish(_ v: UInt32) using Asm {
     gate.store(v, .release)
     memoryBarrier(.inner, .storeStore)
     syncBarrier(.full)
@@ -13,7 +13,7 @@ func publish(_ v: UInt32) {
     instructionBarrier()
 }
 
-func idle() {
+func idle() using Asm {
     relax()
     nop()
     signalEvent()
@@ -21,7 +21,7 @@ func idle() {
     waitForInterrupt()
 }
 
-func flush(_ src: Span[UInt8], _ dst: MutSpan[UInt8]) {
+func flush(_ src: Span[UInt8], _ dst: MutSpan[UInt8]) using Asm {
     with RawMemory {
         cleanData(src)
         invalidateData(src)
@@ -32,7 +32,7 @@ func flush(_ src: Span[UInt8], _ dst: MutSpan[UInt8]) {
     invalidateAllInstructions()
 }
 
-func shootdown(_ va: UInt64) {
+func shootdown(_ va: UInt64) using Asm {
     tlbInvalidateAll(.innerShareable)
     tlbInvalidatePage(va, true, .currentEL)
     tlbInvalidateAsid(3, .innerShareable)

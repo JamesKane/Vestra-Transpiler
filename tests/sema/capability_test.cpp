@@ -505,7 +505,7 @@ TEST_CASE("MmioWireView.at outside Mmio is rejected") {
 // ---- §A7 (§14.13) InterruptsOff region rules ------------------------------
 
 TEST_CASE("waitForInterrupt inside InterruptsOff is rejected") {
-    auto r = check("func bad() {\n"
+    auto r = check("func bad() using Asm {\n"
                    "    with InterruptsOff {\n"
                    "        waitForInterrupt()\n"
                    "    }\n"
@@ -516,7 +516,7 @@ TEST_CASE("waitForInterrupt inside InterruptsOff is rejected") {
 }
 
 TEST_CASE("waitForEvent inside InterruptsOff is rejected") {
-    auto r = check("func bad() {\n"
+    auto r = check("func bad() using Asm {\n"
                    "    with InterruptsOff {\n"
                    "        waitForEvent()\n"
                    "    }\n"
@@ -528,7 +528,7 @@ TEST_CASE("waitForEvent inside InterruptsOff is rejected") {
 TEST_CASE("Cpu.relax / nop inside InterruptsOff is admitted") {
     // Rule 5 names the rejected ops explicitly; everything else
     // pipeline-related (relax / nop / prefetch) stays admitted.
-    CHECK(check("func ok() {\n"
+    CHECK(check("func ok() using Asm {\n"
                 "    with InterruptsOff {\n"
                 "        relax()\n"
                 "        nop()\n"
@@ -561,8 +561,8 @@ TEST_CASE("InterruptsOff bare scope with no rule violations is clean") {
 
 TEST_CASE("invalidateAllInstructions + tlb ops don't require RawMemory") {
     // I-cache global + TLB ops act on architectural state alone —
-    // no memory range, no RawMemory gate.
-    CHECK(check("func ok() {\n"
+    // no memory range, no RawMemory gate (only Asm, like every intrinsic).
+    CHECK(check("func ok() using Asm {\n"
                 "    invalidateAllInstructions()\n"
                 "    tlbInvalidateAll(.innerShareable)\n"
                 "    tlbInvalidatePage(0x1000, false, .currentEL)\n"
@@ -957,4 +957,30 @@ TEST_CASE("an asm block needs Asm") {
     CHECK(r.first_message.find("missing capability 'Asm'") != std::string::npos);
     CHECK(check("func f() using Asm {\n    asm { \"nop\" }\n}\n").error_count == 0);
     CHECK(check("func f() {\n    with Asm {\n        asm { \"nop\" }\n    }\n}\n").error_count == 0);
+}
+
+// ---- §14 every unsafe gate (gaps #4) ------------------------------------------
+
+TEST_CASE("the §14.10 intrinsics need Asm; nop doesn't") {
+    auto r = check("func f() {\n    tlbInvalidateAll(.currentEL)\n}\n");
+    CHECK(r.first_message.find("missing capability 'Asm'") != std::string::npos);
+    CHECK(check("func f() {\n    memoryBarrier(.full, .full)\n}\n").error_count == 1);
+    CHECK(check("func f() {\n    compilerFence(.seqCst)\n}\n").error_count == 1);
+    CHECK(check("func f() {\n    nop()\n}\n").error_count == 0);
+    CHECK(check("func f() using Asm {\n    memoryBarrier(.full, .full)\n    relax()\n}\n").error_count
+          == 0);
+}
+
+TEST_CASE("calling a foreign @extern function needs Extern") {
+    const char* ext = "@extern(\"C\") @symbol(\"ext_f\") func extF(_ x: UInt64) -> UInt64\n";
+    auto r = check(std::string(ext) + "func f() -> UInt64 {\n    return extF(1)\n}\n");
+    CHECK(r.first_message.find("missing capability 'Extern'") != std::string::npos);
+    CHECK(check(std::string(ext) + "func f() -> UInt64 {\n    with Extern {\n        return extF(1)\n    }\n}\n")
+              .error_count
+          == 0);
+    // An @extern("C") function defined in Vestra is Vestra code.
+    CHECK(check("@extern(\"C\") @symbol(\"mine\") func mine(_ x: UInt64) -> UInt64 {\n    return x\n}\n"
+                "func f() -> UInt64 {\n    return mine(1)\n}\n")
+              .error_count
+          == 0);
 }

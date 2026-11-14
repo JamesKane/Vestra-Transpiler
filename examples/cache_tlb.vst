@@ -36,7 +36,7 @@ module examples.cache_tlb
 // Zero a byte buffer through the raw-mint + zeroData path. This
 // mirrors the kernel's `.bss` clear at boot: open RawMemory, mint
 // the pointer, derive the span, hand it to zeroData.
-func zero_at(_ addr: UInt64, _ n: Int) {
+func zero_at(_ addr: UInt64, _ n: Int) using Asm {
     with RawMemory {
         let p: MutPtr[UInt8] = MutPtr.unchecked(fromAddress: addr)
         let buf = MutSpan.raw(at: p, count: n)
@@ -48,7 +48,7 @@ func zero_at(_ addr: UInt64, _ n: Int) {
 // architectural so the runtime just confirms the calls don't
 // crash. The Span argument is the same one the cache lines would
 // operate on in a kernel build.
-func cycle_cache(_ addr: UInt64, _ n: Int) {
+func cycle_cache(_ addr: UInt64, _ n: Int) using Asm {
     with RawMemory {
         let p: Ptr[UInt8] = Ptr.unchecked(fromAddress: addr)
         let buf = Span.raw(at: p, count: n)
@@ -61,7 +61,7 @@ func cycle_cache(_ addr: UInt64, _ n: Int) {
 
 // The TLB + I-cache global ops — no RawMemory required since the
 // architectural state they touch is named, not memory-resident.
-func global_flush() {
+func global_flush() using Asm {
     invalidateAllInstructions()
     tlbInvalidateAll(.innerShareable)
     tlbInvalidatePage(0x1000, false, .currentEL)

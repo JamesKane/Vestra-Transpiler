@@ -40,21 +40,21 @@ static gate: Atomic[UInt32] = 0
 // implies the matching CPU barrier on every supported ISA) but
 // kernels often double-up under defense-in-depth; we keep the
 // idiom legal and let the runtime fold the duplicate at -O2.
-func release_with_barrier(_ v: UInt32) {
+func release_with_barrier(_ v: UInt32) using Asm {
     gate.store(v, .release)
     memoryBarrier(.full, .storeStore)
 }
 
 // A compiler fence by itself prevents the optimizer from reordering
 // across the call site without emitting a hardware barrier.
-func reorder_guard() {
+func reorder_guard() using Asm {
     compilerFence(.acqRel)
 }
 
 // Pipeline-hint smoke test. On a kernel build these emit `wfi`/`yield`/
 // `nop`; on the hosted CI they collapse to no-ops or a pause. The
 // runtime just checks the calls don't crash.
-func hint_chain() -> UInt32 {
+func hint_chain() using Asm -> UInt32 {
     relax()
     nop()
     signalEvent()
@@ -65,7 +65,7 @@ func hint_chain() -> UInt32 {
 // driver pattern is: write a sysreg → ISB → read a register that
 // depends on the new state. We model the shape here without the
 // sysreg piece (that lands in a later phase).
-func isb_chain(_ v: UInt32) -> UInt32 {
+func isb_chain(_ v: UInt32) using Asm -> UInt32 {
     gate.store(v, .release)
     instructionBarrier()
     return gate.load(.acquire)

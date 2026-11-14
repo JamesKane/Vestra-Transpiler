@@ -85,7 +85,7 @@ Subcommands:
                    profile (§15.5) is the build-time proof the
                    binary is libc-free.
         --safety : every site granting an unsafe capability
-                   (RawMemory / Asm / Mmio) via a `using` row or a
+                   (RawMemory / Asm / Mmio / Extern) via a `using` row or a
                    `with` block, and whether a `// Safety:` comment
                    justifies it (§6). Zero `safety:no` == every
                    unsafe grant is documented.
@@ -1104,7 +1104,7 @@ struct NoLibcAuditor {
 };
 
 // §6 safety-audit walker. Enumerates every site that grants an *unsafe*
-// capability — RawMemory / Asm / Mmio, the low-level rows whose discharges
+// capability — RawMemory / Asm / Mmio / Extern, the low-level rows whose discharges
 // bypass the safe model — through a function's `using` row or a `with` block,
 // and reports whether a `// Safety:` comment justifies it. Each finding is
 // `<file>:<line>:<col>: unsafe <Cap> [safety:{yes|no}]`. A pass with zero
@@ -1115,7 +1115,8 @@ struct SafetyAuditor {
     std::vector<std::string_view> lines;  // 1-based: lines[L-1] is source line L
 
     static bool is_unsafe_cap(std::string_view name) {
-        return name == "RawMemory" || name == "Asm" || name == "Mmio";
+        // §14: the four unsafe capabilities.
+        return name == "RawMemory" || name == "Asm" || name == "Mmio" || name == "Extern";
     }
 
     static std::string_view trim(std::string_view s) {

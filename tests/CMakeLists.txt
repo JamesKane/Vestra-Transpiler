@@ -2871,6 +2871,12 @@ foreach(prog cg_func cg_expr cg_stmt cg_if cg_for cg_struct cg_index cgh_struct 
         COMMAND sh -c "rm -rf ${cg_workdir}/compiles/${prog} && mkdir -p ${cg_workdir}/compiles/${prog} && $<TARGET_FILE:vestra> build ${cg_dir}/${prog}.vst -o ${cg_workdir}/compiles/${prog} >/dev/null && ${CMAKE_CXX_COMPILER} -std=c++26 -fsyntax-only -I${cg_workdir}/compiles/${prog} ${cg_workdir}/compiles/${prog}/${prog}.cpp")
 endforeach()
 
+# §14 `vestra audit --safety` lists Extern grants with the other unsafe ones.
+add_test(
+    NAME    e2e_audit_safety_extern
+    COMMAND $<TARGET_FILE:vestra> audit ${CMAKE_SOURCE_DIR}/examples/cinterop_demo/cinterop.vst --safety)
+set_tests_properties(e2e_audit_safety_extern PROPERTIES PASS_REGULAR_EXPRESSION "unsafe Extern")
+
 # §5 visibility: referencing a non-public (internal) decl of an imported module
 # must fail to resolve. `vestra check` is expected to exit non-zero.
 add_test(
