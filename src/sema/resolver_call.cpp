@@ -960,7 +960,11 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
                 error_at(c.args[0].value->range, "Box.new argument cannot have a label");
             }
             auto inner = check_expr(*c.args[0].value);
-            return types_->make_box(inner != nullptr ? inner : types_->error());
+            auto bx = types_->make_box(inner != nullptr ? inner : types_->error());
+            if (expected == nullptr || expected->kind() != TypeKind::Box) {
+                check_slot_holds(bx, c.range);  // an annotation reports its own type
+            }
+            return bx;
         }
         // §11 `Channel.new()` — mints a typed queue. The element type comes
         // from the expected `Channel[T]` (there is no value to infer from),

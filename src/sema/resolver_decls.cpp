@@ -117,6 +117,19 @@ void Resolver::check_decl(const ast::Decl& d) {
                 check_func(static_cast<const ast::FuncDecl&>(*m));
             }
         }
+        // §11.1 a Future can't outlive the scope that spawned it, so no
+        // struct stores one.
+        for (const auto& f : s.fields) {
+            if (f.type != nullptr && f.type->kind == ast::NodeKind::NamedType) {
+                const auto& n = static_cast<const ast::NamedType&>(*f.type);
+                if (n.path.size() == 1 && n.path[0] == "Future") {
+                    error_at(f.type->range,
+                             std::format("field '{}' would store a Future, which can't outlive "
+                                         "the scope that spawned it",
+                                         f.name));
+                }
+            }
+        }
         // §A6 (§6.8 / §14.11.4) `@repr(union)` validation. The struct
         // is re-emitted as a C++ union — its members overlay one
         // storage cell. v0.5 enforces two narrow rules:

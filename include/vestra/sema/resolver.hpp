@@ -330,6 +330,14 @@ private:
     // §4 a write to `target` (an assignment, an `&` argument to an `inout`
     // parameter, an `inout` method's receiver) needs a mutable root.
     void check_mutable_place(const ast::Expr& target, diag::SourceRange site);
+    // §19.4 a Span / MutSpan / Str, or anything holding one (a struct field,
+    // an Optional, an array, a tuple), can't outlive what it views.
+    [[nodiscard]] bool non_escapable(TypePtr t, int depth = 0) const;
+    [[nodiscard]] bool ast_non_escapable(const ast::Type* t, int depth) const;
+    // A heap or channel slot (`Box[T]`, `Channel[T]`) holding a
+    // non-escapable or Future value is an error at `r`.
+    void check_slot_holds(TypePtr slot, diag::SourceRange r);
+    std::unordered_set<std::size_t> slot_reported_;
 
     // §5/§18.4 partition provenance — if `init` is a `split(at:)` /
     // `chunks(of:)` call on a place, or a plain alias `let x = derived` of an

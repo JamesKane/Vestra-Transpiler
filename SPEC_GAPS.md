@@ -181,8 +181,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §10, §19.4 | `Span`/`MutSpan` cannot escape | unsound | Returning a span over a local array, storing one in a struct, and `Box[Span[Int32]]` are all accepted. The only escape check is on `spawn` params (`resolver_exprs.cpp:654`). |
-| §10, §19.4 | `Str` cannot escape, transitively through structs | unsound | `Box.new(Hold(t: t))` with `t: Str` is accepted. |
+| §10, §19.4 | `Span`/`MutSpan` cannot escape | unsound | Returning a span over a local array, and a struct holding one escaping, are accepted. (`Box` / `Channel` of a non-escapable type is rejected; `Vec[Str]` is still admitted because the builtin `split` and `args()` return one.) |
 | §10 | `Buffer[T]`, `Buffer(fixed:)` | missing | "undefined name". `Vec` is the substitute. |
 | §10, §11 | `Arc[T]` | missing | "undefined name". |
 | §10 | `StridedSpan[T]` | missing | "unknown type". |
@@ -197,8 +196,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 | §11.2, §19.4 | The `parallel` body cannot leak its slice | unsound | `ch.send(slice)` inside the body is accepted. |
 | §11.1, §19.8 | `send` takes its argument by `sink` | unsound | `ch.send(b); return b.n` is accepted. A linear value sent on a channel still reports "never consumed". The prelude copies. |
 | §11.1 | Bounded channels | weaker | Unbounded. `Channel.new(capacity: 4)` is accepted, and the capacity is silently dropped. |
-| §19.4 | A non-escapable value in a channel | unsound | `Channel[Span[Int32]]` plus `send(s)` is accepted. |
-| §11.1 | A future cannot escape its spawning scope | unsound | Returning a `Future` or storing one in a struct is accepted. Awaiting at scope exit does work (`~Future` pumps). |
+| §11.1 | A future cannot escape its spawning scope | unsound | Returning a `Future` is accepted. (Storing one in a struct field, a `Box` or a `Channel` is rejected.) Awaiting at scope exit does work (`~Future` pumps). |
 | §11.1 | `spawn` rejects non-escapable captures, transitively | unsound (partial) | A direct `Span` param is rejected. A struct holding a `Span` is not. |
 | §11.4 | No borrowed view live across `await` | unsound (partial) | Only `inout` params on an `async func` are rejected. A `Span` param or local used after an `await` passes. |
 | §11.1 | `select` send-when-ready arm | missing | "select event must be a Future[T] or a channel receive". |

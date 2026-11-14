@@ -1,0 +1,12 @@
+// §19.4 the heap and channels hold escapable values: a plain struct, a scalar,
+// a String, a StrConst.
+struct Plain {
+    var n: Int32
+    var s: String
+}
+func a() using Alloc, Async {
+    let ok: Box[Plain] = Box.new(Plain(n: 1, s: "a"))
+    let oc: Channel[Int32] = Channel.new()
+    let os: Channel[String] = Channel.new()
+    let b = Box.new(Plain(n: 2, s: "b"))
+}

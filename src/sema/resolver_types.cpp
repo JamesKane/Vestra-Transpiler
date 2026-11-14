@@ -51,8 +51,10 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
             // Recognized here before generic-symbol lookup so it never
             // needs to be in the user's symbol table.
             if (n.path[0] == "Box" && n.type_args.size() == 1) {
-                return types_->make_box(n.type_args[0] ? resolve_type(*n.type_args[0])
-                                                       : types_->error());
+                auto bx = types_->make_box(n.type_args[0] ? resolve_type(*n.type_args[0])
+                                                          : types_->error());
+                check_slot_holds(bx, t.range);
+                return bx;
             }
             // §11 Future[T] — a `spawn`-produced result handle. Spellable as
             // a type so a future can be bound (`let f: Future[Int32] = …`).
@@ -62,8 +64,10 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
             }
             // §11 Channel[T] — a typed queue (`send` / `recv`).
             if (n.path[0] == "Channel" && n.type_args.size() == 1) {
-                return types_->make_channel(n.type_args[0] ? resolve_type(*n.type_args[0])
-                                                           : types_->error());
+                auto ch = types_->make_channel(n.type_args[0] ? resolve_type(*n.type_args[0])
+                                                              : types_->error());
+                check_slot_holds(ch, t.range);
+                return ch;
             }
             // §18.5 Vec[T] — a growable, owned sequence (→ std::vector<T>).
             if (n.path[0] == "Vec" && n.type_args.size() == 1) {
@@ -463,6 +467,120 @@ TypePtr Resolver::lookup_field(TypePtr struct_type,
         }
     }
     return nullptr;
+}
+
+bool Resolver::non_escapable(TypePtr t, int depth) const {
+    if (t == nullptr || depth > 16) {
+        return false;
+    }
+    switch (t->kind()) {
+    case TypeKind::Span:
+    case TypeKind::MutSpan:
+    case TypeKind::Str:
+        return true;
+    case TypeKind::Optional:
+    case TypeKind::Vector:
+        return non_escapable(t->inner(), depth + 1);
+    case TypeKind::Tuple:
+        for (auto p : t->parts()) {
+            if (non_escapable(p, depth + 1)) {
+                return true;
+            }
+        }
+        return false;
+    case TypeKind::Struct: {
+        for (auto p : t->parts()) {  // a generic instance over a view
+            if (non_escapable(p, depth + 1)) {
+                return true;
+            }
+        }
+        const auto* d = t->nominal_decl();
+        if (d == nullptr || d->kind != ast::NodeKind::Struct) {
+            return false;
+        }
+        for (const auto& f : static_cast<const ast::StructDecl*>(d)->fields) {
+            if (auto ft = types_->member_type(f.type.get())) {
+                if (non_escapable(ft, depth + 1)) {
+                    return true;
+                }
+            } else if (ast_non_escapable(f.type.get(), depth + 1)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    default:
+        return false;
+    }
+}
+
+// A field's declared type, judged from its spelling (the unit's own structs
+// before their member types are recorded).
+bool Resolver::ast_non_escapable(const ast::Type* t, int depth) const {
+    if (t == nullptr || depth > 16) {
+        return false;
+    }
+    switch (t->kind) {
+    case ast::NodeKind::NamedType: {
+        const auto& n = static_cast<const ast::NamedType&>(*t);
+        if (n.path.size() == 1
+            && (n.path[0] == "Span" || n.path[0] == "MutSpan" || n.path[0] == "Str")) {
+            return true;
+        }
+        for (const auto& a : n.type_args) {
+            if (ast_non_escapable(a.get(), depth + 1)) {
+                return true;
+            }
+        }
+        if (n.path.size() == 1) {
+            if (const auto* sym = const_cast<ScopeStack&>(scopes_).global().lookup_local(n.path[0]);
+                sym != nullptr && sym->kind == SymbolKind::Struct && sym->decl != nullptr) {
+                for (const auto& f : static_cast<const ast::StructDecl*>(sym->decl)->fields) {
+                    if (ast_non_escapable(f.type.get(), depth + 1)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+    case ast::NodeKind::OptionalType:
+        return ast_non_escapable(static_cast<const ast::OptionalType&>(*t).inner.get(), depth + 1);
+    case ast::NodeKind::VectorType:
+        return ast_non_escapable(static_cast<const ast::VectorType&>(*t).element.get(), depth + 1);
+    case ast::NodeKind::TupleType:
+        for (const auto& el : static_cast<const ast::TupleType&>(*t).elements) {
+            if (ast_non_escapable(el.get(), depth + 1)) {
+                return true;
+            }
+        }
+        return false;
+    default:
+        return false;
+    }
+}
+
+void Resolver::check_slot_holds(TypePtr slot, diag::SourceRange r) {
+    if (slot == nullptr || slot->inner() == nullptr || !r.is_valid()
+        || !slot_reported_.insert(r.begin.offset).second) {
+        return;
+    }
+    auto inner = slot->inner();
+    const bool chan = slot->kind() == TypeKind::Channel;
+    if (inner->kind() == TypeKind::Future) {
+        error_at(r,
+                 std::format("{} would hold a Future, which can't outlive the scope that spawned "
+                             "it",
+                             slot->describe()));
+        return;
+    }
+    if (non_escapable(inner)) {
+        error_at(r,
+                 std::format("{} would {}: a Span, MutSpan or Str (or anything holding one) "
+                             "can't outlive what it views",
+                             slot->describe(),
+                             chan ? "carry a non-escapable value" : "put a non-escapable value on the heap"));
+    }
 }
 
 TypePtr Resolver::resolve_member_type_with_generics(const std::vector<ast::GenericParam>& generics,

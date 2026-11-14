@@ -1,0 +1,13 @@
+// §19.4 / §11.1 the heap and channels can't hold a non-escapable value (a Span,
+// MutSpan or Str, or a struct holding one), and nothing stores a Future.
+struct Hold {
+    var t: Str
+}
+struct Fut {
+    var f: Future[Int32]
+}
+func a(_ s: Span[Int32], _ t: Str) using Alloc, Async {
+    let b: Box[Span[Int32]] = Box.new(s)
+    let h = Box.new(Hold(t: t))
+    let ch: Channel[Str] = Channel.new()
+}

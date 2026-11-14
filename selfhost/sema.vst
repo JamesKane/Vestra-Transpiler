@@ -2952,6 +2952,7 @@ func addBuiltins(_ env: inout Env) using Alloc {
     addName(env, "MutPtr")
     addName(env, "Span")      // Annex §10.5 Span.raw / MutSpan.raw
     addName(env, "MutSpan")
+    addName(env, "Channel")   // §11 Channel.new
     addName(env, "String")
     addName(env, "Str")
     addName(env, "Box")
@@ -6900,7 +6901,7 @@ func tyCheckDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             tyCheckFuncAll(env, mods, name, params, r, b)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyCheckMethods(env, m)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyCheckStructD(env, fl, m)
         case .enumD(let vis, let name, let cs, let m, let generics): tyCheckMethods(env, m)
         case .constD(let vis, let name, let ty, let v): tyCheckConst(env, ty, v)
         default: noop()
@@ -7963,11 +7964,167 @@ func tyStmt(_ env: inout TyEnv, _ s: Nd) using Alloc {
 }
 
 func tyLetMu(_ env: inout TyEnv, _ p: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd], _ isVar: Bool) using Alloc {
+    if ty.len() > 0 { esSlot(env, tyAnnSpelling(ty)) }
+    else if esIsBoxNew(v) { esSlot(env, esBoxNewSp(env, v)) }
     tyLet(env, p, ty, v)
     muBind(env, p, isVar)
 }
 
 // A `for` element is a `let`, scoped to the body.
+// ----- §19.4 / §11.1 the type-level escape rules (the bootstrap's
+// check_slot_holds and the struct Future-field rule) ---------------------------
+func tyCheckStructD(_ env: inout TyEnv, _ fl: Vec[Nd], _ m: Vec[Nd]) using Alloc {
+    tyCheckMethods(env, m)
+    var i: Int = 0
+    while i < fl.len() {
+        match fl.get(i) ?? Nd.wildcard {
+            case .field(let k, let n, let t): esField(env, n, t)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func esField(_ env: inout TyEnv, _ n: String, _ t: Vec[Nd]) using Alloc {
+    if let tn = t.get(0) {
+        match tn {
+            case .named(let path, let g, let a): esFutureField(env, n, path)
+            default: noop()
+        }
+    }
+}
+
+func esFutureField(_ env: inout TyEnv, _ n: String, _ path: String) using Alloc {
+    if !streq(path, "Future") { return }
+    var m: String = "field '"
+    m.append(n)
+    m.append("' would store a Future, which can't outlive the scope that spawned it")
+    env.bad.push(m)
+}
+
+func esIsBoxNew(_ v: Vec[Nd]) -> Bool {
+    if let n = v.get(0) {
+        return match n {
+            case .call(let callee, let args): esCalleeIs(callee, "Box", "new")
+            default: false
+        }
+    }
+    return false
+}
+
+func esCalleeIs(_ callee: Vec[Nd], _ ns: Str, _ m: Str) -> Bool {
+    if let c = callee.get(0) {
+        return match c {
+            case .member(let base, let name, let ch): streq(name, m) && esIdentIs(base, ns)
+            default: false
+        }
+    }
+    return false
+}
+
+func esIdentIs(_ base: Vec[Nd], _ ns: Str) -> Bool {
+    if let b = base.get(0) {
+        return match b {
+            case .ident(let x): streq(x, ns)
+            default: false
+        }
+    }
+    return false
+}
+
+// "Box[<the argument's type>]" ("" when the argument's type is unknown).
+func esBoxNewSp(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc -> String {
+    if let n = v.get(0) {
+        return match n {
+            case .call(let callee, let args): esBoxOf(env, args)
+            default: own("")
+        }
+    }
+    return own("")
+}
+
+func esBoxOf(_ env: inout TyEnv, _ args: Vec[Nd]) using Alloc -> String {
+    if args.len() != 1 { return own("") }
+    let at = match args.get(0) ?? Nd.wildcard {
+        case .arg(let l, let io, let v): tyInferBoxed(env, v)
+        default: own("")
+    }
+    if streq(at, "") { return own("") }
+    var s: String = "Box["
+    s.append(at)
+    s.append("]")
+    return s
+}
+
+// A `Box[T]` / `Channel[T]` spelling whose T is a Future or non-escapable.
+func esSlot(_ env: inout TyEnv, _ sp: String) using Alloc {
+    let isBox = tyStartsWith(sp, "Box[")
+    let isChan = tyStartsWith(sp, "Channel[")
+    if !isBox && !isChan { return }
+    let inner = tyBracketInner(sp)
+    if tyStartsWith(inner, "Future[") {
+        var m = own(sp)
+        m.append(" would hold a Future, which can't outlive the scope that spawned it")
+        env.bad.push(m)
+        return
+    }
+    if !esNonEsc(env, inner, 0) { return }
+    var m = own(sp)
+    if isChan { m.append(" would carry a non-escapable value") } else { m.append(" would put a non-escapable value on the heap") }
+    m.append(": a Span, MutSpan or Str (or anything holding one) can't outlive what it views")
+    env.bad.push(m)
+}
+
+// Is a type spelling non-escapable: a Span / MutSpan / Str, or an Optional,
+// array, tuple, generic instance or struct holding one.
+func esNonEsc(_ env: inout TyEnv, _ sp0: Str, _ depth: Int) using Alloc -> Bool {
+    if depth > 16 { return false }
+    let sp = own(sp0)
+    let n = sp.len()
+    if n == 0 { return false }
+    if streq(sp, "Str") || tyStartsWith(sp, "Span[") || tyStartsWith(sp, "MutSpan[") { return true }
+    if (sp.byteAt(n - 1) ?? 0) == 63 { return esNonEsc(env, sp.slice(0, n - 1), depth + 1) }
+    if (sp.byteAt(0) ?? 0) == 91 {
+        var i: Int = 1
+        while i < n && (sp.byteAt(i) ?? 0) != 93 { i = i + 1 }
+        return esNonEsc(env, sp.slice(i + 1, n), depth + 1)
+    }
+    if (sp.byteAt(0) ?? 0) == 40 { return esAnyNonEsc(env, sp.slice(1, n - 1), depth) }
+    var b: Int = 0
+    while b < n && (sp.byteAt(b) ?? 0) != 91 { b = b + 1 }
+    if b < n && esAnyNonEsc(env, sp.slice(b + 1, n - 1), depth) { return true }
+    let base = own(sp.slice(0, b))
+    var f: Int = 0
+    while f < env.sFldStruct.len() {
+        if streq(env.sFldStruct.get(f) ?? own(""), base) && esNonEsc(env, env.sFldType.get(f) ?? own(""), depth + 1) { return true }
+        f = f + 1
+    }
+    return false
+}
+
+func tyTrimSp(_ s: Str) using Alloc -> String {
+    var a: Int = 0
+    while a < s.len() && (s.byteAt(a) ?? 0) == 32 { a = a + 1 }
+    return own(s.slice(a, s.len()))
+}
+
+func esAnyNonEsc(_ env: inout TyEnv, _ list: Str, _ depth: Int) using Alloc -> Bool {
+    var d: Int = 0
+    var start: Int = 0
+    var i: Int = 0
+    while i < list.len() {
+        let c = list.byteAt(i) ?? 0
+        if c == 91 || c == 40 { d = d + 1 }
+        if c == 93 || c == 41 { d = d - 1 }
+        if c == 44 && d == 0 {
+            if esNonEsc(env, tyTrimSp(list.slice(start, i)), depth + 1) { return true }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    return esNonEsc(env, tyTrimSp(list.slice(start, list.len())), depth + 1)
+}
+
 func tyForMu(_ env: inout TyEnv, _ pp: Vec[Nd], _ it: Vec[Nd], _ b: Vec[Nd]) using Alloc {
     tyBoxed(env, it)
     muEnter(env)
@@ -8281,6 +8438,9 @@ func tyCheckBinOp(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) 
     let lt = tyLitAdapt(tyInferBoxed(env, l), rt0, l, r)
     let rt = tyLitAdapt(rt0, lt, r, l)
     if streq(lt, "") || streq(rt, "") { return }
+    // §11 Duration arithmetic and comparison have their own rules (the
+    // resolver's Duration block); they aren't modelled here.
+    if streq(lt, "Duration") || streq(rt, "Duration") { return }
     if isLogOp(op) {
         if !streq(lt, "Bool") || !streq(rt, "Bool") { env.bad.push(tyLogMsg()) }
     } else if isArithOp(op) {
