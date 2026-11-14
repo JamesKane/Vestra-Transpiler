@@ -3380,3 +3380,41 @@ TEST_CASE("a -> Never function is declared [[noreturn]] (F9)") {
     CHECK(f.out.header.find("[[noreturn]] __vstr::Never halt();") != std::string::npos);
     CHECK(f.out.header.find("[[nodiscard]] std::int32_t g();") != std::string::npos);
 }
+
+TEST_CASE("asm lowers to GCC/Clang inline asm (§14.4)") {
+    SemaEmitFixture f("func named(_ x: UInt64) using Asm -> UInt64 {\n"
+                      "    var r: UInt64 = 0\n"
+                      "    asm(volatile: false, in: [x], out: [r], clobbers: [\"cc\"]) {\n"
+                      "        \"adds {r}, {x}, #1 // 100%\"\n"
+                      "        \"ld1 {{v0.16b}}, [{x}]\"\n"
+                      "    }\n"
+                      "    return r\n"
+                      "}\n"
+                      "func pinned(_ n: UInt64, _ a: UInt64) using Asm -> UInt64 {\n"
+                      "    var r: UInt64 = 0\n"
+                      "    asm(in: [\"x8\": n, \"x0\": a], out: [\"x0\": r]) { \"svc #0\" }\n"
+                      "    return r\n"
+                      "}\n"
+                      "func bump(_ n: inout UInt64) using Asm {\n"
+                      "    asm(inout: [n]) { \"add {n}, {n}, #1\" }\n"
+                      "}\n"
+                      "@naked\n"
+                      "func entry() using Asm -> Never {\n"
+                      "    asm { \"b entry\" }\n"
+                      "}\n");
+    CHECK(f.out.source.find("__asm__(\"adds %[r], %[x], #1 // 100%%\\n\\tld1 {v0.16b}, [%[x]]\" : "
+                            "[r] \"=&r\"(r) : [x] \"r\"(static_cast<std::uint64_t>(x)) : \"cc\");")
+          != std::string::npos);
+    CHECK(f.out.source.find("register std::uint64_t __vstr_asm_x8 __asm__(\"x8\") = n;")
+          != std::string::npos);
+    CHECK(f.out.source.find("register std::uint64_t __vstr_asm_x0 __asm__(\"x0\") = a;")
+          != std::string::npos);
+    CHECK(f.out.source.find("__asm__ volatile(\"svc #0\" : \"+r\"(__vstr_asm_x0) : "
+                            "\"r\"(__vstr_asm_x8));")
+          != std::string::npos);
+    CHECK(f.out.source.find("r = __vstr_asm_x0;") != std::string::npos);
+    CHECK(f.out.source.find("__asm__ volatile(\"add %[n], %[n], #1\" : [n] \"+r\"(n));")
+          != std::string::npos);
+    CHECK(f.out.header.find("[[gnu::naked]] [[noreturn]] __vstr::Never entry();") != std::string::npos);
+    CHECK(f.out.source.find("__asm__ volatile(\"b entry\");") != std::string::npos);
+}

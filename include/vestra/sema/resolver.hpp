@@ -184,6 +184,10 @@ private:
     void check_link_attributes(const std::vector<ast::Attribute>& attrs);
 
     void check_stmt(const ast::Stmt& s);
+    // §14.4 inline assembly: operands, template placeholders, register names.
+    void check_asm(const ast::AsmStmt& a);
+    // §14.7 a @naked (or @boot) body is operand-free asm only.
+    void check_naked_body(const ast::FuncDecl& f);
 
     // Compute and record an expression's type. `expected` is the type the
     // context wants — used for literal adaptation; pass nullptr when there

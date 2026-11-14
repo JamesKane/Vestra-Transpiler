@@ -150,7 +150,8 @@ LinkAttrs read_link_attrs(const std::vector<ast::Attribute>& attrs) {
             out.noinit = true;
         } else if (a.name == "interrupt") {
             out.interrupt = true;
-        } else if (a.name == "boot") {
+        } else if (a.name == "boot" || a.name == "naked") {
+            // §14.7 `@naked` on its own, or implied by `@boot`.
             out.boot = true;
         } else if (a.name == "stack_protector" && a.predicate != nullptr
                    && a.predicate->kind == ast::NodeKind::LeadingDotExpr) {

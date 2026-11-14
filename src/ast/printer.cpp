@@ -647,6 +647,45 @@ void Printer::print_stmt(std::ostream& os, const Stmt& s, int indent) {
         os << "\n";
         break;
     }
+    case NodeKind::AsmStmt: {
+        // Printed back in source form: labels in a fixed order.
+        const auto& a = static_cast<const AsmStmt&>(s);
+        os << "asm(volatile: " << (a.is_volatile ? "true" : "false");
+        auto ops = [&](std::string_view label, const std::vector<AsmOperand>& v) {
+            if (v.empty()) {
+                return;
+            }
+            os << ", " << label << ": [";
+            for (std::size_t i = 0; i < v.size(); ++i) {
+                if (i != 0) {
+                    os << ", ";
+                }
+                if (!v[i].reg.empty()) {
+                    os << "\"" << v[i].reg << "\": ";
+                } else {
+                    os << v[i].name << ": ";
+                }
+                print_expr(os, *v[i].value);
+            }
+            os << "]";
+        };
+        ops("in", a.inputs);
+        ops("out", a.outputs);
+        ops("inout", a.inouts);
+        if (!a.clobbers.empty()) {
+            os << ", clobbers: [";
+            for (std::size_t i = 0; i < a.clobbers.size(); ++i) {
+                os << (i != 0 ? ", " : "") << "\"" << a.clobbers[i] << "\"";
+            }
+            os << "]";
+        }
+        os << ") {";
+        for (const auto& l : a.lines) {
+            os << " \"" << l << "\"";
+        }
+        os << " }\n";
+        break;
+    }
     case NodeKind::WhileStmt: {
         const auto& w = static_cast<const WhileStmt&>(s);
         os << "while ";

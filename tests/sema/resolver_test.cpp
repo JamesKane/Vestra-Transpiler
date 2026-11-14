@@ -2816,3 +2816,46 @@ TEST_CASE("-> Never bodies that diverge are accepted (F9)") {
                        "}\n")
           == 0);
 }
+
+// ---- §14.4 inline asm --------------------------------------------------------
+
+TEST_CASE("asm operands, placeholders and volatility are checked") {
+    auto msg = [](const char* body) {
+        return check_detail(std::string("func f(_ k: UInt64, _ s: Str) using Asm {\n    var v: UInt64 = 0\n    ")
+                            + body + "\n}\n")
+            .first_message;
+    };
+    CHECK(msg("asm(in: [s]) { \"nop\" }").find("integer, Bool or pointer") != std::string::npos);
+    CHECK(msg("asm(out: [o: k + 1]) { \"nop\" }").find("must be a place") != std::string::npos);
+    CHECK(msg("asm(in: [k]) { \"mov x0, {nope}\" }").find("'{nope}', which is not a named operand")
+          != std::string::npos);
+    CHECK(msg("asm(in: [k]) { \"x }\" }").find("stray '}'") != std::string::npos);
+    CHECK(msg("asm(in: [k]) { \"x {k\" }").find("unclosed '{'") != std::string::npos);
+    CHECK(msg("asm(volatile: false, in: [k]) { \"nop\" }").find("non-volatile asm with no outputs")
+          != std::string::npos);
+    CHECK(msg("asm(in: [a: 1, a: 2]) { \"{a}\" }").find("duplicate asm operand name 'a'")
+          != std::string::npos);
+    CHECK(msg("asm(in: [\"x0\": k], out: [\"x0\": v, \"x0\": v]) { \"nop\" }")
+              .find("pinned twice")
+          != std::string::npos);
+    CHECK(msg("asm(in: [\"x0\": k], clobbers: [\"x0\"]) { \"nop\" }")
+              .find("both an operand and a clobber")
+          != std::string::npos);
+    // `{{` / `}}` are literal braces; a pinned register in and out is fine.
+    CHECK(check_errors("func f(_ k: UInt64) using Asm -> UInt64 {\n"
+                       "    var r: UInt64 = 0\n"
+                       "    asm(in: [\"x0\": k], out: [\"x0\": r]) { \"ld1 {{v0.16b}}, [x0]\" }\n"
+                       "    return r\n"
+                       "}\n")
+          == 0);
+}
+
+TEST_CASE("a @naked body holds only operand-free asm") {
+    CHECK(check_errors("@naked\nfunc f() using Asm -> Never {\n    asm { \"b f\" }\n}\n") == 0);
+    auto r = check_detail("@naked\nfunc f() using Asm {\n    var x: UInt64 = 1\n    asm(in: [x]) { \"nop\" }\n}\n");
+    CHECK(r.error_count == 2);
+    CHECK(r.first_message.find("may contain only asm") != std::string::npos);
+    CHECK(check_detail("@boot\nfunc g() using Asm {\n    asm(clobbers: [\"x0\"]) { \"nop\" }\n}\n")
+              .first_message.find("can't take operands or clobbers")
+          != std::string::npos);
+}

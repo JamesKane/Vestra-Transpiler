@@ -948,3 +948,13 @@ TEST_CASE("§18 args() requires Alloc (it allocates a Vec)") {
     CHECK(bad.first_message.find("missing capability 'Alloc'") != std::string::npos);
     CHECK(check("func count() using Alloc -> Int { return args().len() }\n").error_count == 0);
 }
+
+// ---- §14.4 inline asm --------------------------------------------------------
+
+TEST_CASE("an asm block needs Asm") {
+    auto r = check("func f() {\n    asm { \"nop\" }\n}\n");
+    CHECK(r.error_count == 1);
+    CHECK(r.first_message.find("missing capability 'Asm'") != std::string::npos);
+    CHECK(check("func f() using Asm {\n    asm { \"nop\" }\n}\n").error_count == 0);
+    CHECK(check("func f() {\n    with Asm {\n        asm { \"nop\" }\n    }\n}\n").error_count == 0);
+}

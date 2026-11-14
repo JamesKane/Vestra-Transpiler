@@ -2785,7 +2785,7 @@ foreach(triple aarch64-none-elf x86_64-none-elf riscv64-none-elf)
         set(fs_mode_${triple} "-fsyntax-only")
     endif()
 endforeach()
-foreach(probe "fs_a64|aarch64-none-elf|" "fs_x86|x86_64-none-elf|-minvpcid"
+foreach(probe "fs_a64|aarch64-none-elf|" "fs_asm|aarch64-none-elf|" "fs_x86|x86_64-none-elf|-minvpcid"
               "fs_rv|riscv64-none-elf|-march=rv64gc_zicbom_zicboz")
     string(REPLACE "|" ";" parts "${probe}")
     list(GET parts 0 prog)
@@ -2806,6 +2806,31 @@ add_test(
     COMMAND sh -c "rm -rf ${fs_workdir}/wrongarch && $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/examples/sysreg.vst --no-libc -o ${fs_workdir}/wrongarch >/dev/null && ${CMAKE_CXX_COMPILER} --target=x86_64-none-elf ${fs_flags_str} -fsyntax-only -I${fs_workdir}/wrongarch ${fs_workdir}/wrongarch/sysreg.cpp -o ${fs_workdir}/wrongarch/sysreg.o 2>&1; true")
 set_tests_properties(e2e_freestanding_wrong_arch_sysreg PROPERTIES
     PASS_REGULAR_EXPRESSION "sctlr_el1 is an aarch64 register")
+
+# §14.4 inline asm, run: examples/asm_demo uses unprivileged aarch64
+# instructions only, so on an aarch64 host it builds hosted and executes.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
+    set(e2e_asm_out ${e2e_workdir}/_asm_demo)
+    add_test(
+        NAME    e2e_asm_demo_transpile
+        COMMAND $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/examples/asm_demo/asm_demo.vst -o ${e2e_asm_out})
+    add_test(
+        NAME    e2e_asm_demo_compile
+        COMMAND ${CMAKE_CXX_COMPILER} -std=c++26 -Wall -Wextra -O2 -I${e2e_asm_out}
+                ${CMAKE_SOURCE_DIR}/tests/e2e/main_asm_demo.cpp ${e2e_asm_out}/asm_demo.cpp
+                -o ${e2e_asm_out}/asm_demo_app)
+    set_tests_properties(e2e_asm_demo_compile PROPERTIES DEPENDS e2e_asm_demo_transpile)
+    add_test(NAME e2e_asm_demo_run COMMAND ${e2e_asm_out}/asm_demo_app)
+    set_tests_properties(e2e_asm_demo_run PROPERTIES
+        DEPENDS e2e_asm_demo_compile PASS_REGULAR_EXPRESSION "asm_demo OK")
+endif()
+
+# §14.4 a pinned register or clobber is checked against the --target ISA.
+add_test(
+    NAME    e2e_asm_bad_register
+    COMMAND sh -c "printf 'func f(_ v: UInt64) using Asm {\\n    asm(in: [\\\"rax\\\": v], clobbers: [\\\"x31\\\"]) { \\\"nop\\\" }\\n}\\n' > ${e2e_workdir}/asm_badreg.vst && $<TARGET_FILE:vestra> build ${e2e_workdir}/asm_badreg.vst --target=aarch64 -o ${e2e_workdir}/_asm_badreg 2>&1; true")
+set_tests_properties(e2e_asm_bad_register PROPERTIES
+    PASS_REGULAR_EXPRESSION "'rax' is not a register on aarch64.*'x31' is not a register on aarch64")
 
 # §5 visibility: referencing a non-public (internal) decl of an imported module
 # must fail to resolve. `vestra check` is expected to exit non-zero.

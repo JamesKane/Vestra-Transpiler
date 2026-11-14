@@ -156,6 +156,21 @@ void CapabilityChecker::check_stmt(const ast::Stmt& s) {
         scopes_.pop_back();
         break;
     }
+    case ast::NodeKind::AsmStmt: {
+        // §14.4 an asm block is gated on Asm.
+        const auto& a = static_cast<const ast::AsmStmt&>(s);
+        if (!in_scope("Asm")) {
+            missing_capability("Asm", a.range);
+        }
+        for (const auto* ops : {&a.inputs, &a.outputs, &a.inouts}) {
+            for (const auto& op : *ops) {
+                if (op.value) {
+                    check_expr(*op.value);
+                }
+            }
+        }
+        break;
+    }
     case ast::NodeKind::BreakStmt:
     case ast::NodeKind::ContinueStmt:
         break;

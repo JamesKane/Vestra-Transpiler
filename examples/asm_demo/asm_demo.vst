@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §14.4 inline assembly, on unprivileged aarch64 instructions so the program
+// runs hosted. Named operands are `{name}` in the template; a string key pins
+// an operand to a register; `inout:` is read and written; `{{` is a brace.
+module examples.asm_demo
+
+public func byteSwap(_ x: UInt64) using Asm -> UInt64 {
+    var r: UInt64 = 0
+    asm(volatile: false, in: [x], out: [r]) { "rev {r}, {x}" }
+    return r
+}
+
+public func addThenDouble(_ a: UInt64, _ b: UInt64) using Asm -> UInt64 {
+    var sum: UInt64 = 0
+    asm(volatile: false, in: [a, b], out: [s: sum]) {
+        "add {s}, {a}, {b}"
+        "lsl {s}, {s}, #1"
+    }
+    return sum
+}
+
+public func viaPinned(_ v: UInt64) using Asm -> UInt64 {
+    var out: UInt64 = 0
+    asm(in: ["x9": v], out: ["x10": out], clobbers: ["cc"]) {
+        "adds x10, x9, #7"
+    }
+    return out
+}
+
+public func increment(_ n: inout UInt64) using Asm {
+    asm(inout: [n]) { "add {n}, {n}, #1" }
+}
+
+public func splitHalves(_ x: UInt64) using Asm -> UInt64 {
+    var lo: UInt64 = 0
+    var hi: UInt64 = 0
+    asm(volatile: false, in: [x], out: [lo, hi]) {
+        "and {lo}, {x}, #0xffffffff"
+        "lsr {hi}, {x}, #32"
+    }
+    return hi - lo
+}
+
+public func percent(_ x: UInt64) using Asm -> UInt64 {
+    var r: UInt64 = 0
+    // A literal `%` (here in a comment) and a literal brace pass through.
+    asm(volatile: false, in: [x], out: [r]) {
+        "mov {r}, {x} // 100% {{kept}}"
+    }
+    return r
+}

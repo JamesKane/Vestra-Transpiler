@@ -95,6 +95,12 @@ std::unique_ptr<ast::BlockExpr> Parser::parse_block_expr() {
 ast::StmtPtr Parser::parse_statement() {
     auto start = peek().range;
     auto kind = peek().kind;
+    // §14.4 `asm` is contextual: an identifier `asm` opening a statement and
+    // followed by `(` or `{` (the Annex reserves no new words).
+    if (kind == TokenKind::Identifier && peek().lexeme == "asm"
+        && (peek(1).kind == TokenKind::LParen || peek(1).kind == TokenKind::LBrace)) {
+        return parse_asm_stmt();
+    }
     switch (kind) {
     case TokenKind::KwLet: {
         advance();
@@ -233,6 +239,133 @@ ast::StmtPtr Parser::parse_statement() {
     e->expr = std::move(expr);
     e->range = merge(start, last_range());
     return e;
+}
+
+// §14.4 `asm(volatile: B, in: [...], out: [...], inout: [...], clobbers: [...]) {
+//     "instruction" ... }`. Each label at most once, in any order; the parens
+// are optional when there is nothing to say. Operand entries:
+//   name           — a named operand bound to the variable `name`
+//   name: expr     — a named operand bound to `expr`
+//   "reg": expr    — `expr` pinned to the register `reg`
+ast::StmtPtr Parser::parse_asm_stmt() {
+    auto start = peek().range;
+    advance();  // `asm`
+    auto a = std::make_unique<ast::AsmStmt>();
+    if (match(TokenKind::LParen)) {
+        std::vector<std::string_view> seen;
+        skip_newlines();
+        while (!check(TokenKind::RParen) && !at_end()) {
+            const auto label_tok = peek();
+            const std::string_view label = label_tok.lexeme;
+            advance();
+            expect(TokenKind::Colon, "':' after an asm label");
+            for (auto s : seen) {
+                if (s == label) {
+                    emit_error(label_tok.range, std::format("duplicate asm label '{}'", label));
+                }
+            }
+            seen.push_back(label);
+            if (label == "volatile") {
+                a->volatile_written = true;
+                if (check(TokenKind::KwTrue) || check(TokenKind::KwFalse)) {
+                    a->is_volatile = advance().kind == TokenKind::KwTrue;
+                } else {
+                    emit_error(peek().range, "asm 'volatile:' expects true or false");
+                    advance();
+                }
+            } else if (label == "in") {
+                parse_asm_operands(a->inputs, false);
+            } else if (label == "out") {
+                parse_asm_operands(a->outputs, true);
+            } else if (label == "inout") {
+                parse_asm_operands(a->inouts, true);
+            } else if (label == "clobbers") {
+                expect(TokenKind::LBracket, "'[' to open the asm clobber list");
+                skip_newlines();
+                while (!check(TokenKind::RBracket) && !at_end()) {
+                    if (check(TokenKind::StringLit)) {
+                        const auto& t = advance();
+                        a->clobbers.emplace_back(t.lexeme.substr(1, t.lexeme.size() - 2));
+                        a->clobber_ranges.push_back(t.range);
+                    } else {
+                        emit_error(peek().range, "an asm clobber is a string: a register, \"memory\" or \"cc\"");
+                        advance();
+                    }
+                    skip_newlines();
+                    if (!match(TokenKind::Comma)) {
+                        break;
+                    }
+                    skip_newlines();
+                }
+                skip_newlines();
+                expect(TokenKind::RBracket, "']' to close the asm clobber list");
+            } else {
+                emit_error(label_tok.range,
+                         std::format("unknown asm label '{}'; expected volatile, in, out, inout "
+                                     "or clobbers",
+                                     label));
+            }
+            skip_newlines();
+            if (!match(TokenKind::Comma)) {
+                break;
+            }
+            skip_newlines();
+        }
+        expect(TokenKind::RParen, "')' to close the asm arguments");
+    }
+    expect(TokenKind::LBrace, "'{' to open the asm template");
+    skip_newlines();
+    while (!check(TokenKind::RBrace) && !at_end()) {
+        if (check(TokenKind::StringLit)) {
+            const auto& t = advance();
+            a->lines.emplace_back(t.lexeme.substr(1, t.lexeme.size() - 2));
+            a->line_ranges.push_back(t.range);
+        } else {
+            emit_error(peek().range, "an asm template holds only string literals, one instruction each");
+            advance();
+        }
+        skip_newlines();
+    }
+    expect(TokenKind::RBrace, "'}' to close the asm template");
+    a->range = merge(start, last_range());
+    return a;
+}
+
+bool Parser::parse_asm_operands(std::vector<ast::AsmOperand>& out, bool /*place*/) {
+    expect(TokenKind::LBracket, "'[' to open an asm operand list");
+    skip_newlines();
+    while (!check(TokenKind::RBracket) && !at_end()) {
+        ast::AsmOperand op;
+        auto start = peek().range;
+        if (check(TokenKind::StringLit) && peek(1).kind == TokenKind::Colon) {
+            const auto& t = advance();
+            op.reg = std::string{t.lexeme.substr(1, t.lexeme.size() - 2)};
+            advance();  // ':'
+            op.value = parse_expr();
+        } else if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Colon) {
+            op.name = std::string{advance().lexeme};
+            advance();  // ':'
+            op.value = parse_expr();
+        } else {
+            op.value = parse_expr();
+            if (op.value && op.value->kind == ast::NodeKind::IdentExpr) {
+                op.name = static_cast<const ast::IdentExpr&>(*op.value).name;
+            } else {
+                emit_error(start,
+                         "an asm operand needs a name: write `name: expr` (used as {name}), or "
+                         "pin it with `\"reg\": expr`");
+            }
+        }
+        op.range = merge(start, last_range());
+        out.push_back(std::move(op));
+        skip_newlines();
+        if (!match(TokenKind::Comma)) {
+            break;
+        }
+        skip_newlines();
+    }
+    skip_newlines();
+    return expect(TokenKind::RBracket, "']' to close an asm operand list");
 }
 
 }  // namespace vestra::parse

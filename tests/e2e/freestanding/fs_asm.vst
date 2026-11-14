@@ -1,0 +1,40 @@
+// §14.4 / §14.7 freestanding asm probe (aarch64): a @naked entry with no
+// prologue, system registers Sysreg doesn't name read and written through asm,
+// and an SVC with arguments pinned to x8 / x0..x2 and results from x0..x1.
+@naked @section(".text.boot") @symbol("_start")
+func start() using Asm -> Never {
+    asm {
+        "msr daifset, #0xf"
+        "adrp x1, __stack_top"
+        "add x1, x1, :lo12:__stack_top"
+        "mov sp, x1"
+        "b kmain"
+    }
+}
+
+func iccAck() using Asm -> UInt64 {
+    var intid: UInt64 = 0
+    asm(out: [intid]) {
+        "mrs {intid}, icc_iar1_el1"
+        "dsb sy"
+    }
+    return intid
+}
+
+func cntpArm(_ ticks: UInt64) using Asm {
+    asm(in: [ticks], clobbers: ["x1", "memory"]) {
+        "msr cntp_tval_el0, {ticks}"
+        "mov x1, #1"
+        "msr cntp_ctl_el0, x1"
+        "isb"
+    }
+}
+
+func syscall(_ n: UInt64, _ a: UInt64, _ b: UInt64, _ c: UInt64) using Asm -> UInt64 {
+    var r0: UInt64 = 0
+    var r1: UInt64 = 0
+    asm(in: ["x8": n, "x0": a, "x1": b, "x2": c], out: ["x0": r0, "x1": r1], clobbers: ["memory"]) {
+        "svc #0"
+    }
+    return r0 + r1
+}

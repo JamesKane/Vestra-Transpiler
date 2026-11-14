@@ -68,6 +68,8 @@ private:
     void
     emit_unit_throws_return(std::ostream& os, const ast::FuncDecl& f, const ast::BlockExpr& blk);
     static bool is_unit_result(const ast::FuncDecl& f);
+    // §14.4 an asm statement, as GCC/Clang extended (or basic) asm.
+    void emit_asm(std::ostream& os, const ast::AsmStmt& a, int indent);
     static bool is_never_result(const ast::FuncDecl& f);
     bool is_unit_typed(const ast::Expr& e) const;
     void emit_struct(std::ostream& hdr, const ast::StructDecl& s);

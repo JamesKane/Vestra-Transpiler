@@ -14,6 +14,7 @@
 
 #include "resolver_internal.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <format>
@@ -658,6 +659,8 @@ void Resolver::check_func(const ast::FuncDecl& f) {
     auto saved_infer = std::move(do_catch_infer_stack_);
     do_catch_infer_stack_.clear();
 
+    check_naked_body(f);
+
     // The body is always a BlockExpr; pass the expected result as the context.
     TypePtr body_type = types_->unit();
     if (f.body->kind == ast::NodeKind::BlockExpr) {
@@ -686,7 +689,13 @@ void Resolver::check_func(const ast::FuncDecl& f) {
     // §4 a `-> Never` function must not return at all: an explicit `return`
     // is a type error above, and falling off the end of the body is caught
     // here (F9). The C++ side is `[[noreturn]]`, so this is UB otherwise.
-    if (expected_result != nullptr && expected_result->is_never() && !expr_diverges(*f.body)) {
+    // A @naked / @boot body is asm the compiler can't see through (its final
+    // branch is how it leaves), so it isn't held to this.
+    const bool naked_body = std::ranges::any_of(f.attributes, [](const ast::Attribute& at) {
+        return at.name == "naked" || at.name == "boot";
+    });
+    if (expected_result != nullptr && expected_result->is_never() && !naked_body
+        && !expr_diverges(*f.body)) {
         error_at(f.body->range,
                  std::format("function '{}' returns Never but its body can complete normally; "
                              "end it with a call to a Never function, `panic(...)`, or a loop "
@@ -831,6 +840,221 @@ TypePtr Resolver::check_block_expr(const ast::BlockExpr& b, TypePtr expected) {
     return last;
 }
 
+namespace {
+
+// §14.4 the register names a pinned operand or clobber may use, per target.
+// Only checked when --target names an architecture; a host build can't know
+// which assembler it will meet.
+bool is_register_name(std::string_view arch, std::string_view r) {
+    auto numbered = [&](std::string_view prefix, int lo, int hi) {
+        if (!r.starts_with(prefix) || r.size() == prefix.size()) {
+            return false;
+        }
+        int n = 0;
+        for (char c : r.substr(prefix.size())) {
+            if (c < '0' || c > '9') {
+                return false;
+            }
+            n = n * 10 + (c - '0');
+        }
+        return n >= lo && n <= hi && !(r.size() > prefix.size() + 1 && r[prefix.size()] == '0');
+    };
+    auto one_of = [&](std::initializer_list<std::string_view> names) {
+        for (auto n : names) {
+            if (r == n) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (arch == "aarch64") {
+        return numbered("x", 0, 30) || numbered("w", 0, 30) || numbered("v", 0, 31)
+               || numbered("q", 0, 31) || numbered("d", 0, 31) || numbered("s", 0, 31)
+               || numbered("h", 0, 31) || numbered("b", 0, 31) || one_of({"sp", "fp", "lr"});
+    }
+    if (arch == "x86_64") {
+        return one_of({"rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "eax", "ebx",
+                       "ecx", "edx", "esi", "edi", "ebp", "esp", "ax", "bx", "cx", "dx", "al",
+                       "bl", "cl", "dl"})
+               || numbered("r", 8, 15) || numbered("xmm", 0, 31) || numbered("ymm", 0, 31)
+               || numbered("zmm", 0, 31) || numbered("k", 0, 7);
+    }
+    if (arch == "riscv64") {
+        return numbered("x", 0, 31) || numbered("f", 0, 31) || numbered("t", 0, 6)
+               || numbered("s", 0, 11) || numbered("a", 0, 7) || numbered("ft", 0, 11)
+               || numbered("fs", 0, 11) || numbered("fa", 0, 7)
+               || one_of({"zero", "ra", "sp", "gp", "tp", "fp"});
+    }
+    return true;
+}
+
+bool is_asm_operand_type(const TypePtr& t) {
+    if (t == nullptr || t->is_error()) {
+        return true;  // already diagnosed
+    }
+    if (t->kind() == TypeKind::Int128 || t->kind() == TypeKind::UInt128) {
+        return false;  // wider than any one general register
+    }
+    return t->is_integer() || t->kind() == TypeKind::Bool || t->kind() == TypeKind::Ptr
+           || t->kind() == TypeKind::MutPtr;
+}
+
+bool is_place_expr(const ast::Expr& e) {
+    switch (e.kind) {
+    case ast::NodeKind::IdentExpr:
+        return true;
+    case ast::NodeKind::MemberExpr:
+        return is_place_expr(*static_cast<const ast::MemberExpr&>(e).base);
+    case ast::NodeKind::IndexExpr:
+        return is_place_expr(*static_cast<const ast::IndexExpr&>(e).base);
+    default:
+        return false;
+    }
+}
+
+}  // namespace
+
+void Resolver::check_asm(const ast::AsmStmt& a) {
+    std::vector<std::string_view> names;
+    std::vector<std::string_view> in_regs;
+    std::vector<std::string_view> out_regs;
+    const std::string_view arch = target_.arch;
+    auto check_reg = [&](std::string_view reg, diag::SourceRange r) {
+        if (!is_register_name(arch, reg)) {
+            error_at(r, std::format("'{}' is not a register on {}", reg, arch));
+        }
+    };
+    auto add_name = [&](const ast::AsmOperand& op) {
+        for (auto n : names) {
+            if (n == op.name) {
+                error_at(op.range, std::format("duplicate asm operand name '{}'", op.name));
+                return;
+            }
+        }
+        names.push_back(op.name);
+    };
+    auto check_operand = [&](const ast::AsmOperand& op, bool place, std::vector<std::string_view>& regs) {
+        TypePtr t = op.value ? check_expr(*op.value) : nullptr;
+        if (!is_asm_operand_type(t)) {
+            error_at(op.range,
+                     std::format("an asm operand is an integer, Bool or pointer value; got {}",
+                                 t->describe()));
+        }
+        if (place && op.value && !is_place_expr(*op.value)) {
+            error_at(op.range, "an asm output must be a place (a variable, field or element)");
+        }
+        if (!op.reg.empty()) {
+            check_reg(op.reg, op.range);
+            for (auto r : regs) {
+                if (r == op.reg) {
+                    error_at(op.range, std::format("register '{}' is pinned twice", op.reg));
+                }
+            }
+            regs.push_back(op.reg);
+        } else if (!op.name.empty()) {
+            add_name(op);
+        }
+    };
+    for (const auto& op : a.inputs) {
+        check_operand(op, false, in_regs);
+    }
+    for (const auto& op : a.outputs) {
+        check_operand(op, true, out_regs);
+    }
+    for (const auto& op : a.inouts) {
+        check_operand(op, true, out_regs);
+        // An inout pin is an input pin too.
+        if (!op.reg.empty()) {
+            for (auto r : in_regs) {
+                if (r == op.reg) {
+                    error_at(op.range, std::format("register '{}' is pinned twice", op.reg));
+                }
+            }
+        }
+    }
+    for (std::size_t i = 0; i < a.clobbers.size(); ++i) {
+        const auto& c = a.clobbers[i];
+        if (c == "memory" || c == "cc") {
+            continue;
+        }
+        check_reg(c, a.clobber_ranges[i]);
+        for (const auto* regs : {&in_regs, &out_regs}) {
+            for (auto r : *regs) {
+                if (r == c) {
+                    error_at(a.clobber_ranges[i],
+                             std::format("register '{}' is both an operand and a clobber", c));
+                }
+            }
+        }
+    }
+    if (a.volatile_written && !a.is_volatile && a.outputs.empty() && a.inouts.empty()) {
+        error_at(a.range,
+                 "a non-volatile asm with no outputs has no effect the compiler can see and may "
+                 "be deleted; drop `volatile: false` or give it an output");
+    }
+    // Template placeholders: `{name}` names an operand; `{{` / `}}` are braces.
+    for (std::size_t li = 0; li < a.lines.size(); ++li) {
+        const std::string_view line = a.lines[li];
+        for (std::size_t i = 0; i < line.size(); ++i) {
+            if (line[i] == '{') {
+                if (i + 1 < line.size() && line[i + 1] == '{') {
+                    ++i;
+                    continue;
+                }
+                auto close = line.find('}', i + 1);
+                if (close == std::string_view::npos) {
+                    error_at(a.line_ranges[li], "unclosed '{' in asm template; write '{{' for a literal brace");
+                    break;
+                }
+                const auto name = line.substr(i + 1, close - i - 1);
+                bool found = false;
+                for (auto n : names) {
+                    found = found || n == name;
+                }
+                if (!found) {
+                    error_at(a.line_ranges[li],
+                             std::format("asm template names '{{{}}}', which is not a named operand "
+                                         "(write '{{{{' for a literal brace)",
+                                         name));
+                }
+                i = close;
+            } else if (line[i] == '}') {
+                if (i + 1 < line.size() && line[i + 1] == '}') {
+                    ++i;
+                    continue;
+                }
+                error_at(a.line_ranges[li], "stray '}' in asm template; write '}}' for a literal brace");
+            }
+        }
+    }
+}
+
+void Resolver::check_naked_body(const ast::FuncDecl& f) {
+    const bool naked = std::ranges::any_of(f.attributes, [](const ast::Attribute& at) {
+        return at.name == "naked" || at.name == "boot";
+    });
+    if (!naked || f.body == nullptr || f.body->kind != ast::NodeKind::BlockExpr) {
+        return;
+    }
+    for (const auto& s : static_cast<const ast::BlockExpr&>(*f.body).stmts) {
+        if (s->kind == ast::NodeKind::AsmStmt) {
+            const auto& a = static_cast<const ast::AsmStmt&>(*s);
+            if (a.inputs.empty() && a.outputs.empty() && a.inouts.empty() && a.clobbers.empty()) {
+                continue;
+            }
+            error_at(s->range,
+                     std::format("'{}' is @naked: its asm can't take operands or clobbers (there "
+                                 "is no prologue to set them up); name registers directly",
+                                 f.name));
+            continue;
+        }
+        error_at(s->range,
+                 std::format("'{}' is @naked: its body may contain only asm (it has no prologue, "
+                             "stack frame or return)",
+                             f.name));
+    }
+}
+
 void Resolver::check_stmt(const ast::Stmt& s) {
     switch (s.kind) {
     case ast::NodeKind::LetStmt:
@@ -926,6 +1150,9 @@ void Resolver::check_stmt(const ast::Stmt& s) {
     }
     case ast::NodeKind::ExprStmt:
         (void)check_expr(*static_cast<const ast::ExprStmt&>(s).expr);
+        break;
+    case ast::NodeKind::AsmStmt:
+        check_asm(static_cast<const ast::AsmStmt&>(s));
         break;
     case ast::NodeKind::AssignStmt: {
         const auto& a = static_cast<const ast::AssignStmt&>(s);

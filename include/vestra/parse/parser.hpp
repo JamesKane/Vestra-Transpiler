@@ -84,6 +84,8 @@ private:
 
     std::unique_ptr<ast::BlockExpr> parse_block_expr();
     ast::StmtPtr parse_statement();
+    ast::StmtPtr parse_asm_stmt();
+    bool parse_asm_operands(std::vector<ast::AsmOperand>& out, bool place);
 
     // Pratt expression parser.
     ast::ExprPtr parse_expr();

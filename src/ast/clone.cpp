@@ -346,6 +346,25 @@ StmtPtr clone(const Stmt& s) {
         n->value = cl(a.value);
         return with_range(std::move(n), s);
     }
+    case NodeKind::AsmStmt: {
+        const auto& a = static_cast<const AsmStmt&>(s);
+        auto n = std::make_unique<AsmStmt>();
+        n->is_volatile = a.is_volatile;
+        n->volatile_written = a.volatile_written;
+        auto ops = [&](const std::vector<AsmOperand>& from, std::vector<AsmOperand>& to) {
+            for (const auto& o : from) {
+                to.push_back(AsmOperand{o.name, o.reg, cl(o.value), o.range});
+            }
+        };
+        ops(a.inputs, n->inputs);
+        ops(a.outputs, n->outputs);
+        ops(a.inouts, n->inouts);
+        n->clobbers = a.clobbers;
+        n->clobber_ranges = a.clobber_ranges;
+        n->lines = a.lines;
+        n->line_ranges = a.line_ranges;
+        return with_range(std::move(n), s);
+    }
     case NodeKind::ForStmt: {
         const auto& f = static_cast<const ForStmt&>(s);
         auto n = std::make_unique<ForStmt>();

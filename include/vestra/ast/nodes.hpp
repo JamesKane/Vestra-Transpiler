@@ -53,6 +53,7 @@ enum class NodeKind : std::uint16_t {
     WhileStmt,
     WithStmt,
     AssignStmt,
+    AsmStmt,
     // ---- expressions ----
     IntLit,
     FloatLit,
@@ -708,6 +709,30 @@ struct AssignStmt : Stmt {
     ExprPtr target;
     ExprPtr value;
     AssignStmt() : Stmt(NodeKind::AssignStmt) {}
+};
+
+// §14.4 inline assembly: `asm(volatile:, in:, out:, inout:, clobbers:) { "…" … }`.
+// An operand is either named — `{name}` in the template stands for whatever
+// register the compiler picks — or pinned to a register by a string key.
+struct AsmOperand {
+    std::string name;  // `{name}` in the template; empty when pinned
+    std::string reg;   // pinned register (`"x8": n`); empty when named
+    ExprPtr value;     // the input value, or the output place
+    diag::SourceRange range;
+};
+
+struct AsmStmt : Stmt {
+    bool is_volatile = true;
+    bool volatile_written = false;  // `volatile:` appeared explicitly
+    std::vector<AsmOperand> inputs;
+    std::vector<AsmOperand> outputs;
+    std::vector<AsmOperand> inouts;
+    std::vector<std::string> clobbers;
+    std::vector<diag::SourceRange> clobber_ranges;
+    // One instruction per string, as written (quotes stripped, escapes kept).
+    std::vector<std::string> lines;
+    std::vector<diag::SourceRange> line_ranges;
+    AsmStmt() : Stmt(NodeKind::AsmStmt) {}
 };
 
 // ------------------------------------------------------------------ patterns

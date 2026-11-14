@@ -12,6 +12,7 @@
 
 #include <format>
 #include <ostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -216,6 +217,9 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         }
         break;
     }
+    case ast::NodeKind::AsmStmt:
+        emit_asm(os, static_cast<const ast::AsmStmt&>(s), indent);
+        break;
     case ast::NodeKind::BreakStmt:
         os << "break;\n";
         break;
@@ -468,6 +472,190 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         break;
     }
     active_hoists_ = prev_hoists;
+}
+
+// §14.4 `asm(...) { "…" }` lowers to GCC/Clang inline asm. With no operands or
+// clobbers it is basic asm (the only kind a naked function may hold), and the
+// template passes through but for `{{` / `}}`. Otherwise it is extended asm:
+//   * `{name}` -> `%[name]`, and a literal `%` doubles to `%%`;
+//   * a named output is early-clobber (`=&r`), so it never shares a register
+//     with an input still to be read; a named inout is `+r`;
+//   * a pinned operand rides in a `register T v __asm__("reg")` local in a
+//     block of its own, copied back to its place after the asm. A register
+//     pinned as both input and output is one `+r` operand.
+void CppEmitter::emit_asm(std::ostream& os, const ast::AsmStmt& a, int indent) {
+    const bool extended =
+        !a.inputs.empty() || !a.outputs.empty() || !a.inouts.empty() || !a.clobbers.empty();
+    std::string tmpl;
+    for (std::size_t li = 0; li < a.lines.size(); ++li) {
+        if (li != 0) {
+            tmpl += "\\n\\t";
+        }
+        const std::string_view line = a.lines[li];
+        for (std::size_t i = 0; i < line.size(); ++i) {
+            const char c = line[i];
+            if ((c == '{' || c == '}') && i + 1 < line.size() && line[i + 1] == c) {
+                tmpl += c;
+                ++i;
+            } else if (c == '{' && extended) {
+                const auto close = line.find('}', i + 1);
+                tmpl += "%[";
+                tmpl += line.substr(i + 1, close - i - 1);
+                tmpl += "]";
+                i = close;
+            } else if (c == '%' && extended) {
+                tmpl += "%%";
+            } else {
+                tmpl += c;
+            }
+        }
+    }
+    const char* kw = a.is_volatile ? "__asm__ volatile(\"" : "__asm__(\"";
+    if (!extended) {
+        os << kw << tmpl << "\");\n";
+        return;
+    }
+
+    // Pinned registers, in first-seen order: the input that seeds each, the
+    // place an output copies back to, and whether it is read-write.
+    struct Pin {
+        std::string reg;
+        const ast::Expr* in = nullptr;
+        const ast::Expr* out = nullptr;
+        bool inout = false;
+    };
+    std::vector<Pin> pins;
+    auto pin = [&](const std::string& reg) -> Pin& {
+        for (auto& p : pins) {
+            if (p.reg == reg) {
+                return p;
+            }
+        }
+        pins.push_back(Pin{reg});
+        return pins.back();
+    };
+    for (const auto& op : a.inputs) {
+        if (!op.reg.empty()) {
+            pin(op.reg).in = op.value.get();
+        }
+    }
+    for (const auto& op : a.outputs) {
+        if (!op.reg.empty()) {
+            pin(op.reg).out = op.value.get();
+        }
+    }
+    for (const auto& op : a.inouts) {
+        if (!op.reg.empty()) {
+            auto& p = pin(op.reg);
+            p.in = op.value.get();
+            p.out = op.value.get();
+            p.inout = true;
+        }
+    }
+    auto pin_var = [](const std::string& reg) { return "__vstr_asm_" + reg; };
+    auto emit_type_of = [&](const ast::Expr& e) {
+        auto t = resolution_ != nullptr ? resolution_->type_of(&e) : nullptr;
+        if (t != nullptr) {
+            emit_sema_type(os, t);
+        } else {
+            os << "std::uint64_t";
+        }
+    };
+
+    if (!pins.empty()) {
+        os << "{\n";
+        for (const auto& p : pins) {
+            detail::write_indent(os, indent + 1);
+            os << "register ";
+            emit_type_of(p.out != nullptr ? *p.out : *p.in);
+            os << " " << pin_var(p.reg) << " __asm__(\"" << p.reg << "\")";
+            if (p.in != nullptr) {
+                os << " = ";
+                emit_expr(os, *p.in);
+            }
+            os << ";\n";
+        }
+        detail::write_indent(os, indent + 1);
+    }
+    // Build the three operand sections, then drop empty trailing ones: GCC
+    // syntax needs a `:` only up to the last section in use.
+    std::ostringstream outs;
+    std::ostringstream ins;
+    std::ostringstream clob;
+    auto sep = [](std::ostringstream& o) {
+        if (o.tellp() > 0) {
+            o << ", ";
+        }
+    };
+    for (const auto& op : a.outputs) {
+        if (op.reg.empty()) {
+            sep(outs);
+            outs << "[" << op.name << "] \"=&r\"(";
+            emit_expr(outs, *op.value);
+            outs << ")";
+        }
+    }
+    for (const auto& op : a.inouts) {
+        if (op.reg.empty()) {
+            sep(outs);
+            outs << "[" << op.name << "] \"+r\"(";
+            emit_expr(outs, *op.value);
+            outs << ")";
+        }
+    }
+    for (const auto& p : pins) {
+        if (p.out != nullptr) {
+            sep(outs);
+            outs << (p.in != nullptr ? "\"+r\"(" : "\"=r\"(") << pin_var(p.reg) << ")";
+        }
+    }
+    for (const auto& op : a.inputs) {
+        if (op.reg.empty()) {
+            sep(ins);
+            ins << "[" << op.name << "] \"r\"(static_cast<";
+            auto t = resolution_ != nullptr ? resolution_->type_of(op.value.get()) : nullptr;
+            if (t != nullptr) {
+                emit_sema_type(ins, t);
+            } else {
+                ins << "std::uint64_t";
+            }
+            ins << ">(";
+            emit_expr(ins, *op.value);
+            ins << "))";
+        }
+    }
+    for (const auto& p : pins) {
+        if (p.out == nullptr) {
+            sep(ins);
+            ins << "\"r\"(" << pin_var(p.reg) << ")";
+        }
+    }
+    for (const auto& c : a.clobbers) {
+        sep(clob);
+        clob << "\"" << c << "\"";
+    }
+    const std::string sections[3] = {outs.str(), ins.str(), clob.str()};
+    int last = 2;
+    while (last >= 0 && sections[last].empty()) {
+        --last;
+    }
+    os << kw << tmpl << "\"";
+    for (int i = 0; i <= last; ++i) {
+        os << " :" << (sections[i].empty() ? "" : " ") << sections[i];
+    }
+    os << ");\n";
+
+    if (!pins.empty()) {
+        for (const auto& p : pins) {
+            if (p.out != nullptr) {
+                detail::write_indent(os, indent + 1);
+                emit_expr(os, *p.out);
+                os << " = " << pin_var(p.reg) << ";\n";
+            }
+        }
+        detail::write_indent(os, indent);
+        os << "}\n";
+    }
 }
 
 void CppEmitter::emit_stmt_expr(std::ostream& os, const ast::Expr& expr, bool return_value) {
