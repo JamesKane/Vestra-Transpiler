@@ -1054,6 +1054,45 @@ void Resolver::check_asm(const ast::AsmStmt& a) {
     }
 }
 
+bool Resolver::in_interrupt_handler() const {
+    return current_func_ != nullptr
+           && std::ranges::any_of(current_func_->attributes,
+                                  [](const ast::Attribute& at) { return at.name == "interrupt"; });
+}
+
+// §14.5 an ISR shares state with the rest of the kernel only through a
+// `static Atomic`: writing any other static from the handler's own body (by
+// assignment, or by lending it `inout`) is an error.
+void Resolver::check_interrupt_static_write(const ast::Expr& target, diag::SourceRange site) {
+    const ast::Expr* root = &target;
+    while (root->kind == ast::NodeKind::MemberExpr || root->kind == ast::NodeKind::IndexExpr
+           || root->kind == ast::NodeKind::ParenExpr) {
+        if (root->kind == ast::NodeKind::MemberExpr) {
+            root = static_cast<const ast::MemberExpr&>(*root).base.get();
+        } else if (root->kind == ast::NodeKind::IndexExpr) {
+            root = static_cast<const ast::IndexExpr&>(*root).base.get();
+        } else {
+            root = static_cast<const ast::ParenExpr&>(*root).inner.get();
+        }
+    }
+    if (root->kind != ast::NodeKind::IdentExpr) {
+        return;
+    }
+    const auto* sym = scopes_.current().lookup(static_cast<const ast::IdentExpr&>(*root).name);
+    if (sym == nullptr || sym->kind != SymbolKind::Static || sym->type == nullptr) {
+        return;
+    }
+    if (sym->type->kind() == TypeKind::Atomic || sym->type->kind() == TypeKind::AtomicTaggedPointer) {
+        return;
+    }
+    error_at(site,
+             std::format("an @interrupt handler shares state only through a `static Atomic`; "
+                         "'{}' is a plain static ({}), so writing it here races the code it "
+                         "interrupted",
+                         sym->name,
+                         sym->type->describe()));
+}
+
 void Resolver::check_naked_body(const ast::FuncDecl& f) {
     const bool naked = std::ranges::any_of(f.attributes, [](const ast::Attribute& at) {
         return at.name == "naked" || at.name == "boot";
@@ -1181,6 +1220,9 @@ void Resolver::check_stmt(const ast::Stmt& s) {
         break;
     case ast::NodeKind::AssignStmt: {
         const auto& a = static_cast<const ast::AssignStmt&>(s);
+        if (in_interrupt_handler()) {
+            check_interrupt_static_write(*a.target, a.range);
+        }
         // §5 a plain method reads its receiver; only an `inout func` may
         // assign through `self` (codegen makes a plain method `const`).
         if (current_func_ != nullptr && current_func_->recv_mode == ast::FuncDecl::RecvMode::None) {
@@ -1332,6 +1374,24 @@ void Resolver::check_stmt(const ast::Stmt& s) {
         // binding into the scope at the value's type; then recurse
         // into the body.
         const auto& w = static_cast<const ast::WithStmt&>(s);
+        // §14.5 an interrupt handler has no heap, no awaits and no FFI: it
+        // can't open them with `with` any more than declare them with `using`
+        // (and a call that needs one then has nothing to resolve it).
+        if (in_interrupt_handler()) {
+            for (const auto& b : w.bindings) {
+                if (b.cap_type != nullptr && b.cap_type->kind == ast::NodeKind::NamedType) {
+                    const auto& nt = static_cast<const ast::NamedType&>(*b.cap_type);
+                    const std::string cap = nt.path.empty() ? std::string{} : nt.path.back();
+                    if (cap == "Alloc" || cap == "Async" || cap == "Extern") {
+                        error_at(b.cap_type->range,
+                                 std::format("an @interrupt handler can't open `with {}` (no heap, "
+                                             "no awaits, no FFI in a handler); defer that work to a "
+                                             "task",
+                                             cap));
+                    }
+                }
+            }
+        }
         ScopeStack::Guard g(scopes_);
         for (const auto& b : w.bindings) {
             // §17.4 type annotation on a name-binding (`with NAME: T

@@ -200,6 +200,9 @@ private:
     void check_asm(const ast::AsmStmt& a);
     // §14.7 a @naked (or @boot) body is operand-free asm only.
     void check_naked_body(const ast::FuncDecl& f);
+    // §14.5 interrupt-handler body rules.
+    [[nodiscard]] bool in_interrupt_handler() const;
+    void check_interrupt_static_write(const ast::Expr& target, diag::SourceRange site);
 
     // Compute and record an expression's type. `expected` is the type the
     // context wants — used for literal adaptation; pass nullptr when there

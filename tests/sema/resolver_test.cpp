@@ -2892,3 +2892,32 @@ TEST_CASE("a value-returning function must return on every path (F22)") {
                        "func d(_ x: Int32) -> Int32 {\n    panic(\"no\")\n}\n")
           == 0);
 }
+
+// ---- §14.5 interrupt-handler body rules (gaps #5) -------------------------------
+
+namespace {
+const char* kIsr = "struct TrapFrame {\n    var x0: UInt64\n}\n"
+                   "static count: UInt64 = 0\n"
+                   "static ticks: Atomic[UInt64] = 0\n"
+                   "func bump(_ v: inout UInt64) { }\n"
+                   "func alloc() using Alloc { }\n";
+}  // namespace
+
+TEST_CASE("an @interrupt handler can't open Alloc / Async / Extern with `with`") {
+    auto r = check_detail(std::string(kIsr)
+                          + "@interrupt\nfunc h(_ f: inout TrapFrame) {\n    with Alloc {\n        alloc()\n    }\n}\n");
+    CHECK(r.first_message.find("can't open `with Alloc`") != std::string::npos);
+}
+
+TEST_CASE("an @interrupt handler writes only atomic statics") {
+    auto r = check_detail(std::string(kIsr)
+                          + "@interrupt\nfunc h(_ f: inout TrapFrame) {\n    count = count + 1\n}\n");
+    CHECK(r.first_message.find("shares state only through a `static Atomic`") != std::string::npos);
+    CHECK(check_errors(std::string(kIsr)
+                       + "@interrupt\nfunc h(_ f: inout TrapFrame) {\n    bump(&count)\n}\n")
+          == 1);
+    CHECK(check_errors(std::string(kIsr)
+                       + "@interrupt\nfunc h(_ f: inout TrapFrame) {\n"
+                         "    ticks.fetchAdd(1, .relaxed)\n    f.x0 = count\n}\n")
+          == 0);
+}

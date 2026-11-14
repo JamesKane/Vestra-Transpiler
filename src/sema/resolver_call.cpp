@@ -70,6 +70,14 @@ TypePtr Resolver::type_from_index_expr(const ast::Expr* e) {
 }
 
 TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
+    // §14.5 lending a plain static `inout` from an interrupt handler writes it.
+    if (in_interrupt_handler()) {
+        for (const auto& arg : c.args) {
+            if (arg.is_inout && arg.value != nullptr) {
+                check_interrupt_static_write(*arg.value, arg.value->range);
+            }
+        }
+    }
     // §17.x conversion-call syntax: `Float64(i)` / `Int32(x)` — a bare
     // primitive numeric type name in callee position is an explicit
     // conversion. We handle it before normal callee resolution so the
