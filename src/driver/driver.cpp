@@ -63,10 +63,11 @@ Subcommands:
         ISA features (e.g. lse2,cx16). Wide atomics (Atomic[UInt128] /
         AtomicTaggedPointer[T]) require the matching feature when the
         target is non-host: lse2 on aarch64, cx16 on x86_64 (§14.9.4).
-  check <file.vst> [-I DIR ...]
+  check <file.vst> [-I DIR ...] [--target=ARCH] [--target-features=LIST] [--no-libc]
         Parse and run name resolution + type checking; print any diagnostics.
         Exits 0 on a clean check. -I DIR adds an import search root (as in
-        build), so `check` resolves imports identically.
+        build), so `check` resolves imports identically; the target options
+        mean what they do for build, so target-dependent errors match too.
   fmt <file.vst>
         Pretty-print a Vestra source file to stdout.
   expand <file.vst>
@@ -102,6 +103,28 @@ void print_usage(std::ostream& os) {
 
 }  // namespace
 
+namespace {
+// §14.9.4 `--target-features=a,b`: split the comma-list into the feature
+// set. Empty entries from a stray comma are dropped, so `lse2,` and `lse2`
+// mean the same.
+void split_features(std::string_view arg, std::vector<std::string>& out) {
+    auto list = arg.substr(std::string_view{"--target-features="}.size());
+    std::size_t start = 0;
+    while (start <= list.size()) {
+        auto comma = list.find(',', start);
+        auto chunk = list.substr(
+            start, comma == std::string_view::npos ? list.size() - start : comma - start);
+        if (!chunk.empty()) {
+            out.emplace_back(chunk);
+        }
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+}
+}  // namespace
+
 int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream& err) {
     if (argv.size() < 2 || argv[1] == "help" || argv[1] == "-h" || argv[1] == "--help") {
         print_usage(out);
@@ -133,24 +156,7 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
             } else if (a.starts_with("--target=")) {
                 opts.target = std::string{a.substr(std::string_view{"--target="}.size())};
             } else if (a.starts_with("--target-features=")) {
-                // §14.9.4 — split the comma-list into the feature
-                // set. Empty trailing entries from a stray comma
-                // are dropped so `lse2,` and `lse2` mean the same.
-                auto list = a.substr(std::string_view{"--target-features="}.size());
-                std::size_t start = 0;
-                while (start <= list.size()) {
-                    auto comma = list.find(',', start);
-                    auto chunk = list.substr(start,
-                                             comma == std::string_view::npos ? list.size() - start
-                                                                             : comma - start);
-                    if (!chunk.empty()) {
-                        opts.target_features.emplace_back(chunk);
-                    }
-                    if (comma == std::string_view::npos) {
-                        break;
-                    }
-                    start = comma + 1;
-                }
+                split_features(a, opts.target_features);
             } else if (!a.empty() && a[0] != '-') {
                 opts.input = std::string{a};
             } else {
@@ -168,10 +174,17 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
     if (sub == "check") {
         std::filesystem::path input;
         std::vector<std::filesystem::path> import_paths;
+        sema::TargetContext target;
         for (std::size_t i = 2; i < argv.size(); ++i) {
             auto a = argv[i];
             if (a == "-I" && i + 1 < argv.size()) {
                 import_paths.emplace_back(std::string{argv[++i]});
+            } else if (a == "--no-libc") {
+                target.freestanding = true;
+            } else if (a.starts_with("--target=")) {
+                target.arch = std::string{a.substr(std::string_view{"--target="}.size())};
+            } else if (a.starts_with("--target-features=")) {
+                split_features(a, target.features);
             } else if (!a.empty() && a[0] != '-') {
                 input = std::string{a};
             } else {
@@ -183,7 +196,7 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
             err << "vestra check: missing input file\n";
             return 2;
         }
-        return run_check(input, out, err, import_paths);
+        return run_check(input, out, err, import_paths, target);
     }
     if (sub == "fmt") {
         if (argv.size() < 3) {
@@ -757,7 +770,8 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
 int run_check(const std::filesystem::path& input,
               std::ostream& out,
               std::ostream& err,
-              const std::vector<std::filesystem::path>& import_paths) {
+              const std::vector<std::filesystem::path>& import_paths,
+              const sema::TargetContext& target) {
     diag::SourceManager sm;
     diag::DiagnosticReporter rep(sm);
 
@@ -781,8 +795,11 @@ int run_check(const std::filesystem::path& input,
     sema::Resolver::ModuleExports store;
     for (std::size_t i : topo_order(graph)) {
         auto& unit = *graph.units[i];
-        sema::Resolver resolver(
-            unit, arena, rep, make_embed_reader(graph.files[i].parent_path(), nullptr, err));
+        sema::Resolver resolver(unit,
+                                arena,
+                                rep,
+                                make_embed_reader(graph.files[i].parent_path(), nullptr, err),
+                                target);
         sema::Resolver::ModuleExports visible;
         for (int d : graph.deps[i]) {
             const std::string dep_mod = module_path_of(*graph.units[static_cast<std::size_t>(d)]);

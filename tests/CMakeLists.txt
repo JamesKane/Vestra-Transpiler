@@ -2908,6 +2908,19 @@ add_test(NAME e2e_match_flow_demo_run COMMAND ${e2e_mf18_out}/match_flow_demo_ap
 set_tests_properties(e2e_match_flow_demo_run PROPERTIES
     DEPENDS e2e_match_flow_demo_compile PASS_REGULAR_EXPRESSION "match_flow_demo OK")
 
+# `vestra check` takes build's target options, so target-dependent errors
+# (a register of another architecture, a hosted feature under --no-libc) match.
+add_test(
+    NAME    e2e_check_target_wrongarch
+    COMMAND sh -c "$<TARGET_FILE:vestra> check ${CMAKE_SOURCE_DIR}/examples/sysreg.vst --target=x86_64 2>&1; true")
+set_tests_properties(e2e_check_target_wrongarch PROPERTIES
+    PASS_REGULAR_EXPRESSION "Sysreg.daif is an aarch64 register; this build targets x86_64")
+add_test(
+    NAME    e2e_check_nolibc
+    COMMAND sh -c "$<TARGET_FILE:vestra> check ${CMAKE_SOURCE_DIR}/examples/boot_chain.vst --no-libc 2>&1; true")
+set_tests_properties(e2e_check_nolibc PROPERTIES
+    PASS_REGULAR_EXPRESSION "`Alloc` needs the hosted runtime")
+
 # §5 visibility: referencing a non-public (internal) decl of an imported module
 # must fail to resolve. `vestra check` is expected to exit non-zero.
 add_test(

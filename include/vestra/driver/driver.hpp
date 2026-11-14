@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "vestra/sema/resolver.hpp"
+
 #include <filesystem>
 #include <iosfwd>
 #include <span>
@@ -60,10 +62,13 @@ struct BuildOptions {
 [[nodiscard]] int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err);
 // §5 `import_paths` are extra import search roots (see BuildOptions); empty for
 // a plain single-root check.
+// `target` is what `build --target / --target-features / --no-libc` would give
+// sema, so `check` reports the same target-dependent errors.
 [[nodiscard]] int run_check(const std::filesystem::path& input,
                             std::ostream& out,
                             std::ostream& err,
-                            const std::vector<std::filesystem::path>& import_paths = {});
+                            const std::vector<std::filesystem::path>& import_paths = {},
+                            const sema::TargetContext& target = {});
 [[nodiscard]] int run_fmt(const std::filesystem::path& input, std::ostream& out, std::ostream& err);
 [[nodiscard]] int
 run_expand(const std::filesystem::path& input, std::ostream& out, std::ostream& err);
