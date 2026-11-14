@@ -9800,6 +9800,14 @@ func emitIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc
 // lowercase by convention, so instance access is unaffected.
 func emitMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool) using Alloc, Log {
     if chain { emitChainMember(env, base, name); return }
+    // §14.12 a typed system-register handle `Sysreg.<name>` is the runtime
+    // singleton `__vstr::sysreg::<name>` (the bootstrap's resolver admits only
+    // canonical names; a unit type named Sysreg would shadow it).
+    if streq(identBaseName(base), "Sysreg") && !tyIsStruct(env, own("Sysreg")) && !tyIsEnumName(env, "Sysreg") {
+        print("__vstr::sysreg::")
+        print(name)
+        return
+    }
     // §3 `q.value` extracts an opaque newtype's underlying T via one static_cast.
     if streq(name, "value") {
         let bt = tyInferBoxed(env, base)
@@ -10029,6 +10037,7 @@ func emitStr(_ s: Str) using Alloc, Log {
 // calls in the curated corpus are struct constructions; method calls have a
 // member callee (not an identifier) and so never match.
 func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
+    if tryEmitSysregWrite(env, callee, args) { return }
     if tryEmitSysStatic(env, callee, args) { return }
     if tryEmitBoxNew(env, callee, args) { return }
     if tryEmitDeriveDefault(env, callee, args) { return }
@@ -10054,6 +10063,49 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     print("(")
     emitCallArgList(env, "", fname, args)
     print(")")
+}
+
+// §14.12.3 a write to one of the six barrier-gated EL1 registers
+// (`Sysreg.<reg>.write(v)`) routes through `__vstr::sysreg::write_<reg>(v)`,
+// which issues the post-write barrier, unless the enclosing function carries
+// `@no_auto_barrier` (read off the declaration's attributes).
+func tryEmitSysregWrite(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if callee.len() == 0 || args.len() != 1 { return false }
+    let reg = sysregWriteTarget(callee.get(0) ?? Nd.wildcard)
+    if !isGatedSysreg(reg) { return false }
+    if attrHas(env.curAttrs, "no_auto_barrier") { return false }
+    print("__vstr::sysreg::write_")
+    print(reg)
+    print("(")
+    emitArg(env, args.get(0) ?? Nd.wildcard)
+    print(")")
+    return true
+}
+
+// `Sysreg.<reg>.write` -> <reg>, else "".
+func sysregWriteTarget(_ c: Nd) using Alloc -> String {
+    return match c {
+        case .member(let base, let name, let chain): sysregWriteOn(base, name, chain)
+        default: own("")
+    }
+}
+
+func sysregWriteOn(_ base: Vec[Nd], _ name: Str, _ chain: Bool) using Alloc -> String {
+    if chain || !streq(name, "write") || base.len() == 0 { return own("") }
+    return match base.get(0) ?? Nd.wildcard {
+        case .member(let root, let reg, let c2): sysregRegOf(root, reg)
+        default: own("")
+    }
+}
+
+func sysregRegOf(_ root: Vec[Nd], _ reg: Str) using Alloc -> String {
+    if !streq(identBaseName(root), "Sysreg") { return own("") }
+    return own(reg)
+}
+
+func isGatedSysreg(_ r: Str) -> Bool {
+    return streq(r, "sctlr_el1") || streq(r, "vbar_el1") || streq(r, "ttbr0_el1")
+        || streq(r, "ttbr1_el1") || streq(r, "tcr_el1") || streq(r, "mair_el1")
 }
 
 // Static calls on two runtime namespaces, mirroring cpp_emitter.cpp:

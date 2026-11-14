@@ -1,0 +1,30 @@
+// §14.12 typed system registers. A `Sysreg.<name>` handle is the runtime
+// singleton `__vstr::sysreg::<name>`, read and written through it. A write
+// to one of the six barrier-gated EL1 registers (sctlr, vbar, ttbr0, ttbr1,
+// tcr, mair) routes through `__vstr::sysreg::write_<reg>`, which issues the
+// post-write barrier, unless the function carries `@no_auto_barrier`; any
+// other register's write, and every read, goes straight to the handle.
+func gated(_ v: UInt64) using Asm {
+    Sysreg.sctlr_el1.write(v)
+    Sysreg.vbar_el1.write(v)
+    Sysreg.ttbr0_el1.write(v)
+    Sysreg.ttbr1_el1.write(v)
+    Sysreg.tcr_el1.write(v)
+    Sysreg.mair_el1.write(v)
+}
+
+func ungated(_ v: UInt64) using Asm {
+    Sysreg.daif.write(v)
+    Sysreg.tpidr_el1.write(v)
+    Sysreg.stvec.write(v)
+}
+
+@kernel_init @no_auto_barrier
+func batched(_ v: UInt64) using Asm {
+    Sysreg.sctlr_el1.write(v)
+    Sysreg.tcr_el1.write(v)
+}
+
+func reads() using Asm -> UInt64 {
+    return Sysreg.midr_el1.read() + Sysreg.sctlr_el1.read() + Sysreg.cntpct_el0.read()
+}
