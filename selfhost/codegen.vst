@@ -4334,6 +4334,28 @@ func tyInferIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Al
 
 func tyIsIndexable(_ s: String) -> Bool {
     return tyStartsWith(s, "Vec[") || tyStartsWith(s, "Span[") || tyStartsWith(s, "MutSpan[")
+        || tyStartsWith(s, "Chunks[")
+}
+
+func tyIsSpanSp(_ s: String) -> Bool {
+    return tyStartsWith(s, "Span[") || tyStartsWith(s, "MutSpan[")
+}
+
+// §9 / §18.4 the iterator values vgen models by spelling: the combinators
+// `Zip[(A, B)]`, `Take[E]`, `Filter[E]`, `Map[E]` (E unknown for map, which
+// would need the closure's result type) and a span's `Chunks[Span[T]]`. A
+// `for` over one takes the iterator protocol.
+func tyIsIterAdapter(_ s: String) -> Bool {
+    return tyStartsWith(s, "Zip[") || tyStartsWith(s, "Take[") || tyStartsWith(s, "Filter[")
+        || tyStartsWith(s, "Map[") || tyStartsWith(s, "Chunks[")
+}
+
+// The element a `for` over this iterable binds: a container's T, an
+// adapter's element, or a user iterator struct's `next() -> T?` T.
+func tyIterElem(_ env: inout TyEnv, _ s: String) using Alloc -> String {
+    if tyStartsWith(s, "Vec[") || tyIsSpanSp(s) || tyIsIterAdapter(s) { return tyBracketInner(s) }
+    if tyIsStruct(env, s) { return tyUnwrapOpt(tyMethodRet(env, s, own("next"))) }
+    return own("")
 }
 
 func tyStartsWith(_ s: String, _ prefix: Str) -> Bool {
@@ -4373,6 +4395,10 @@ func tyInferMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain:
     if streq(name, "value") && tyIsOpaque(env, bt) { return typeSpelling(tyOpaqueUnder(env, bt)) }
     if streq(name, "value") && tyStartsWith(bt, "Box[") { return own(bt.slice(4, bt.len() - 1)) }
     if streq(name, "value") && (tyStartsWith(bt, "Ptr[") || tyStartsWith(bt, "MutPtr[")) { return tyBracketInner(bt) }
+    // §10 a span's `.count` / `.isEmpty`; §18.4 a chunk iterator's `.count`.
+    if tyIsSpanSp(bt) && streq(name, "count") { return own("Int") }
+    if tyIsSpanSp(bt) && streq(name, "isEmpty") { return own("Bool") }
+    if tyStartsWith(bt, "Chunks[") && streq(name, "count") { return own("Int") }
     // §A11 (§14.8) `Padded[T].value` is the padded cell itself.
     if streq(name, "value") && tyStartsWith(bt, "Padded[") { return tyBracketInner(bt) }
     // A bare case of a user enum (`List.empty`) types as the enum.
@@ -4605,6 +4631,8 @@ func tyCtorLabelMsg(_ n: Int) using Alloc -> String {
 // `Box.new(v)` types as Box[<v's type>] (unknown if v's is); any other call
 // types by its callee alone.
 func tyInferCallArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc -> String {
+    let ad = tyInferAdapter(env, exCalleeNameBoxed(callee), args)
+    if !streq(ad, "") { return ad }
     if !isBoxNewCallee(callee) || args.len() != 1 { return tyInferCall(env, callee) }
     let at = tyInferArg(env, args)
     if streq(at, "") { return own("") }
@@ -4644,6 +4672,41 @@ func tyBuiltinRet(_ nm: Str) using Alloc -> String {
     return own("")
 }
 
+// §9 the builtin combinators (a unit function of the same name wins):
+// `zip(a, b)` -> Zip[(EA, EB)], `take(xs, n)` -> Take[E], `filter(xs, f)` ->
+// Filter[E], `map(xs, f)` -> Map[] (its element would need f's result).
+func tyInferAdapter(_ env: inout TyEnv, _ nm: Str, _ args: Vec[Nd]) using Alloc -> String {
+    if args.len() != 2 || tyArity(env, nm) >= 0 { return own("") }
+    let isZip = streq(nm, "zip")
+    let isTake = streq(nm, "take")
+    let isFilter = streq(nm, "filter")
+    let isMap = streq(nm, "map")
+    if !(isZip || isTake || isFilter || isMap) { return own("") }
+    let e0 = tyIterElem(env, tyInferArg(env, args))
+    var inner: String = ""
+    if isZip {
+        var parts: Vec[String] = Vec.new()
+        parts.push(e0)
+        parts.push(tyIterElem(env, tyInferArgAt(env, args, 1)))
+        inner = tyJoinTuple(parts)
+    } else if !isMap {
+        inner = own(e0)
+    }
+    var out: String = ""
+    if isZip { out.append("Zip[") } else if isTake { out.append("Take[") }
+    else if isFilter { out.append("Filter[") } else { out.append("Map[") }
+    out.append(inner)
+    out.append("]")
+    return out
+}
+
+func tyInferArgAt(_ env: inout TyEnv, _ args: Vec[Nd], _ i: Int) using Alloc -> String {
+    return match args.get(i) ?? Nd.wildcard {
+        case .arg(let label, let isInout, let value): tyInferBoxed(env, value)
+        default: own("")
+    }
+}
+
 // `recv.method(...)` types as the method's declared result, found by the
 // receiver's (struct/enum) type. A `?.` chain, an unknown receiver, or a builtin
 // / generic method (none recorded) stays unknown and is tolerated. A `Self`
@@ -4666,6 +4729,20 @@ func tyBuiltinMethodRet(_ bt: String, _ name: String) using Alloc -> String {
     // atomic operations yield the atomic's T.
     if tyStartsWith(bt, "PerCpu[") && streq(name, "mine") { return tyBracketInner(bt) }
     if tyStartsWith(bt, "Atomic[") && atomicRetIsT(name) { return tyBracketInner(bt) }
+    // §5 / §18.4 `s.split(at:)` is the (prefix, suffix) pair of sub-spans;
+    // `s.chunks(of:)` iterates sub-spans of the same kind.
+    if tyIsSpanSp(bt) && streq(name, "split") {
+        var parts: Vec[String] = Vec.new()
+        parts.push(own(bt))
+        parts.push(own(bt))
+        return tyJoinTuple(parts)
+    }
+    if tyIsSpanSp(bt) && streq(name, "chunks") {
+        var c: String = "Chunks["
+        c.append(bt)
+        c.append("]")
+        return c
+    }
     if tyStartsWith(bt, "HashMap[") { return tyMapMethodRet(bt, name) }
     if streq(bt, "String") || streq(bt, "Str") || streq(bt, "StrConst") { return tyStrMethodRet(name) }
     if tyIsNumericScalar(bt) && streq(name, "toString") { return own("String") }
@@ -8092,8 +8169,8 @@ func emitWhile(_ env: inout TyEnv, _ indent: Str, _ cond: Vec[Nd], _ body: Vec[N
 // and any other iterable becomes a range-based `for (auto&& v : <iter>)`.
 func emitFor(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ iter: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
     tyRegisterForBinder(env, pat, iter)
-    if forIsIterProto(env, iter) && !patIsTuple(pat) {
-        emitIterProtoFor(env, indent, patName(pat), iter, body)
+    if forIsIterProto(env, iter) {
+        emitIterProtoFor(env, indent, pat, iter, body)
         return
     }
     print(indent)
@@ -8110,9 +8187,7 @@ func emitFor(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ iter: Vec[Nd],
 // bootstrap's resolver picks. Only a `Vec[T]` iterable is known here; a tuple
 // element destructures through the same path `let (a, b) = …` uses.
 func tyRegisterForBinder(_ env: inout TyEnv, _ pat: Vec[Nd], _ iter: Vec[Nd]) using Alloc {
-    let it = tyInferBoxed(env, iter)
-    if !tyStartsWith(it, "Vec[") { return }
-    let el = tyBracketInner(it)
+    let el = tyIterElem(env, tyInferBoxed(env, iter))
     if streq(el, "") { return }
     if patIsTuple(pat) { tyRegisterTuplePat(env, pat.get(0) ?? Nd.wildcard, el) }
     else { tyAddSymSpelling(env, patName(pat), el) }
@@ -8132,15 +8207,18 @@ func forIsIterProto(_ env: inout TyEnv, _ iter: Vec[Nd]) using Alloc -> Bool {
     }
     if isRange { return false }
     let t = tyInferBoxed(env, iter)
-    return tyIsStruct(env, t)
+    return tyIsStruct(env, t) || tyIsIterAdapter(t)
 }
 
-func emitIterProtoFor(_ env: inout TyEnv, _ indent: Str, _ v: Str, _ iter: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+// A tuple loop variable (`for (i, j) in zip(a, b)`) binds by structured
+// binding over the yielded value, as the bootstrap's iterator-protocol
+// lowering does: `auto [i, j] = std::move(*__vstr_o);`.
+func emitIterProtoFor(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ iter: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
     print(indent)
     print("{ auto __vstr_iter = ")
     emitBoxed(env, iter)
     print("; while (true) { auto __vstr_o = __vstr_iter.next(); if (!__vstr_o.has_value()) { break; } auto ")
-    print(v)
+    emitForBinder(env, pat)
     print(" = std::move(*__vstr_o); {\n")
     if body.len() > 0 { emitBlockStmts(env, body.get(0) ?? Nd.wildcard, deeper(indent)) }
     print(indent)
@@ -9815,6 +9893,29 @@ func emitIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc
 // lowercase by convention, so instance access is unaffected.
 func emitMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool) using Alloc, Log {
     if chain { emitChainMember(env, base, name); return }
+    // §10 a span's `.count` -> `static_cast<std::intptr_t>(s.size())` (signed,
+    // comparable with Int indices) and `.isEmpty` -> `s.empty()`; §18.4 a chunk
+    // iterator's `.count` -> `(cs).count()`.
+    if streq(name, "count") || streq(name, "isEmpty") {
+        let mbt = tyInferBoxed(env, base)
+        if tyIsSpanSp(mbt) && streq(name, "count") {
+            print("static_cast<std::intptr_t>(")
+            emitBoxed(env, base)
+            print(".size())")
+            return
+        }
+        if tyIsSpanSp(mbt) {
+            emitBoxed(env, base)
+            print(".empty()")
+            return
+        }
+        if tyStartsWith(mbt, "Chunks[") && streq(name, "count") {
+            print("(")
+            emitBoxed(env, base)
+            print(").count()")
+            return
+        }
+    }
     // §14.12 a typed system-register handle `Sysreg.<name>` is the runtime
     // singleton `__vstr::sysreg::<name>` (the bootstrap's resolver admits only
     // canonical names; a unit type named Sysreg would shadow it).
@@ -10512,6 +10613,17 @@ func emitBuiltinMethodOn(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ cha
     if tyStartsWith(bt, "Atomic[") || tyStartsWith(bt, "AtomicTaggedPointer[") {
         return emitAtomicMethod(env, base, bt, name, args)
     }
+    // §5 / §18.4 `s.split(at: i)` -> `__vstr::split_at(s, static_cast<std::intptr_t>(i))`;
+    // `s.chunks(of: n)` -> `__vstr::Chunks{s, static_cast<std::size_t>(n)}`.
+    if tyIsSpanSp(bt) && args.len() == 1 && (streq(name, "split") || streq(name, "chunks")) {
+        let isSplit = streq(name, "split")
+        if isSplit { print("__vstr::split_at(") } else { print("__vstr::Chunks{") }
+        emitBoxed(env, base)
+        if isSplit { print(", static_cast<std::intptr_t>(") } else { print(", static_cast<std::size_t>(") }
+        emitArg(env, args.get(0) ?? Nd.wildcard)
+        if isSplit { print("))") } else { print(")}") }
+        return true
+    }
     if tyIsNumericScalar(bt) && streq(name, "toString") && args.len() == 0 {
         print("__vstr::to_string(")
         emitBoxed(env, base)
@@ -10854,6 +10966,7 @@ func tryEmitBuiltin(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using All
     if emitSyncIntrinsic(env, fname, args) { return true }
     if emitMemIntrinsic(env, fname, args) { return true }
     if tyArity(env, fname) >= 0 { return false }
+    if emitAdapter(env, fname, args) { return true }
     if streq(fname, "readFile") && args.len() == 1 {
         print("__vstr::read_file(")
         emitArg(env, args.get(0) ?? Nd.wildcard)
@@ -10894,6 +11007,70 @@ func emitSyncIntrinsic(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using 
     }
     print(")")
     return true
+}
+
+// §9 the combinators construct the runtime adapter by CTAD:
+// `__vstr::Zip{a, b}`, `__vstr::Take{xs, static_cast<std::int64_t>(n)}`,
+// `__vstr::Map{xs, f}`, `__vstr::Filter{xs, f}`. A closure argument of map /
+// filter takes its parameter type from the iterable's element type.
+func emitAdapter(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if args.len() != 2 { return false }
+    let isTake = streq(fname, "take")
+    let isFn = streq(fname, "map") || streq(fname, "filter")
+    if !(isTake || isFn || streq(fname, "zip")) { return false }
+    print("__vstr::")
+    if streq(fname, "zip") { print("Zip") } else if isTake { print("Take") }
+    else if streq(fname, "map") { print("Map") } else { print("Filter") }
+    print("{")
+    emitArg(env, args.get(0) ?? Nd.wildcard)
+    print(", ")
+    if isTake {
+        print("static_cast<std::int64_t>(")
+        emitArg(env, args.get(1) ?? Nd.wildcard)
+        print(")")
+    } else if isFn {
+        let elem = tyIterElem(env, tyInferArg(env, args))
+        emitElemClosureArg(env, elem, args.get(1) ?? Nd.wildcard)
+    } else {
+        emitArg(env, args.get(1) ?? Nd.wildcard)
+    }
+    print("}")
+    return true
+}
+
+func emitElemClosureArg(_ env: inout TyEnv, _ elem: Str, _ a: Nd) using Alloc, Log {
+    match a {
+        case .arg(let label, let isInout, let val): emitElemClosureVal(env, elem, val)
+        default: noop()
+    }
+}
+
+func emitElemClosureVal(_ env: inout TyEnv, _ elem: Str, _ val: Vec[Nd]) using Alloc, Log {
+    if val.len() == 0 { return }
+    match val.get(0) ?? Nd.wildcard {
+        case .closureE(let cparams, let body): emitSpClosure(env, cparams, body, elem)
+        default: emitBoxed(env, val)
+    }
+}
+
+// `[&](<T> p) { return <body>; }` with every parameter typed by the C++
+// spelling of `elem` (`auto` when unknown); the parameters register at that
+// type so the body infers, and the closure always yields its value.
+func emitSpClosure(_ env: inout TyEnv, _ cparams: Vec[Nd], _ body: Vec[Nd], _ elem: Str) using Alloc, Log {
+    print("[&](")
+    var i: Int = 0
+    while i < cparams.len() {
+        if i > 0 { print(", ") }
+        let pn = identName(cparams.get(i) ?? Nd.ident(""))
+        if streq(elem, "") { print("auto") } else { print(cppOfSpelling(own(elem))) }
+        print(" ")
+        print(pn)
+        tyAddSymSpelling(&env, pn, own(elem))
+        i = i + 1
+    }
+    print(") { ")
+    emitClosureStmts(env, body, true)
+    print(" }")
 }
 
 // §A10 (§15.4) `memcpy` / `memset` / `memmove` -> the `__builtin_*` forms,

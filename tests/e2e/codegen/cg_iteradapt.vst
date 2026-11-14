@@ -1,0 +1,51 @@
+// §9 iterator combinators and §5 / §10 / §18.4 span queries. `zip` / `take`
+// / `map` / `filter` construct the runtime adapters by CTAD (`take`'s count
+// widened to int64); a map / filter closure's parameter takes the iterable's
+// element type (a user iterator's `next() -> T?` T, or an adapter's). A `for`
+// over an adapter takes the iterator protocol, a tuple loop variable binding
+// by structured binding. On spans, `.count` is the signed size, `.isEmpty`
+// is `.empty()`, `split(at:)` is the runtime partitioner, and `chunks(of:)`
+// iterates sub-spans whose own `.count` (and the iterator's) lower too.
+struct Counter {
+    var n: Int32
+    inout func next() -> Int32? {
+        if self.n <= 0 { return nil }
+        let v = self.n
+        self.n = self.n - 1
+        return v
+    }
+}
+
+func pairs() -> Int32 {
+    var total: Int32 = 0
+    var a = Counter(n: 3)
+    var b = Counter(n: 9)
+    for (x, y) in take(zip(a, b), 2) {
+        total = total + x * y
+    }
+    return total
+}
+
+func evensSquared(_ k: Int32) -> Int32 {
+    var total: Int32 = 0
+    var c = Counter(n: 10)
+    for v in map(filter(c, { x => x % 2 == 0 }), { x => x * k }) {
+        total = total + v
+    }
+    return total
+}
+
+func halves(_ s: Span[Int32], _ at: Int) -> Int {
+    let (lo, hi) = s.split(at: at)
+    if lo.isEmpty { return hi.count }
+    return lo.count - hi.count
+}
+
+func chunkTotal(_ s: MutSpan[UInt8], _ n: Int) -> Int {
+    var total: Int = 0
+    for chunk in s.chunks(of: n) {
+        total = total + chunk.count
+    }
+    let cs = s.chunks(of: n)
+    return total + cs.count + cs[0].count
+}
