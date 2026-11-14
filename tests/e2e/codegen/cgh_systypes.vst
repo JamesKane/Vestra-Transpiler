@@ -1,0 +1,35 @@
+// The runtime and standard templates behind the systems-level builtin types,
+// in parameter, result and global position: `Atomic[T]` -> std::atomic<T>,
+// `Padded[T]` / `PerCpu[T]` -> __vstr::Padded / __vstr::PerCpu,
+// `Ptr[T]` / `MutPtr[T]` -> const T* / T*, the three MMIO views, and the
+// bare `Context`, `Duration` and `Never` runtime types.
+@noinit static hits: Atomic[UInt32]
+@noinit static slot: Padded[UInt64]
+@noinit static perHart: PerCpu[Atomic[UInt32]]
+@noinit static ctx: Context
+
+func readPtr(_ p: Ptr[UInt32], _ q: MutPtr[UInt8]) -> Int32 {
+    return 0
+}
+
+func views(_ a: MmioView[UInt32], _ b: MmioRegion[UInt32], _ c: MmioWireView[UInt32]) -> Int32 {
+    return 0
+}
+
+func wait(_ d: Duration) -> Int32 {
+    return 0
+}
+
+func halt(_ msg: Str) -> Never {
+    panic("halt")
+}
+
+// A free function's read-mode raw pointer passes by value; a method's keeps
+// the canonical `const T&` (the bootstrap's method path has no pointer case),
+// giving the shared, warning-only `const const T*& p`.
+struct Reader {
+    var n: Int32
+    func at(_ p: Ptr[UInt32]) -> Int32 {
+        return self.n
+    }
+}

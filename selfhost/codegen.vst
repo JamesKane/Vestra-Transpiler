@@ -5914,7 +5914,7 @@ func emitMethodDef(_ env: inout TyEnv, _ owner: Str, _ mods: Str, _ name: Str, _
     print(" ")
     print(name)
     print("(")
-    emitParamsMode(params, isAsyncMods(mods))
+    emitParamsMode(params, isAsyncMods(mods), false)
     print(") {\n")
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
@@ -6050,7 +6050,7 @@ func emitFwdDecl(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd]
     print(name)
     print("(")
     if isEntryMain(env, name) { print("int argc, char** argv") }
-    else { emitParamsMode(params, isAsyncMods(mods)) }
+    else { emitParamsMode(params, isAsyncMods(mods), true) }
     print(");\n")
 }
 
@@ -6070,7 +6070,7 @@ func emitFunc(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd], _
     print(name)
     print("(")
     if isEntryMain(env, name) { print("int argc, char** argv") }
-    else { emitParamsMode(params, isA) }
+    else { emitParamsMode(params, isA, true) }
     print(") {\n")
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
@@ -6166,11 +6166,11 @@ func emitExpectedRet(_ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
     print(">")
 }
 
-func emitParams(_ params: Vec[Nd]) using Alloc, Log {
+func emitParams(_ params: Vec[Nd], _ ptrByVal: Bool) using Alloc, Log {
     var i: Int = 0
     while i < params.len() {
         if i > 0 { print(", ") }
-        emitParam(params.get(i) ?? Nd.wildcard)
+        emitParam(params.get(i) ?? Nd.wildcard, ptrByVal)
         i = i + 1
     }
 }
@@ -6178,8 +6178,8 @@ func emitParams(_ params: Vec[Nd]) using Alloc, Log {
 // §11: an async function's read params pass BY VALUE (`T n`) — the coroutine
 // frame does not copy by-reference params, so a `const T&` bound to a caller
 // temporary would dangle across a suspension point.
-func emitParamsMode(_ params: Vec[Nd], _ isAsync: Bool) using Alloc, Log {
-    if !isAsync { emitParams(params); return }
+func emitParamsMode(_ params: Vec[Nd], _ isAsync: Bool, _ ptrByVal: Bool) using Alloc, Log {
+    if !isAsync { emitParams(params, ptrByVal); return }
     var i: Int = 0
     while i < params.len() {
         if i > 0 { print(", ") }
@@ -6201,9 +6201,9 @@ func emitValueParamParts(_ nm: Str, _ ty: Vec[Nd]) using Alloc, Log {
     print(nm)
 }
 
-func emitParam(_ p: Nd) using Alloc, Log {
+func emitParam(_ p: Nd, _ ptrByVal: Bool) using Alloc, Log {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): emitModeParam(md, nm, ty)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): emitModeParam(md, nm, ty, ptrByVal)
         default: noop()
     }
 }
@@ -6211,7 +6211,7 @@ func emitParam(_ p: Nd) using Alloc, Log {
 // Mode mapping: read -> `const T& n` (function-pointer declarator aside),
 // inout -> `T& n`, sink -> `T&& n`. (The parser stores the mode with its
 // trailing space, matching the AST print.)
-func emitModeParam(_ md: Str, _ nm: Str, _ ty: Vec[Nd]) using Alloc, Log {
+func emitModeParam(_ md: Str, _ nm: Str, _ ty: Vec[Nd], _ ptrByVal: Bool) using Alloc, Log {
     if streq(md, "inout ") {
         emitTypeBoxed(ty)
         print("& ")
@@ -6224,7 +6224,20 @@ func emitModeParam(_ md: Str, _ nm: Str, _ ty: Vec[Nd]) using Alloc, Log {
         print(nm)
         return
     }
+    // §A3 (§10.5) a raw pointer is a word-sized Trivial value, and
+    // `const T*& p` would put the const on the pointee, so a FREE function's
+    // read-mode `Ptr` / `MutPtr` parameter passes by value. The bootstrap's
+    // method-parameter path has no such case, so methods keep `const T&`.
+    if ptrByVal && isRawPtrTy(ty) { emitValueParamParts(nm, ty); return }
     emitReadParam(nm, ty)
+}
+
+func isRawPtrTy(_ ty: Vec[Nd]) -> Bool {
+    if ty.len() == 0 { return false }
+    return match ty.get(0) ?? Nd.wildcard {
+        case .named(let path, let hasG, let args): streq(path, "Ptr") || streq(path, "MutPtr")
+        default: false
+    }
 }
 
 // Slice 1: read-mode parameter -> `const <type>& <name>`. A function-typed
@@ -6325,6 +6338,10 @@ func emitGenericType(_ path: Str, _ args: Vec[Nd]) using Alloc, Log {
     if streq(path, "HashMap") { emitWrap2("std::unordered_map<", args); return }
     if streq(path, "Channel") { emitWrap1("__vstr::Channel<", args); return }
     if streq(path, "Future") { emitWrap1("__vstr::Future<", args); return }
+    // §A3 (§10.5) raw pointers, §A6 MMIO views, §A11 (§14.8) per-CPU storage
+    // and cache-line padding, §A4 (§14.9) atomics — each a one-argument
+    // runtime or standard template, as in the bootstrap's emit_type.
+    if args.len() == 1 && emitSysGeneric(path, args) { return }
     // A user generic instantiation: `Pair[Int32]` -> `Pair<std::int32_t>`.
     print(path)
     print("<")
@@ -6335,6 +6352,19 @@ func emitGenericType(_ path: Str, _ args: Vec[Nd]) using Alloc, Log {
         i = i + 1
     }
     print(">")
+}
+
+func emitSysGeneric(_ path: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if streq(path, "Ptr") { print("const "); emitTypeArg(args, 0); print("*"); return true }
+    if streq(path, "MutPtr") { emitTypeArg(args, 0); print("*"); return true }
+    if streq(path, "MmioView") { emitWrap1("__vstr::MmioView<", args); return true }
+    if streq(path, "MmioRegion") { emitWrap1("__vstr::MmioRegion<", args); return true }
+    if streq(path, "MmioWireView") { emitWrap1("__vstr::MmioWireView<", args); return true }
+    if streq(path, "PerCpu") { emitWrap1("__vstr::PerCpu<", args); return true }
+    if streq(path, "Padded") { emitWrap1("__vstr::Padded<", args); return true }
+    if streq(path, "Atomic") { emitWrap1("std::atomic<", args); return true }
+    if streq(path, "AtomicTaggedPointer") { emitWrap1("__vstr::AtomicTaggedPointer<", args); return true }
+    return false
 }
 
 func emitWrap1(_ open: Str, _ args: Vec[Nd]) using Alloc, Log {
@@ -6389,6 +6419,11 @@ func cppNamed(_ path: Str) using Alloc -> String {
     // the `std::memory_order_*` literals (see emitMemoryOrder), so the type
     // itself is `std::memory_order`.
     if streq(path, "Ordering") { return own("std::memory_order") }
+    // §A10 `Never`, §A7 (§14.14) the builtin `Context`, §11 `Duration`: bare
+    // runtime types.
+    if streq(path, "Never") { return own("__vstr::Never") }
+    if streq(path, "Context") { return own("__vstr::Context") }
+    if streq(path, "Duration") { return own("__vstr::Duration") }
     // §5 a module-qualified type (`helper.Point`) spells with `::` — dots
     // only appear in type paths as module qualifiers.
     if pathHasDot(path) { return dotsToColons(path) }
