@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// §5 an imported module's enums and structs used directly: cases named
+// through the module (`kern.ipc.Held.client(0)`) and by leading dot against
+// an imported type, `match` and `catch` over imported enums, and fields of an
+// imported struct whose types are the module's own.
+module demo.kern
+import kern.ipc
+
+public func qualified() -> kern.ipc.Held {
+    return kern.ipc.Held.client(0)
+}
+
+public func contextual() -> kern.ipc.Held {
+    return .client(1)
+}
+
+public func codeOf(_ e: kern.ipc.No) -> UInt64 {
+    return match e {
+        case .dead: 1
+        case .busy: 2
+    }
+}
+
+public func payloadOf(_ h: kern.ipc.Held) -> UInt32 {
+    return match h {
+        case .client(let e): e
+        case .serves(let e): e + 100
+        case .none: 999
+    }
+}
+
+public func bareCases() -> Bool {
+    let a: kern.ipc.Held = .none
+    let b = kern.ipc.Held.none
+    let c: kern.ipc.No = .dead
+    let d = kern.ipc.No.busy
+    return payloadOf(a) == payloadOf(b) && codeOf(c) != codeOf(d)
+}
+
+public func caught(_ x: Int32) -> UInt64 {
+    return do {
+        let v = try kern.ipc.risky(x)
+        UInt64(v)
+    } catch (e: kern.ipc.No) {
+        codeOf(e) + 1000
+    }
+}
+
+public func nested() -> Bool {
+    let k = kern.ipc.fresh()
+    return k.domains[0].alive && payloadOf(k.domains[1].held) == 999 && codeOf(k.last) == 2
+}

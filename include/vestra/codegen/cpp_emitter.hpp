@@ -171,6 +171,11 @@ private:
     // nominal (present in imported_qualifiers_); a no-op for the unit's own
     // decls and for single-file builds.
     void emit_nominal_qualifier(std::ostream& os, const ast::Decl* decl);
+    // The same prefix as a string (`util::math::`, or empty), for call sites
+    // that stream an enum's name inline (`<prefix>No::dead`, F19).
+    [[nodiscard]] std::string nominal_prefix(const ast::Decl* decl) const;
+    // `::` when this unit is inside a namespace, else empty (see the .cpp).
+    [[nodiscard]] std::string_view global_qualifier() const;
 
     // §9 stmt-position lowering for expressions whose runtime semantics
     // need a statement (a real `return`, an `if/else` chain, etc.). When

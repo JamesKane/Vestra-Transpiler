@@ -2732,6 +2732,34 @@ set_tests_properties(e2e_multifile_demo_run PROPERTIES
     DEPENDS                e2e_multifile_demo_compile
     PASS_REGULAR_EXPRESSION "multifile_demo OK")
 
+# §5 imported enums and struct fields (F19): `examples/modenum_demo` imports
+# `kern.ipc` and names its enum cases qualified and by leading dot, matches
+# and catches over them, and reads fields typed by the module's own types.
+set(e2e_me_input  ${CMAKE_SOURCE_DIR}/examples/modenum_demo/main.vst)
+set(e2e_me_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_modenum_demo.cpp)
+set(e2e_me_out    ${e2e_workdir}/_modenum)
+
+add_test(
+    NAME    e2e_modenum_demo_transpile
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_me_input} -o ${e2e_me_out})
+
+add_test(
+    NAME    e2e_modenum_demo_compile
+    COMMAND ${CMAKE_CXX_COMPILER}
+            -std=c++26 -Wall -Wextra -O0
+            -I${e2e_me_out}
+            ${e2e_me_driver} ${e2e_me_out}/main.cpp ${e2e_me_out}/kern/ipc.cpp
+            -o ${e2e_me_out}/modenum_app)
+set_tests_properties(e2e_modenum_demo_compile PROPERTIES
+    DEPENDS e2e_modenum_demo_transpile)
+
+add_test(
+    NAME    e2e_modenum_demo_run
+    COMMAND ${e2e_me_out}/modenum_app)
+set_tests_properties(e2e_modenum_demo_run PROPERTIES
+    DEPENDS                e2e_modenum_demo_compile
+    PASS_REGULAR_EXPRESSION "modenum_demo OK")
+
 # §5 visibility: referencing a non-public (internal) decl of an imported module
 # must fail to resolve. `vestra check` is expected to exit non-zero.
 add_test(

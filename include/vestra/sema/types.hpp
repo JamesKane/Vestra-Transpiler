@@ -365,7 +365,21 @@ public:
     [[nodiscard]] TypePtr substitute(TypePtr t,
                                      const std::unordered_map<std::string, TypePtr>& bindings);
 
+    // §5 a struct field's or enum payload's type as its OWN module resolved
+    // it (generic params left as GenericParam placeholders). An importer that
+    // reaches the member through a value of the imported type reads it here
+    // instead of re-resolving the declaration's syntax in its own scope, where
+    // the module's other type names don't exist (F19).
+    void record_member_type(const ast::Type* syntax, TypePtr resolved) {
+        member_types_[syntax] = resolved;
+    }
+    [[nodiscard]] TypePtr member_type(const ast::Type* syntax) const {
+        auto it = member_types_.find(syntax);
+        return it == member_types_.end() ? nullptr : it->second;
+    }
+
 private:
+    std::unordered_map<const ast::Type*, TypePtr> member_types_;
     std::vector<std::unique_ptr<Type>> owned_;
     // Keyed by TypeKind directly — C++14 made std::hash valid for any
     // enum class, so the static_cast<int> the map used to require is gone.

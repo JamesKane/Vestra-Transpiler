@@ -136,6 +136,40 @@ void Resolver::resolve() {
         }
         check_decl(*d);
     }
+    // Only a unit that resolved cleanly is ever imported (the driver stops on
+    // the first error), and only then is re-resolving its member types
+    // guaranteed silent.
+    if (!reporter_->has_errors()) {
+        record_member_types();
+    }
+}
+
+void Resolver::record_member_types() {
+    for (const auto& d : unit_->decls) {
+        if (gated_out(*d)) {
+            continue;
+        }
+        if (d->kind == ast::NodeKind::Struct) {
+            const auto& s = static_cast<const ast::StructDecl&>(*d);
+            for (const auto& f : s.fields) {
+                if (f.type != nullptr) {
+                    types_->record_member_type(
+                        f.type.get(), resolve_member_type_with_generics(s.generics, *f.type, {}));
+                }
+            }
+        } else if (d->kind == ast::NodeKind::Enum) {
+            const auto& e = static_cast<const ast::EnumDecl&>(*d);
+            for (const auto& c : e.cases) {
+                for (const auto& p : c.payload) {
+                    if (p.second != nullptr) {
+                        types_->record_member_type(
+                            p.second.get(),
+                            resolve_member_type_with_generics(e.generics, *p.second, {}));
+                    }
+                }
+            }
+        }
+    }
 }
 
 void Resolver::error_at(diag::SourceRange r, std::string msg) {

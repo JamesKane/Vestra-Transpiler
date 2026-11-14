@@ -41,9 +41,22 @@ void CppEmitter::emit_soa_backing(std::ostream& os, const ast::StructDecl& sd) {
 }
 
 void CppEmitter::emit_nominal_qualifier(std::ostream& os, const ast::Decl* decl) {
+    os << nominal_prefix(decl);
+}
+
+// §5 an imported name is spelled from the global namespace (`::kern::ipc::`)
+// whenever this unit is itself inside one: from `namespace demo::kern`, a
+// plain `kern::ipc::Held` would find the enclosing `demo::kern` first. A
+// module-less unit is at global scope already, so it keeps the bare spelling.
+std::string_view CppEmitter::global_qualifier() const {
+    return unit_has_module_ ? "::" : "";
+}
+
+std::string CppEmitter::nominal_prefix(const ast::Decl* decl) const {
     if (auto it = imported_qualifiers_.find(decl); it != imported_qualifiers_.end()) {
-        os << it->second << "::";
+        return std::string{global_qualifier()} + it->second + "::";
     }
+    return {};
 }
 
 void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
@@ -590,6 +603,10 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
                 os << it->second;
                 return;
             }
+        }
+        // A dotted path is a qualified reference into an imported module.
+        if (n.path.size() > 1) {
+            os << global_qualifier();
         }
         for (std::size_t i = 0; i < n.path.size(); ++i) {
             if (i != 0) {

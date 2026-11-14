@@ -4709,7 +4709,10 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // call form so the args slot into the right `case_t` aggregate.
         if (resolution_ != nullptr && c.callee->kind == ast::NodeKind::MemberExpr) {
             const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
-            if (mem.base->kind == ast::NodeKind::IdentExpr) {
+            // The enum is named locally (`Shape`) or through its module
+            // (`geo.Shape`, F19); sema binds the enum's symbol to either.
+            if (mem.base->kind == ast::NodeKind::IdentExpr
+                || mem.base->kind == ast::NodeKind::MemberExpr) {
                 if (const auto* sym = resolution_->symbol_of(mem.base.get())) {
                     if (sym->kind == sema::SymbolKind::Enum && sym->decl != nullptr) {
                         const auto& ed = static_cast<const ast::EnumDecl&>(*sym->decl);
@@ -4726,7 +4729,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                                 if (generic_inst) {
                                     emit_sema_type(os, inst);
                                 } else {
-                                    os << ed.name;
+                                    os << nominal_prefix(&ed) << ed.name;
                                 }
                             };
                             emit_enum_name();
@@ -4781,7 +4784,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                         if (generic_inst) {
                             emit_sema_type(os, inst);
                         } else {
-                            os << ed.name;
+                            os << nominal_prefix(&ed) << ed.name;
                         }
                     };
                     emit_enum_name();
@@ -4823,7 +4826,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             const auto* sym = resolution_->symbol_of(c.callee.get());
             const auto* qn = resolution_->qualified_name_of(c.callee.get());
             if (sym != nullptr && sym->kind == sema::SymbolKind::Struct && qn != nullptr) {
-                os << *qn;
+                os << global_qualifier() << *qn;
                 // §7/§5 generic imported struct — `coll.box.Holder[Int32](...)`
                 // constructs as `coll::box::Holder<std::int32_t>{...}`. The
                 // call's resolved result type carries the inferred arguments;
@@ -4985,7 +4988,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // export, which the resolver tagged with its fully-qualified C++ name.
         if (resolution_ != nullptr) {
             if (const auto* qn = resolution_->qualified_name_of(&e); qn != nullptr) {
-                os << *qn;
+                os << global_qualifier() << *qn;
                 break;
             }
         }
@@ -5038,7 +5041,9 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // this is a static enum case access. Bare enums emit as
         // `Color::red`; payloaded enums lower as struct-of-variant so a
         // bare-case access needs the `Shape{Shape::point_t{}}` wrap.
-        if (resolution_ != nullptr && m.base->kind == ast::NodeKind::IdentExpr) {
+        if (resolution_ != nullptr
+            && (m.base->kind == ast::NodeKind::IdentExpr
+                || m.base->kind == ast::NodeKind::MemberExpr)) {
             const auto* base_sym = resolution_->symbol_of(m.base.get());
             if (base_sym != nullptr && base_sym->kind == sema::SymbolKind::Enum
                 && base_sym->decl != nullptr) {
@@ -5055,7 +5060,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                         if (generic_inst) {
                             emit_sema_type(os, inst);
                         } else {
-                            os << enum_decl.name;
+                            os << nominal_prefix(&enum_decl) << enum_decl.name;
                         }
                     };
                     emit_enum_name();
@@ -5063,7 +5068,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     emit_enum_name();
                     os << "::" << m.member << "_t{}}";
                 } else {
-                    os << enum_decl.name << "::" << m.member;
+                    os << nominal_prefix(&enum_decl) << enum_decl.name << "::" << m.member;
                 }
                 break;
             }
@@ -5247,7 +5252,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                         if (generic_inst) {
                             emit_sema_type(os, t);
                         } else {
-                            os << enum_decl.name;
+                            os << nominal_prefix(&enum_decl) << enum_decl.name;
                         }
                     };
                     emit_enum_name();
@@ -5255,7 +5260,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     emit_enum_name();
                     os << "::" << d.name << "_t{}}";
                 } else {
-                    os << enum_decl.name << "::" << d.name;
+                    os << nominal_prefix(&enum_decl) << enum_decl.name << "::" << d.name;
                 }
                 break;
             }

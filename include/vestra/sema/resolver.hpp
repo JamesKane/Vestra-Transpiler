@@ -164,6 +164,12 @@ private:
     // ---- pass 2: resolve bodies ------------------------------------------
     void check_decl(const ast::Decl& d);
     void check_func(const ast::FuncDecl& f);
+    // §5 record this unit's struct-field / enum-payload types in the shared
+    // arena for importers (TypeArena::record_member_type).
+    void record_member_types();
+    // `Enum.case` once the base has resolved to the enum's symbol (local, or
+    // imported through `mod.Enum`).
+    TypePtr check_enum_case_member(const ast::MemberExpr& m, const Symbol& sym, TypePtr expected);
     // §4 `-> Never`: conservative "cannot complete normally" over a checked
     // body (F9). Diverging: `return`, a Never-typed expression (a call to a
     // Never function, `panic`, `throw`), `while true` with no `break` out of

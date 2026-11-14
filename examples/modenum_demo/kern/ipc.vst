@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// The imported half of modenum_demo: a payload enum, a bare enum used as an
+// error type, and structs whose fields are this module's own types.
+module kern.ipc
+
+public enum Held {
+    case client(UInt32)
+    case serves(UInt32)
+    case none
+}
+
+public enum No {
+    case dead
+    case busy
+}
+
+public struct Domain {
+    var alive: Bool
+    var held: Held
+}
+
+public struct Kernel {
+    var domains: [2]Domain
+    var last: No
+}
+
+public func fresh() -> Kernel {
+    let d = Domain(alive: true, held: Held.none)
+    return Kernel(domains: [d, d], last: No.busy)
+}
+
+public func risky(_ x: Int32) throws(No) -> Int32 {
+    if x < 0 { throw No.dead }
+    return x
+}

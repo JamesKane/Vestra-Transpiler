@@ -298,7 +298,7 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
                 // OrPat folded into a chain of `||`s.
                 if (arm.pattern->kind == ast::NodeKind::EnumPat) {
                     const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
-                    os << "__vstr_m == " << enum_decl.name << "::" << ep.case_name;
+                    os << "__vstr_m == " << nominal_prefix(&enum_decl) << enum_decl.name << "::" << ep.case_name;
                 } else {
                     const auto& op = static_cast<const ast::OrPat&>(*arm.pattern);
                     os << "(";
@@ -309,7 +309,7 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
                         if (op.alternatives[i] != nullptr
                             && op.alternatives[i]->kind == ast::NodeKind::EnumPat) {
                             const auto& ep = static_cast<const ast::EnumPat&>(*op.alternatives[i]);
-                            os << "__vstr_m == " << enum_decl.name << "::" << ep.case_name;
+                            os << "__vstr_m == " << nominal_prefix(&enum_decl) << enum_decl.name << "::" << ep.case_name;
                         } else {
                             os << "false";
                         }
@@ -359,7 +359,7 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
         auto emit_enum_labels = [&](const ast::Pattern& p, auto& self) -> bool {
             if (p.kind == ast::NodeKind::EnumPat) {
                 const auto& ep = static_cast<const ast::EnumPat&>(p);
-                os << "        case " << enum_decl.name << "::" << ep.case_name << ":\n";
+                os << "        case " << nominal_prefix(&enum_decl) << enum_decl.name << "::" << ep.case_name << ":\n";
                 return true;
             }
             if (p.kind == ast::NodeKind::OrPat) {
@@ -543,7 +543,7 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
         if (!scrutinee_type->parts().empty()) {
             emit_sema_type(os, scrutinee_type);
         } else {
-            os << enum_decl.name;
+            os << nominal_prefix(&enum_decl) << enum_decl.name;
         }
         os << "::" << case_name << "_t>) {\n";
 

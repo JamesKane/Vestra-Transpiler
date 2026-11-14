@@ -14,6 +14,8 @@
 
 #include "resolver_internal.hpp"
 
+#include <algorithm>
+
 #include <array>
 #include <cstdlib>
 #include <format>
@@ -453,6 +455,31 @@ TypePtr Resolver::lookup_field(TypePtr struct_type,
 TypePtr Resolver::resolve_member_type_with_generics(const std::vector<ast::GenericParam>& generics,
                                                     const ast::Type& member_type,
                                                     const std::vector<TypePtr>& args) {
+    // §5 a member of an imported type: use the type its own module resolved
+    // (F19), binding this instance's type arguments by name. A const generic
+    // needs the scope-binding path below (it concretizes `[N]T`), so a type
+    // with one falls through.
+    if (auto declared = types_->member_type(&member_type)) {
+        const bool has_const = std::ranges::any_of(
+            generics, [](const ast::GenericParam& g) { return !g.name.empty() && g.is_const; });
+        if (named_type_param_count(generics) == 0) {
+            return declared;
+        }
+        if (!has_const) {
+            std::unordered_map<std::string, TypePtr> bindings;
+            std::size_t idx = 0;
+            for (const auto& gp : generics) {
+                if (gp.name.empty()) {
+                    continue;
+                }
+                if (idx < args.size() && args[idx] != nullptr) {
+                    bindings[gp.name] = args[idx];
+                }
+                ++idx;
+            }
+            return types_->substitute(declared, bindings);
+        }
+    }
     if (named_type_param_count(generics) == 0) {
         return resolve_type(member_type);
     }

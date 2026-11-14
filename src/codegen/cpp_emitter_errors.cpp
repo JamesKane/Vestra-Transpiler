@@ -452,7 +452,7 @@ void CppEmitter::emit_match_in_lambda(std::ostream& os, const ast::MatchExpr& m,
             }
             const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
             write_indent(os, indent);
-            os << "case " << enum_decl.name << "::" << ep.case_name << ": {\n";
+            os << "case " << nominal_prefix(&enum_decl) << enum_decl.name << "::" << ep.case_name << ": {\n";
             write_indent(os, indent + 1);
             emit_stmt_expr(os, *arm.body, /*return_value=*/true);
             write_indent(os, indent);
@@ -515,7 +515,7 @@ void CppEmitter::emit_match_in_lambda(std::ostream& os, const ast::MatchExpr& m,
         } else {
             os << "else if";
         }
-        os << " (std::holds_alternative<" << enum_decl.name << "::" << ep.case_name
+        os << " (std::holds_alternative<" << nominal_prefix(&enum_decl) << enum_decl.name << "::" << ep.case_name
            << "_t>(__vstr_alt_ref)) {\n";
 
         // Bind payload fields. The alt is `std::get<case_t>(__vstr_alt_ref)`;
@@ -537,7 +537,7 @@ void CppEmitter::emit_match_in_lambda(std::ostream& os, const ast::MatchExpr& m,
             });
         if (has_child_binding) {
             write_indent(os, indent + 1);
-            os << "auto&& __vstr_alt = std::get<" << enum_decl.name << "::" << ep.case_name
+            os << "auto&& __vstr_alt = std::get<" << nominal_prefix(&enum_decl) << enum_decl.name << "::" << ep.case_name
                << "_t>(__vstr_alt_ref);\n";
         }
 

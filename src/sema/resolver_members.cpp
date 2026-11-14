@@ -595,11 +595,60 @@ TypePtr Resolver::check_qualified_module_ref(const ast::MemberExpr& m) {
     return sym->type;
 }
 
+TypePtr Resolver::check_enum_case_member(const ast::MemberExpr& m,
+                                         const Symbol& sym,
+                                         TypePtr expected) {
+    const auto& enum_decl = static_cast<const ast::EnumDecl&>(*sym.decl);
+    if (const auto* c = lookup_enum_case(enum_decl, m.member)) {
+        // §7 generics phase 2 — if the surrounding context
+        // expects a concrete instance of this same enum, build
+        // the constructor against that instance so the type
+        // arguments are pinned (e.g. `let o: Option[Int32] =
+        // Option.none`). Otherwise use the bare nominal: a
+        // payloaded case infers its arguments from the call, and
+        // a no-payload case with no context is reported below.
+        TypePtr enum_t = sym.type;
+        if (expected != nullptr && expected->kind() == TypeKind::Enum
+            && expected->nominal_decl() == sym.decl && !expected->parts().empty()) {
+            enum_t = expected;
+        }
+        if (named_type_param_count(enum_decl.generics) > 0 && c->payload.empty()
+            && enum_t->parts().empty()) {
+            error_at(m.range,
+                     std::format("cannot infer type argument(s) for generic enum '{}' "
+                                 "case '{}'; use it in a typed context (e.g. the "
+                                 "leading-dot form `.{}` against a `{}[...]`)",
+                                 enum_decl.name,
+                                 m.member,
+                                 m.member,
+                                 enum_decl.name));
+            return types_->error();
+        }
+        auto t = enum_case_constructor_type(enum_t, *c);
+        return t;
+    }
+    error_at(m.range,
+             std::format("enum '{}' has no case '{}'", enum_decl.name, m.member));
+    return types_->error();
+}
+
 TypePtr Resolver::check_member(const ast::MemberExpr& m, TypePtr expected) {
     // §5 a qualified reference into an imported module (`util.math.add`) is
     // resolved before any value/static member handling.
     if (auto qt = check_qualified_module_ref(m)) {
         return qt;
+    }
+    // §5 `mod.Enum.case`: a case of an imported enum, named through its
+    // module (F19). The base `mod.Enum` resolves as a qualified reference to
+    // the exported enum; the member is then a case, as for a local enum.
+    if (m.base->kind == ast::NodeKind::MemberExpr) {
+        const auto& base = static_cast<const ast::MemberExpr&>(*m.base);
+        if (auto bt = check_qualified_module_ref(base); bt != nullptr && !bt->is_error()) {
+            if (const Symbol* sym = resolution_.symbol_of(&base);
+                sym != nullptr && sym->kind == SymbolKind::Enum && sym->decl != nullptr) {
+                return check_enum_case_member(m, *sym, expected);
+            }
+        }
     }
     // §14.12 typed system-register access. `Sysreg.<name>` resolves
     // to a SysregHandle<UInt64> over the architectural register
@@ -683,38 +732,7 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m, TypePtr expected) {
             if (sym->kind == SymbolKind::Enum && sym->decl != nullptr) {
                 resolution_.set_symbol(m.base.get(), sym);
                 check_visibility(*sym, m.base->range);
-                const auto& enum_decl = static_cast<const ast::EnumDecl&>(*sym->decl);
-                if (const auto* c = lookup_enum_case(enum_decl, m.member)) {
-                    // §7 generics phase 2 — if the surrounding context
-                    // expects a concrete instance of this same enum, build
-                    // the constructor against that instance so the type
-                    // arguments are pinned (e.g. `let o: Option[Int32] =
-                    // Option.none`). Otherwise use the bare nominal: a
-                    // payloaded case infers its arguments from the call, and
-                    // a no-payload case with no context is reported below.
-                    TypePtr enum_t = sym->type;
-                    if (expected != nullptr && expected->kind() == TypeKind::Enum
-                        && expected->nominal_decl() == sym->decl && !expected->parts().empty()) {
-                        enum_t = expected;
-                    }
-                    if (named_type_param_count(enum_decl.generics) > 0 && c->payload.empty()
-                        && enum_t->parts().empty()) {
-                        error_at(m.range,
-                                 std::format("cannot infer type argument(s) for generic enum '{}' "
-                                             "case '{}'; use it in a typed context (e.g. the "
-                                             "leading-dot form `.{}` against a `{}[...]`)",
-                                             enum_decl.name,
-                                             m.member,
-                                             m.member,
-                                             enum_decl.name));
-                        return types_->error();
-                    }
-                    auto t = enum_case_constructor_type(enum_t, *c);
-                    return t;
-                }
-                error_at(m.range,
-                         std::format("enum '{}' has no case '{}'", enum_decl.name, m.member));
-                return types_->error();
+                return check_enum_case_member(m, *sym, expected);
             }
             // §12.2 reflection: `StructName.fields` returns a `[N]Field`
             // — one entry per ordinary field (embed fields per §6 are
