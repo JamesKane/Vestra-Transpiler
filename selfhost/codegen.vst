@@ -9519,6 +9519,14 @@ func tryEmitLeadingDotCall(_ env: inout TyEnv, _ to: Str, _ callee: Vec[Nd], _ a
 func tryEmitLeadingDotCase(_ env: inout TyEnv, _ to: Str, _ n: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
     let base = genBaseOf(to)
     if streq(base, "Ordering") { emitMemoryOrder(n); return true }
+    // §A5 the prelude's payload-free builtin enums (`enum class BarrierScope`
+    // and friends): a plain scoped reference, with no unit declaration to find.
+    if streq(base, "BarrierScope") || streq(base, "BarrierKind") || streq(base, "TlbScope") {
+        print(base)
+        print("::")
+        print(n)
+        return true
+    }
     if !tyIsEnumName(env, base) { return false }
     if isPayloadEnum(env, base) {
         let nm = cppOfSpelling(own(to))
@@ -10195,6 +10203,7 @@ func tryEmitBuiltin(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using All
         print("__vstr::unreachable_fn()")
         return true
     }
+    if emitSyncIntrinsic(env, fname, args) { return true }
     if tyArity(env, fname) >= 0 { return false }
     if streq(fname, "readFile") && args.len() == 1 {
         print("__vstr::read_file(")
@@ -10215,6 +10224,55 @@ func tryEmitBuiltin(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using All
         return true
     }
     return false
+}
+
+// §A5 (§14.10) the sync, cache and TLB intrinsics: `__vstr::<name>(args)`,
+// with `nop` -> `cpu_nop` (the bare name collides on the C++ side). Matched on
+// the callee NAME alone, as the bootstrap's table is. Each argument takes its
+// builtin parameter type (resolver_builtins.cpp), so a leading-dot Ordering /
+// BarrierScope / BarrierKind / TlbScope case lowers to its C++ spelling.
+func emitSyncIntrinsic(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    let cn = syncIntrinsicCpp(fname)
+    if streq(cn, "") { return false }
+    print("__vstr::")
+    print(cn)
+    print("(")
+    var i: Int = 0
+    while i < args.len() {
+        if i > 0 { print(", ") }
+        emitSlotArg(env, syncParamType(fname, i), args.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    print(")")
+    return true
+}
+
+func syncIntrinsicCpp(_ n: Str) using Alloc -> String {
+    if streq(n, "nop") { return own("cpu_nop") }
+    if streq(n, "compilerFence") || streq(n, "memoryBarrier") || streq(n, "syncBarrier")
+        || streq(n, "instructionBarrier") || streq(n, "waitForInterrupt")
+        || streq(n, "waitForEvent") || streq(n, "signalEvent") || streq(n, "relax")
+        || streq(n, "cleanData") || streq(n, "invalidateData")
+        || streq(n, "cleanInvalidateData") || streq(n, "zeroData")
+        || streq(n, "publishInstructions") || streq(n, "invalidateAllInstructions")
+        || streq(n, "tlbInvalidateAll") || streq(n, "tlbInvalidatePage")
+        || streq(n, "tlbInvalidateAsid") {
+        return own(n)
+    }
+    return own("")
+}
+
+// The enum-typed parameters of the intrinsics; every other parameter (spans,
+// addresses, flags) emits its argument unchanged.
+func syncParamType(_ n: Str, _ i: Int) using Alloc -> String {
+    if streq(n, "compilerFence") && i == 0 { return own("Ordering") }
+    if streq(n, "memoryBarrier") && i == 0 { return own("BarrierScope") }
+    if streq(n, "memoryBarrier") && i == 1 { return own("BarrierKind") }
+    if streq(n, "syncBarrier") && i == 0 { return own("BarrierScope") }
+    if streq(n, "tlbInvalidateAll") && i == 0 { return own("TlbScope") }
+    if streq(n, "tlbInvalidatePage") && i == 2 { return own("TlbScope") }
+    if streq(n, "tlbInvalidateAsid") && i == 1 { return own("TlbScope") }
+    return own("")
 }
 
 // The print family — `print`/`println` (stdout) and `eprint`/`eprintln`
