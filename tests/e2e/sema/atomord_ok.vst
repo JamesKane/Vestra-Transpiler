@@ -1,0 +1,18 @@
+// §14.9 every ordering here is one its operation can carry, and labeled CAS
+// arguments name their parameters in order.
+
+static counter: Atomic[UInt32] = 0
+
+func bump(_ o: Ordering) -> UInt32 {
+    counter.store(1, .release)
+    counter.store(2, o)
+    let a = counter.load(.acquire)
+    let b = counter.fetchAdd(1, .acqRel)
+    let r1 = counter.compareExchange(0, 1, .seqCst, .seqCst)
+    let r2 = counter.compareExchange(expected: 0, desired: 1, success: .acqRel, failure: .acquire)
+    let r3 = counter.compareExchange(0, 1, .release, .relaxed)
+    if r1.succeeded || r2.succeeded || r3.succeeded { return a + b }
+    return counter.load(.relaxed)
+}
+
+func main() -> Int32 { return 0 }

@@ -49,8 +49,6 @@ Each gap has one of four kinds:
    - Division by zero.
    - Argument evaluation order.
    - `??` evaluates its right side eagerly.
-   - An illegal atomic ordering such as `load(.release)` is passed straight
-     through to `std::memory_order_release`.
 3. **Unfoldable comptime constructs degrade to a warning.** `build` prints
    "codegen does not yet support: expression" and emits
    `/* unsupported: expression */`. The output then either fails to compile
@@ -342,9 +340,9 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | §14.7.1 rule 5 | One-way: ordinary code may not reach `@kernel_init` | unsound (partial) | Direct calls are rejected. `let p = &ki` from ordinary code passes. |
 | §14.12.3 | `@no_auto_barrier` on a statement | missing | Function level only. The statement form is a parse error. |
 | §14.8 | `PerCpu[T]` layout | weaker | One `alignas(64)` slot shared by every hart (`cpp_emitter_prelude.cpp:369`). `slot(hartId)` ignores `hartId`. No `[MAX_HARTS]` array, and no `tpidr_el1` / `gs` / `tp` read. |
-| §14.9.1, §14.9.3 | Ordering legality | unsound | `load(.release)`, `store(_, .acquire)` and a CAS failure ordering stronger than success all pass. `load(.release)` emits `std::memory_order_release`, which is UB. |
+| §14.9.1, §14.9.3 | Ordering legality for an ordering held in a variable | unsound | Only a literal `.case` is checked. `load(o)` with `o` a `.release` parameter emits `std::memory_order_release`, which is UB. |
 | §14.9.2 | Orderings default to `.seqCst` | divergent | The ordering argument is mandatory. |
-| §14.9.3 | CAS argument labels | unsound | Labels are ignored, so reordered labeled arguments bind positionally: `compareExchange(desired: 1, expected: 0, ...)` emits expected = 1, desired = 0. |
+| §14.9.3 | CAS argument labels | divergent | Labels are optional: positional `compareExchange(0, 1, .seqCst, .acquire)` is accepted. A label that is given must be the one for its position, so reordered labels are an error rather than a silent swap. |
 | §14.9.2 | `fetchSet` / `fetchClear` on `Atomic[Bool]` | missing | |
 | §14.9.3 | Admitted weak-CAS loop shapes | unsound (partial) | `repeat { } while` is a parse error. Any `while true` admits any number of weak sites (`resolver_decls.cpp:1300`). |
 | §14.9.3 | `@retry_loop` predicate, `@allow_weak_cas` | missing | `@retry_loop` is "not supported yet". `@allow_weak_cas` on a statement is a parse error. |

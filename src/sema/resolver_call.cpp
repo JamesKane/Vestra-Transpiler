@@ -1242,6 +1242,10 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
+    if (c.callee->kind == ast::NodeKind::MemberExpr) {
+        check_atomic_call(c);
+    }
+
     // Struct construction: `Point(x: 10, y: 32)` parses as a CallExpr whose
     // callee evaluates to the nominal Struct type. Dispatch by-label against
     // the struct's fields rather than treating it as a function call.
@@ -1486,6 +1490,99 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
 
     auto result = callee_type->result() != nullptr ? callee_type->result() : types_->unit();
     return types_->substitute(result, bindings);
+}
+
+namespace {
+
+// The ordering a literal `.case` argument names, or "" for anything else (a
+// variable, a parameter), which is left to the runtime value.
+std::string_view literal_ordering(const ast::Expr* e) {
+    if (e == nullptr || e->kind != ast::NodeKind::LeadingDotExpr) {
+        return {};
+    }
+    return static_cast<const ast::LeadingDotExpr&>(*e).name;
+}
+
+const ast::Expr* arg_at(const ast::CallExpr& c, std::size_t i) {
+    return i < c.args.size() ? c.args[i].value.get() : nullptr;
+}
+
+}  // namespace
+
+// §14.9.1 / §14.9.3 an ordering an operation can't carry is a compile error:
+// a load can't release, a store can't acquire, and a CAS failure ordering may
+// be neither .release nor .acqRel, nor stronger than its success ordering.
+// The CAS arguments, when labeled, carry the spec's labels in order.
+void Resolver::check_atomic_call(const ast::CallExpr& c) {
+    const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+    auto base_t = resolution_.type_of(mem.base.get());
+    if (base_t == nullptr) {
+        return;
+    }
+    const bool plain = base_t->kind() == TypeKind::Atomic;
+    const bool tagged = base_t->kind() == TypeKind::AtomicTaggedPointer;
+    if (!plain && !tagged) {
+        return;
+    }
+    const std::string& op = mem.member;
+    auto check_single = [&](std::size_t idx, std::string_view what, bool is_load) {
+        auto o = literal_ordering(arg_at(c, idx));
+        const bool bad = is_load ? (o == "release" || o == "acqRel")
+                                 : (o == "acquire" || o == "acqRel");
+        if (bad) {
+            error_at(arg_at(c, idx)->range,
+                     std::format("an atomic {} can't carry the ordering '.{}'", what, o));
+        }
+    };
+    if (op == "load") {
+        check_single(0, "load", true);
+        return;
+    }
+    if (op == "store") {
+        check_single(plain ? 1 : 2, "store", false);
+        return;
+    }
+    const bool cas = op == "compareExchange" || (plain && op == "compareExchangeWeak");
+    if (!cas) {
+        return;
+    }
+    if (plain) {
+        static constexpr std::array<std::string_view, 4> kLabels{"expected", "desired", "success",
+                                                                 "failure"};
+        for (std::size_t i = 0; i < c.args.size() && i < kLabels.size(); ++i) {
+            const auto& lbl = c.args[i].label;
+            if (!lbl.empty() && lbl != kLabels[i]) {
+                error_at(c.args[i].value->range,
+                         std::format("argument {} of {} is labeled '{}', but that parameter is '{}'",
+                                     i + 1,
+                                     op,
+                                     lbl,
+                                     kLabels[i]));
+            }
+        }
+    }
+    const std::size_t si = plain ? 2 : 3;
+    auto success = literal_ordering(arg_at(c, si));
+    auto failure = literal_ordering(arg_at(c, si + 1));
+    if (failure == "release" || failure == "acqRel") {
+        error_at(arg_at(c, si + 1)->range,
+                 std::format("a CAS failure ordering can't be '.{}'; use .relaxed, .acquire or "
+                             ".seqCst",
+                             failure));
+        return;
+    }
+    if (success.empty() || failure.empty()) {
+        return;
+    }
+    const bool success_acquires =
+        success == "acquire" || success == "acqRel" || success == "seqCst";
+    if ((failure == "seqCst" && success != "seqCst") || (failure == "acquire" && !success_acquires)) {
+        error_at(arg_at(c, si + 1)->range,
+                 std::format("the CAS failure ordering '.{}' is stronger than its success "
+                             "ordering '.{}'",
+                             failure,
+                             success));
+    }
 }
 
 }  // namespace vestra::sema

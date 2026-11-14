@@ -1,0 +1,19 @@
+// §14.9 an ordering an operation can't carry used to pass straight through to
+// C++ (`load(.release)` is undefined behaviour there), and labeled CAS
+// arguments bound by position, so swapping them swapped expected and desired.
+
+static counter: Atomic[UInt32] = 0
+
+func bad() -> UInt32 {
+    let a = counter.load(.release)
+    counter.store(1, .acquire)
+    counter.store(1, .acqRel)
+    let r1 = counter.compareExchange(0, 1, .seqCst, .release)
+    let r2 = counter.compareExchange(0, 1, .acquire, .seqCst)
+    let r3 = counter.compareExchange(0, 1, .release, .acquire)
+    let r4 = counter.compareExchange(desired: 1, expected: 0, success: .seqCst, failure: .acquire)
+    if r1.succeeded || r2.succeeded || r3.succeeded || r4.succeeded { return a }
+    return 0
+}
+
+func main() -> Int32 { return 0 }

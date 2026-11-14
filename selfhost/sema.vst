@@ -3478,6 +3478,7 @@ func tnSeedBuiltins(_ env: inout TnEnv) using Alloc {
     env.types.push("Soa"); env.types.push("Channel"); env.types.push("Future")
     env.types.push("Duration"); env.types.push("Self"); env.types.push("Never")
     env.types.push("Ptr"); env.types.push("MutPtr")   // §14.1 raw pointers
+    env.types.push("Ordering"); env.types.push("AtomicTaggedPointer")   // Annex §14.9
     env.types.push("Padded"); env.types.push("PerCpu") // Annex §14.8
     env.types.push("MmioView"); env.types.push("MmioRegion")   // Annex §14.11
 }
@@ -6948,6 +6949,7 @@ struct TyEnv {
     var muMarks: Vec[Int]       // scope starts in muName
     var stName: Vec[String]     // global: statics ...
     var stAtomic: Vec[Bool]     // ... and whether each is an Atomic (the only writable kind)
+    var stSpell: Vec[String]    // ... and its type spelling
     var esBad: Vec[String]      // §19.4 escape errors (printed after the flow passes, as the bootstrap's pass runs last)
     var esFn: String            // per-function: its name
     var esLocals: Vec[String]   // per-function: every let / var it declares
@@ -7006,6 +7008,7 @@ func tyRecordStatic(_ env: inout TyEnv, _ name: String, _ ty: Vec[Nd]) using All
     env.stName.push(own(name))
     let sp = tyAnnSpelling(ty)
     env.stAtomic.push(tyStartsWith(sp, "Atomic[") || tyStartsWith(sp, "AtomicTaggedPointer["))
+    env.stSpell.push(own(sp))
 }
 
 func tyRecordEnumDecl(_ env: inout TyEnv, _ name: String, _ cases: Vec[Nd], _ methods: Vec[Nd]) using Alloc {
@@ -8496,6 +8499,7 @@ func tyGuardMsg(_ got: String) using Alloc -> String {
 
 func tyExprCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
     tyBoxed(env, callee)
+    tyAtomicCall(env, callee, args)
     var i: Int = 0
     while i < args.len() {
         tyExpr(env, args.get(i) ?? Nd.wildcard)
@@ -8503,6 +8507,146 @@ func tyExprCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Al
     }
     tyCheckCallArgs(env, callee, args)
     muCall(env, callee, args)
+}
+
+// ----- §14.9 atomic orderings and CAS labels ----------------------------------
+// A load can't release, a store can't acquire, and a CAS failure ordering may be
+// neither .release nor .acqRel, nor stronger than its success ordering. Labeled
+// `Atomic` CAS arguments carry the spec's labels in order. Only a literal
+// `.case` ordering is checked.
+func tyAtomicCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let name, let chain): tyAtomicMember(env, base, name, args)
+        default: noop()
+    }
+}
+
+// 1 for an `Atomic[T]` receiver, 2 for an `AtomicTaggedPointer[T]`, else 0.
+func tyAtomicKind(_ env: inout TyEnv, _ base: Vec[Nd]) using Alloc -> Int {
+    var sp = tyInferBoxed(env, base)
+    if streq(sp, "") { sp = tyStaticOf(env, base) }
+    if tyStartsWith(sp, "Atomic[") { return 1 }
+    if tyStartsWith(sp, "AtomicTaggedPointer[") { return 2 }
+    return 0
+}
+
+func tyStaticOf(_ env: inout TyEnv, _ base: Vec[Nd]) using Alloc -> String {
+    return match base.get(0) ?? Nd.wildcard {
+        case .ident(let n): tyStaticSpell(env, n)
+        default: own("")
+    }
+}
+
+func tyStaticSpell(_ env: inout TyEnv, _ name: String) using Alloc -> String {
+    var i: Int = 0
+    while i < env.stName.len() {
+        if streq(env.stName.get(i) ?? own(""), name) { return env.stSpell.get(i) ?? own("") }
+        i = i + 1
+    }
+    return own("")
+}
+
+func tyAtomicMember(_ env: inout TyEnv, _ base: Vec[Nd], _ op: String, _ args: Vec[Nd]) using Alloc {
+    let kind = tyAtomicKind(env, base)
+    if kind == 0 { return }
+    if streq(op, "load") { tyOrdSingle(env, args, 0, "load"); return }
+    if streq(op, "store") {
+        if kind == 1 { tyOrdSingle(env, args, 1, "store") } else { tyOrdSingle(env, args, 2, "store") }
+        return
+    }
+    let cas = streq(op, "compareExchange") || (kind == 1 && streq(op, "compareExchangeWeak"))
+    if !cas { return }
+    if kind == 1 {
+        var i: Int = 0
+        while i < args.len() && i < 4 {
+            tyCasLabel(env, op, i, args.get(i) ?? Nd.wildcard)
+            i = i + 1
+        }
+    }
+    var si: Int = 2
+    if kind == 2 { si = 3 }
+    let success = tyOrdAt(args, si)
+    let failure = tyOrdAt(args, si + 1)
+    if streq(failure, "release") || streq(failure, "acqRel") {
+        env.bad.push(tyCasFailMsg(failure))
+        return
+    }
+    if streq(success, "") || streq(failure, "") { return }
+    let acq = streq(success, "acquire") || streq(success, "acqRel") || streq(success, "seqCst")
+    if (streq(failure, "seqCst") && !streq(success, "seqCst")) || (streq(failure, "acquire") && !acq) {
+        env.bad.push(tyCasStrongMsg(failure, success))
+    }
+}
+
+func tyCasLabel(_ env: inout TyEnv, _ op: String, _ i: Int, _ a: Nd) using Alloc {
+    match a {
+        case .arg(let label, let io, let val): tyCasLabelIs(env, op, i, label)
+        default: noop()
+    }
+}
+
+func tyCasLabelIs(_ env: inout TyEnv, _ op: String, _ i: Int, _ label: String) using Alloc {
+    var want: String = "expected"
+    if i == 1 { want = "desired" }
+    if i == 2 { want = "success" }
+    if i == 3 { want = "failure" }
+    if label.len() > 0 && !streq(label, want) {
+        var s: String = "argument "
+        s.append(intToStr(i + 1))
+        s.append(" of ")
+        s.append(op)
+        s.append(" is labeled '")
+        s.append(label)
+        s.append("', but that parameter is '")
+        s.append(want)
+        s.append("'")
+        env.bad.push(s)
+    }
+}
+
+// The ordering a literal `.case` argument names, or "".
+func tyOrdAt(_ args: Vec[Nd], _ i: Int) using Alloc -> String {
+    return match args.get(i) ?? Nd.wildcard {
+        case .arg(let label, let io, let val): tyOrdLit(val)
+        default: own("")
+    }
+}
+
+func tyOrdLit(_ val: Vec[Nd]) using Alloc -> String {
+    return match val.get(0) ?? Nd.wildcard {
+        case .leadingDot(let n): own(n)
+        default: own("")
+    }
+}
+
+func tyOrdSingle(_ env: inout TyEnv, _ args: Vec[Nd], _ i: Int, _ what: String) using Alloc {
+    let o = tyOrdAt(args, i)
+    var bad: Bool = streq(o, "acquire") || streq(o, "acqRel")
+    if streq(what, "load") { bad = streq(o, "release") || streq(o, "acqRel") }
+    if bad {
+        var s: String = "an atomic "
+        s.append(what)
+        s.append(" can't carry the ordering '.")
+        s.append(o)
+        s.append("'")
+        env.bad.push(s)
+    }
+}
+
+func tyCasFailMsg(_ f: String) using Alloc -> String {
+    var s: String = "a CAS failure ordering can't be '."
+    s.append(f)
+    s.append("'; use .relaxed, .acquire or .seqCst")
+    return s
+}
+
+func tyCasStrongMsg(_ f: String, _ su: String) using Alloc -> String {
+    var s: String = "the CAS failure ordering '."
+    s.append(f)
+    s.append("' is stronger than its success ordering '.")
+    s.append(su)
+    s.append("'")
+    return s
 }
 
 // A call to a known user function must supply the right arity, and each argument
@@ -10849,7 +10993,7 @@ func main() -> Int32 {
                                      curRet: own(""), bad: Vec.new(),
                                      mInout: Vec.new(), muName: Vec.new(), muFlag: Vec.new(),
                                      muKind: Vec.new(), muMarks: Vec.new(),
-                                     stName: Vec.new(), stAtomic: Vec.new(),
+                                     stName: Vec.new(), stAtomic: Vec.new(), stSpell: Vec.new(),
                                      esBad: Vec.new(), esFn: own(""), esLocals: Vec.new(), esSinks: Vec.new(),
                                      esVName: Vec.new(), esVOrig: Vec.new(), esRaw: 0, esMmio: 0,
                                      esDepth: 0, esLocDepth: Vec.new(), esVDepth: Vec.new(),

@@ -321,6 +321,10 @@ private:
     // the inferred/supplied argument types. `bindings` maps each parameter
     // name to its resolved type. Emits a diagnostic at `range` per
     // violation. Used at function call sites and struct/enum instantiations.
+    // §14.9 ordering legality and CAS argument labels on an Atomic /
+    // AtomicTaggedPointer method call.
+    void check_atomic_call(const ast::CallExpr& c);
+
     void check_generic_bounds(const std::vector<ast::GenericParam>& generics,
                               const std::unordered_map<std::string, TypePtr>& bindings,
                               diag::SourceRange range);
