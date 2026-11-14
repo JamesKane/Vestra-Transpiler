@@ -225,6 +225,12 @@ void ExclusivityChecker::check_expr(const ast::Expr& e) {
     case ast::NodeKind::AsExpr:
         check_expr(*static_cast<const ast::AsExpr&>(e).value);
         break;
+    case ast::NodeKind::ClosureExpr:
+        // §19.3 a closure body is code like any other.
+        for (const auto& st : static_cast<const ast::ClosureExpr&>(e).body) {
+            check_stmt(*st);
+        }
+        break;
     case ast::NodeKind::VectorLitExpr:
         for (const auto& el : static_cast<const ast::VectorLitExpr&>(e).elements) {
             check_expr(*el);

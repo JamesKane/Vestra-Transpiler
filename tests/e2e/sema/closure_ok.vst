@@ -1,0 +1,23 @@
+// §7 closures: a Trivial capture copies, a moved-in capture used only inside,
+// and a linear local of the body consumed there.
+linear struct T {
+    let id: Int32
+}
+struct B {
+    var b: Box[Int32]
+}
+func close(_ t: sink T) { }
+func run(_ f: () -> Int32) -> Int32 { return f() }
+func ok(_ k: Int32) -> Int32 {
+    return run({ => k + 1 })
+}
+func moved(_ b: sink B) -> Int32 {
+    return run({ => b.b.value })
+}
+func local() -> Int32 {
+    return run({ =>
+        let t = T(id: 1)
+        close(t)
+        1
+    })
+}

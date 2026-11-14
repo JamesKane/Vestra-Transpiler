@@ -1,0 +1,43 @@
+// §7 a closure captures by value (a non-Trivial capture moves in, and a
+// borrowed one can't), and its body is checked like any code.
+linear struct T {
+    let id: Int32
+}
+struct B {
+    var b: Box[Int32]
+}
+func close(_ t: sink T) { }
+func eat(_ b: sink B) { }
+func run(_ f: () -> Int32) -> Int32 { return f() }
+func useAfter(_ b: sink B) -> Int32 {
+    let n = run({ => b.b.value })
+    eat(b)
+    return n
+}
+func leak() -> Int32 {
+    return run({ =>
+        let t = T(id: 1)
+        1
+    })
+}
+func twice(_ t: sink T) -> Int32 {
+    return run({ =>
+        close(t)
+        close(t)
+        1
+    })
+}
+func borrowed(_ b: B) -> Int32 {
+    return run({ => b.b.value })
+}
+struct P {
+    var a: Int32
+}
+func both(_ x: inout P, _ y: inout P) { }
+func excl() -> Int32 {
+    return run({ =>
+        var p = P(a: 1)
+        both(&p, &p)
+        1
+    })
+}

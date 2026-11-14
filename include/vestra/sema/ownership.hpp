@@ -176,6 +176,16 @@ private:
     // `deinit`, or owns a `Box`, directly or through a field / payload /
     // element.
     [[nodiscard]] std::string non_copyable_reason(TypePtr t, int depth = 0) const;
+    // §7 closures capture by value. While a closure body is checked, every
+    // outer binding it names is recorded here (innermost closure last).
+    struct CaptureScope {
+        diag::SourceRange range;
+        std::vector<std::pair<const Symbol*, diag::SourceRange>> captures;
+    };
+    std::vector<CaptureScope> captures_;
+    void note_capture(const Symbol* sym, diag::SourceRange site);
+    void check_closure(const ast::ClosureExpr& cx);
+    [[nodiscard]] static bool inside(diag::SourceRange inner, diag::SourceRange outer);
 
     const ast::CompilationUnit* unit_;
     const Resolution* resolution_;

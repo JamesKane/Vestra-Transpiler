@@ -4278,6 +4278,7 @@ func exExpr(_ env: inout ExEnv, _ e: Nd) using Alloc {
         case .addrOf(let x): exBoxed(env, x)
         case .arg(let l, let io, let v): exBoxed(env, v)
         case .doCatchE(let db, let en, let et, let cb): exPair(env, db, cb)
+        case .closureE(let ps, let body): exBlock(env, body)   // §19.3 a closure body is code too
         default: noop()
     }
 }
@@ -4520,6 +4521,9 @@ struct OwnEnv {
     var locTy: Vec[Nd]          // ... and its declared (or constructed) type
     var selfTy: String          // per method: the owning type ("" outside one)
     var borrows: Vec[String]    // per function: `if let` bindings borrowed from a place
+    var capMark: Vec[Int]       // per closure (innermost last): bindings before its body
+    var capStart: Vec[Int]      // ... where its captures begin in capNames
+    var capNames: Vec[String]   // captured binding names, by closure
     var deinitTys: Vec[String]  // global: struct names that declare a `deinit`
     var payOwner: Vec[String]   // global: enum payload rows — owning enum ...
     var payTy: Vec[Nd]          // ... and the payload type
@@ -5049,6 +5053,7 @@ func ownConsume(_ env: inout OwnEnv, _ name: String) using Alloc {
 }
 
 func ownUse(_ env: inout OwnEnv, _ name: String) using Alloc {
+    ownNoteCapture(env, name)
     let idx = ownFind(env, name)
     if idx >= 0 && (env.consumed.get(idx) ?? false) { env.bad.push(ownUseAfter(name)); return }
     let mf = ownMovedField(env, name)
@@ -5108,6 +5113,7 @@ func ownExpr(_ env: inout OwnEnv, _ e: Nd) using Alloc {
         case .ident(let n): ownUse(env, n)
         case .call(let callee, let args): ownCall(env, callee, args)
         case .prefixE(let kw, let inner): ownPrefix(env, kw, inner)
+        case .closureE(let ps, let body): ownClosure(env, body)
         case .paren(let x): ownBoxed(env, x)
         case .unary(let op, let x): ownBoxed(env, x)
         case .binary(let op, let l, let r): ownPair(env, l, r)
@@ -5127,6 +5133,69 @@ func ownExpr(_ env: inout OwnEnv, _ e: Nd) using Alloc {
 func ownPrefix(_ env: inout OwnEnv, _ kw: String, _ inner: Vec[Nd]) using Alloc {
     ownBoxed(env, inner)
     if streq(kw, "copy ") { ownCopyCheck(env, inner) }
+}
+
+// ----- §7 closures capture by value (the bootstrap's check_closure) ---------
+func ownNoteCapture(_ env: inout OwnEnv, _ name: String) using Alloc {
+    if env.capMark.len() == 0 { return }
+    let mark = env.capMark.get(env.capMark.len() - 1) ?? 0
+    let idx = ownFind(env, name)
+    if idx < 0 || idx >= mark { return }   // not tracked, or the closure's own
+    let start = env.capStart.get(env.capStart.len() - 1) ?? 0
+    var i: Int = start
+    while i < env.capNames.len() {
+        if streq(env.capNames.get(i) ?? own(""), name) { return }
+        i = i + 1
+    }
+    env.capNames.push(own(name))
+}
+
+func ownClosure(_ env: inout OwnEnv, _ body: Vec[Nd]) using Alloc {
+    let pre = ownSnap(env)
+    let preF = ownFactsSnap(env)
+    env.capMark.push(env.names.len())
+    env.capStart.push(env.capNames.len())
+    var i: Int = 0
+    while i < body.len() {
+        ownStmt(env, body.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    // A linear local of the body must be consumed in it.
+    var k: Int = pre.names.len()
+    while k < env.names.len() {
+        let n = env.names.get(k) ?? own("")
+        if (env.isLin.get(k) ?? false) && !(env.consumed.get(k) ?? true) && !ownLeakSeen(env, n) {
+            env.bad.push(ownLeakMsg(n))
+        }
+        k = k + 1
+    }
+    let start = env.capStart.pop() ?? 0
+    let _m = env.capMark.pop()
+    var caps: Vec[String] = Vec.new()
+    while env.capNames.len() > start { caps.push(env.capNames.pop() ?? own("")) }
+    ownLoad(env, pre)
+    ownFactsLoad(env, preF)
+    // In capture order (they were popped in reverse).
+    var c: Int = caps.len() - 1
+    while c >= 0 {
+        ownCaptureMove(env, caps.get(c) ?? own(""))
+        c = c - 1
+    }
+}
+
+func ownCaptureMove(_ env: inout OwnEnv, _ n: String) using Alloc {
+    ownNoteCapture(env, n)   // the enclosing closure captures it too
+    let pi = ownFindIn(env.pName, n)
+    if pi >= 0 && ownFindIn(env.locName, n) < 0 && !streq(env.pMode.get(pi) ?? own(""), "sink ") {
+        var m: String = "a closure captures by value, and '"
+        m.append(n)
+        m.append("' is a `read` or `inout` parameter, so it can't move in; `copy` it into a local first")
+        env.bad.push(m)
+        return
+    }
+    if ownIsBorrowed(env, n) { return }
+    let idx = ownFind(env, n)
+    if idx >= 0 && !(env.consumed.get(idx) ?? true) { env.consumed.set(idx, true) }
 }
 
 func ownIndex(_ env: inout OwnEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc {
@@ -6289,6 +6358,7 @@ func ownMovedField(_ env: inout OwnEnv, _ root: String) using Alloc -> String {
 func ownMemberUse(_ env: inout OwnEnv, _ e: Nd, _ base: Vec[Nd]) using Alloc {
     let fp = ownFieldPath(env, e)
     if !fp.ok { ownBoxed(env, base); return }
+    ownNoteCapture(env, fp.root)
     let ri = ownFind(env, fp.root)
     if ri >= 0 && (env.consumed.get(ri) ?? false) { env.bad.push(ownUseAfter(fp.root)); return }
     let full = ownFull(fp)
@@ -8961,6 +9031,7 @@ func main() -> Int32 {
                                       fieldName: Vec.new(), staticName: Vec.new(), staticTy: Vec.new(),
                                       pName: Vec.new(), pMode: Vec.new(), pTy: Vec.new(),
                                       locName: Vec.new(), locTy: Vec.new(), selfTy: "", borrows: Vec.new(),
+                                      capMark: Vec.new(), capStart: Vec.new(), capNames: Vec.new(),
                                       deinitTys: Vec.new(), payOwner: Vec.new(), payTy: Vec.new(),
                                       fKeys: Vec.new(), fIds: Vec.new(), fStatic: Vec.new())
                     ownCheck(&oenv, u)

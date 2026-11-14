@@ -112,8 +112,7 @@ Each gap has one of four kinds:
 | §5 | Small `Trivial` structs copy implicitly | divergent | `is_trivial` covers only primitive scalars (`ownership.cpp:688`). Passing `struct P { var a: Int32 }` to `sink` twice is an error. |
 | §5, §19.4 | Inferred lifetimes for returned views | unsound | `return id(localArray)` as `Span[Int32]` is accepted. |
 | §19.3 | Exclusivity across an `inout` method receiver | unsound | `p.bump(&p.a)` is accepted. |
-| §19.3 | Ownership, exclusivity and linearity inside closure bodies | unsound | A double `close(a)` of a linear value inside a `parallel` body is accepted. No checker has a `Closure` case. |
-| §7, §5 | Closures move their non-`Trivial` captures | unsound (partial) | A move-only value captured by a closure is still usable afterwards. Capturing a `var` is rejected outright, because function types are plain function pointers. |
+| §7 | Capturing a `var` in a closure | missing | Rejected outright: function types are plain function pointers, so a capturing closure can't be one. |
 
 ### §6: structs, enums, opaque types, layout
 

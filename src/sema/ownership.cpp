@@ -442,8 +442,11 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
         }
         break;
     }
+    case ast::NodeKind::ClosureExpr:
+        check_closure(static_cast<const ast::ClosureExpr&>(e));
+        break;
     default:
-        // Literals / SelfExpr / LeadingDotExpr / closures / etc. have no
+        // Literals / SelfExpr / LeadingDotExpr / etc. have no
         // binding uses we model in phase 1.
         break;
     }
@@ -605,6 +608,7 @@ std::optional<std::string> OwnershipChecker::field_path(const ast::Expr& e,
 bool OwnershipChecker::check_field_use(const Symbol* root,
                                        const std::string& path,
                                        diag::SourceRange site) {
+    note_capture(root, site);
     auto it = bindings_.find(root);
     if (it == bindings_.end()) {
         return false;
@@ -690,8 +694,94 @@ bool OwnershipChecker::consume_field(const ast::Expr& e, diag::SourceRange site)
     return true;
 }
 
+bool OwnershipChecker::inside(diag::SourceRange inner, diag::SourceRange outer) {
+    return inner.is_valid() && outer.is_valid() && inner.begin.file == outer.begin.file
+           && inner.begin.offset >= outer.begin.offset && inner.begin.offset < outer.end().offset;
+}
+
+void OwnershipChecker::note_capture(const Symbol* sym, diag::SourceRange site) {
+    if (captures_.empty() || sym == nullptr || !is_trackable_kind(sym->kind)) {
+        return;
+    }
+    auto& top = captures_.back();
+    if (inside(sym->definition_range, top.range)) {
+        return;  // the closure's own parameter or local
+    }
+    for (const auto& [s, at] : top.captures) {
+        if (s == sym) {
+            return;
+        }
+    }
+    top.captures.emplace_back(sym, site);
+}
+
+// §7 a closure captures by value: a Trivial capture is copied, a non-Trivial
+// one moves into the closure and ends the captured binding. The body is
+// checked like a function body of its own: captures start as they are
+// outside, its locals are tracked, and a linear local of the body must be
+// consumed in it.
+void OwnershipChecker::check_closure(const ast::ClosureExpr& cx) {
+    BindingMap outer = bindings_;
+    auto outer_facts = empty_places_;
+    captures_.push_back(CaptureScope{cx.range, {}});
+    for (const auto& st : cx.body) {
+        check_stmt(*st);
+    }
+    for (const auto& [sym, info] : bindings_) {
+        if (info.state == State::Live && sym != nullptr && sym->kind == SymbolKind::Local
+            && inside(sym->definition_range, cx.range) && is_linear_type(sym->type)
+            && !leak_reported_.contains(sym)) {
+            reporter_->report(
+                diag::Diagnostic::error(
+                    std::format("linear value '{}' is never consumed; a linear value must be moved "
+                                "to a sink parameter, returned, or destructured before its scope "
+                                "ends",
+                                sym->name))
+                    .at(sym->definition_range));
+        }
+    }
+    auto scope = std::move(captures_.back());
+    captures_.pop_back();
+    bindings_ = std::move(outer);
+    empty_places_ = std::move(outer_facts);
+    for (const auto& [sym, at] : scope.captures) {
+        // A capture from further out is the enclosing closure's capture too.
+        note_capture(sym, at);
+        if (is_trivial(sym->type)) {
+            continue;
+        }
+        // A borrowed value can't move into the closure.
+        if (sym->kind == SymbolKind::Parameter && current_func_ != nullptr) {
+            bool owned = true;
+            for (const auto& p : current_func_->params) {
+                if (p.name == sym->name && p.mode != ast::ParamMode::Sink) {
+                    owned = false;
+                }
+            }
+            if (!owned) {
+                reporter_->report(
+                    diag::Diagnostic::error(
+                        std::format("a closure captures by value, and '{}' is a `read` or `inout` "
+                                    "parameter, so it can't move in; `copy` it into a local first",
+                                    sym->name))
+                        .at(at));
+                continue;
+            }
+        }
+        if (borrows_.contains(sym)) {
+            continue;  // reject_move_out-style borrow rules don't reach captures
+        }
+        auto& info = bindings_[sym];
+        if (info.state == State::Live) {
+            info.state = State::Consumed;
+            info.consume_site = cx.range;
+        }
+    }
+}
+
 void OwnershipChecker::check_use(const ast::IdentExpr& ident) {
     const auto* sym = resolution_->symbol_of(&ident);
+    note_capture(sym, ident.range);
     if (sym == nullptr || !is_trackable_kind(sym->kind) || is_trivial(sym->type)) {
         return;
     }

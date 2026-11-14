@@ -117,8 +117,6 @@ identical diagnostics), because the new backend will trust whatever sema
 accepts. Ordered by how likely each is to let a wrong program through:
 
 1. **Move checking:**
-   - closures moving their captures;
-   - ownership, exclusivity and linearity inside closure bodies;
    - linear leaks on a `try` error path, and discarded linear results.
 
    (Gaps §5, §19.6)
