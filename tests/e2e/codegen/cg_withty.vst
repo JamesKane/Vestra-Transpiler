@@ -1,0 +1,28 @@
+// §17.4 a type annotation on a `with` name-binding declares the binding at
+// that type (`T name = v;`) instead of `auto&&`, and registers it, so a
+// builtin method on the binding (`s.len()` on a Str) takes the §18.5
+// lowering. Annotated and unannotated bindings mix in one `with`, and nest.
+struct Pair {
+    var a: Int32
+    var b: Int32
+}
+
+func scaled() -> Int32 {
+    with size: Int32 = 100, step = 4 {
+        with width: Int32 = 32 {
+            return size / width + step
+        }
+    }
+}
+
+func named() -> Int {
+    with s: Str = "vestra" {
+        return s.len()
+    }
+}
+
+func paired() -> Int32 {
+    with p: Pair = Pair(a: 3, b: 4) {
+        return p.a * p.b
+    }
+}
