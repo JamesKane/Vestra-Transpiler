@@ -120,8 +120,7 @@ accepts. Ordered by how likely each is to let a wrong program through:
    admitted while the builtin `split` and `args()` return one; the decision is
    a lazy `split` iterator or tracking sources through the container).
 
-2. **Unknown names are errors:** `cfg.has` features, `@repr` kinds (Gaps
-   headline 3).
+2. **Unknown names are errors:** `@repr` kinds (Gaps headline 3).
 3. **Generics checked against bounds:** operations on `T` gated by its
    bounds, transitive bound checking, bounds at inferred construction (Gaps
    §7).

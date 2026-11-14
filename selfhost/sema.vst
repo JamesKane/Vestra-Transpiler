@@ -947,6 +947,7 @@ struct Ps {
     var pos: Int
     var attrs: Vec[String]  // every declaration attribute name, in source order
     var bounds: Vec[String] // every generic bound's spelling, in source order
+    var cfgBad: Vec[String] // §12.6 unknown names in `@when` predicates
 }
 
 struct BP {
@@ -1139,18 +1140,21 @@ func skipAttrsNaked(_ p: inout Ps) using Alloc -> Bool {
         advP(&p)  // '@'
         p.attrs.push(curText(p))
         if streq(curRaw(p), "naked") || streq(curRaw(p), "boot") { naked = true }
+        let isWhen = streq(curRaw(p), "when")
         advP(&p)  // name (identifier or reserved word)
         if isKind(p, TokKind.lparen) {
             var depth: Int = 0
             var go: Bool = true
+            var args: Vec[Token] = Vec.new()
             while go && !atEndP(p) {
                 if isKind(p, TokKind.lparen) { depth = depth + 1 }
                 else if isKind(p, TokKind.rparen) {
                     depth = depth - 1
                     if depth == 0 { advP(&p); go = false }
                 }
-                if go { advP(&p) }
+                if go { args.push(curT(p)); advP(&p) }
             }
+            if isWhen { cfgScan(p.cfgBad, args) }
         }
         skipNL(&p)
     }
@@ -9989,7 +9993,7 @@ func loadImportPath(_ isC: Bool, _ dotted: String, _ dir: Str, _ errs: inout Vec
 // module path. A file with no `module` line exports nothing addressable.
 func harvestModule(_ env: inout Env, _ contents: Str) using Alloc {
     let toks = tokenize(contents)
-    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new())
+    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new())
     let mu = parseUnit(&p)
     if !mu.hasMod { return }
     env.modPaths.push(own(mu.modPath))
@@ -10229,7 +10233,7 @@ func hlNamed(_ path: String, _ args: Vec[Nd], _ out: inout Vec[String]) using Al
 
 // An attribute must be one the compiler acts on or a comptime function of this
 // unit (a declaration macro); the spec's unimplemented ones are rejected too.
-func attrCheck(_ u: NUnit, _ attrs: Vec[String], _ boundBad: Vec[String], _ protos: Vec[String]) using Alloc -> Vec[String] {
+func attrCheck(_ u: NUnit, _ attrs: Vec[String], _ cfgBad: Vec[String], _ boundBad: Vec[String], _ protos: Vec[String]) using Alloc -> Vec[String] {
     var macros: Vec[String] = Vec.new()
     var i: Int = 0
     while i < u.decls.len() {
@@ -10258,6 +10262,11 @@ func attrCheck(_ u: NUnit, _ attrs: Vec[String], _ boundBad: Vec[String], _ prot
             bad.push(m)
         }
         j = j + 1
+    }
+    var ci: Int = 0
+    while ci < cfgBad.len() {
+        bad.push(own(cfgBad.get(ci) ?? own("")))
+        ci = ci + 1
     }
     var k: Int = 0
     while k < boundBad.len() {
@@ -10345,6 +10354,82 @@ func unitProtocols(_ toks: Vec[Token]) using Alloc -> Vec[String] {
     return protos
 }
 
+// §12.6 scan an `@when` predicate's tokens: each `cfg.X` must be a known field,
+// `cfg.has("f")` a feature the compiler acts on (there is no manifest yet), and
+// a case compared with `cfg.arch` / `cfg.os` / `cfg.endian` one of its values.
+func cfgScan(_ bad: inout Vec[String], _ ts: Vec[Token]) using Alloc {
+    var i: Int = 0
+    while i + 2 < ts.len() {
+        if cfgTokIs(ts, i, "identifier", "cfg") && cfgTokIs(ts, i + 1, ".", "") {
+            let f = ts.get(i + 2) ?? eofTok()
+            if streq(f.text, "has") {
+                if cfgTokIs(ts, i + 3, "(", "") && cfgTokIs(ts, i + 4, "string literal", "") {
+                    let lit = ts.get(i + 4) ?? eofTok()
+                    let name = own(lit.text.slice(1, lit.text.len() - 1))
+                    if !streq(name, "lse2") && !streq(name, "cx16") {
+                        var m: String = "unknown cfg feature '"
+                        m.append(name)
+                        m.append("'")
+                        bad.push(m)
+                    }
+                }
+            } else if !cfgField(f.text) {
+                var m: String = "unknown cfg field '"
+                m.append(f.text)
+                m.append("'")
+                bad.push(m)
+            } else {
+                cfgCaseAt(bad, ts, i, f.text)
+            }
+        }
+        i = i + 1
+    }
+}
+
+func cfgCaseAt(_ bad: inout Vec[String], _ ts: Vec[Token], _ i: Int, _ field: Str) using Alloc {
+    var at: Int = 0 - 1
+    if cfgTokCmp(ts, i + 3) && cfgTokIs(ts, i + 4, ".", "") { at = i + 5 }
+    else if i >= 3 && cfgTokCmp(ts, i - 1) && cfgTokIs(ts, i - 3, ".", "") { at = i - 2 }
+    if at < 0 { return }
+    let c = ts.get(at) ?? eofTok()
+    if cfgCaseKnown(field, c.text) { return }
+    var m: String = "unknown cfg."
+    m.append(field)
+    m.append(" value '.")
+    m.append(c.text)
+    m.append("'")
+    bad.push(m)
+}
+
+func cfgTokIs(_ ts: Vec[Token], _ i: Int, _ kind: Str, _ text: Str) -> Bool {
+    if i < 0 || i >= ts.len() { return false }
+    let t = ts.get(i) ?? eofTok()
+    return streq(spelling(t.kind), kind) && (text.len() == 0 || streq(t.text, text))
+}
+
+func cfgTokCmp(_ ts: Vec[Token], _ i: Int) -> Bool {
+    return cfgTokIs(ts, i, "==", "") || cfgTokIs(ts, i, "!=", "")
+}
+
+func cfgField(_ n: Str) -> Bool {
+    return streq(n, "arch") || streq(n, "os") || streq(n, "endian") || streq(n, "pointerBits")
+        || streq(n, "profile") || streq(n, "option")
+}
+
+// A field without a closed case list (pointerBits, profile, option) admits any.
+func cfgCaseKnown(_ field: Str, _ c: Str) -> Bool {
+    if streq(field, "arch") {
+        return streq(c, "x86_64") || streq(c, "arm64") || streq(c, "riscv64")
+            || streq(c, "riscv32") || streq(c, "wasm32")
+    }
+    if streq(field, "os") {
+        return streq(c, "vectra") || streq(c, "linux") || streq(c, "macos")
+            || streq(c, "windows") || streq(c, "freestanding")
+    }
+    if streq(field, "endian") { return streq(c, "little") || streq(c, "big") }
+    return true
+}
+
 func boundKnown(_ n: String) -> Bool {
     return streq(n, "Display") || streq(n, "Default") || streq(n, "Eq") || streq(n, "Hash")
         || streq(n, "Hashable") || streq(n, "Debug") || streq(n, "Clone")
@@ -10389,10 +10474,10 @@ func main() -> Int32 {
                 }
                 if let src = readFile(path) {
                     let toks = tokenize(src)
-                    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new())
+                    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new())
                     let u = parseUnit(&p)
                     let protos = unitProtocols(p.toks)
-                    let attrBad = attrCheck(u, p.attrs, boundCheck(protos, p.bounds), protos)
+                    let attrBad = attrCheck(u, p.attrs, p.cfgBad, boundCheck(protos, p.bounds), protos)
                     // §5 module loading: every `import a.b.c` must resolve to a
                     // file <dir>/a/b/c.vst; a missing one aborts before sema (as
                     // the driver does), reporting the searched path.

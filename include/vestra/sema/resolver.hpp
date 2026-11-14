@@ -396,6 +396,9 @@ private:
     // An attribute must be one the compiler knows or a declaration macro of
     // this unit (Gaps headline 3).
     void check_attribute_names();
+    // §12.6 an `@when` predicate's `cfg` fields, `cfg.has` features and the
+    // cases compared against `cfg.arch` / `cfg.os` / `cfg.endian`.
+    void check_cfg_names(const ast::Expr& e);
     // A generic bound must name a protocol the checker knows or one in scope.
     void check_bound_names();
     // A `derive` must name one the compiler implements (§12.3).

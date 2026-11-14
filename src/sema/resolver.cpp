@@ -894,6 +894,104 @@ void Resolver::check_attribute_names() {
             error_at(a->range, std::format("unknown attribute '@{}'", a->name));
         }
     }
+    for (const auto* a : attrs) {
+        if (a->name == "when" && a->predicate != nullptr) {
+            check_cfg_names(*a->predicate);
+        }
+    }
+}
+
+namespace {
+
+// `cfg.X`, or nullptr.
+const ast::MemberExpr* cfg_member(const ast::Expr& e) {
+    if (e.kind != ast::NodeKind::MemberExpr) {
+        return nullptr;
+    }
+    const auto& m = static_cast<const ast::MemberExpr&>(e);
+    if (m.base == nullptr || m.base->kind != ast::NodeKind::IdentExpr
+        || static_cast<const ast::IdentExpr&>(*m.base).name != "cfg") {
+        return nullptr;
+    }
+    return &m;
+}
+
+// The cases of a `cfg` field with a closed enumeration (§12.6), or empty.
+std::vector<std::string_view> cfg_cases(std::string_view field) {
+    if (field == "arch") {
+        return {"x86_64", "arm64", "riscv64", "riscv32", "wasm32"};
+    }
+    if (field == "os") {
+        return {"vectra", "linux", "macos", "windows", "freestanding"};
+    }
+    if (field == "endian") {
+        return {"little", "big"};
+    }
+    return {};
+}
+
+}  // namespace
+
+void Resolver::check_cfg_names(const ast::Expr& e) {
+    // There is no package manifest yet, so the features `cfg.has` can name are
+    // the ISA features the compiler itself acts on (§14.9.4).
+    constexpr std::array<std::string_view, 2> features{"lse2", "cx16"};
+    constexpr std::array<std::string_view, 7> fields{"arch", "os", "endian", "pointerBits",
+                                                     "profile", "has", "option"};
+    switch (e.kind) {
+    case ast::NodeKind::MemberExpr:
+        if (const auto* m = cfg_member(e)) {
+            if (!std::ranges::contains(fields, std::string_view{m->member})) {
+                error_at(m->range, std::format("unknown cfg field '{}'", m->member));
+            }
+        }
+        return;
+    case ast::NodeKind::CallExpr: {
+        const auto& c = static_cast<const ast::CallExpr&>(e);
+        const auto* m = c.callee != nullptr ? cfg_member(*c.callee) : nullptr;
+        if (m != nullptr && m->member == "has" && c.args.size() == 1 && c.args[0].value != nullptr
+            && c.args[0].value->kind == ast::NodeKind::StringLit) {
+            const auto& lit = static_cast<const ast::StringLit&>(*c.args[0].value);
+            if (!std::ranges::contains(features, std::string_view{lit.text})) {
+                error_at(lit.range, std::format("unknown cfg feature '{}'", lit.text));
+            }
+        }
+        return;
+    }
+    case ast::NodeKind::ParenExpr:
+        check_cfg_names(*static_cast<const ast::ParenExpr&>(e).inner);
+        return;
+    case ast::NodeKind::UnaryExpr:
+        check_cfg_names(*static_cast<const ast::UnaryExpr&>(e).operand);
+        return;
+    case ast::NodeKind::BinaryExpr: {
+        const auto& b = static_cast<const ast::BinaryExpr&>(e);
+        if (b.op == ast::BinaryOp::Eq || b.op == ast::BinaryOp::Ne) {
+            // `cfg.os == .linux`, either way round.
+            const ast::MemberExpr* m = cfg_member(*b.lhs);
+            const ast::Expr* other = b.rhs.get();
+            if (m == nullptr) {
+                m = cfg_member(*b.rhs);
+                other = b.lhs.get();
+            }
+            if (m != nullptr && other != nullptr && other->kind == ast::NodeKind::LeadingDotExpr) {
+                check_cfg_names(*m);
+                const auto& dot = static_cast<const ast::LeadingDotExpr&>(*other);
+                const auto cases = cfg_cases(m->member);
+                if (!cases.empty() && !std::ranges::contains(cases, std::string_view{dot.name})) {
+                    error_at(dot.range,
+                             std::format("unknown cfg.{} value '.{}'", m->member, dot.name));
+                }
+                return;
+            }
+        }
+        check_cfg_names(*b.lhs);
+        check_cfg_names(*b.rhs);
+        return;
+    }
+    default:
+        return;
+    }
 }
 
 // ----- §12.4 declaration-macro expansion ---------------------------------

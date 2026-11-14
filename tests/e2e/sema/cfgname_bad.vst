@@ -1,0 +1,13 @@
+// A misspelt `cfg` field, case or feature used to fold to "not false" and
+// keep the declaration. Each is now an error.
+
+@when(cfg.archh == .arm64)
+func a() -> Int32 { return 1 }
+
+@when(cfg.arch == .arm46 && cfg.has("nonsense"))
+func b() -> Int32 { return 2 }
+
+@when(!(cfg.os != .linx) || .bigg == cfg.endian)
+func c() -> Int32 { return 3 }
+
+func main() -> Int32 { return 0 }

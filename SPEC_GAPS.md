@@ -51,12 +51,13 @@ Each gap has one of four kinds:
    - `??` evaluates its right side eagerly.
    - An illegal atomic ordering such as `load(.release)` is passed straight
      through to `std::memory_order_release`.
-3. **Unknown names are accepted silently.** These include unknown
-   `cfg.has(...)` features. A misspelling becomes a no-op, and several spec
-   features "work" only in the sense that they are ignored. (Attributes,
-   generic bounds and `derive` names are now checked: an unknown one is an
-   error, and one the spec defines but the compiler doesn't implement
-   reports "is not supported yet".)
+3. **Unknown names are accepted silently.** This now covers only `@repr`
+   kinds. A misspelling becomes a no-op, and several spec features "work"
+   only in the sense that they are ignored. (Attributes, generic bounds,
+   `derive` names and the `cfg` fields, cases and features of an `@when`
+   predicate are now checked: an unknown one is an error, and one the spec
+   defines but the compiler doesn't implement reports "is not supported
+   yet".)
 4. **Unfoldable comptime constructs degrade to a warning.** `build` prints
    "codegen does not yet support: expression" and emits
    `/* unsupported: expression */`. The output then either fails to compile
@@ -201,7 +202,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 | §12.1, §12.6 | `comptime if` / `comptime match` | missing | Rejected at module scope. The statement-arm `match` fails to parse. In a body it checks OK, then lowers to `/* unsupported */`, which silently dropped an assignment in one probe. |
 | §12.6 rule 1 | Every `@when` branch is type-checked | unsound | An unselected `@when(linux)` body that references an undefined name checks OK. |
 | §12.6 | `cfg` follows the build target | unsound | `cfg` comes from the compiler's host `#if`s (`comptime.cpp:648`): `endian` is always little, and `profile` follows the compiler's own `NDEBUG`. `--target=x86_64` on an arm64 host selects the arm64 branch. |
-| §12.6 | `cfg.has` with manifest-declared features, and `cfg` as a value | missing | `cfg.has("nonsense")` and `cfg.archh` are accepted silently. `cfg` is undefined outside `@when`. `cfg.option` knows only `cache_line_bytes` = 64 (`resolver_call.cpp:833`). |
+| §12.6 | `cfg.has` with manifest-declared features, and `cfg` as a value | missing | With no manifest, `cfg.has` admits only the ISA features the compiler acts on (`lse2`, `cx16`); any other is "unknown cfg feature". It never folds, so a `cfg.has` gate keeps its declaration whatever `--target-features` says. `cfg` is undefined outside `@when`. `cfg.option` knows only `cache_line_bytes` = 64. |
 | §12.6 rule 3 | The diagnostic names the missing configuration | missing (partial) | Only a plain "undefined name". |
 | §12.2 | `Type` as a value (`t.fields` on a `Type` param) | missing | Only `Point.fields`, with a concrete name, works. |
 | §12.2 | `Type.structOf(fields:)` | missing | Checks, then emits nothing. |

@@ -1,0 +1,13 @@
+// `@when` predicates over the known `cfg` fields, their cases, and the ISA
+// features the compiler acts on.
+
+@when(cfg.os == .linux || cfg.os == .macos)
+func hosted() -> Int32 { return 1 }
+
+@when(cfg.arch == .arm64 && cfg.has("lse2"))
+func wide() -> Int32 { return 2 }
+
+@when(.little == cfg.endian && cfg.pointerBits == 64 && !(cfg.arch != .x86_64))
+func x86() -> Int32 { return 3 }
+
+func main() -> Int32 { return 0 }
