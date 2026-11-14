@@ -40,6 +40,10 @@ struct Symbol {
     // Visibility level recorded for top-level decls. For locals/params the
     // value is meaningless and stays at the default.
     ast::Visibility visibility = ast::Visibility::Internal;
+    // §4 may the binding be written (assigned, lent `inout`, or used as the
+    // receiver of an `inout` method)? `let`, `read` parameters and pattern
+    // bindings are not; `var`, `inout` and `sink` parameters are.
+    bool is_mutable = true;
     // §5/§18.4 partition provenance. When this binding is a sub-view derived
     // from a parent place — a `split(at:)` half or a `chunks(of:)` iterator —
     // `provenance_root` is the parent's Symbol and `provenance_segment` is a

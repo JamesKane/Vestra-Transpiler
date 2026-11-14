@@ -382,6 +382,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
                 Symbol sym;
                 sym.name = name;
                 sym.kind = SymbolKind::Local;
+                sym.is_mutable = false;
                 sym.type = types_->error();
                 sym.definition_range = cx.range;
                 (void)g.scope().insert(std::move(sym));
@@ -399,6 +400,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
             Symbol sym;
             sym.name = cx.params[i];
             sym.kind = SymbolKind::Local;
+            sym.is_mutable = false;
             sym.type = expected->parts()[i] != nullptr ? expected->parts()[i] : types_->error();
             sym.definition_range = cx.range;  // a closure parameter is defined by the closure
             (void)g.scope().insert(std::move(sym));
@@ -849,6 +851,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         Symbol sym;
         sym.name = dc.error_name;
         sym.kind = SymbolKind::Local;
+        sym.is_mutable = false;
         sym.type = error_type;
         sym.definition_range = dc.range;
         (void)scopes_.current().insert(std::move(sym));
@@ -1397,6 +1400,7 @@ TypePtr Resolver::check_if(const ast::IfExpr& i, TypePtr expected) {
         Symbol sym;
         sym.name = i.let_name;
         sym.kind = SymbolKind::Local;
+        sym.is_mutable = false;
         sym.type = bound;
         sym.definition_range = i.range;
         (void)scopes_.current().insert(std::move(sym));

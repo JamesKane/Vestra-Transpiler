@@ -26,7 +26,7 @@ namespace vestra::sema {
 
 using detail::named_type_param_count;
 
-void Resolver::bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type) {
+void Resolver::bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type, bool mutable_bindings) {
     if (value_type == nullptr || value_type->is_error()) {
         return;  // suppress cascading errors
     }
@@ -57,7 +57,7 @@ void Resolver::bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type) 
         } else if (sub->kind == ast::NodeKind::WildcardPat) {
             continue;
         } else if (sub->kind == ast::NodeKind::TuplePat) {
-            bind_tuple_pattern(static_cast<const ast::TuplePat&>(*sub), parts[i]);
+            bind_tuple_pattern(static_cast<const ast::TuplePat&>(*sub), parts[i], mutable_bindings);
             continue;
         } else if (sub->kind == ast::NodeKind::LiteralPat || sub->kind == ast::NodeKind::RangePat
                    || sub->kind == ast::NodeKind::OrPat) {
@@ -78,6 +78,7 @@ void Resolver::bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type) 
         Symbol sym;
         sym.name = std::string{name};
         sym.kind = SymbolKind::Local;
+        sym.is_mutable = mutable_bindings;
         sym.type = parts[i];
         sym.definition_range = sub->range;
         if (auto* prev = scopes_.current().insert(std::move(sym))) {
@@ -492,6 +493,7 @@ void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
         Symbol sym;
         sym.name = ip.name;
         sym.kind = SymbolKind::Local;
+        sym.is_mutable = false;  // a pattern binding is a `let`
         sym.type = scrutinee;
         sym.definition_range = p.range;
         (void)scopes_.current().insert(std::move(sym));

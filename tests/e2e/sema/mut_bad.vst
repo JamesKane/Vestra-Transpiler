@@ -1,0 +1,29 @@
+// §4 writes to immutable bindings: a `let`, a `read` parameter, a field or
+// element through one, `&` of one, a mutating method on one, and bindings from
+// patterns.
+struct P {
+    var a: Int32
+    inout func inc() { self.a = self.a + 1 }
+}
+func bump(_ p: inout P) { p.a = 1 }
+func f(_ q: P, _ r: Int32, _ o: Int32?) using Alloc {
+    let x: Int32 = 1
+    x = 2
+    let p = P(a: 1)
+    p.a = 2
+    let a: [2]Int32 = [1, 2]
+    a[0] = 3
+    bump(&p)
+    p.inc()
+    q.a = 1
+    r = 5
+    q.inc()
+    let v: Vec[Int32] = Vec.new()
+    v.push(1)
+    for i in 0..<3 {
+        i = 4
+    }
+    if let y = o {
+        y = 1
+    }
+}

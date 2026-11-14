@@ -6089,6 +6089,11 @@ struct TyEnv {
     var symType: Vec[String]    // ... -> type spelling
     var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
     var bad: Vec[String]
+    var mInout: Vec[Bool]       // global: parallel to mStruct / mName — an `inout func`?
+    var muName: Vec[String]     // per-function: §4 bindings in scope, innermost last ...
+    var muFlag: Vec[Bool]       // ... may it be written? ...
+    var muKind: Vec[Int]        // ... 0 local, 1 parameter
+    var muMarks: Vec[Int]       // scope starts in muName
 }
 
 func tyCheck(_ env: inout TyEnv, _ u: NUnit) using Alloc {
@@ -6198,9 +6203,15 @@ func tyRecordMethods(_ env: inout TyEnv, _ owner: String, _ methods: Vec[Nd]) us
 func tyRecordMethod(_ env: inout TyEnv, _ owner: String, _ m: Nd) using Alloc {
     match m {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
-            tyPushMethod(env, owner, name, g, r)
+            tyPushMethodM(env, owner, name, g, r, containsSub(mods, "inout"))
         default: noop()
     }
+}
+
+func tyPushMethodM(_ env: inout TyEnv, _ owner: String, _ name: String, _ gens: Vec[Nd], _ result: Vec[Nd], _ isInout: Bool) using Alloc {
+    if gens.len() > 0 { return }
+    env.mInout.push(isInout)
+    tyPushMethod(env, owner, name, gens, result)
 }
 
 func tyPushMethod(_ env: inout TyEnv, _ owner: String, _ name: String, _ gens: Vec[Nd], _ result: Vec[Nd]) using Alloc {
@@ -6607,6 +6618,10 @@ func tyResetSyms(_ env: inout TyEnv) using Alloc {
 }
 
 func tyRegisterParams(_ env: inout TyEnv, _ params: Vec[Nd]) using Alloc {
+    while env.muName.len() > 0 { let _ = env.muName.pop() }
+    while env.muFlag.len() > 0 { let _ = env.muFlag.pop() }
+    while env.muKind.len() > 0 { let _ = env.muKind.pop() }
+    while env.muMarks.len() > 0 { let _ = env.muMarks.pop() }
     var i: Int = 0
     while i < params.len() {
         tyRegisterParam(env, params.get(i) ?? Nd.wildcard)
@@ -6616,9 +6631,173 @@ func tyRegisterParams(_ env: inout TyEnv, _ params: Vec[Nd]) using Alloc {
 
 func tyRegisterParam(_ env: inout TyEnv, _ p: Nd) using Alloc {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyAddSym(env, nm, ty)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyAddParamMu(env, nm, md, ty)
         default: noop()
     }
+}
+
+// §7 a `read` parameter is immutable; `inout` and `sink` may be written.
+func tyAddParamMu(_ env: inout TyEnv, _ nm: String, _ md: String, _ ty: Vec[Nd]) using Alloc {
+    muPush(env, nm, streq(md, "inout ") || streq(md, "sink "), 1)
+    tyAddSym(env, nm, ty)
+}
+
+// ----- §4 mutability (the bootstrap's Symbol::is_mutable + check_mutable_place)
+func muPush(_ env: inout TyEnv, _ n: String, _ isMut: Bool, _ kind: Int) using Alloc {
+    env.muName.push(own(n))
+    env.muFlag.push(isMut)
+    env.muKind.push(kind)
+}
+
+func muEnter(_ env: inout TyEnv) using Alloc { env.muMarks.push(env.muName.len()) }
+
+func muLeave(_ env: inout TyEnv) using Alloc {
+    if env.muMarks.len() == 0 { return }
+    let m = env.muMarks.pop() ?? 0
+    while env.muName.len() > m { let _ = env.muName.pop() }
+    while env.muFlag.len() > m { let _ = env.muFlag.pop() }
+    while env.muKind.len() > m { let _ = env.muKind.pop() }
+}
+
+// Every name a pattern binds, as immutable locals.
+func muPat(_ env: inout TyEnv, _ pat: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < pat.len() {
+        match pat.get(i) ?? Nd.wildcard {
+            case .identP(let n): muPush(env, n, false, 0)
+            case .bindP(let n): muPush(env, n, false, 0)
+            case .enumP(let c, let xs): muPat(env, xs)
+            case .tupleP(let xs): muPat(env, xs)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func muBind(_ env: inout TyEnv, _ pat: Vec[Nd], _ isMut: Bool) using Alloc {
+    if let p = pat.get(0) {
+        match p {
+            case .identP(let n): muPush(env, n, isMut, 0)
+            case .bindP(let n): muPush(env, n, isMut, 0)
+            case .tupleP(let xs): muBindAll(env, xs, isMut)
+            default: noop()
+        }
+    }
+}
+
+func muBindAll(_ env: inout TyEnv, _ xs: Vec[Nd], _ isMut: Bool) using Alloc {
+    var i: Int = 0
+    while i < xs.len() {
+        var one: Vec[Nd] = Vec.new()
+        one.push(xs.get(i) ?? Nd.wildcard)
+        muBind(env, one, isMut)
+        i = i + 1
+    }
+}
+
+// A write to `t` needs a isMut root; a write through a view (an element of a
+// Span / MutSpan, a pointer's `.value`) changes the viewed memory instead.
+func muCheck(_ env: inout TyEnv, _ t: Vec[Nd]) using Alloc {
+    if let n = t.get(0) {
+        match n {
+            case .paren(let x): muCheck(env, x)
+            case .member(let base, let m, let ch): muCheckMember(env, base, m)
+            case .index(let base, let idxs): muCheckIndex(env, base)
+            case .ident(let x): muCheckRoot(env, x)
+            default: noop()
+        }
+    }
+}
+
+func muCheckMember(_ env: inout TyEnv, _ base: Vec[Nd], _ m: String) using Alloc {
+    let bt = tyInferBoxed(env, base)
+    if streq(m, "value") && (tyStartsWith(bt, "MutPtr[") || tyStartsWith(bt, "Ptr[")) { return }
+    muCheck(env, base)
+}
+
+func muCheckIndex(_ env: inout TyEnv, _ base: Vec[Nd]) using Alloc {
+    let bt = tyInferBoxed(env, base)
+    // An unknown base (a span from chunks / split, say) may be a view: don't pile on.
+    if streq(bt, "") || tyStartsWith(bt, "MutSpan[") || tyStartsWith(bt, "Span[") { return }
+    muCheck(env, base)
+}
+
+func muCheckRoot(_ env: inout TyEnv, _ x: String) using Alloc {
+    var i: Int = env.muName.len() - 1
+    while i >= 0 {
+        if let n = env.muName.get(i) {
+            if streq(n, x) {
+                if env.muFlag.get(i) ?? true { return }
+                if (env.muKind.get(i) ?? 0) == 1 { env.bad.push(muParamMsg(x)) } else { env.bad.push(muLetMsg(x)) }
+                return
+            }
+        }
+        i = i - 1
+    }
+}
+
+func muLetMsg(_ x: String) using Alloc -> String {
+    var s: String = "'"
+    s.append(x)
+    s.append("' is bound with `let`, so it can't be changed; declare it `var` to change it")
+    return s
+}
+
+func muParamMsg(_ x: String) using Alloc -> String {
+    var s: String = "'"
+    s.append(x)
+    s.append("' is a `read` parameter, so it can't be changed here; take it `inout` to change the caller's value")
+    return s
+}
+
+// A call's writes: `&` arguments, and a mutating method's receiver.
+func muCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < args.len() {
+        match args.get(i) ?? Nd.wildcard {
+            case .arg(let l, let io, let v): muArg(env, io, v)
+            default: noop()
+        }
+        i = i + 1
+    }
+    if let c = callee.get(0) {
+        match c {
+            case .member(let base, let m, let ch): muRecv(env, base, m)
+            default: noop()
+        }
+    }
+}
+
+func muArg(_ env: inout TyEnv, _ io: Bool, _ v: Vec[Nd]) using Alloc {
+    if io { muCheck(env, v) }
+}
+
+func muRecv(_ env: inout TyEnv, _ base: Vec[Nd], _ m: String) using Alloc {
+    let bt = tyInferBoxed(env, base)
+    if streq(bt, "") { return }
+    var mut: Bool = false
+    if tyStartsWith(bt, "Vec[") {
+        mut = streq(m, "push") || streq(m, "pop") || streq(m, "set") || streq(m, "clear") || streq(m, "insert") || streq(m, "remove")
+    } else if streq(bt, "String") {
+        mut = streq(m, "append") || streq(m, "push")
+    } else if tyStartsWith(bt, "HashMap[") {
+        mut = streq(m, "set") || streq(m, "remove")
+    } else if (bt.byteAt(bt.len() - 1) ?? 0) == 63 {
+        mut = streq(m, "take") || streq(m, "put")
+    } else {
+        mut = muMethodInout(env, bt, m)
+    }
+    if mut { muCheck(env, base) }
+}
+
+func muMethodInout(_ env: inout TyEnv, _ owner: String, _ m: String) using Alloc -> Bool {
+    var out: Bool = false
+    var i: Int = 0
+    while i < env.mStruct.len() {
+        if streq(env.mStruct.get(i) ?? own(""), owner) && streq(env.mName.get(i) ?? own(""), m) { out = env.mInout.get(i) ?? false }
+        i = i + 1
+    }
+    return out
 }
 
 // Register a binding's type from its annotation (empty annotation => untracked).
@@ -6667,7 +6846,7 @@ func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
         case .binary(let op, let l, let r): tyBinary(env, op, l, r)
         case .member(let base, let n, let c): tyMember(env, base, n, c)
         case .index(let base, let idxs): tyIndex(env, base, idxs)
-        case .ifE(let ln, let li, let cond, let thenB, let els): tyIf(env, li, cond, thenB, els)
+        case .ifE(let ln, let li, let cond, let thenB, let els): tyIfMu(env, ln, li, cond, thenB, els)
         case .block(let stmts): tyBlock(env, stmts)
         case .asE(let v, let t, let o): tyBoxed(env, v)
         case .addrOf(let x): tyBoxed(env, x)
@@ -6919,9 +7098,17 @@ func notExhaustiveMsg(_ caseName: String) using Alloc -> String {
 
 func tyArm(_ env: inout TyEnv, _ a: Nd) using Alloc {
     match a {
-        case .matchArm(let isDefault, let pat, let guard, let body): tyArmParts(env, guard, body)
+        case .matchArm(let isDefault, let pat, let guard, let body): tyArmMu(env, pat, guard, body)
         default: noop()
     }
+}
+
+// A match arm's pattern bindings are `let`s, scoped to the arm.
+func tyArmMu(_ env: inout TyEnv, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    muEnter(env)
+    muPat(env, pat)
+    tyArmParts(env, guard, body)
+    muLeave(env)
 }
 
 func tyArmParts(_ env: inout TyEnv, _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc {
@@ -6946,6 +7133,7 @@ func tyExprCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Al
         i = i + 1
     }
     tyCheckCallArgs(env, callee, args)
+    muCall(env, callee, args)
 }
 
 // A call to a known user function must supply the right arity, and each argument
@@ -7108,6 +7296,19 @@ func tyNoCaseMsg(_ enumName: String, _ caseName: String) using Alloc -> String {
     return s
 }
 
+// An `if let` binding is a `let`, scoped to the then-branch.
+func tyIfMu(_ env: inout TyEnv, _ ln: String, _ li: Vec[Nd], _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc {
+    if streq(ln, "") { tyIf(env, li, cond, thenB, els); return }
+    tyCheckCond(env, cond, "if")
+    tyBoxed(env, cond)
+    tyBoxed(env, li)
+    muEnter(env)
+    muPush(env, ln, false, 0)
+    tyBoxed(env, thenB)
+    muLeave(env)
+    tyBoxed(env, els)
+}
+
 func tyIf(_ env: inout TyEnv, _ li: Vec[Nd], _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc {
     tyCheckCond(env, cond, "if")
     tyBoxed(env, cond)
@@ -7138,25 +7339,41 @@ func tyWhile(_ env: inout TyEnv, _ cond: Vec[Nd], _ body: Vec[Nd]) using Alloc {
 }
 
 func tyBlock(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc {
+    muEnter(env)
     var i: Int = 0
     while i < stmts.len() {
         tyStmt(env, stmts.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    muLeave(env)
 }
 
 func tyStmt(_ env: inout TyEnv, _ s: Nd) using Alloc {
     match s {
-        case .letS(let p, let ty, let v): tyLet(env, p, ty, v)
-        case .varS(let p, let ty, let v): tyLet(env, p, ty, v)
+        case .letS(let p, let ty, let v): tyLetMu(env, p, ty, v, false)
+        case .varS(let p, let ty, let v): tyLetMu(env, p, ty, v, true)
         case .exprS(let e): tyBoxed(env, e)
         case .retS(let v): tyRet(env, v)
         case .assignS(let op, let t, let v): tyAssign(env, t, v)
         case .whileS(let c, let b): tyWhile(env, c, b)
-        case .forS(let pp, let it, let b): tyPair(env, it, b)
+        case .forS(let pp, let it, let b): tyForMu(env, pp, it, b)
         case .withS(let caps, let vals, let body): tyWith(env, vals, body)
         default: noop()
     }
+}
+
+func tyLetMu(_ env: inout TyEnv, _ p: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd], _ isVar: Bool) using Alloc {
+    tyLet(env, p, ty, v)
+    muBind(env, p, isVar)
+}
+
+// A `for` element is a `let`, scoped to the body.
+func tyForMu(_ env: inout TyEnv, _ pp: Vec[Nd], _ it: Vec[Nd], _ b: Vec[Nd]) using Alloc {
+    tyBoxed(env, it)
+    muEnter(env)
+    muBind(env, pp, false)
+    tyBoxed(env, b)
+    muLeave(env)
 }
 
 // `let`/`var`: if annotated, the initializer must be assignable to it; then walk
@@ -7168,7 +7385,26 @@ func tyLet(_ env: inout TyEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) usin
         if !tyFits(vt, v, ann) { env.bad.push(tyInitMsg(vt, ann)) }
     }
     tyBoxed(env, v)
-    tyRegisterPat(env, pat, ty)
+    if ty.len() > 0 { tyRegisterPat(env, pat, ty) } else { tyRegisterInferred(env, pat, tyInferBoxed(env, v)) }
+}
+
+// An unannotated binding types as its initializer, when that is known.
+// Numbers stay untracked: a literal types as `Int` here, which would mistype
+// the binding (sema types it against its later uses).
+func tyRegisterInferred(_ env: inout TyEnv, _ pat: Vec[Nd], _ sp: String) using Alloc {
+    if streq(sp, "") || tyIsNumeric(sp) { return }
+    if let p = pat.get(0) {
+        match p {
+            case .identP(let n): tyAddSymSp(env, n, sp)
+            case .bindP(let n): tyAddSymSp(env, n, sp)
+            default: noop()
+        }
+    }
+}
+
+func tyAddSymSp(_ env: inout TyEnv, _ n: String, _ sp: String) using Alloc {
+    env.symName.push(own(n))
+    env.symType.push(own(sp))
 }
 
 // Assignment (incl. compound ops, which the resolver checks identically): the
@@ -7176,6 +7412,7 @@ func tyLet(_ env: inout TyEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) usin
 // slot here; member/index targets are unknown and tolerated.
 func tyAssign(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     tyBoxed(env, t)
+    muCheck(env, t)
     tyBoxed(env, v)
     let lt = tyInferBoxed(env, t)
     let rt = tyInferBoxed(env, v)
@@ -8270,7 +8507,9 @@ func main() -> Int32 {
                                      mRet: Vec.new(), eName: Vec.new(), ecEnum: Vec.new(),
                                      ecName: Vec.new(), ecArity: Vec.new(),
                                      symName: Vec.new(), symType: Vec.new(),
-                                     curRet: own(""), bad: Vec.new())
+                                     curRet: own(""), bad: Vec.new(),
+                                     mInout: Vec.new(), muName: Vec.new(), muFlag: Vec.new(),
+                                     muKind: Vec.new(), muMarks: Vec.new())
                     tyCheck(&tenv, u)
                     var ti: Int = 0
                     while ti < tenv.bad.len() {

@@ -640,6 +640,9 @@ void Resolver::check_func(const ast::FuncDecl& f) {
         Symbol s;
         s.name = p.name;
         s.kind = SymbolKind::Parameter;
+        // §7 a `read` parameter is an immutable borrow; `inout` and `sink` own
+        // (or exclusively borrow) a value the body may change.
+        s.is_mutable = p.mode == ast::ParamMode::Inout || p.mode == ast::ParamMode::Sink;
         s.type = param_type;
         s.definition_range = p.range;
         if (auto* prev = g.scope().insert(std::move(s))) {
@@ -1121,6 +1124,57 @@ void Resolver::check_interrupt_static_write(const ast::Expr& target, diag::Sourc
                          sym->type->describe()));
 }
 
+void Resolver::check_mutable_place(const ast::Expr& target, diag::SourceRange site) {
+    // Walk to the root binding. Writing through a view (an element of a
+    // MutSpan, the pointee of a MutPtr) changes the memory it views, not the
+    // binding holding the view, so the walk stops there.
+    const ast::Expr* root = &target;
+    while (true) {
+        if (root->kind == ast::NodeKind::ParenExpr) {
+            root = static_cast<const ast::ParenExpr&>(*root).inner.get();
+        } else if (root->kind == ast::NodeKind::MemberExpr) {
+            const auto& m = static_cast<const ast::MemberExpr&>(*root);
+            auto bt = resolution_.type_of(m.base.get());
+            if (bt != nullptr && m.member == "value"
+                && (bt->kind() == TypeKind::MutPtr || bt->kind() == TypeKind::Ptr)) {
+                return;
+            }
+            root = m.base.get();
+        } else if (root->kind == ast::NodeKind::IndexExpr) {
+            const auto& ix = static_cast<const ast::IndexExpr&>(*root);
+            auto bt = resolution_.type_of(ix.base.get());
+            if (bt != nullptr && (bt->kind() == TypeKind::MutSpan || bt->kind() == TypeKind::Span)) {
+                return;
+            }
+            root = ix.base.get();
+        } else {
+            break;
+        }
+        if (root == nullptr) {
+            return;
+        }
+    }
+    if (root->kind != ast::NodeKind::IdentExpr) {
+        return;
+    }
+    const auto& name = static_cast<const ast::IdentExpr&>(*root).name;
+    const auto* sym = scopes_.current().lookup(name);
+    if (sym == nullptr || sym->is_mutable) {
+        return;
+    }
+    if (sym->kind == SymbolKind::Parameter) {
+        error_at(site,
+                 std::format("'{}' is a `read` parameter, so it can't be changed here; take it "
+                             "`inout` to change the caller's value",
+                             name));
+    } else if (sym->kind == SymbolKind::Local) {
+        error_at(site,
+                 std::format("'{}' is bound with `let`, so it can't be changed; declare it `var` "
+                             "to change it",
+                             name));
+    }
+}
+
 void Resolver::check_naked_body(const ast::FuncDecl& f) {
     const bool naked = std::ranges::any_of(f.attributes, [](const ast::Attribute& at) {
         return at.name == "naked" || at.name == "boot";
@@ -1197,6 +1251,7 @@ void Resolver::check_stmt(const ast::Stmt& s) {
         if (!binding_name.empty()) {
             Symbol sym;
             sym.name = std::string{binding_name};
+            sym.is_mutable = s.kind == ast::NodeKind::VarStmt;  // §4 `let` binds immutably
             sym.kind = SymbolKind::Local;
             sym.type = annot_type != nullptr ? annot_type : value_type;
             sym.definition_range = binding_range;
@@ -1218,7 +1273,8 @@ void Resolver::check_stmt(const ast::Stmt& s) {
         }
         if (pat != nullptr && pat->kind == ast::NodeKind::TuplePat) {
             TypePtr bind_t = annot_type != nullptr ? annot_type : value_type;
-            bind_tuple_pattern(static_cast<const ast::TuplePat&>(*pat), bind_t);
+            bind_tuple_pattern(static_cast<const ast::TuplePat&>(*pat), bind_t,
+                               s.kind == ast::NodeKind::VarStmt);
         }
         // §5/§18.4 — record sub-view provenance (split / chunks / alias) so the
         // exclusivity checker can flag a borrow that aliases the parent place.
@@ -1251,6 +1307,7 @@ void Resolver::check_stmt(const ast::Stmt& s) {
         if (in_interrupt_handler()) {
             check_interrupt_static_write(*a.target, a.range);
         }
+
         // §5 a plain method reads its receiver; only an `inout func` may
         // assign through `self` (codegen makes a plain method `const`).
         if (current_func_ != nullptr && current_func_->recv_mode == ast::FuncDecl::RecvMode::None) {
@@ -1275,6 +1332,7 @@ void Resolver::check_stmt(const ast::Stmt& s) {
             }
         }
         auto lhs = check_expr(*a.target);
+        check_mutable_place(*a.target, a.range);  // after typing: views are judged by type
         // Pass the target type as the expected type for the rhs so an
         // int literal (`i + 1`) adapts to the slot width (Int32 vs Int)
         // — same propagation as `let x: Int32 = i + 1` already does.
@@ -1375,6 +1433,7 @@ void Resolver::check_stmt(const ast::Stmt& s) {
         if (f.pattern && f.pattern->kind == ast::NodeKind::IdentPat) {
             Symbol sym;
             sym.name = static_cast<const ast::IdentPat&>(*f.pattern).name;
+            sym.is_mutable = false;  // a `for` element is a `let`
             sym.kind = SymbolKind::Local;
             sym.type = elem_type != nullptr ? elem_type : types_->error();
             sym.definition_range = f.pattern->range;

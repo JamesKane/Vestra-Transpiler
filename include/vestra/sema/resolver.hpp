@@ -224,6 +224,9 @@ private:
     TypePtr check_binary(const ast::BinaryExpr& b, TypePtr expected);
     TypePtr check_unary(const ast::UnaryExpr& u, TypePtr expected);
     TypePtr check_call(const ast::CallExpr& c, TypePtr expected = nullptr);
+    TypePtr check_call_inner(const ast::CallExpr& c, TypePtr expected);
+    // §4 the writes a typed call makes: `&` arguments and a mutating receiver.
+    void check_call_writes(const ast::CallExpr& c);
     TypePtr check_if(const ast::IfExpr& i, TypePtr expected);
     TypePtr check_match(const ast::MatchExpr& m, TypePtr expected);
     // §11 `select { on … : … }` — each arm's event must be a Future[T]
@@ -323,7 +326,10 @@ private:
     // the corresponding element's type. Reports arity / non-tuple
     // errors. Each leaf binding goes through the same IdentPat /
     // BindPat shape that LetStmt's single-name path uses.
-    void bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type);
+    void bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type, bool mutable_bindings = false);
+    // §4 a write to `target` (an assignment, an `&` argument to an `inout`
+    // parameter, an `inout` method's receiver) needs a mutable root.
+    void check_mutable_place(const ast::Expr& target, diag::SourceRange site);
 
     // §5/§18.4 partition provenance — if `init` is a `split(at:)` /
     // `chunks(of:)` call on a place, or a plain alias `let x = derived` of an

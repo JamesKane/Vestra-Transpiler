@@ -1,0 +1,27 @@
+// §4 writes that are allowed: to a `var`, an `inout` or `sink` parameter, a
+// shadowing `var`. (A write through a view held in a `let` is a bootstrap unit
+// test: the selfhost sema doesn't know MutSpan yet.)
+struct P {
+    var a: Int32
+    inout func inc() { self.a = self.a + 1 }
+}
+func bump(_ p: inout P) { p.a = 1 }
+func own2(_ p: sink P) -> Int32 {
+    p.a = 3
+    return p.a
+}
+func f(_ q: inout P) using Alloc {
+    var v = P(a: 1)
+    v.a = 2
+    v.inc()
+    bump(&v)
+    q.a = 4
+    q.inc()
+    var xs: Vec[Int32] = Vec.new()
+    xs.push(1)
+    let k: Int32 = 1
+    if k > 0 {
+        var k: Int32 = 2
+        k = 3
+    }
+}

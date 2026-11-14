@@ -2948,3 +2948,18 @@ TEST_CASE("Context.start takes a `() -> Never` entry and a UInt64 stack top (§1
               .first_message.find("must be a `() -> Never` function")
           != std::string::npos);
 }
+
+TEST_CASE("§4 a let binding and a read parameter can't be written") {
+    auto r = check_detail("func f() { let x: Int32 = 1\n x = 2 }\n");
+    CHECK(r.first_message.find("'x' is bound with `let`") != std::string::npos);
+    auto p = check_detail("struct P { var a: Int32 }\nfunc f(_ q: P) { q.a = 1 }\n");
+    CHECK(p.first_message.find("'q' is a `read` parameter") != std::string::npos);
+    CHECK(check_errors("func f() { var x: Int32 = 1\n x = 2 }\n") == 0);
+}
+
+TEST_CASE("§4 a write through a view held in a let changes the view's memory") {
+    CHECK(check_errors("func f(_ mp: MutPtr[UInt8]) using RawMemory {\n"
+                       "    let d = MutSpan.raw(at: mp, count: 2)\n    d[0] = 1\n"
+                       "    let q = mp\n    q.value = 3\n}\n")
+          == 0);
+}

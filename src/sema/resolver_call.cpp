@@ -70,6 +70,69 @@ TypePtr Resolver::type_from_index_expr(const ast::Expr* e) {
 }
 
 TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
+    auto t = check_call_inner(c, expected);
+    check_call_writes(c);
+    return t;
+}
+
+void Resolver::check_call_writes(const ast::CallExpr& c) {
+    for (const auto& arg : c.args) {
+        if (arg.is_inout && arg.value != nullptr) {
+            check_mutable_place(*arg.value, arg.value->range);
+        }
+    }
+    if (c.callee == nullptr || c.callee->kind != ast::NodeKind::MemberExpr) {
+        return;
+    }
+    const auto& m = static_cast<const ast::MemberExpr&>(*c.callee);
+    auto bt = resolution_.type_of(m.base.get());
+    if (bt == nullptr || m.base == nullptr) {
+        return;
+    }
+    bool mutates = false;
+    switch (bt->kind()) {
+    case TypeKind::Vec:
+        mutates = m.member == "push" || m.member == "pop" || m.member == "set"
+                  || m.member == "clear" || m.member == "insert" || m.member == "remove";
+        break;
+    case TypeKind::String:
+        mutates = m.member == "append" || m.member == "push";
+        break;
+    case TypeKind::HashMap:
+        mutates = m.member == "set" || m.member == "remove";
+        break;
+    case TypeKind::Optional:
+        mutates = m.member == "take" || m.member == "put";
+        break;
+    case TypeKind::Struct:
+    case TypeKind::Enum:
+        if (const auto* d = bt->nominal_decl()) {
+            const std::vector<ast::DeclPtr>* methods = nullptr;
+            if (d->kind == ast::NodeKind::Struct) {
+                methods = &static_cast<const ast::StructDecl*>(d)->methods;
+            } else if (d->kind == ast::NodeKind::Enum) {
+                methods = &static_cast<const ast::EnumDecl*>(d)->methods;
+            }
+            if (methods != nullptr) {
+                for (const auto& md : *methods) {
+                    if (md->kind == ast::NodeKind::Func
+                        && static_cast<const ast::FuncDecl&>(*md).name == m.member) {
+                        mutates = static_cast<const ast::FuncDecl&>(*md).recv_mode
+                                  == ast::FuncDecl::RecvMode::Inout;
+                    }
+                }
+            }
+        }
+        break;
+    default:
+        break;
+    }
+    if (mutates) {
+        check_mutable_place(*m.base, c.range);
+    }
+}
+
+TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
     // §14.5 lending a plain static `inout` from an interrupt handler writes it.
     if (in_interrupt_handler()) {
         for (const auto& arg : c.args) {
