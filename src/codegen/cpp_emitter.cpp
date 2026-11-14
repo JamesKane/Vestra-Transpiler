@@ -2305,6 +2305,12 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
     // linker sees a consistent set.
     const auto link_attrs = read_link_attrs(f.attributes);
 
+    // §15 Tier C: an `@extern(conv)` function, declared or defined, follows
+    // the foreign ABI, where a scalar argument travels in a register rather
+    // than by address. Its `read` parameters therefore pass by value (F8).
+    const bool is_foreign_abi = std::ranges::any_of(
+        f.attributes, [](const ast::Attribute& a) { return a.name == "extern"; });
+
     // `is_decl` controls the asm-label trailer: GCC / Clang allow
     // asm("name") on a forward declaration but reject it on a
     // function *definition* (header + body). The header gets the
@@ -2390,7 +2396,8 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
                         emit_type(os, *p.type);
                     }
                     os << " " << pname;
-                } else if (f.is_async) {
+                } else if (f.is_async || is_foreign_abi) {
+                    // §15 Tier C (`is_foreign_abi`): see above.
                     // §11 — a coroutine does NOT copy by-reference parameters
                     // into its frame, so a `const T&` read param bound to a
                     // caller temporary (a literal arg, `a + b`, …) dangles

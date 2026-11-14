@@ -1,0 +1,24 @@
+struct Frame {
+  var x0: UInt64
+}
+@extern("C") @symbol("cg_put")
+func put(_ c: UInt8, _ port: UInt64)
+@extern("C") @symbol("cg_enter")
+func enter(_ f: inout Frame)
+@extern("C") @symbol("cg_copy")
+func copyBytes(_ dst: MutPtr[UInt8], _ src: Ptr[UInt8], _ n: UInt64) -> MutPtr[UInt8] {
+  return dst
+}
+@extern("C") @symbol("cg_entry")
+func entry(_ id: UInt64, _ cb: (UInt64) -> UInt64) -> UInt64 {
+  return cb(id)
+}
+@extern("aapcs") @symbol("cg_aapcs")
+func aapcsFn(_ a: Int32, _ b: Int32) -> Int32
+func plain(_ a: UInt64) -> UInt64 {
+  return a
+}
+func caller(_ f: inout Frame) using Extern {
+  put(65, 9)
+  enter(&f)
+}

@@ -5519,6 +5519,7 @@ func emitDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
 // lives entirely in the header.
 func emitFuncOrSkip(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
     if gens.len() > 0 { return }
+    if body.len() == 0 { return }   // a body-less (`@extern`) declaration lives only in the header
     let attrs = ndsCopy(env.curAttrs)
     emitLinkPrefix(attrs)
     emitInlineSpec(attrs)
@@ -6639,7 +6640,7 @@ func emitFwdDecl(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd]
     print(name)
     print("(")
     if isEntryMain(env, name) { print("int argc, char** argv") }
-    else { emitParamsMode(params, isAsyncMods(mods), true) }
+    else { emitParamsMode(params, isAsyncMods(mods) || isForeignAbi(attrs), true) }
     print(")")
     // The asm label rides only on the declaration (a definition cannot take it).
     emitAsmLabel(attrStr(attrs, "symbol"))
@@ -6662,7 +6663,7 @@ func emitFunc(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd], _
     print(name)
     print("(")
     if isEntryMain(env, name) { print("int argc, char** argv") }
-    else { emitParamsMode(params, isA, true) }
+    else { emitParamsMode(params, isA || isForeignAbi(env.curAttrs), true) }
     print(") {\n")
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
@@ -6808,12 +6809,31 @@ func emitParamsMode(_ params: Vec[Nd], _ isAsync: Bool, _ ptrByVal: Bool) using 
 
 func emitValueParam(_ p: Nd) using Alloc, Log {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): emitValueParamParts(nm, ty)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): emitValueModeParam(md, nm, ty)
         default: noop()
     }
 }
 
+// Only READ params go by value; `inout` / `sink` keep their reference forms
+// (an inout param is a pointer in the foreign ABI too).
+func emitValueModeParam(_ md: Str, _ nm: Str, _ ty: Vec[Nd]) using Alloc, Log {
+    if streq(md, "inout ") || streq(md, "sink ") { emitModeParam(md, nm, ty, true); return }
+    emitValueParamParts(nm, ty)
+}
+
+// §15 Tier C: an `@extern(conv)` function, declared or defined, follows the
+// foreign ABI, so its read params pass by value like an async function's (F8).
+func isForeignAbi(_ attrs: Vec[Nd]) using Alloc -> Bool {
+    var i: Int = 0
+    while i < attrs.len() {
+        if streq(attrNameOf(attrs.get(i) ?? Nd.wildcard), "extern") { return true }
+        i = i + 1
+    }
+    return false
+}
+
 func emitValueParamParts(_ nm: Str, _ ty: Vec[Nd]) using Alloc, Log {
+    if isFnTy(ty) { emitFnPtrDecl(ty, nm); return }
     emitTypeBoxed(ty)
     print(" ")
     print(nm)

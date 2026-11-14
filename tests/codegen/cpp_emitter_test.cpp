@@ -3334,3 +3334,22 @@ TEST_CASE("binary operands are parenthesized where C++ precedence would regroup 
     CHECK(f.out.source.find("return a == (b | 1);") != std::string::npos);
     CHECK(f.out.source.find("return a + b * 2 << 1;") != std::string::npos);
 }
+
+TEST_CASE("@extern functions pass read parameters by value (Tier C)") {
+    // §15: an `@extern(conv)` item follows the foreign ABI, so a scalar
+    // argument travels in a register, not by address (F8). Declarations and
+    // definitions agree; inout stays a reference; ordinary functions keep
+    // the Tier V `const T&` form.
+    SemaEmitFixture f("struct Frame { var x0: UInt64 }\n"
+                      "@extern(\"C\") @symbol(\"k_put\") func put(_ c: UInt8, _ port: UInt64)\n"
+                      "@extern(\"C\") @symbol(\"k_enter\") func enter(_ f: inout Frame)\n"
+                      "@extern(\"C\") @symbol(\"k_entry\")\n"
+                      "func entry(_ id: UInt64) -> UInt64 { return id }\n"
+                      "func plain(_ a: UInt64) -> UInt64 { return a }\n");
+    CHECK(f.out.header.find("void put(std::uint8_t c, std::uint64_t port) asm(\"k_put\");")
+          != std::string::npos);
+    CHECK(f.out.header.find("void enter(Frame& f) asm(\"k_enter\");") != std::string::npos);
+    CHECK(f.out.source.find("std::uint64_t entry(std::uint64_t id) {") != std::string::npos);
+    CHECK(f.out.source.find("std::uint64_t plain(const std::uint64_t& a) {")
+          != std::string::npos);
+}
