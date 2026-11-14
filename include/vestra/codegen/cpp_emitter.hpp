@@ -60,6 +60,10 @@ public:
 
 private:
     void emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl& d);
+    // §14.5.3 a `static [N]@interrupt(T)` under --no-libc on aarch64: the
+    // vector table itself, as compiler-emitted code (true when handled).
+    bool emit_vector_table(std::ostream& hdr, std::ostream& src, const ast::StaticDecl& s);
+    std::string module_label_;  // the unit's module path, `_`-joined (symbol prefixes)
     void emit_func(std::ostream& hdr, std::ostream& src, const ast::FuncDecl& f);
     // §11 — append a trailing `co_return;` to a void async function body
     // when needed so it is a C++20 coroutine.

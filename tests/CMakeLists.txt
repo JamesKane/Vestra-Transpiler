@@ -2877,6 +2877,13 @@ add_test(
     COMMAND $<TARGET_FILE:vestra> audit ${CMAKE_SOURCE_DIR}/examples/cinterop_demo/cinterop.vst --safety)
 set_tests_properties(e2e_audit_safety_extern PROPERTIES PASS_REGULAR_EXPRESSION "unsafe Extern")
 
+# §14.5.3 a vector table over a frame without the canonical fields is an error.
+add_test(
+    NAME    e2e_vectable_frame_fields
+    COMMAND sh -c "printf 'struct F {\\n    var pc: UInt64\\n}\\n@interrupt\\nfunc h(_ f: inout F) {\\n    f.pc = 0\\n}\\nstatic t: [2]@interrupt(F) = [h, h]\\n' > ${e2e_workdir}/vt_bad.vst && $<TARGET_FILE:vestra> build ${e2e_workdir}/vt_bad.vst --no-libc -o ${e2e_workdir}/_vt_bad 2>&1; true")
+set_tests_properties(e2e_vectable_frame_fields PROPERTIES
+    PASS_REGULAR_EXPRESSION "lacks the fields the compiler-emitted vector table saves into: x: \\[31\\]UInt64, sp: UInt64")
+
 # §5 visibility: referencing a non-public (internal) decl of an imported module
 # must fail to resolve. `vestra check` is expected to exit non-zero.
 add_test(

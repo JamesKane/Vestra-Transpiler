@@ -320,6 +320,12 @@ Resolver::ExportMap Resolver::public_exports() {
             name = static_cast<const ast::ConstDecl&>(*d).name;
             vis = static_cast<const ast::ConstDecl&>(*d).visibility;
             break;
+        case ast::NodeKind::Static:
+            // §5 a `public static` is reachable as `module.name` (a vector table
+            // an init module installs, a shared atomic counter).
+            name = static_cast<const ast::StaticDecl&>(*d).name;
+            vis = static_cast<const ast::StaticDecl&>(*d).visibility;
+            break;
         default:
             continue;
         }

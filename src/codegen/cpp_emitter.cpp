@@ -266,6 +266,12 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     // so its emission captures argc/argv (for args()); a `main` inside a module
     // is just `mod::main`, not the entry.
     unit_has_module_ = unit.module != nullptr;
+    module_label_.clear();
+    if (unit.module != nullptr) {
+        for (const auto& seg : unit.module->path) {
+            module_label_ += seg + "_";
+        }
+    }
 
     // §13 — index the unit's top-level structs by name so a `Soa[Point]`
     // annotation can reach Point's fields when emitting its tuple-of-vectors.
@@ -800,6 +806,10 @@ void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl
         // @symbol custom name is emitted as an asm("name") trailer.
         const auto& s = static_cast<const ast::StaticDecl&>(d);
         const auto la = read_link_attrs(s.attributes);
+        const bool vector_table = emit_vector_table(hdr, src, s);
+        if (vector_table) {
+            hdr << "#else\n";
+        }
         emit_link_attr_prefix(hdr, la);
         if (la.align > 0) {
             hdr << "alignas(" << la.align << ") ";
@@ -819,6 +829,9 @@ void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl
             emit_expr(hdr, *s.value);
         }
         hdr << ";\n";
+        if (vector_table) {
+            hdr << "#endif\n";
+        }
         break;
     }
     case ast::NodeKind::Opaque: {
@@ -1262,6 +1275,211 @@ void CppEmitter::emit_async_void_coreturn(std::ostream& os,
 // §9 — a Unit-returning `throws(E)` function returns `std::expected<void, E>`,
 // so falling off the end of its body is undefined behaviour (F9b). Unless the
 // body already ends in a `return`, append the success value.
+namespace {
+
+// Size and alignment of a trap-frame field type the vector code can address:
+// a primitive integer, or a fixed array of them. 0 when unsupported.
+std::pair<std::int64_t, std::int64_t> frame_field_layout(const ast::Type* t) {
+    if (t == nullptr) {
+        return {0, 0};
+    }
+    if (t->kind == ast::NodeKind::VectorType) {
+        const auto& v = static_cast<const ast::VectorType&>(*t);
+        auto [sz, al] = frame_field_layout(v.element.get());
+        return {sz * v.length, al};
+    }
+    if (t->kind != ast::NodeKind::NamedType) {
+        return {0, 0};
+    }
+    const auto& n = static_cast<const ast::NamedType&>(*t);
+    if (n.path.size() != 1) {
+        return {0, 0};
+    }
+    const auto& p = n.path[0];
+    if (p == "UInt64" || p == "Int64" || p == "UInt" || p == "Int") {
+        return {8, 8};
+    }
+    if (p == "UInt32" || p == "Int32") {
+        return {4, 4};
+    }
+    if (p == "UInt16" || p == "Int16") {
+        return {2, 2};
+    }
+    if (p == "UInt8" || p == "Int8" || p == "Bool") {
+        return {1, 1};
+    }
+    return {0, 0};
+}
+
+}  // namespace
+
+bool CppEmitter::emit_vector_table(std::ostream& hdr, std::ostream& src, const ast::StaticDecl& s) {
+    // Only the freestanding profile emits code: hosted, the table stays an
+    // array of handler pointers (what a host test inspects).
+    if (!no_libc_ || s.type == nullptr || s.type->kind != ast::NodeKind::VectorType) {
+        return false;
+    }
+    const auto& vt = static_cast<const ast::VectorType&>(*s.type);
+    if (vt.element == nullptr || vt.element->kind != ast::NodeKind::InterruptType) {
+        return false;
+    }
+    const auto& it = static_cast<const ast::InterruptType&>(*vt.element);
+    // The frame type and its canonical fields.
+    const ast::StructDecl* frame = nullptr;
+    if (resolution_ != nullptr && s.value != nullptr && it.trap_frame != nullptr) {
+        // Recover the struct from any handler's first parameter type.
+        if (auto st = resolution_->type_of(s.value.get());
+            st != nullptr && st->inner() != nullptr && st->inner()->kind() == sema::TypeKind::InterruptHandler
+            && st->inner()->inner() != nullptr && st->inner()->inner()->nominal_decl() != nullptr
+            && st->inner()->inner()->nominal_decl()->kind == ast::NodeKind::Struct) {
+            frame = static_cast<const ast::StructDecl*>(st->inner()->inner()->nominal_decl());
+        }
+    }
+    if (frame == nullptr || s.value == nullptr || s.value->kind != ast::NodeKind::VectorLitExpr) {
+        reporter_->report(
+            diag::Diagnostic::error("a compiler-emitted vector table needs an array literal of "
+                                    "@interrupt handlers over a struct trap frame")
+                .at(s.range));
+        return false;
+    }
+    // Layout (C rules over the field types), then the canonical fields.
+    std::unordered_map<std::string, std::int64_t> off;
+    std::int64_t at = 0;
+    std::int64_t max_al = 1;
+    std::int64_t x_count = 0;
+    for (const auto& f : frame->fields) {
+        auto [sz, al] = frame_field_layout(f.type.get());
+        if (sz == 0) {
+            reporter_->report(
+                diag::Diagnostic::error(std::format(
+                    "trap frame field '{}' needs a fixed-size integer type for the compiler-emitted "
+                    "vector table to address it",
+                    f.name))
+                    .at(f.range));
+            return false;
+        }
+        at = (at + al - 1) / al * al;
+        off[f.name] = at;
+        if (f.name == "x" && f.type->kind == ast::NodeKind::VectorType) {
+            x_count = static_cast<const ast::VectorType&>(*f.type).length;
+        }
+        at += sz;
+        max_al = std::max(max_al, al);
+    }
+    const std::int64_t frame_size = (at + max_al - 1) / max_al * max_al;
+    std::vector<std::string> missing;
+    if (x_count != 31) {
+        missing.emplace_back("x: [31]UInt64");
+    }
+    for (const char* n : {"sp", "elr", "spsr", "esr", "far"}) {
+        if (!off.contains(n)) {
+            missing.emplace_back(std::string{n} + ": UInt64");
+        }
+    }
+    if (!missing.empty()) {
+        std::string list;
+        for (const auto& m : missing) {
+            list += (list.empty() ? "" : ", ") + m;
+        }
+        reporter_->report(diag::Diagnostic::error(
+                              std::format("trap frame '{}' lacks the fields the compiler-emitted "
+                                          "vector table saves into: {}",
+                                          frame->name,
+                                          list))
+                              .at(frame->range));
+        return false;
+    }
+    const auto& elems = static_cast<const ast::VectorLitExpr&>(*s.value).elements;
+    const std::int64_t stack = (frame_size + 15) / 16 * 16;
+    const std::int64_t X = off["x"];
+    if (X + 30 * 8 > 504 - 8) {
+        reporter_->report(diag::Diagnostic::error(
+                              "trap frame field 'x' sits too far into the frame for the vector "
+                              "code's paired stores; put it first")
+                              .at(frame->range));
+        return false;
+    }
+    const auto la = read_link_attrs(s.attributes);
+    const std::string section = la.section.empty() ? ".text.vectors" : la.section;
+    const std::int64_t align = la.align > 0 ? la.align : 2048;
+    const std::string label = "__vstr_vt_" + module_label_ + s.name;
+    const std::string handlers = label + "_handlers";
+    std::ostringstream fty;
+    emit_type(fty, *s.type);
+    const std::string frame_name = nominal_prefix(frame) + frame->name;
+
+    // Header: on aarch64 the static names the code.
+    hdr << "#if defined(__aarch64__)\n";
+    hdr << "extern " << fty.str() << " " << s.name << " asm(\"" << label << "\");\n";
+
+    // Source: the handler pointers (read by the shared path), the layout the
+    // asm assumes, and the table code.
+    src << "#if defined(__aarch64__)\n";
+    src << "static_assert(sizeof(" << frame_name << ") == " << frame_size
+        << ", \"trap frame layout\");\n";
+    for (const auto& [n, o] : off) {
+        src << "static_assert(offsetof(" << frame_name << ", " << n << ") == " << o
+            << ", \"trap frame layout\");\n";
+    }
+    src << "[[gnu::used]] void (*" << handlers << "[" << elems.size() << "])(" << frame_name
+        << "&) asm(\"" << handlers << "\") = {";
+    for (std::size_t i = 0; i < elems.size(); ++i) {
+        src << (i != 0 ? ", " : "");
+        emit_expr(src, *elems[i]);
+    }
+    src << "};\n";
+    auto line = [&](const std::string& l) { src << "    \"" << l << "\\n\"\n"; };
+    src << "__asm__(\n";
+    line(".pushsection " + section + ", \\\"ax\\\"");
+    line(".balign " + std::to_string(align));
+    line(".global " + label);
+    line(label + ":");
+    for (std::size_t i = 0; i < elems.size(); ++i) {
+        line(".balign 128");
+        line("sub sp, sp, #" + std::to_string(stack));
+        line("stp x0, x1, [sp, #" + std::to_string(X) + "]");
+        line("mov x0, #" + std::to_string(i));
+        line("b " + label + "_common");
+    }
+    line(label + "_common:");
+    for (int r = 2; r < 30; r += 2) {
+        line("stp x" + std::to_string(r) + ", x" + std::to_string(r + 1) + ", [sp, #"
+             + std::to_string(X + r * 8) + "]");
+    }
+    line("str x30, [sp, #" + std::to_string(X + 240) + "]");
+    const std::pair<const char*, const char*> regs[] = {
+        {"sp", "sp_el0"}, {"elr", "elr_el1"}, {"spsr", "spsr_el1"}, {"esr", "esr_el1"}, {"far", "far_el1"}};
+    for (const auto& [field, reg] : regs) {
+        line(std::string{"mrs x2, "} + reg);
+        line("str x2, [sp, #" + std::to_string(off[field]) + "]");
+    }
+    if (off.contains("vector")) {
+        line("str x0, [sp, #" + std::to_string(off["vector"]) + "]");
+    }
+    line("adrp x1, " + handlers);
+    line("add x1, x1, :lo12:" + handlers);
+    line("ldr x1, [x1, x0, lsl #3]");
+    line("mov x0, sp");
+    line("blr x1");
+    for (const auto& [field, reg] : {std::pair{"sp", "sp_el0"}, std::pair{"elr", "elr_el1"},
+                                     std::pair{"spsr", "spsr_el1"}}) {
+        line("ldr x2, [sp, #" + std::to_string(off[field]) + "]");
+        line(std::string{"msr "} + reg + ", x2");
+    }
+    for (int r = 2; r < 30; r += 2) {
+        line("ldp x" + std::to_string(r) + ", x" + std::to_string(r + 1) + ", [sp, #"
+             + std::to_string(X + r * 8) + "]");
+    }
+    line("ldr x30, [sp, #" + std::to_string(X + 240) + "]");
+    line("ldp x0, x1, [sp, #" + std::to_string(X) + "]");
+    line("add sp, sp, #" + std::to_string(stack));
+    line("eret");
+    line(".popsection");
+    src << ");\n";
+    src << "#endif\n\n";
+    return true;
+}
+
 void CppEmitter::emit_unit_throws_return(std::ostream& os,
                                          const ast::FuncDecl& f,
                                          const ast::BlockExpr& blk) {

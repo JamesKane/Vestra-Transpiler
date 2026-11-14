@@ -56,3 +56,23 @@ func startWorker() using Asm {
     workerTask = Context.start(entry: worker, stack: (&workerStack).address + 4096)
     Scheduler.swapContext(mainTask, workerTask)
 }
+// §14.5.3 a compiler-emitted vector table over a canonical trap frame.
+@repr(C)
+struct Frame {
+    var x: [31]UInt64
+    var sp: UInt64
+    var elr: UInt64
+    var spsr: UInt64
+    var esr: UInt64
+    var far: UInt64
+    var vector: UInt64
+}
+@interrupt
+func onAny(_ f: inout Frame) {
+    f.elr = f.elr + 4
+}
+@section(".text.vectors") @align(2048)
+static table: [4]@interrupt(Frame) = [onAny, onAny, onAny, onAny]
+func vbar() -> UInt64 {
+    return (&table).address
+}
