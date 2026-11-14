@@ -3461,3 +3461,16 @@ TEST_CASE("hosted compilerFence is a full compiler barrier, not a signal fence")
     CHECK(f.out.header.find("__asm__ volatile(\"\" ::: \"memory\");") != std::string::npos);
     CHECK(f.out.header.find("std::atomic_signal_fence(ord)") == std::string::npos);
 }
+
+TEST_CASE("a Vestra memcpy replaces the builtin (Annex §15.4)") {
+    SemaEmitFixture f("@extern(\"C\") @symbol(\"memcpy\")\n"
+                      "func memcpy(_ d: MutPtr[UInt8], _ s: Ptr[UInt8], _ n: Int) using RawMemory { }\n"
+                      "func use(_ d: MutPtr[UInt8], _ s: Ptr[UInt8]) using RawMemory { memcpy(d, s, 4) }\n");
+    CHECK(f.out.source.find("    memcpy(d, s, 4);") != std::string::npos);
+    CHECK(f.out.source.find("__builtin_memcpy") == std::string::npos);
+}
+
+TEST_CASE("without a Vestra memcpy, the builtin lowers to __builtin_memcpy") {
+    SemaEmitFixture f("func use(_ d: MutPtr[UInt8], _ s: Ptr[UInt8]) using RawMemory { memcpy(d, s, 4) }\n");
+    CHECK(f.out.source.find("__builtin_memcpy(d, s, static_cast<std::size_t>(4))") != std::string::npos);
+}

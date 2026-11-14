@@ -355,7 +355,17 @@ void Resolver::collect_func(const ast::FuncDecl& f) {
     s.type = function_type_of(f);
     s.definition_range = f.range;
     s.visibility = f.visibility;
+    Symbol keep = s;
     if (auto* prev = scopes_.global().insert(std::move(s))) {
+        // Annex §15.4: a Vestra `memcpy` / `memset` / `memmove` (the body the
+        // compiler's own emitted calls bind to) replaces the builtin.
+        if (prev->decl == nullptr && prev->kind == SymbolKind::Func
+            && (f.name == "memcpy" || f.name == "memset" || f.name == "memmove")) {
+            if (auto* slot = scopes_.global().lookup_mutable(f.name)) {
+                *slot = std::move(keep);
+            }
+            return;
+        }
         duplicate_definition(*prev, f.name, f.range);
     }
 }

@@ -3771,7 +3771,10 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 {"memset", "__builtin_memset"},
                 {"memmove", "__builtin_memmove"},
             };
-            if (auto it = mem_intrinsics.find(callee_ident.name); it != mem_intrinsics.end()) {
+            const auto* mem_sym =
+                resolution_ != nullptr ? resolution_->symbol_of(c.callee.get()) : nullptr;
+            if (auto it = mem_intrinsics.find(callee_ident.name);
+                it != mem_intrinsics.end() && (mem_sym == nullptr || mem_sym->decl == nullptr)) {
                 os << it->second << "(";
                 for (std::size_t i = 0; i < c.args.size(); ++i) {
                     if (i != 0) {

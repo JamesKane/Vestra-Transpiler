@@ -438,7 +438,11 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                 "memmove",
             };
             const auto& bi = static_cast<const ast::IdentExpr&>(*c.callee);
-            if (raw_memory_builtins.contains(bi.name) && !in_scope("RawMemory")) {
+            // A user function of the same name (Annex §15.4's Vestra
+            // `memcpy`) is gated by its own `using` row instead.
+            const auto* bsym = resolution_ != nullptr ? resolution_->symbol_of(c.callee.get()) : nullptr;
+            const bool user_defined = bsym != nullptr && bsym->decl != nullptr;
+            if (raw_memory_builtins.contains(bi.name) && !user_defined && !in_scope("RawMemory")) {
                 missing_capability("RawMemory", c.range);
             }
             // §11.2 `parallel(data, chunks, body)` dispatches its worker onto
