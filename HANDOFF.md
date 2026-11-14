@@ -37,13 +37,13 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 
 ## Current state
 
-- **1532 / 1532 tests pass** (`ctest --test-dir build/debug`), Debug build,
-  format-check clean. Of these, **242 are `e2e_selfhost`** (4 lexer, 11 parser,
-  74 sema, 149 codegen, 4 end-to-end demo).
-- Latest slice: `af2a689` (codegen slice 76, `@noinit` statics and untyped
-  consts; corpus burndown 22). **118 commits** carry the `selfhost:` prefix.
-- **Corpus burndown: 97 of 150 examples byte-identical, 1204 divergent lines**
-  (about 720 of them parked by design or in practice, so about 485 live; see
+- **1534 / 1534 tests pass** (`ctest --test-dir build/debug`), Debug build,
+  format-check clean. Of these, **244 are `e2e_selfhost`** (4 lexer, 11 parser,
+  74 sema, 151 codegen, 4 end-to-end demo).
+- Latest slice: `4391797` (codegen slice 77, or-patterns over enum cases;
+  corpus burndown 23). **119 commits** carry the `selfhost:` prefix.
+- **Corpus burndown: 99 of 150 examples byte-identical, 1192 divergent lines**
+  (about 720 of them parked by design or in practice, so about 470 live; see
   the ranking below). The baseline when the burndown started was 11 examples
   and 23394 lines.
 - Phase status:
@@ -60,7 +60,7 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
     generics tracking (unknown-type, is-not-generic), all match families
     (guard-Bool, exhaustiveness, arm-type, pattern checks), and multi-file
     modules (import resolution, qualified member + type).
-  - **Codegen: 76 slices; the close-out roadmap is complete and the corpus
+  - **Codegen: 77 slices; the close-out roadmap is complete and the corpus
     burndown is active.** See "Where to pick up" below.
 
 ## Where to pick up: codegen
@@ -79,12 +79,11 @@ byte-for-byte vs `vestra build`:
 ### The next action
 
 The completion standard is the whole `examples/` corpus byte-identical, the same
-bar the lexer and parser already met. **97 of 150** examples are there;
-**1204 divergent lines** remain, of which about **720 are parked** (by design or
-in practice; see the ranking). Families #1 (loop-element typing, slice 75) and #2 (`@noinit` globals,
-slice 76) have shipped. **Start with family #3 in the table below**
-(or-patterns over enum cases), then #4; together they could reach about
-105 identical. First re-establish the baseline, since it is also
+bar the lexer and parser already met. **99 of 150** examples are there;
+**1192 divergent lines** remain, of which about **720 are parked** (by design or
+in practice; see the ranking). Families #1 to #3 have shipped (slices 75 to 77). **Start with family #4
+in the table below** (six cheap one-offs, each its own small slice); all
+six would reach about 105 identical. First re-establish the baseline, since it is also
 the regression check:
 
 ```
@@ -109,7 +108,7 @@ example totals, "flips" the examples a family would make identical.
 |---|---|---|---|---|
 | 1 | ~~**Loop-element / receiver typing**~~ DONE in slice 75: a `for` element or iterable is untyped, so `.len()` / `.isDigit()` / `.split()` / `.toInt()` miss the §18.5 builtin path | `tokenize_demo` 4, `string_split_demo` 4, `hashmap_iter_demo` 4, `selfhost_demo` 2 | 4 | small |
 | 2 | ~~**Global without initializer**~~ DONE in slice 76 emits `T x = ;` instead of `inline T x;` | `padded`, `per_cpu`, `per_cpu_extras`, `link_attrs` (1 to 2 lines each) | 0 alone | tiny; unblocks 5 and 6 |
-| 3 | **Or-patterns over enum cases** (`case .red, .green:` as stacked `case` labels; `case .a(let n), .b(let n)` in a visit) | `match` 8, `match_patterns` 4 | 2 | small |
+| 3 | ~~**Or-patterns over enum cases**~~ DONE in slice 77 (`case .red, .green:` as stacked `case` labels; `case .a(let n), .b(let n)` in a visit) | `match` 8, `match_patterns` 4 | 2 | small |
 | 4 | **Cheap one-offs**: sink arg of a struct not moved; `requires` bounds; typed `with x = e` binding; if-let as a value; `?.` through an optional field (`and_then`); a function name as a value (`&f`) | `ownership` 2, `generic_bounds` 2, `with_binding` 4, `optional` 4, `optchain` 6, `fn_ptr_table` 6 | up to 6 | small each |
 | 5 | **Attributes** (`@naked`, `@section`, `@used`, `@weak`, `@stack_protector`, `@packed` / `@align` / bitfields, asm symbol names). The parser SKIPS them (`skipAttributes`), so this starts with capturing them on `funcD` / `structD` | `stack_protector` 4, `boot_chain` 4, `interrupt_handler` 8, `layout` 8, `link_attrs` 14, `mmio_union` 16, `vec_table` 18 | 5 to 7 | medium |
 | 6 | **Atomics / sync surface outside `atomics`**: `Atomic[T]` as `std::atomic`, `fetchAdd` as `fetch_add`, the default `seq_cst` ordering argument, `__vstr::PerCpu` / `Padded`, sync intrinsics | `padded` 8, `per_cpu` 10, `interrupts_off` 18, `sync_intrinsics` 22, `panic_handler` 13 (and part of the parked `atomics` 86) | 4 to 5 | medium |
@@ -168,7 +167,7 @@ generated output directly over reading the `<`/`>` markers.
 
 ### What codegen covers
 
-Seventy-six slices; the close-out roadmap is complete and the corpus burndown
+Seventy-seven slices; the close-out roadmap is complete and the corpus burndown
 is active. The per-slice engineering log — every lowering, its bootstrap source
 line, and its gotchas — is in the `project_dogfood_compiler.md` memory file.
 The capability summary:
@@ -213,7 +212,9 @@ leftovers (multi-statement bodies, where-guard, and a bare `catch e` whose
 first `try` calls a method rather than a plain function); unannotated
 bindings of if cond-hoists (unannotated match bindings hoist since slice 72);
 nested tuple patterns outside `let`/`var` (for loops, match arms, do/catch
-still take the flat form); the atomics method
+still take the flat form); the bare-enum if-chain for two UNGUARDED arms
+naming the same case (the bootstrap's `any_duplicate` trigger; vgen only
+takes the chain on a guard, and no example hits it); the atomics method
 surface; Soa methods and span `split`/`chunks`.
 
 **Known SHARED bootstrap gaps**, mirrored rather than fixed — both produce
