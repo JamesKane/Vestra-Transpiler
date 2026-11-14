@@ -500,6 +500,40 @@ TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
                 }
                 return types_->unit();
             }
+            // §14.14 `Context.start(entry: f, stack: top)`: a Context that, once
+            // swapped in, begins running `f` (a `() -> Never` function) on the
+            // stack whose top is `top`, with interrupts unmasked. Context stays
+            // opaque; this is the one way to make a task that hasn't run yet.
+            if (bi.name == "Context" && mem.member == "start"
+                && builtin_context_decl_ != nullptr) {
+                TypePtr context_t = types_->make_nominal(TypeKind::Struct, builtin_context_decl_.get());
+                if (c.args.size() != 2 || c.args[0].label != "entry" || c.args[1].label != "stack") {
+                    for (const auto& a : c.args) {
+                        (void)check_expr(*a.value);
+                    }
+                    error_at(c.range, "Context.start takes (entry: () -> Never, stack: UInt64)");
+                    return context_t;
+                }
+                auto entry_t = check_expr(*c.args[0].value);
+                auto stack_t = check_expr(*c.args[1].value, types_->primitive(TypeKind::UInt64));
+                if (entry_t != nullptr && !entry_t->is_error()
+                    && (entry_t->kind() != TypeKind::Function || !entry_t->parts().empty()
+                        || entry_t->result() == nullptr || !entry_t->result()->is_never())) {
+                    error_at(c.args[0].value->range,
+                             std::format("Context.start's entry must be a `() -> Never` function "
+                                         "(a task has no caller to return to), got {}",
+                                         entry_t->describe()));
+                }
+                if (stack_t != nullptr && !stack_t->is_error()
+                    && stack_t->kind() != TypeKind::UInt64) {
+                    error_at(c.args[1].value->range,
+                             std::format("Context.start's stack is the stack top address, a "
+                                         "UInt64; got {}",
+                                         stack_t->describe()));
+                }
+                resolution_.set_type(&c, context_t);
+                return context_t;
+            }
         }
     }
 

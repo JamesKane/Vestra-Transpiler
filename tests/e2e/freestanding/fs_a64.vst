@@ -44,3 +44,15 @@ func arm(_ v: UInt64) using Asm -> UInt64 {
     return Sysreg.midr_el1.read() + Sysreg.cntpct_el0.read() + Sysreg.esr_el1.read()
         + Sysreg.currentel.read() + Sysreg.cntvct_el0.read() + Sysreg.id_aa64mmfr0_el1.read()
 }
+// §14.14 a fresh task and a swap into it.
+@noinit static mainTask: Context
+@noinit static workerTask: Context
+@noinit static workerStack: [512]UInt64
+func worker() using Asm -> Never {
+    Scheduler.swapContext(workerTask, mainTask)
+    while true { }
+}
+func startWorker() using Asm {
+    workerTask = Context.start(entry: worker, stack: (&workerStack).address + 4096)
+    Scheduler.swapContext(mainTask, workerTask)
+}

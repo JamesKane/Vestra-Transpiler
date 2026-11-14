@@ -371,6 +371,19 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                 missing_capability("Asm", c.range);
             }
         }
+        // §14.14 swapping register sets, or building one, is an instruction
+        // sequence: gated on Asm (rule 5), not RawMemory.
+        if (c.callee && c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& sm = static_cast<const ast::MemberExpr&>(*c.callee);
+            if (sm.base != nullptr && sm.base->kind == ast::NodeKind::IdentExpr) {
+                const auto& base_name = static_cast<const ast::IdentExpr&>(*sm.base).name;
+                const bool ctx_op = (base_name == "Scheduler" && sm.member == "swapContext")
+                                    || (base_name == "Context" && sm.member == "start");
+                if (ctx_op && !in_scope("Asm")) {
+                    missing_capability("Asm", c.range);
+                }
+            }
+        }
         // §14.7.1 `@kernel_init` is one-way: init code may call ordinary code,
         // but ordinary code may not call back into init (it runs before the
         // scheduler, single-threaded; once that's over, it's over).

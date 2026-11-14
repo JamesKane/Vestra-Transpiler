@@ -2669,9 +2669,15 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << "__vstr::opt_" << mem.member << "(";
                 emit_expr(os, *mem.base);
                 if (mem.member == "put") {
-                    os << ", std::move(";
-                    emit_expr(os, *c.args[0].value);
-                    os << ")";
+                    // A named value moves in; a temporary already is an rvalue.
+                    os << ", ";
+                    if (is_lvalue_expr(*c.args[0].value)) {
+                        os << "std::move(";
+                        emit_expr(os, *c.args[0].value);
+                        os << ")";
+                    } else {
+                        emit_expr(os, *c.args[0].value);
+                    }
                 }
                 os << ")";
                 break;
@@ -2845,6 +2851,17 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << ", &";
                 emit_expr(os, *c.args[1].value);
                 os << ")";
+                break;
+            }
+            // §14.14 `Context.start(entry: f, stack: top)`.
+            if (mem.base != nullptr && mem.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*mem.base).name == "Context"
+                && mem.member == "start" && c.args.size() == 2) {
+                os << "__vstr::context_start(";
+                emit_expr(os, *c.args[0].value);
+                os << ", static_cast<std::uint64_t>(";
+                emit_expr(os, *c.args[1].value);
+                os << "))";
                 break;
             }
         }

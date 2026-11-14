@@ -32,3 +32,15 @@ func rv(_ v: UInt64) using Asm -> UInt64 {
     Sysreg.sip.write(0)
     return Sysreg.scause.read() + Sysreg.time.read() + Sysreg.cycle.read()
 }
+// §14.14 a fresh task and a swap into it.
+@noinit static mainTask: Context
+@noinit static workerTask: Context
+@noinit static workerStack: [512]UInt64
+func worker() using Asm -> Never {
+    Scheduler.swapContext(workerTask, mainTask)
+    while true { }
+}
+func startWorker() using Asm {
+    workerTask = Context.start(entry: worker, stack: (&workerStack).address + 4096)
+    Scheduler.swapContext(mainTask, workerTask)
+}

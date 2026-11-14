@@ -2935,3 +2935,16 @@ TEST_CASE("a pointer's address is a UInt64, with no capability (F6)") {
               .first_message.find("no field or method 'address'")
           != std::string::npos);
 }
+
+TEST_CASE("Context.start takes a `() -> Never` entry and a UInt64 stack top (§14.14)") {
+    const char* fns = "func task() -> Never {\n    while true { }\n}\nfunc plain() { }\n";
+    CHECK(check_errors(std::string(fns)
+                       + "func f() using Asm -> Context {\n"
+                         "    return Context.start(entry: task, stack: 0x1000)\n}\n")
+          == 0);
+    CHECK(check_detail(std::string(fns)
+                       + "func f() using Asm -> Context {\n"
+                         "    return Context.start(entry: plain, stack: 0x1000)\n}\n")
+              .first_message.find("must be a `() -> Never` function")
+          != std::string::npos);
+}

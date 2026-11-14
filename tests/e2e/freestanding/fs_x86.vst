@@ -32,3 +32,15 @@ func x86(_ v: UInt64) using Asm -> UInt64 {
     Sysreg.ia32_kernel_gs_base.write(v)
     return Sysreg.ia32_lstar.read() + Sysreg.ia32_tsc_aux.read()
 }
+// §14.14 a fresh task and a swap into it.
+@noinit static mainTask: Context
+@noinit static workerTask: Context
+@noinit static workerStack: [512]UInt64
+func worker() using Asm -> Never {
+    Scheduler.swapContext(workerTask, mainTask)
+    while true { }
+}
+func startWorker() using Asm {
+    workerTask = Context.start(entry: worker, stack: (&workerStack).address + 4096)
+    Scheduler.swapContext(mainTask, workerTask)
+}

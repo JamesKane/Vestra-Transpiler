@@ -1348,6 +1348,18 @@ struct SelectAwaiter {
     hdr << "};\n";
     hdr << "inline void scheduler_swap_context(Context*, const Context*) noexcept {\n";
     hdr << "    // hosted no-op; kernel target emits the save/restore sequence.\n";
+    hdr << "}\n";
+    // §14.14 Context.start: hosted, the slot only records the entry and
+    // stack (there is no switching to do with them).
+    hdr << "template <class F>\n";
+    hdr << "inline Context context_start(F* entry, std::uint64_t stack) noexcept {\n";
+    hdr << "    Context c{};\n";
+    hdr << "    const auto e = reinterpret_cast<std::uintptr_t>(entry);\n";
+    hdr << "    for (int i = 0; i < 8; ++i) {\n";
+    hdr << "        c._bytes[i] = static_cast<std::uint8_t>(e >> (8 * i));\n";
+    hdr << "        c._bytes[8 + i] = static_cast<std::uint8_t>(stack >> (8 * i));\n";
+    hdr << "    }\n";
+    hdr << "    return c;\n";
     hdr << "}\n\n";
     hdr << "}  // namespace __vstr\n\n";
 
@@ -2450,13 +2462,135 @@ inline void tlbInvalidatePage(std::uint64_t, bool, TlbScope) noexcept VESTRA_UNL
 inline void tlbInvalidateAsid(std::uint16_t, TlbScope) noexcept VESTRA_UNLOWERED("no TLB lowering for this target");
 #endif
 
-// §14.14 the save/restore sequence for Scheduler.swapContext is not lowered
-// for the freestanding profile yet; a kernel keeps its own (see F3).
+// §14.14 Scheduler.swapContext: save the callee-saved registers, the stack
+// pointer, the return address (the resume PC) and the interrupt mask into
+// *save; load the same from *load and return into it. Caller-saved and
+// FP/vector state are not part of a Context (rules 2-4). Slot layout:
+//   aarch64  x19..x28 @0, x29 @80, x30 (resume PC) @88, sp @96, DAIF @104
+//   x86_64   rbx rbp r12..r15 @0..40, rsp @48, resume PC @56, RFLAGS @64
+//   riscv64  ra @0, sp @8, s0..s11 @16..104, sstatus.SIE @112
 struct alignas(16) Context {
     std::uint8_t _bytes[256];
 };
-inline void scheduler_swap_context(Context*, const Context*) noexcept
-    VESTRA_UNLOWERED("Scheduler.swapContext is not lowered for --no-libc yet");
+
+[[gnu::naked, gnu::noinline]] inline void scheduler_swap_context(Context* /*save*/, const Context* /*load*/) noexcept {
+#if defined(__aarch64__)
+    __asm__ volatile(
+        "stp x19, x20, [x0, #0]\n"
+        "stp x21, x22, [x0, #16]\n"
+        "stp x23, x24, [x0, #32]\n"
+        "stp x25, x26, [x0, #48]\n"
+        "stp x27, x28, [x0, #64]\n"
+        "stp x29, x30, [x0, #80]\n"
+        "mov x9, sp\n"
+        "mrs x10, daif\n"
+        "stp x9, x10, [x0, #96]\n"
+        "ldp x19, x20, [x1, #0]\n"
+        "ldp x21, x22, [x1, #16]\n"
+        "ldp x23, x24, [x1, #32]\n"
+        "ldp x25, x26, [x1, #48]\n"
+        "ldp x27, x28, [x1, #64]\n"
+        "ldp x29, x30, [x1, #80]\n"
+        "ldp x9, x10, [x1, #96]\n"
+        "mov sp, x9\n"
+        "msr daif, x10\n"
+        "ret\n");
+#elif defined(__x86_64__)
+    __asm__ volatile(
+        "mov %rbx, 0(%rdi)\n"
+        "mov %rbp, 8(%rdi)\n"
+        "mov %r12, 16(%rdi)\n"
+        "mov %r13, 24(%rdi)\n"
+        "mov %r14, 32(%rdi)\n"
+        "mov %r15, 40(%rdi)\n"
+        "lea 8(%rsp), %rax\n"
+        "mov %rax, 48(%rdi)\n"
+        "mov (%rsp), %rax\n"
+        "mov %rax, 56(%rdi)\n"
+        "pushfq\n"
+        "pop %rax\n"
+        "mov %rax, 64(%rdi)\n"
+        "mov 0(%rsi), %rbx\n"
+        "mov 8(%rsi), %rbp\n"
+        "mov 16(%rsi), %r12\n"
+        "mov 24(%rsi), %r13\n"
+        "mov 32(%rsi), %r14\n"
+        "mov 40(%rsi), %r15\n"
+        "mov 64(%rsi), %rax\n"
+        "push %rax\n"
+        "popfq\n"
+        "mov 48(%rsi), %rsp\n"
+        "jmp *56(%rsi)\n");
+#elif defined(__riscv)
+    __asm__ volatile(
+        "sd ra, 0(a0)\n"
+        "sd sp, 8(a0)\n"
+        "sd s0, 16(a0)\n"
+        "sd s1, 24(a0)\n"
+        "sd s2, 32(a0)\n"
+        "sd s3, 40(a0)\n"
+        "sd s4, 48(a0)\n"
+        "sd s5, 56(a0)\n"
+        "sd s6, 64(a0)\n"
+        "sd s7, 72(a0)\n"
+        "sd s8, 80(a0)\n"
+        "sd s9, 88(a0)\n"
+        "sd s10, 96(a0)\n"
+        "sd s11, 104(a0)\n"
+        "csrr t0, sstatus\n"
+        "andi t0, t0, 2\n"
+        "sd t0, 112(a0)\n"
+        "ld ra, 0(a1)\n"
+        "ld sp, 8(a1)\n"
+        "ld s0, 16(a1)\n"
+        "ld s1, 24(a1)\n"
+        "ld s2, 32(a1)\n"
+        "ld s3, 40(a1)\n"
+        "ld s4, 48(a1)\n"
+        "ld s5, 56(a1)\n"
+        "ld s6, 64(a1)\n"
+        "ld s7, 72(a1)\n"
+        "ld s8, 80(a1)\n"
+        "ld s9, 88(a1)\n"
+        "ld s10, 96(a1)\n"
+        "ld s11, 104(a1)\n"
+        "csrci sstatus, 2\n"
+        "ld t0, 112(a1)\n"
+        "csrs sstatus, t0\n"
+        "ret\n");
+#else
+    __builtin_trap();
+#endif
+}
+
+inline void context_put64(Context& c, int off, std::uint64_t v) noexcept {
+    for (int i = 0; i < 8; ++i) {
+        c._bytes[off + i] = static_cast<std::uint8_t>(v >> (8 * i));
+    }
+}
+
+// §14.14 Context.start: a register image that, swapped in, starts `entry`
+// on the stack whose top is `stack`, interrupts unmasked.
+template <class F>
+inline Context context_start(F* entry, std::uint64_t stack) noexcept {
+    Context c{};
+    const auto pc = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(entry));
+    const std::uint64_t top = stack & ~std::uint64_t{15};
+#if defined(__aarch64__)
+    context_put64(c, 88, pc);
+    context_put64(c, 96, top);
+    context_put64(c, 104, 0);              // DAIF clear: interrupts unmasked
+#elif defined(__x86_64__)
+    context_put64(c, 48, top - 8);          // as if `call` pushed a return address
+    context_put64(c, 56, pc);
+    context_put64(c, 64, 0x202);            // RFLAGS: IF set, reserved bit 1
+#elif defined(__riscv)
+    context_put64(c, 0, pc);
+    context_put64(c, 8, top);
+    context_put64(c, 112, 2);               // sstatus.SIE
+#endif
+    return c;
+}
 
 }  // namespace __vstr
 

@@ -11,7 +11,7 @@ struct Stats {
     var misses: UInt32
 }
 
-func bounce() {
+func bounce() using Asm {
     Scheduler.swapContext(saved, next)
     Scheduler.swapContext(next, saved)
 }

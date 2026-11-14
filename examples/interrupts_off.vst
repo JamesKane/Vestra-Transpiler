@@ -66,6 +66,6 @@ func nested_bump() {
 // Drive Scheduler.swapContext between two Context slots. The
 // hosted shim is a no-op; the kernel target replaces it with the
 // save/restore sequence.
-func switch_tasks() {
+func switch_tasks() using Asm {
     Scheduler.swapContext(slot_a, slot_b)
 }
