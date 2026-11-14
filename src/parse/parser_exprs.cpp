@@ -376,7 +376,12 @@ ast::ExprPtr Parser::parse_primary() {
         auto v = std::make_unique<ast::VectorLitExpr>();
         if (!check(TokenKind::RBracket)) {
             v->elements.push_back(parse_expr());
+            // A trailing comma before `]` is allowed (a table written one
+            // element per line).
             while (match(TokenKind::Comma)) {
+                if (check(TokenKind::RBracket)) {
+                    break;
+                }
                 v->elements.push_back(parse_expr());
             }
         }

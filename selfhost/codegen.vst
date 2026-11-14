@@ -1880,7 +1880,11 @@ func parsePrimary(_ p: inout Ps) using Alloc -> Nd {
         var elems: Vec[Nd] = Vec.new()
         if !isKind(p, TokKind.rbracket) {
             elems.push(parseExpr(&p))
-            while eat(p, TokKind.comma) { elems.push(parseExpr(&p)) }
+            // A trailing comma before `]` is allowed, as in the bootstrap.
+            while eat(p, TokKind.comma) {
+                if isKind(p, TokKind.rbracket) { break }
+                elems.push(parseExpr(&p))
+            }
         }
         eat(p, TokKind.rbracket)
         return Nd.vecLit(elems)

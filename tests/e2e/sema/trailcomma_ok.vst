@@ -1,0 +1,10 @@
+// An array literal may end in a trailing comma, one element per line.
+func f() -> Int32 {
+    let a: [3]Int32 = [
+        1,
+        2,
+        3,
+    ]
+    let b: [2]Int32 = [4, 5,]
+    return 0
+}
