@@ -1,0 +1,15 @@
+// Bodies that can fall off the end (F9, F22).
+func a(_ x: Int32) -> Int32 {
+    if x > 0 { return 1 }
+}
+func b(_ x: Int32) -> Int32 {
+    while true {
+        if x > 0 { break }
+    }
+}
+func c() -> Never {
+    let y: Int32 = 1
+}
+func d(_ x: Int32) -> Int32 {
+    while x > 0 { return 1 }
+}

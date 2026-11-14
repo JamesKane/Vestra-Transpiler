@@ -1127,9 +1127,15 @@ func parseVisibility(_ p: inout Ps) -> Str {
 
 // Skip declaration attributes `@name` / `@name(...)` (the C++ printer does not emit
 // them). Consumes any run of attributes, balancing parens in their argument lists.
-func skipAttributes(_ p: inout Ps) {
+func skipAttributes(_ p: inout Ps) { let _ = skipAttrsNaked(&p) }
+
+// As skipAttributes, and says whether one was `@naked` or `@boot` (an asm body
+// the divergence checks don't hold to their rules, as in the bootstrap).
+func skipAttrsNaked(_ p: inout Ps) -> Bool {
+    var naked: Bool = false
     while isKind(p, TokKind.at) {
         advP(&p)  // '@'
+        if streq(curRaw(p), "naked") || streq(curRaw(p), "boot") { naked = true }
         advP(&p)  // name (identifier or reserved word)
         if isKind(p, TokKind.lparen) {
             var depth: Int = 0
@@ -1145,10 +1151,15 @@ func skipAttributes(_ p: inout Ps) {
         }
         skipNL(&p)
     }
+    return naked
 }
 
+// A `@naked` / `@boot` function carries this in its modifiers; the printer
+// drops it.
+func nakedMark() -> Str { return "@naked " }
+
 func parseDecl(_ p: inout Ps) using Alloc -> Nd {
-    skipAttributes(&p)
+    let naked = skipAttrsNaked(&p)
     let vis = own(parseVisibility(&p))
     if isKind(p, TokKind.kwStruct) { return parseStruct(&p, vis, false) }
     // §5 `linear struct Foo { … }` — the modifier (admitted on structs in v0.5)
@@ -1160,7 +1171,8 @@ func parseDecl(_ p: inout Ps) using Alloc -> Nd {
     if isKind(p, TokKind.kwOpaque) { return parseOpaque(&p, vis) }
     if isKind(p, TokKind.kwDerive) { return parseDerive(&p) }
     var mods: String = ""
-    if eat(p, TokKind.kwComptime) { mods = "comptime " }
+    if naked { mods.append(nakedMark()) }
+    if eat(p, TokKind.kwComptime) { mods.append("comptime ") }
     if eat(p, TokKind.kwAsync) { mods.append("async ") }
     if eat(p, TokKind.kwInout) { mods.append("inout ") }
     else if eat(p, TokKind.kwSink) { mods.append("sink ") }
@@ -1221,11 +1233,12 @@ func parseStruct(_ p: inout Ps, _ vis: String, _ isLinear: Bool) using Alloc -> 
     var methods: Vec[Nd] = Vec.new()
     var deinitB: Vec[Nd] = Vec.new()
     while !isKind(p, TokKind.rbrace) && !atEndP(p) {
-        skipAttributes(&p)  // field / method attributes (e.g. @bits(4)) — printer drops them
+        let naked = skipAttrsNaked(&p)  // field / method attributes (e.g. @bits(4)) — printer drops them
         if isKind(p, TokKind.kwFunc) || isKind(p, TokKind.kwAsync)
             || isKind(p, TokKind.kwInout) || isKind(p, TokKind.kwSink) {
             var mods: String = ""
-            if eat(p, TokKind.kwAsync) { mods = "async " }
+            if naked { mods.append(nakedMark()) }
+            if eat(p, TokKind.kwAsync) { mods.append("async ") }
             if eat(p, TokKind.kwInout) { mods.append("inout ") }
             else if eat(p, TokKind.kwSink) { mods.append("sink ") }
             methods.push(parseFunc(&p, "", mods))
@@ -2317,7 +2330,7 @@ func printFunc(_ vis: String, _ mods: String, _ name: String, _ gens: Vec[Nd], _
                _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd], _ indent: Int) using Alloc, Log {
     indentTo(indent)
     print(vis)
-    print(mods)
+    if containsSub(mods, nakedMark()) { print(mods.slice(nakedMark().len(), mods.len())) } else { print(mods) }
     print("func ")
     print(name)
     printGenerics(gens)
@@ -3417,7 +3430,7 @@ func tnSeedBuiltins(_ env: inout TnEnv) using Alloc {
     env.types.push("Box"); env.types.push("Span"); env.types.push("MutSpan")
     env.types.push("Option"); env.types.push("Result"); env.types.push("Atomic")
     env.types.push("Soa"); env.types.push("Channel"); env.types.push("Future")
-    env.types.push("Duration"); env.types.push("Self")
+    env.types.push("Duration"); env.types.push("Self"); env.types.push("Never")
 }
 
 func tnCollectType(_ env: inout TnEnv, _ d: Nd) using Alloc {
@@ -5096,7 +5109,7 @@ func tyIsStruct(_ env: inout TyEnv, _ name: String) -> Bool {
 func tyCheckDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
-            tyCheckFunc(env, name, params, r, b)
+            tyCheckFuncAll(env, mods, name, params, r, b)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyCheckMethods(env, m)
         case .enumD(let vis, let name, let cs, let m, let generics): tyCheckMethods(env, m)
         case .constD(let vis, let name, let ty, let v): tyCheckConst(env, ty, v)
@@ -5118,6 +5131,206 @@ func tyCheckFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ result
     tyRegisterParams(env, params)
     tyBoxed(env, body)
     tyCheckBodyProduces(env, name, body)
+}
+
+// §4 / §19 the bootstrap's two body-completion rules (F9, F22): a `-> Never`
+// function can't complete normally, and a value-returning one can't fall off
+// its end. A body-less declaration has nothing to check.
+func tyCheckDivergence(_ env: inout TyEnv, _ name: String, _ body: Vec[Nd]) using Alloc {
+    if body.len() == 0 || streq(env.curRet, "") || streq(env.curRet, "Unit") { return }
+    if tyDiverges(env, body) { return }
+    if streq(env.curRet, "Never") { env.bad.push(tyNeverMsg(name)); return }
+    // An `if` with no `else` is Unit, whatever its branch yields.
+    if !tyBodyEndsInElselessIf(body) {
+        let bt = tyBodyType(env, body)
+        if !streq(bt, "") && !streq(bt, "Unit") && tyAssignable(bt, env.curRet) { return }
+        if streq(bt, "") && tyBodyEndsInExpr(body) { return }   // unknown value: don't pile on
+    }
+    env.bad.push(tyNoReturnMsg(name, env.curRet))
+}
+
+func tyBodyEndsInElselessIf(_ body: Vec[Nd]) -> Bool {
+    if let b = body.get(0) {
+        return match b {
+            case .block(let stmts): tyLastIsElselessIf(stmts)
+            default: false
+        }
+    }
+    return false
+}
+
+func tyLastIsElselessIf(_ stmts: Vec[Nd]) -> Bool {
+    if stmts.len() == 0 { return false }
+    if let s = stmts.get(stmts.len() - 1) {
+        return match s {
+            case .exprS(let e): tyIsElselessIf(e)
+            default: false
+        }
+    }
+    return false
+}
+
+func tyIsElselessIf(_ e: Vec[Nd]) -> Bool {
+    if let n = e.get(0) {
+        return match n {
+            case .ifE(let ln, let li, let c, let t, let el): el.len() == 0
+            default: false
+        }
+    }
+    return false
+}
+
+func tyBodyEndsInExpr(_ body: Vec[Nd]) -> Bool {
+    if let b = body.get(0) {
+        return match b {
+            case .block(let stmts): tyLastIsExpr(stmts)
+            default: false
+        }
+    }
+    return false
+}
+
+func tyLastIsExpr(_ stmts: Vec[Nd]) -> Bool {
+    if stmts.len() == 0 { return false }
+    if let s = stmts.get(stmts.len() - 1) {
+        return match s {
+            case .exprS: true
+            default: false
+        }
+    }
+    return false
+}
+
+func tyNeverMsg(_ name: String) using Alloc -> String {
+    var s: String = "function '"
+    s.append(name)
+    s.append("' returns Never but its body can complete normally; end it with a call to a Never function, `panic(...)`, or a loop that doesn't exit")
+    return s
+}
+
+func tyNoReturnMsg(_ name: String, _ ret: String) using Alloc -> String {
+    var s: String = "function '"
+    s.append(name)
+    s.append("' can reach the end of its body without returning its ")
+    s.append(ret)
+    s.append(" result; return on every path")
+    return s
+}
+
+// Can `e` not complete normally? (The bootstrap's expr_diverges.)
+func tyDiverges(_ env: inout TyEnv, _ e: Vec[Nd]) using Alloc -> Bool {
+    if tyIsNeverCall(e) { return true }
+    if streq(tyInferBoxed(env, e), "Never") { return true }
+    if let n = e.get(0) {
+        return match n {
+            case .block(let stmts): tyStmtsDiverge(env, stmts)
+            case .paren(let x): tyDiverges(env, x)
+            case .ifE(let ln, let li, let c, let t, let el): el.len() > 0 && tyDiverges(env, t) && tyDiverges(env, el)
+            case .matchE(let scr, let arms): tyArmsDiverge(env, arms)
+            default: false
+        }
+    }
+    return false
+}
+
+// `panic(...)` / `abort()` / `unreachable()`, the built-in Never functions.
+func tyIsNeverCall(_ e: Vec[Nd]) -> Bool {
+    if let n = e.get(0) {
+        return match n {
+            case .call(let callee, let args): tyIsNeverName(callee)
+            default: false
+        }
+    }
+    return false
+}
+
+func tyIsNeverName(_ callee: Vec[Nd]) -> Bool {
+    if let n = callee.get(0) {
+        return match n {
+            case .ident(let nm): streq(nm, "panic") || streq(nm, "abort") || streq(nm, "unreachable")
+            default: false
+        }
+    }
+    return false
+}
+
+func tyStmtsDiverge(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc -> Bool {
+    var i: Int = 0
+    while i < stmts.len() {
+        if tyStmtDiverges(env, stmts.get(i) ?? Nd.wildcard) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func tyArmsDiverge(_ env: inout TyEnv, _ arms: Vec[Nd]) using Alloc -> Bool {
+    if arms.len() == 0 { return false }
+    var i: Int = 0
+    while i < arms.len() {
+        if !tyArmDiverges(env, arms.get(i) ?? Nd.wildcard) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+func tyArmDiverges(_ env: inout TyEnv, _ a: Nd) using Alloc -> Bool {
+    return match a {
+        case .matchArm(let d, let pat, let g, let body): body.len() > 0 && tyDiverges(env, body)
+        default: false
+    }
+}
+
+func tyStmtDiverges(_ env: inout TyEnv, _ s: Nd) using Alloc -> Bool {
+    return match s {
+        case .retS(let v): true
+        case .exprS(let e): tyDiverges(env, e)
+        case .letS(let p, let t, let v): v.len() > 0 && tyDiverges(env, v)
+        case .varS(let p, let t, let v): v.len() > 0 && tyDiverges(env, v)
+        case .whileS(let c, let b): tyIsTrueLit(c) && !tyBreaksOut(b, false)
+        case .withS(let caps, let vals, let b): tyDiverges(env, b)
+        default: false
+    }
+}
+
+func tyIsTrueLit(_ c: Vec[Nd]) -> Bool {
+    if let n = c.get(0) {
+        return match n {
+            case .boolLit(let v): v
+            default: false
+        }
+    }
+    return false
+}
+
+// Does a `break` in `body` leave the loop it belongs to? A labeled break
+// leaves it too (it targets this loop or one outside it).
+func tyBreaksOut(_ body: Vec[Nd], _ inLoop: Bool) -> Bool {
+    var i: Int = 0
+    while i < body.len() {
+        if tyNodeBreaksOut(body.get(i) ?? Nd.wildcard, inLoop) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func tyNodeBreaksOut(_ n: Nd, _ inLoop: Bool) -> Bool {
+    return match n {
+        case .breakS(let label): !inLoop || !streq(label, "")
+        case .block(let stmts): tyBreaksOut(stmts, inLoop)
+        case .exprS(let e): tyBreaksOut(e, inLoop)
+        case .ifE(let ln, let li, let c, let t, let el): tyBreaksOut(t, inLoop) || tyBreaksOut(el, inLoop)
+        case .matchE(let scr, let arms): tyBreaksOut(arms, inLoop)
+        case .matchArm(let d, let pat, let g, let body): tyBreaksOut(body, inLoop)
+        case .whileS(let c, let b): tyBreaksOut(b, true)
+        case .forS(let p, let it, let b): tyBreaksOut(b, true)
+        case .withS(let caps, let vals, let b): tyBreaksOut(b, inLoop)
+        default: false
+    }
+}
+
+func tyCheckFuncAll(_ env: inout TyEnv, _ mods: String, _ name: String, _ params: Vec[Nd], _ result: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    tyCheckFunc(env, name, params, result, body)
+    if !containsSub(mods, nakedMark()) { tyCheckDivergence(env, name, body) }
 }
 
 func tyRetSpelling(_ result: Vec[Nd]) using Alloc -> String {
