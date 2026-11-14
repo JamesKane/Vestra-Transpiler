@@ -37,13 +37,13 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 
 ## Current state
 
-- **1546 / 1546 tests pass** (`ctest --test-dir build/debug`), Debug build,
-  format-check clean. Of these, **256 are `e2e_selfhost`** (4 lexer, 11 parser,
-  74 sema, 163 codegen, 4 end-to-end demo).
-- Latest slice: `995ea71` (codegen slice 83, if-let in value and return
-  position; corpus burndown 29). **125 commits** carry the `selfhost:` prefix.
-- **Corpus burndown: 105 of 150 examples byte-identical, 1164 divergent lines**
-  (about 720 of them parked by design or in practice, so about 445 live; see
+- **1554 / 1554 tests pass** (`ctest --test-dir build/debug`), Debug build,
+  format-check clean. Of these, **264 are `e2e_selfhost`** (4 lexer, 11 parser,
+  74 sema, 171 codegen, 4 end-to-end demo).
+- Latest slice: `f9a1a1b` (codegen slice 87, `Scheduler.swapContext` and
+  `PerCpu.new`; corpus burndown 33). **129 commits** carry the `selfhost:` prefix.
+- **Corpus burndown: 111 of 150 examples byte-identical, 970 divergent lines**
+  (641 of them parked by design or in practice, so 329 live; see
   the ranking below). The baseline when the burndown started was 11 examples
   and 23394 lines.
 - Phase status:
@@ -60,7 +60,7 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
     generics tracking (unknown-type, is-not-generic), all match families
     (guard-Bool, exhaustiveness, arm-type, pattern checks), and multi-file
     modules (import resolution, qualified member + type).
-  - **Codegen: 83 slices; the close-out roadmap is complete and the corpus
+  - **Codegen: 87 slices; the close-out roadmap is complete and the corpus
     burndown is active.** See "Where to pick up" below.
 
 ## Where to pick up: codegen
@@ -79,12 +79,12 @@ byte-for-byte vs `vestra build`:
 ### The next action
 
 The completion standard is the whole `examples/` corpus byte-identical, the same
-bar the lexer and parser already met. **105 of 150** examples are there;
-**1164 divergent lines** remain, of which about **720 are parked** (by design or
-in practice; see the ranking). Families #1 to #4 have shipped (slices 75 to 83, session of 2026-11-14),
-reaching 105 identical. **Start with family #5 in the table below**
-(attributes), which begins with capturing attributes in the parser; family
-#6 needs the open atomics decision below first. First re-establish the baseline, since it is also
+bar the lexer and parser already met. **111 of 150** examples are there;
+**970 divergent lines** remain, of which **641 are parked** (by design or
+in practice; see the ranking), leaving **329 live**. Families #1 to #4 and #6 have shipped (slices 75 to 87, session of
+2026-11-14), reaching 111 identical. **Start with family #5 in the table
+below** (attributes), which begins with capturing attributes in the parser;
+it now also owns `panic_handler` (the `@panic_handler` registration block). First re-establish the baseline, since it is also
 the regression check:
 
 ```
@@ -111,26 +111,26 @@ example totals, "flips" the examples a family would make identical.
 | 2 | ~~**Global without initializer**~~ DONE in slice 76 emits `T x = ;` instead of `inline T x;` | `padded`, `per_cpu`, `per_cpu_extras`, `link_attrs` (1 to 2 lines each) | 0 alone | tiny; unblocks 5 and 6 |
 | 3 | ~~**Or-patterns over enum cases**~~ DONE in slice 77 (`case .red, .green:` as stacked `case` labels; `case .a(let n), .b(let n)` in a visit) | `match` 8, `match_patterns` 4 | 2 | small |
 | 4 | ~~**Cheap one-offs**~~ DONE in slices 78 to 83 (`addr_of` also fell from 18 to 14): sink arg of a struct not moved; `requires` bounds; typed `with x = e` binding; if-let as a value; `?.` through an optional field (`and_then`); a function name as a value (`&f`) | `ownership` 2, `generic_bounds` 2, `with_binding` 4, `optional` 4, `optchain` 6, `fn_ptr_table` 6 | up to 6 | small each |
-| 5 | **Attributes** (`@naked`, `@section`, `@used`, `@weak`, `@stack_protector`, `@packed` / `@align` / bitfields, asm symbol names). The parser SKIPS them (`skipAttributes`), so this starts with capturing them on `funcD` / `structD` | `stack_protector` 4, `boot_chain` 4, `interrupt_handler` 8, `layout` 8, `link_attrs` 14, `mmio_union` 16, `vec_table` 18 | 5 to 7 | medium |
-| 6 | **Atomics / sync surface outside `atomics`**: `Atomic[T]` as `std::atomic`, `fetchAdd` as `fetch_add`, the default `seq_cst` ordering argument, `__vstr::PerCpu` / `Padded`, sync intrinsics | `padded` 8, `per_cpu` 10, `interrupts_off` 18, `sync_intrinsics` 22, `panic_handler` 13 (and part of the parked `atomics` 86) | 4 to 5 | medium |
-| 7 | **Raw pointers and MMIO**: `Ptr` / `MutPtr.unchecked` as `reinterpret_cast`, `p.value` as `(*p)`, `Span.raw`, `MmioView` / `MmioRegion` / `MmioWireView`, `memcpy` / cache intrinsics, `&x` | `raw_mint` 8, `mmio` 8, `mmio_wire` 8, `ptr_deref` 14, `mem_intrinsics` 16, `addr_of` 18, `cache_tlb` 26 | 6 to 7 | medium to large |
+| 5 | **Attributes** (`@naked`, `@section`, `@used`, `@weak`, `@stack_protector`, `@packed` / `@align` / bitfields, asm symbol names). The parser SKIPS them (`skipAttributes`), so this starts with capturing them on `funcD` / `structD` | `stack_protector` 4, `boot_chain` 4, `interrupt_handler` 8, `layout` 8, `link_attrs` 12, `mmio_union` 16, `vec_table` 18, `panic_handler` 5 (the `@panic_handler` registration block) | 6 to 8 | medium |
+| 6 | ~~**Atomics / sync surface**~~ DONE in slices 84 to 87, including the `atomics` example itself; `panic_handler` moved to #5 | | | |
+| 7 | **Raw pointers and MMIO**: `Ptr` / `MutPtr.unchecked` as `reinterpret_cast`, `p.value` as `(*p)`, `Span.raw`, the MMIO view methods, `memcpy`. (The type spellings, by-value pointer params, `&x` and the cache intrinsics landed in slices 80, 84 and 86.) | `raw_mint` 8, `mmio` 8, `mmio_wire` 8, `ptr_deref` 14, `mem_intrinsics` 16, `addr_of` 6, `cache_tlb` 8 | 6 to 7 | medium |
 | 8 | **Spans and iterator adapters**: `s.count` / `isEmpty` / `split` / `chunks` and the `zip` / `take` / `map` / `filter` adapter protocol | `split_demo` 12, `iter_combinators` 12, `map_filter` 16, `chunks_demo` 18 | 4 | medium |
 | 9 | **Medium one-offs** | `simd_demo` 6, `map_error` 7 (closure with a match body), `const_generic` 12 (array literal element type from a generic field), `tuple_params` 14 (tuple-pattern parameters), `docatch_where` 14, `parallel_demo` 14 (closure param types), `soa_demo` 20, `midtry` 27 (an `if` cond-hoist at an unannotated binding and mid-expression) | 1 each | varies |
+| 10 | **Typed system registers** (§14.12, missed by the September re-rank): `Sysreg.daif` as `__vstr::sysreg::daif`, and some registers lowered to dedicated `__vstr::sysreg::write_<reg>` shims | `sysreg` 14 | 1 | small |
 
-**Open decision (raised 2026-09-25, not yet answered).** The `atomics` example
-was parked for its size (86 lines), but family #6 shows the same surface in five
-OTHER examples (about 70 lines). The recommendation on the table is to unpark
-the core (the `Atomic[T]` mapping, `fetch_add` and friends, the default
-`seq_cst` ordering argument) when #6 comes up, and still leave the `atomics`
-example itself for last. Ask before starting #6.
+**Atomics decision (answered 2026-11-14).** Unparked. The `atomics` example
+was only scoped out of slice 39 to keep that slice reviewable, then labelled
+"parked by design" in the slice 63 re-rank without a structural reason
+(unlike `select` and comptime). Slices 84 to 87 ported the whole surface and
+the example is now identical.
 
-**Also parked in practice**, beyond the three below: the **comptime family**
-(`comptime` 26, `reflection` 26, `cfg` 20, `sin_table` 13, `vectors` 13,
-`embed` 4, most of `inline_layout` 28 and `spans` 15). The bootstrap folds
-comptime functions and drops them from the output, and comptime is already a
-known unmirrored gap. `async_demo` (20) is a `select`, the same parked family
-as `channel_select_demo`. Counting those, about 720 of the 1218 remaining lines
-are parked, and about 500 are live.
+**Also parked in practice**, beyond the two below: the **comptime family**
+(`comptime` 26, `reflection` 22, `cfg` 20, `sin_table` 11, `vectors` 11,
+`embed` 2, `inline_layout` 28 and `spans` 15). The bootstrap folds comptime
+functions and drops them from the output, and comptime is already a known
+unmirrored gap. `async_demo` (20) is a `select`, the same parked family as
+`channel_select_demo`. Counting those, 641 of the 970 remaining lines are
+parked and 329 are live (measured from the sweep report after slice 87).
 
 **A pattern worth checking first.** When many examples share the same small
 divergence count (44 `interp_*` demos at exactly 4 lines each), the cause is
@@ -138,9 +138,9 @@ almost always one missing builtin type. Slice 67 was a one-line fix to
 `tyBuiltinRet`.
 
 **Parked by design; expect these to stay divergent.** `quote_demo` (368,
-comptime/quote), `channel_select_demo` (118, select), `atomics` (86, the
-atomics method surface). Together they are 47% of the remaining line count, so
-subtract them before reading the total as progress.
+comptime/quote) and `channel_select_demo` (118, select). Together they are
+half of the remaining line count, so subtract them before reading the total
+as progress.
 
 ### Two lessons about the metric
 
@@ -168,7 +168,7 @@ generated output directly over reading the `<`/`>` markers.
 
 ### What codegen covers
 
-Eighty-three slices; the close-out roadmap is complete and the corpus burndown
+Eighty-seven slices; the close-out roadmap is complete and the corpus burndown
 is active. The per-slice engineering log — every lowering, its bootstrap source
 line, and its gotchas — is in the `project_dogfood_compiler.md` memory file.
 The capability summary:
@@ -218,13 +218,16 @@ naming the same case (the bootstrap's `any_duplicate` trigger; vgen only
 takes the chain on a guard, and no example hits it); an if-EXPRESSION as
 the sole statement of a return-position `else { … }` block (the bootstrap
 flattens it into nested returning ifs, vgen emits a value lambda; the
-`else if` spelling is fine); the atomics method
-surface; Soa methods and span `split`/`chunks`.
+`else if` spelling is fine); `PerCpu.new` takes its T from the
+argument rather than the call's expected type, so a literal argument under
+a wider `Box[PerCpu[T]]` annotation would differ; Soa methods and span `split`/`chunks`.
 
 **Known SHARED bootstrap gaps**, mirrored rather than fixed — both produce
 non-compiling C++ on BOTH sides, so the differential stays textual:
 closure→fn-ptr conversion (a `[&]` lambda cannot convert to a raw function
-pointer), template-less generic methods, and destructuring a move-only tuple
+pointer), a METHOD's read-mode raw-pointer parameter (`const const T*& p`:
+only free functions pass `Ptr` / `MutPtr` by value; compiles with a
+duplicate-const warning), template-less generic methods, and destructuring a move-only tuple
 LVALUE (`let (c, k) = q` emits `auto [c, k] = q;`, a copy; found in slice 73). Separately, methods are not
 const-qualified in v0.5, so calling one on a read-mode (`const T&`) parameter
 does not compile; fixtures call methods through `var` locals.
