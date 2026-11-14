@@ -1,0 +1,24 @@
+// §5 / §19.2 a binding from outside a loop, moved in its body, is used after
+// the move by the next iteration.
+struct B {
+    var n: Int32
+}
+linear struct T {
+    let id: Int32
+}
+func eat(_ b: sink B) { }
+func close(_ t: sink T) { }
+func bad1(_ c: Int32) {
+    let b: B = B(n: 1)
+    var i: Int32 = 0
+    while i < c {
+        eat(b)
+        i = i + 1
+    }
+}
+func bad2() {
+    let t = T(id: 1)
+    for i in 0..<3 {
+        close(t)
+    }
+}

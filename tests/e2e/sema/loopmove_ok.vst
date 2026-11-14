@@ -1,0 +1,43 @@
+// §5 / §19.2 moves in a loop that are fine: reassigned before the next
+// iteration, on a path that leaves the loop, of a binding declared inside it,
+// or in a body that can't repeat.
+struct B {
+    var n: Int32
+}
+linear struct T {
+    let id: Int32
+}
+func eat(_ b: sink B) { }
+func close(_ t: sink T) { }
+func ok1(_ c: Int32) {
+    var b: B = B(n: 1)
+    var i: Int32 = 0
+    while i < c {
+        eat(b)
+        b = B(n: 2)
+        i = i + 1
+    }
+}
+func ok2(_ c: Bool) {
+    let b: B = B(n: 1)
+    while true {
+        if c {
+            eat(b)
+            break
+        }
+    }
+}
+func ok3() {
+    var i: Int32 = 0
+    while i < 3 {
+        let b: B = B(n: 1)
+        eat(b)
+        i = i + 1
+    }
+}
+func ok4() -> B {
+    let b: B = B(n: 1)
+    while true {
+        return b
+    }
+}

@@ -153,6 +153,9 @@ private:
     // Does this diverging branch leave the function (vs break / continue)?
     [[nodiscard]] bool leaves_function(const ast::Expr* e) const;
     void report_path_leaks(const BindingMap& state, diag::SourceRange site);
+    // §5 / §19.2 a binding from outside a loop, live on entry and still moved
+    // at the end of the body, is moved again (or used) by the next iteration.
+    void report_loop_moves(const BindingMap& pre, const ast::Expr* body);
 
     const ast::CompilationUnit* unit_;
     const Resolution* resolution_;

@@ -117,7 +117,6 @@ identical diagnostics), because the new backend will trust whatever sema
 accepts. Ordered by how likely each is to let a wrong program through:
 
 1. **Move checking:**
-   - moves inside loop bodies;
    - field-level moves;
    - `copy` restricted to copyable types;
    - closures moving their captures;

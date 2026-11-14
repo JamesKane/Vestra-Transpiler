@@ -5445,11 +5445,36 @@ func ownNilBin(_ env: inout OwnEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd], _ 
 
 // A loop body runs again after its own writes: no empty-place fact crosses into
 // it or out of it.
-func ownLoop(_ env: inout OwnEnv, _ head: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+func ownLoop(_ env: inout OwnEnv, _ head: Vec[Nd], _ body: Vec[Nd], _ isFor: Bool) using Alloc {
     ownClearFacts(env)
+    // A `while` condition runs every iteration; a `for` iterable once.
+    var pre = ownSnap(env)
     ownBoxed(env, head)
+    if isFor { pre = ownSnap(env) }
     ownBoxed(env, body)
+    ownLoopMoves(env, pre, body)
     ownClearFacts(env)
+}
+
+// §5 / §19.2 a binding from outside the loop, live on entry and still moved at
+// the end of the body, is used after the move by the next iteration. (A body
+// that can't fall through never repeats.)
+func ownLoopMoves(_ env: inout OwnEnv, _ pre: OwnSt, _ body: Vec[Nd]) using Alloc {
+    if ownDiverges(env, body) { return }
+    var i: Int = 0
+    while i < pre.names.len() {
+        if !(pre.consumed.get(i) ?? true) {
+            let n = pre.names.get(i) ?? own("")
+            let j = ownFind(env, n)
+            if j >= 0 && (env.consumed.get(j) ?? false) {
+                var m: String = "'"
+                m.append(n)
+                m.append("' is moved inside a loop, so the next iteration would use it after the move; move it on a path that leaves the loop, or reassign it before the loop repeats")
+                env.bad.push(m)
+            }
+        }
+        i = i + 1
+    }
 }
 
 // ----- branch-aware flow (the bootstrap's §10/§5 phase 2) -------------------
@@ -5800,8 +5825,8 @@ func ownStmt(_ env: inout OwnEnv, _ s: Nd) using Alloc {
         case .exprS(let e): ownBoxed(env, e)
         case .retS(let v): ownRet(env, v)
         case .assignS(let op, let t, let v): ownAssign(env, t, v)
-        case .whileS(let c, let b): ownLoop(env, c, b)
-        case .forS(let pp, let it, let b): ownLoop(env, it, b)
+        case .whileS(let c, let b): ownLoop(env, c, b, false)
+        case .forS(let pp, let it, let b): ownLoop(env, it, b, true)
         case .withS(let caps, let vals, let body): ownWith(env, vals, body)
         default: noop()
     }

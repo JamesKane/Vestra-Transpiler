@@ -146,10 +146,12 @@ void OwnershipChecker::check_stmt(const ast::Stmt& s) {
         // A loop body runs again after its own writes, so no empty-place fact
         // crosses into it (or out of it).
         empty_places_.clear();
+        BindingMap pre = bindings_;
         check_expr(*w.cond);
         if (w.body) {
             check_expr(*w.body);
         }
+        report_loop_moves(pre, w.body.get());
         empty_places_.clear();
         break;
     }
@@ -157,9 +159,11 @@ void OwnershipChecker::check_stmt(const ast::Stmt& s) {
         const auto& f = static_cast<const ast::ForStmt&>(s);
         empty_places_.clear();
         check_expr(*f.iter);
+        BindingMap pre = bindings_;
         if (f.body) {
             check_expr(*f.body);
         }
+        report_loop_moves(pre, f.body.get());
         empty_places_.clear();
         break;
     }
@@ -1186,6 +1190,34 @@ bool OwnershipChecker::leaves_function(const ast::Expr* e) const {
     }
     const auto k = b.stmts.back()->kind;
     return k != ast::NodeKind::BreakStmt && k != ast::NodeKind::ContinueStmt;
+}
+
+void OwnershipChecker::report_loop_moves(const BindingMap& pre, const ast::Expr* body) {
+    if (body == nullptr || block_diverges(body)) {
+        return;  // a body that can't fall through never runs a second time
+    }
+    for (const auto& [sym, info] : bindings_) {
+        if (sym == nullptr || info.state != State::Consumed) {
+            continue;
+        }
+        // Declared inside the body: a fresh binding each iteration.
+        if (sym->definition_range.is_valid() && body->range.is_valid()
+            && sym->definition_range.begin.offset >= body->range.begin.offset
+            && sym->definition_range.begin.offset < body->range.end().offset) {
+            continue;
+        }
+        auto it = pre.find(sym);
+        if (it != pre.end() && it->second.state == State::Consumed) {
+            continue;  // already moved before the loop: reported as a use
+        }
+        reporter_->report(
+            diag::Diagnostic::error(std::format("'{}' is moved inside a loop, so the next "
+                                                "iteration would use it after the move; move it "
+                                                "on a path that leaves the loop, or reassign it "
+                                                "before the loop repeats",
+                                                sym->name))
+                .at(info.consume_site.is_valid() ? info.consume_site : body->range));
+    }
 }
 
 void OwnershipChecker::report_path_leaks(const BindingMap& state, diag::SourceRange site) {
