@@ -82,7 +82,8 @@ void OwnershipChecker::check_func(const ast::FuncDecl& f) {
     // §5/§19.6 — any linear binding still live at the end of the function
     // body is a leak: a linear value must be consumed before its scope ends.
     for (const auto& [sym, info] : bindings_) {
-        if (info.state == State::Live && sym != nullptr && is_linear_type(sym->type)
+        if (info.state == State::Live && sym != nullptr && sym->kind != SymbolKind::Parameter
+            && is_linear_type(sym->type)
             && !leak_reported_.contains(sym)) {
             reporter_->report(
                 diag::Diagnostic::error(
@@ -226,9 +227,15 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
     case ast::NodeKind::CallExpr:
         check_call(static_cast<const ast::CallExpr&>(e));
         break;
-    case ast::NodeKind::MemberExpr:
+    case ast::NodeKind::MemberExpr: {
+        const Symbol* root = nullptr;
+        if (auto path = field_path(e, root)) {
+            check_field_use(root, *path, e.range);
+            break;
+        }
         check_expr(*static_cast<const ast::MemberExpr&>(e).base);
         break;
+    }
     case ast::NodeKind::IndexExpr: {
         const auto& ix = static_cast<const ast::IndexExpr&>(e);
         check_expr(*ix.base);
@@ -515,11 +522,17 @@ const Symbol* OwnershipChecker::place_symbol(const ast::Expr& e) const {
 }
 
 void OwnershipChecker::consume_place(const ast::Expr& e, diag::SourceRange site) {
+    if (consume_field(e, site)) {
+        return;
+    }
     const auto* sym = place_symbol(e);
     if (sym == nullptr) {
         return;
     }
     auto [it, inserted] = bindings_.try_emplace(sym);
+    if (!it->second.moved_fields.empty()) {
+        return;  // check_use reported the partially moved value
+    }
     if (it->second.state == State::Consumed) {
         // Double-consume: report the second one as a use-after-move.
         auto d = diag::Diagnostic::error(
@@ -536,12 +549,153 @@ void OwnershipChecker::consume_place(const ast::Expr& e, diag::SourceRange site)
     it->second.consume_site = site;
 }
 
+std::optional<std::string> OwnershipChecker::field_path(const ast::Expr& e,
+                                                        const Symbol*& root) const {
+    const ast::Expr* cur = &e;
+    while (cur->kind == ast::NodeKind::ParenExpr) {
+        cur = static_cast<const ast::ParenExpr&>(*cur).inner.get();
+    }
+    std::vector<std::string> parts;
+    while (cur->kind == ast::NodeKind::MemberExpr) {
+        const auto& m = static_cast<const ast::MemberExpr&>(*cur);
+        if (m.is_optional_chain || resolution_->qualified_name_of(cur) != nullptr) {
+            return std::nullopt;
+        }
+        auto t = resolution_->type_of(cur);
+        if (t == nullptr || t->kind() == TypeKind::Function) {
+            return std::nullopt;  // a method, not a field
+        }
+        // A raw pointer's pointee is RawMemory's, not a field.
+        auto bt = resolution_->type_of(m.base.get());
+        if (bt != nullptr && (bt->kind() == TypeKind::Ptr || bt->kind() == TypeKind::MutPtr)) {
+            return std::nullopt;
+        }
+        parts.push_back(m.member);
+        cur = m.base.get();
+        while (cur->kind == ast::NodeKind::ParenExpr) {
+            cur = static_cast<const ast::ParenExpr&>(*cur).inner.get();
+        }
+    }
+    if (parts.empty() || cur->kind != ast::NodeKind::IdentExpr) {
+        return std::nullopt;
+    }
+    const auto* sym = resolution_->symbol_of(cur);
+    if (sym == nullptr || !is_trackable_kind(sym->kind)) {
+        return std::nullopt;
+    }
+    root = sym;
+    std::string path;
+    for (auto it = parts.rbegin(); it != parts.rend(); ++it) {
+        path += (path.empty() ? "" : ".") + *it;
+    }
+    return path;
+}
+
+bool OwnershipChecker::check_field_use(const Symbol* root,
+                                       const std::string& path,
+                                       diag::SourceRange site) {
+    auto it = bindings_.find(root);
+    if (it == bindings_.end()) {
+        return false;
+    }
+    if (it->second.state == State::Consumed) {
+        reporter_->report(
+            diag::Diagnostic::error(std::format("use of '{}' after it was moved", root->name))
+                .at(site));
+        return true;
+    }
+    for (const auto& [moved, at] : it->second.moved_fields) {
+        const bool covers = path == moved || path.starts_with(moved + ".");
+        const bool under = moved.starts_with(path + ".");
+        if (covers) {
+            reporter_->report(diag::Diagnostic::error(std::format("use of '{}.{}' after it was "
+                                                                  "moved",
+                                                                  root->name,
+                                                                  path))
+                                  .at(site));
+            return true;
+        }
+        if (under) {
+            reporter_->report(diag::Diagnostic::error(std::format("use of '{}.{}' after '{}.{}' "
+                                                                  "was moved out of it",
+                                                                  root->name,
+                                                                  path,
+                                                                  root->name,
+                                                                  moved))
+                                  .at(site));
+            return true;
+        }
+    }
+    return false;
+}
+
+bool OwnershipChecker::consume_field(const ast::Expr& e, diag::SourceRange site) {
+    const Symbol* root = nullptr;
+    auto path = field_path(e, root);
+    if (!path || root == nullptr || is_trivial(resolution_->type_of(&e))
+        || is_linear_type(resolution_->type_of(&e))) {
+        return false;  // a linear field is the storage-place rules' (reject_move_out)
+    }
+    // An `if let` on a place only borrows it.
+    if (borrows_.contains(root)) {
+        reporter_->report(diag::Diagnostic::error(
+                              std::format("can't move '{}.{}' out of '{}': it's borrowed from its "
+                                          "place (an `if let` on a field or element); use `copy`",
+                                          root->name,
+                                          *path,
+                                          root->name))
+                              .at(site));
+        return true;
+    }
+    // Moving out of a borrow: the caller still owns the value.
+    if (root->kind == SymbolKind::Parameter && current_func_ != nullptr) {
+        for (const auto& p : current_func_->params) {
+            if (p.name == root->name && p.mode != ast::ParamMode::Sink) {
+                reporter_->report(
+                    diag::Diagnostic::error(
+                        std::format("can't move '{}.{}' out of '{}': it's a `read` or `inout` "
+                                    "parameter, so the caller still owns it; use `copy` or take "
+                                    "it as `sink`",
+                                    root->name,
+                                    *path,
+                                    root->name))
+                        .at(site));
+                return true;
+            }
+        }
+    }
+    auto& info = bindings_[root];
+    for (const auto& [moved, at] : info.moved_fields) {
+        if (*path == moved || path->starts_with(moved + ".")) {
+            reporter_->report(diag::Diagnostic::error(std::format("'{}.{}' was already moved and "
+                                                                  "cannot be moved again",
+                                                                  root->name,
+                                                                  *path))
+                                  .at(site));
+            return true;
+        }
+    }
+    info.moved_fields[*path] = site;
+    return true;
+}
+
 void OwnershipChecker::check_use(const ast::IdentExpr& ident) {
     const auto* sym = resolution_->symbol_of(&ident);
     if (sym == nullptr || !is_trackable_kind(sym->kind) || is_trivial(sym->type)) {
         return;
     }
     auto it = bindings_.find(sym);
+    if (it != bindings_.end() && it->second.state == State::Live
+        && !it->second.moved_fields.empty()) {
+        const auto& [f, at] = *it->second.moved_fields.begin();
+        reporter_->report(diag::Diagnostic::error(std::format("use of '{}' after '{}.{}' was moved "
+                                                              "out of it",
+                                                              sym->name,
+                                                              sym->name,
+                                                              f))
+                              .at(ident.range));
+        return;
+    }
     if (it == bindings_.end() || it->second.state == State::Live) {
         return;
     }
@@ -562,6 +716,12 @@ void OwnershipChecker::check_use(const ast::IdentExpr& ident) {
 // reached by any path that moved x sees x as moved.
 void OwnershipChecker::merge_consumed(BindingMap& dst, const BindingMap& branch) {
     for (const auto& [sym, info] : branch) {
+        if (!info.moved_fields.empty()) {
+            auto& slot = dst[sym];
+            for (const auto& [f, at] : info.moved_fields) {
+                slot.moved_fields.try_emplace(f, at);
+            }
+        }
         if (info.state != State::Consumed) {
             continue;
         }
@@ -663,7 +823,8 @@ void OwnershipChecker::report_linear_divergence(const BindingMap& pre,
     for (const auto& [sym, info] : pre) {
         // Only bindings live going into the branch can leak on a path; one
         // already consumed before the branch is fine.
-        if (info.state == State::Consumed || sym == nullptr || !is_linear_type(sym->type)) {
+        if (info.state == State::Consumed || sym == nullptr || sym->kind == SymbolKind::Parameter
+            || !is_linear_type(sym->type)) {
             continue;
         }
         bool any = false;
@@ -995,6 +1156,23 @@ void OwnershipChecker::check_place_assign(const ast::AssignStmt& a) {
         return;
     }
     const auto& target = strip_parens(*a.target);
+    // §5 assigning a moved field (or a whole binding) gives it a value again.
+    {
+        const Symbol* root = nullptr;
+        if (auto path = field_path(target, root); path && root != nullptr) {
+            if (auto it = bindings_.find(root); it != bindings_.end()) {
+                std::erase_if(it->second.moved_fields, [&](const auto& kv) {
+                    return kv.first == *path || kv.first.starts_with(*path + ".");
+                });
+            }
+        } else if (target.kind == ast::NodeKind::IdentExpr) {
+            if (const auto* sym = resolution_->symbol_of(&target)) {
+                if (auto it = bindings_.find(sym); it != bindings_.end()) {
+                    it->second.moved_fields.clear();
+                }
+            }
+        }
+    }
     if (auto k = storage_place(target)) {
         check_expr(target);
         if (is_linear_place_value(target)) {
@@ -1197,13 +1375,35 @@ void OwnershipChecker::report_loop_moves(const BindingMap& pre, const ast::Expr*
         return;  // a body that can't fall through never runs a second time
     }
     for (const auto& [sym, info] : bindings_) {
-        if (sym == nullptr || info.state != State::Consumed) {
+        if (sym == nullptr) {
             continue;
         }
         // Declared inside the body: a fresh binding each iteration.
         if (sym->definition_range.is_valid() && body->range.is_valid()
             && sym->definition_range.begin.offset >= body->range.begin.offset
             && sym->definition_range.begin.offset < body->range.end().offset) {
+            continue;
+        }
+        // A field moved out in the body, not before the loop.
+        if (info.state == State::Live && !info.moved_fields.empty()) {
+            auto pit = pre.find(sym);
+            for (const auto& [f, at] : info.moved_fields) {
+                if (pit != pre.end() && pit->second.moved_fields.contains(f)) {
+                    continue;
+                }
+                reporter_->report(
+                    diag::Diagnostic::error(std::format("'{}.{}' is moved inside a loop, so the "
+                                                        "next iteration would use it after the "
+                                                        "move; move it on a path that leaves the "
+                                                        "loop, or reassign it before the loop "
+                                                        "repeats",
+                                                        sym->name,
+                                                        f))
+                        .at(at));
+            }
+            continue;
+        }
+        if (info.state != State::Consumed) {
             continue;
         }
         auto it = pre.find(sym);
@@ -1222,7 +1422,8 @@ void OwnershipChecker::report_loop_moves(const BindingMap& pre, const ast::Expr*
 
 void OwnershipChecker::report_path_leaks(const BindingMap& state, diag::SourceRange site) {
     for (const auto& [sym, info] : state) {
-        if (info.state == State::Live && sym != nullptr && is_linear_type(sym->type)
+        if (info.state == State::Live && sym != nullptr && sym->kind != SymbolKind::Parameter
+            && is_linear_type(sym->type)
             && !borrows_.contains(sym) && leak_reported_.insert(sym).second) {
             reporter_->report(
                 diag::Diagnostic::error(

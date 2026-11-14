@@ -1,0 +1,34 @@
+// §5 field moves that are fine: other fields stay usable, a moved field can
+// be assigned again, and so can the whole binding.
+struct In {
+    var n: Int32
+    var s: String
+}
+struct Out {
+    var i: In
+    var j: In
+    var k: Int32
+}
+func eat(_ x: sink In) { }
+func eatS(_ x: sink String) { }
+func whole(_ o: sink Out) { }
+func use2(_ o: sink Out) -> Int32 {
+    eat(o.i)
+    return o.j.n + o.k
+}
+func use5(_ o: sink Out) {
+    var p = o
+    eat(p.i)
+    p.i = In(n: 1, s: "a")
+    whole(p)
+}
+func use7(_ o: sink Out) -> Int32 {
+    eatS(o.i.s)
+    return o.i.n
+}
+func use11(_ o: sink Out) -> Int32 {
+    var p: Out = o
+    eat(p.i)
+    p = Out(i: In(n: 1, s: "a"), j: In(n: 2, s: "b"), k: 3)
+    return p.i.n
+}

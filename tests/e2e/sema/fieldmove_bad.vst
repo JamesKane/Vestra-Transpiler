@@ -1,0 +1,44 @@
+// §5 field moves: the moved field, a prefix of it, or the whole value can't be
+// used after; a field can't be moved twice, out of a borrow, or in a loop.
+struct In {
+    var n: Int32
+    var s: String
+}
+struct Out {
+    var i: In
+    var j: In
+    var k: Int32
+}
+func eat(_ x: sink In) { }
+func eatS(_ x: sink String) { }
+func whole(_ o: sink Out) { }
+func use1(_ o: sink Out) -> Int32 {
+    eat(o.i)
+    return o.i.n
+}
+func use3(_ o: sink Out) {
+    eat(o.i)
+    whole(o)
+}
+func use4(_ o: sink Out) {
+    eat(o.i)
+    eat(o.i)
+}
+func use6(_ o: Out) {
+    eat(o.i)
+}
+func use8(_ o: sink Out) {
+    eatS(o.i.s)
+    eat(o.i)
+}
+func use9(_ o: sink Out, _ c: Bool) {
+    if c { eat(o.i) }
+    whole(o)
+}
+func use10(_ o: sink Out, _ n: Int32) {
+    var i: Int32 = 0
+    while i < n {
+        eat(o.j)
+        i = i + 1
+    }
+}

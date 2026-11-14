@@ -4919,6 +4919,7 @@ func ownFind(_ env: inout OwnEnv, _ name: String) -> Int {
 }
 
 func ownConsume(_ env: inout OwnEnv, _ name: String) using Alloc {
+    if !streq(ownMovedField(env, name), "") { return }   // ownUse reported the partial move
     let idx = ownFind(env, name)
     if idx < 0 { return }
     if env.consumed.get(idx) ?? false { env.bad.push(ownAlreadyMoved(name)) }
@@ -4927,7 +4928,9 @@ func ownConsume(_ env: inout OwnEnv, _ name: String) using Alloc {
 
 func ownUse(_ env: inout OwnEnv, _ name: String) using Alloc {
     let idx = ownFind(env, name)
-    if idx >= 0 && (env.consumed.get(idx) ?? false) { env.bad.push(ownUseAfter(name)) }
+    if idx >= 0 && (env.consumed.get(idx) ?? false) { env.bad.push(ownUseAfter(name)); return }
+    let mf = ownMovedField(env, name)
+    if !streq(mf, "") { env.bad.push(ownPartialMsg(name, mf)) }
 }
 
 func ownRevive(_ env: inout OwnEnv, _ name: String) {
@@ -4986,7 +4989,7 @@ func ownExpr(_ env: inout OwnEnv, _ e: Nd) using Alloc {
         case .paren(let x): ownBoxed(env, x)
         case .unary(let op, let x): ownBoxed(env, x)
         case .binary(let op, let l, let r): ownPair(env, l, r)
-        case .member(let base, let n, let c): ownBoxed(env, base)
+        case .member(let base, let n, let c): ownMemberUse(env, e, base)
         case .index(let base, let idxs): ownIndex(env, base, idxs)
         case .ifE(let ln, let li, let cond, let thenB, let els): ownIf(env, ln, li, cond, thenB, els)
         case .matchE(let scr, let arms): ownMatch(env, scr, arms)
@@ -5461,6 +5464,23 @@ func ownLoop(_ env: inout OwnEnv, _ head: Vec[Nd], _ body: Vec[Nd], _ isFor: Boo
 // that can't fall through never repeats.)
 func ownLoopMoves(_ env: inout OwnEnv, _ pre: OwnSt, _ body: Vec[Nd]) using Alloc {
     if ownDiverges(env, body) { return }
+    // A field moved in the body (a path entry new since the loop began, or not
+    // moved then), of a binding from outside the loop.
+    var f: Int = 0
+    while f < env.names.len() {
+        let n = env.names.get(f) ?? own("")
+        if ownIsFieldName(n) && (env.consumed.get(f) ?? false) {
+            let k = ownStFind(pre, n)
+            let before = k >= 0 && (pre.consumed.get(k) ?? false)
+            if !before && ownStFind(pre, ownRootOf(n)) >= 0 {
+                var m: String = "'"
+                m.append(n)
+                m.append("' is moved inside a loop, so the next iteration would use it after the move; move it on a path that leaves the loop, or reassign it before the loop repeats")
+                env.bad.push(m)
+            }
+        }
+        f = f + 1
+    }
     var i: Int = 0
     while i < pre.names.len() {
         if !(pre.consumed.get(i) ?? true) {
@@ -5862,6 +5882,8 @@ func ownAssign(_ env: inout OwnEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
         ownRejectMoveOut(env, v)
         ownConsumeBoxed(env, v)
     }
+    let afp = ownFieldPath(env, t.get(0) ?? Nd.wildcard)
+    if afp.ok { ownReviveUnder(env, ownFull(afp)) }
     let pl = ownPlace(env, t)
     if pl.ok { ownAssignPlace(env, t, pl, ownIsNilBoxed(v)); return }
     ownAssignTarget(env, t, ownIsNilBoxed(v))
@@ -5918,6 +5940,9 @@ func ownAssignTargetE(_ env: inout OwnEnv, _ e: Nd, _ isNil: Bool) using Alloc {
 
 func ownAssignLocal(_ env: inout OwnEnv, _ n: String, _ isNil: Bool) using Alloc {
     ownKillMentioning(env, n)
+    var under: String = own(n)
+    under.append(".x")   // revive every "n.*" path
+    ownReviveAllOf(env, n)
     let idx = ownFind(env, n)
     if idx < 0 { return }
     if env.isLin.get(idx) ?? false {
@@ -5946,7 +5971,7 @@ func ownWith(_ env: inout OwnEnv, _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc 
 
 func ownCall(_ env: inout OwnEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
     if ownOptMethod(env, callee, args) { return }
-    ownBoxed(env, callee)
+    ownCallee(env, callee)
     let fname = exCalleeNameBoxed(callee)
     let isCtor = ownIsCtor(env, fname)
     var i: Int = 0
@@ -6060,8 +6085,201 @@ func ownConsumeExpr(_ env: inout OwnEnv, _ e: Nd) using Alloc {
     match e {
         case .ident(let n): ownConsume(env, n)
         case .paren(let inner): ownConsumeBoxed(env, inner)
+        case .member(let b, let m, let c): ownConsumeField(env, e)
         default: noop()
     }
+}
+
+// ----- §5 field moves (the bootstrap's moved_fields) -------------------------
+// A moved field is a pseudo-binding named by its path ("o.i"), consumed, so
+// the branch merge and the snapshots carry it like any other binding.
+struct OwnPath {
+    var ok: Bool
+    var root: String
+    var path: String     // "i.s" (without the root)
+    var ty: Vec[Nd]      // the field's type, empty when unknown
+}
+
+func ownNoPath() using Alloc -> OwnPath {
+    return OwnPath(ok: false, root: "", path: "", ty: Vec.new())
+}
+
+// `o.f.g` over a local or parameter, as a field path; not a method (that's the
+// callee's business), not a raw pointer's `.value`.
+func ownFieldPath(_ env: inout OwnEnv, _ e: Nd) using Alloc -> OwnPath {
+    return match e {
+        case .paren(let x): ownFieldPath(env, x.get(0) ?? Nd.wildcard)
+        case .member(let base, let m, let ch): ownFieldPathM(env, base, m, ch)
+        default: ownNoPath()
+    }
+}
+
+func ownFieldPathM(_ env: inout OwnEnv, _ base: Vec[Nd], _ m: String, _ ch: Bool) using Alloc -> OwnPath {
+    if ch { return ownNoPath() }
+    let b = base.get(0) ?? Nd.wildcard
+    var inner = ownNoPath()
+    let rn = ownIdentName(base)
+    if !streq(rn, "") {
+        let li = ownFindIn(env.locName, rn)
+        let pi = ownFindIn(env.pName, rn)
+        if li < 0 && pi < 0 { return ownNoPath() }
+        var ty: Vec[Nd] = Vec.new()
+        if li >= 0 { ty.push(env.locTy.get(li) ?? Nd.wildcard) } else { ty.push(env.pTy.get(pi) ?? Nd.wildcard) }
+        inner = OwnPath(ok: true, root: own(rn), path: "", ty: ty)
+    } else {
+        inner = ownFieldPath(env, b)
+        if !inner.ok { return inner }
+    }
+    let head = ownTyHead(inner.ty)
+    if streq(m, "value") && (streq(head, "MutPtr") || streq(head, "Ptr")) { return ownNoPath() }
+    var path: String = own(inner.path)
+    if path.len() > 0 { path.append(".") }
+    path.append(m)
+    return OwnPath(ok: true, root: own(inner.root), path: path, ty: ownFieldTy(env, inner.ty, m))
+}
+
+func ownFull(_ p: OwnPath) using Alloc -> String {
+    var s: String = own(p.root)
+    s.append(".")
+    s.append(p.path)
+    return s
+}
+
+// The first moved field of `root` ("" when none).
+func ownMovedField(_ env: inout OwnEnv, _ root: String) using Alloc -> String {
+    var pre: String = own(root)
+    pre.append(".")
+    var i: Int = 0
+    while i < env.names.len() {
+        let n = env.names.get(i) ?? own("")
+        if tyStartsWith(n, pre) && (env.consumed.get(i) ?? false) { return n }
+        i = i + 1
+    }
+    return own("")
+}
+
+// A field path's use: through a moved field, or a prefix of one, is an error.
+func ownMemberUse(_ env: inout OwnEnv, _ e: Nd, _ base: Vec[Nd]) using Alloc {
+    let fp = ownFieldPath(env, e)
+    if !fp.ok { ownBoxed(env, base); return }
+    let ri = ownFind(env, fp.root)
+    if ri >= 0 && (env.consumed.get(ri) ?? false) { env.bad.push(ownUseAfter(fp.root)); return }
+    let full = ownFull(fp)
+    var i: Int = 0
+    while i < env.names.len() {
+        let n = env.names.get(i) ?? own("")
+        if (env.consumed.get(i) ?? false) && tyStartsWith(n, fp.root) && n.len() > fp.root.len() {
+            var dot: String = own(n)
+            dot.append(".")
+            var fdot: String = own(full)
+            fdot.append(".")
+            if streq(n, full) || tyStartsWith(full, dot) { env.bad.push(ownUseAfter(full)); return }
+            if tyStartsWith(n, fdot) { env.bad.push(ownPartialMsg(full, n)); return }
+        }
+        i = i + 1
+    }
+}
+
+func ownPartialMsg(_ what: String, _ moved: String) using Alloc -> String {
+    var s: String = "use of '"
+    s.append(what)
+    s.append("' after '")
+    s.append(moved)
+    s.append("' was moved out of it")
+    return s
+}
+
+// A method call uses its receiver whole.
+func ownCallee(_ env: inout OwnEnv, _ callee: Vec[Nd]) using Alloc {
+    if let c = callee.get(0) {
+        match c {
+            case .member(let base, let m, let ch): ownBoxed(env, base)
+            default: ownBoxed(env, callee)
+        }
+    }
+}
+
+func ownConsumeField(_ env: inout OwnEnv, _ e: Nd) using Alloc {
+    let fp = ownFieldPath(env, e)
+    if !fp.ok || fp.ty.len() == 0 { return }
+    if !ownNonTrivialBoxed(fp.ty) || ownTyLinear(env, fp.ty) { return }
+    let full = ownFull(fp)
+    if ownIsBorrowed(env, fp.root) {
+        var m: String = "can't move '"
+        m.append(full)
+        m.append("' out of '")
+        m.append(fp.root)
+        m.append("': it's borrowed from its place (an `if let` on a field or element); use `copy`")
+        env.bad.push(m)
+        return
+    }
+    let pi = ownFindIn(env.pName, fp.root)
+    if pi >= 0 && ownFindIn(env.locName, fp.root) < 0 && !streq(env.pMode.get(pi) ?? own(""), "sink ") {
+        var m: String = "can't move '"
+        m.append(full)
+        m.append("' out of '")
+        m.append(fp.root)
+        m.append("': it's a `read` or `inout` parameter, so the caller still owns it; use `copy` or take it as `sink`")
+        env.bad.push(m)
+        return
+    }
+    var i: Int = 0
+    while i < env.names.len() {
+        let n = env.names.get(i) ?? own("")
+        if (env.consumed.get(i) ?? false) {
+            var dot: String = own(n)
+            dot.append(".")
+            if streq(n, full) || tyStartsWith(full, dot) {
+                if tyStartsWith(n, fp.root) && n.len() > fp.root.len() { env.bad.push(ownAlreadyMoved(full)); return }
+            }
+        }
+        i = i + 1
+    }
+    let j = ownFind(env, full)
+    if j >= 0 { env.consumed.set(j, true) } else { ownPush(env, full, true, false) }
+}
+
+// Assigning a field (or the whole binding) gives the moved paths under it a
+// value again.
+func ownReviveUnder(_ env: inout OwnEnv, _ full: String) using Alloc {
+    var dot: String = own(full)
+    dot.append(".")
+    var i: Int = 0
+    while i < env.names.len() {
+        let n = env.names.get(i) ?? own("")
+        if (streq(n, full) || tyStartsWith(n, dot)) && !(env.isLin.get(i) ?? false) && n.len() > 0 {
+            if tyStartsWith(n, dot) || ownIsFieldName(n) { env.consumed.set(i, false) }
+        }
+        i = i + 1
+    }
+}
+
+func ownReviveAllOf(_ env: inout OwnEnv, _ root: String) using Alloc {
+    var dot: String = own(root)
+    dot.append(".")
+    var i: Int = 0
+    while i < env.names.len() {
+        if tyStartsWith(env.names.get(i) ?? own(""), dot) { env.consumed.set(i, false) }
+        i = i + 1
+    }
+}
+
+func ownRootOf(_ n: String) using Alloc -> String {
+    var i: Int = 0
+    while i < n.len() {
+        if (n.byteAt(i) ?? 0) == 46 { return own(n.slice(0, i)) }
+        i = i + 1
+    }
+    return own(n)
+}
+
+func ownIsFieldName(_ n: String) -> Bool {
+    var i: Int = 0
+    while i < n.len() {
+        if (n.byteAt(i) ?? 0) == 46 { return true }
+        i = i + 1
+    }
+    return false
 }
 
 func ownRegisterPat(_ env: inout OwnEnv, _ pat: Vec[Nd], _ ty: Vec[Nd]) using Alloc {

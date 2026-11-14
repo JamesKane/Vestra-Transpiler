@@ -3,6 +3,10 @@
 
 #pragma once
 
+#include <map>
+#include <optional>
+#include <string>
+
 #include "vestra/ast/nodes.hpp"
 #include "vestra/diag/diagnostic.hpp"
 #include "vestra/diag/source_manager.hpp"
@@ -57,7 +61,19 @@ private:
     struct BindingInfo {
         State state = State::Live;
         diag::SourceRange consume_site{};
+        // §5 fields moved out of a live binding ("f", "f.g"), with the move
+        // sites. The binding stays usable except through a moved path.
+        std::map<std::string, diag::SourceRange> moved_fields;
     };
+
+    // `o.f.g` as ("f.g", o's symbol) when it is a field path over a tracked
+    // binding (no index, no optional chain, not a method); nullopt otherwise.
+    [[nodiscard]] std::optional<std::string> field_path(const ast::Expr& e,
+                                                        const Symbol*& root) const;
+    // Report a use of field path `path` of `root` that touches a moved field.
+    bool check_field_use(const Symbol* root, const std::string& path, diag::SourceRange site);
+    // Move field path `e` out of its binding (§5), or reject it.
+    bool consume_field(const ast::Expr& e, diag::SourceRange site);
 
     void check_decl(const ast::Decl& d);
     void check_func(const ast::FuncDecl& f);
