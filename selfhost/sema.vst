@@ -4478,6 +4478,8 @@ struct OwnEnv {
     var sigMode: Vec[String]    // ... and that parameter's mode (for `sink`)
     var ctors: Vec[String]      // global: struct / enum names (constructor args are sinks)
     var bad: Vec[String]
+    var linears: Vec[String]    // global: `linear struct` names
+    var linLocals: Vec[String]  // per function: local bindings of a linear type, in order
 }
 
 func ownCheck(_ env: inout OwnEnv, _ u: NUnit) using Alloc {
@@ -4498,10 +4500,15 @@ func ownCollectDecl(_ env: inout OwnEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             ownRecordSig(env, name, params)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): env.ctors.push(name)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): ownCollectStruct(env, name, isLinear)
         case .enumD(let vis, let name, let cs, let m, let generics): env.ctors.push(name)
         default: noop()
     }
+}
+
+func ownCollectStruct(_ env: inout OwnEnv, _ name: String, _ isLinear: Bool) using Alloc {
+    env.ctors.push(name)
+    if isLinear { env.linears.push(name) }
 }
 
 func ownRecordSig(_ env: inout OwnEnv, _ name: String, _ params: Vec[Nd]) using Alloc {
@@ -4570,11 +4577,98 @@ func ownCheckFunc(_ env: inout OwnEnv, _ params: Vec[Nd], _ body: Vec[Nd]) using
     ownResetBindings(env)
     ownRegisterParams(env, params)
     ownBoxed(env, body)
+    ownReportLeaks(env)
 }
 
 func ownResetBindings(_ env: inout OwnEnv) using Alloc {
     while env.names.len() > 0 { let _ = env.names.pop() }
     while env.consumed.len() > 0 { let _ = env.consumed.pop() }
+    while env.linLocals.len() > 0 { let _ = env.linLocals.pop() }
+}
+
+// §5 / §19.6 a local linear binding never moved anywhere leaks (the bootstrap's
+// end-of-function check). Parameters carry no obligation. Move tracking here is
+// flow-insensitive, so this is the never-consumed case only.
+func ownReportLeaks(_ env: inout OwnEnv) using Alloc {
+    var i: Int = 0
+    while i < env.linLocals.len() {
+        let n = env.linLocals.get(i) ?? own("")
+        let idx = ownFind(env, n)
+        if idx >= 0 && !(env.consumed.get(idx) ?? true) { env.bad.push(ownLeakMsg(n)) }
+        i = i + 1
+    }
+}
+
+func ownLeakMsg(_ n: String) using Alloc -> String {
+    var s: String = "linear value '"
+    s.append(n)
+    s.append("' is never consumed; a linear value must be moved to a sink parameter, returned, or destructured before its scope ends")
+    return s
+}
+
+func ownIsLinearName(_ env: inout OwnEnv, _ name: String) -> Bool {
+    var i: Int = 0
+    while i < env.linears.len() {
+        if let c = env.linears.get(i) {
+            if streq(c, name) { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// The linear struct a `let` binds: from its annotation, else from a
+// constructor-call initializer (`let t = Tok(...)`). "" when not linear.
+func ownLinearOf(_ env: inout OwnEnv, _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc -> String {
+    if let t = ty.get(0) {
+        return match t {
+            case .named(let path, let g, let a): ownLinOrEmpty(env, path)
+            default: own("")
+        }
+    }
+    if let e = v.get(0) {
+        return match e {
+            case .call(let callee, let args): ownLinCallee(env, callee)
+            default: own("")
+        }
+    }
+    return own("")
+}
+
+func ownLinCallee(_ env: inout OwnEnv, _ callee: Vec[Nd]) using Alloc -> String {
+    if let c = callee.get(0) {
+        return match c {
+            case .ident(let n): ownLinOrEmpty(env, n)
+            default: own("")
+        }
+    }
+    return own("")
+}
+
+func ownLinOrEmpty(_ env: inout OwnEnv, _ n: String) using Alloc -> String {
+    if ownIsLinearName(env, n) { return own(n) }
+    return own("")
+}
+
+// Note a `let x` / `var x` of a linear type: it is tracked for moves (even
+// without an annotation) and must be consumed.
+func ownNoteLinear(_ env: inout OwnEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    if streq(ownLinearOf(env, ty, v), "") { return }
+    if let pn = pat.get(0) {
+        match pn {
+            case .identP(let n): ownTrackLinear(env, n)
+            case .bindP(let n): ownTrackLinear(env, n)
+            default: noop()
+        }
+    }
+}
+
+func ownTrackLinear(_ env: inout OwnEnv, _ n: String) using Alloc {
+    if ownFind(env, n) < 0 {
+        env.names.push(n)
+        env.consumed.push(false)
+    }
+    env.linLocals.push(n)
 }
 
 func ownRegisterParams(_ env: inout OwnEnv, _ params: Vec[Nd]) using Alloc {
@@ -4734,6 +4828,7 @@ func ownLet(_ env: inout OwnEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) us
     ownBoxed(env, v)
     ownConsumeBoxed(env, v)
     ownRegisterPat(env, pat, ty)
+    ownNoteLinear(env, pat, ty, v)
 }
 
 func ownRet(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc {
@@ -6849,7 +6944,8 @@ func main() -> Int32 {
                     if tenv.bad.len() > 0 { return 1 }
                     var oenv = OwnEnv(names: Vec.new(), consumed: Vec.new(),
                                       sigName: Vec.new(), sigIdx: Vec.new(), sigMode: Vec.new(),
-                                      ctors: Vec.new(), bad: Vec.new())
+                                      ctors: Vec.new(), bad: Vec.new(),
+                                      linears: Vec.new(), linLocals: Vec.new())
                     ownCheck(&oenv, u)
                     var o: Int = 0
                     while o < oenv.bad.len() {

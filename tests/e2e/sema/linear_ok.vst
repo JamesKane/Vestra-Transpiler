@@ -1,0 +1,14 @@
+// Linear values consumed: moved to a sink, returned, rebound, or passed to a
+// constructor (§5, §19.6).
+linear struct Tok {
+    let id: Int32
+}
+struct Holder {
+    let t: Tok
+}
+func close(_ t: sink Tok) { }
+func viaSink() { let t: Tok = Tok(id: 1); close(t) }
+func viaReturn() -> Tok { let t = Tok(id: 2); return t }
+func viaRebind() { let t: Tok = Tok(id: 3); let u: Tok = t; close(u) }
+func viaCtor() -> Holder { let t: Tok = Tok(id: 4); return Holder(t: t) }
+func param(_ t: Tok) -> Int32 { return t.id }

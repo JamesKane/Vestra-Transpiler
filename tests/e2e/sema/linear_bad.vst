@@ -1,0 +1,8 @@
+// A local linear value that is never consumed leaks (§5, §19.6).
+linear struct Tok {
+    let id: Int32
+}
+func close(_ t: sink Tok) { }
+func dropped() { let t: Tok = Tok(id: 1) }
+func readOnly() -> Int32 { let t = Tok(id: 2); return t.id }
+func lostRebind() { let t: Tok = Tok(id: 3); let u: Tok = t }
