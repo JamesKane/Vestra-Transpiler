@@ -283,14 +283,22 @@ void Resolver::collect_top_level() {
     // only through a qualified path (`util.math.add`), resolved against
     // module_exports_ (set by set_module_exports before resolve()). So an
     // imported name never collides with or shadows a local one.
-    for (const auto& d : unit_->decls) {
-        // §12.6: skip `@when`-gated-out decls before they enter any scope.
-        // Other passes (check_decl, codegen) will skip them the same way,
-        // so a gated-out decl is effectively absent from the program.
-        if (gated_out(*d)) {
-            continue;
+    // Nominal types first, so a function or static can name a type declared
+    // later in the file (its signature is resolved as it is collected).
+    auto is_type_decl = [](const ast::Decl& d) {
+        return d.kind == ast::NodeKind::Struct || d.kind == ast::NodeKind::Enum
+               || d.kind == ast::NodeKind::Opaque;
+    };
+    for (const bool types_pass : {true, false}) {
+        for (const auto& d : unit_->decls) {
+            // §12.6: skip `@when`-gated-out decls before they enter any scope.
+            // Other passes (check_decl, codegen) will skip them the same way,
+            // so a gated-out decl is effectively absent from the program.
+            if (gated_out(*d) || is_type_decl(*d) != types_pass) {
+                continue;
+            }
+            collect_decl(*d);
         }
-        collect_decl(*d);
     }
 }
 

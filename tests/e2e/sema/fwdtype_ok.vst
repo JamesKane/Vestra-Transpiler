@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026 James Kane
+
+// A signature, struct field or match may name a type declared later in the file.
+func make() -> P { return P(x: 1) }
+func use(_ p: P) -> Int32 { return p.x }
+func kind(_ s: Shape) -> Bool {
+    return match s {
+        case .dot: true
+        default: false
+    }
+}
+struct Q { var p: P }
+struct P { var x: Int32 }
+enum Shape {
+    case dot(Int32)
+    case box
+}

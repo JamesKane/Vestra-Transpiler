@@ -2938,6 +2938,17 @@ func addBuiltins(_ env: inout Env) using Alloc {
 // All top-level declarations share one namespace, so a repeated name (across any
 // of func / struct / enum / const / static / opaque) is a duplicate. Builtins sit
 // below the top-level mark, so a global never clashes with one.
+// Is `d` a nominal type (struct / enum / opaque)? These are collected first, as
+// the bootstrap does, so a signature can name a type declared later.
+func isTypeDecl(_ d: Nd) -> Bool {
+    return match d {
+        case .structD: true
+        case .enumD: true
+        case .opaqueD: true
+        default: false
+    }
+}
+
 func collectGlobal(_ env: inout Env, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let pp, let c, let t, let r, let b): addBinding(env, name)
@@ -2956,7 +2967,14 @@ func resolve(_ env: inout Env, _ u: NUnit) using Alloc {
     scopeEnter(env)   // top-level scope (above the builtins added before resolve)
     var i: Int = 0
     while i < u.decls.len() {
-        collectGlobal(env, u.decls.get(i) ?? Nd.wildcard)
+        let d = u.decls.get(i) ?? Nd.wildcard
+        if isTypeDecl(d) { collectGlobal(env, d) }
+        i = i + 1
+    }
+    i = 0
+    while i < u.decls.len() {
+        let d = u.decls.get(i) ?? Nd.wildcard
+        if !isTypeDecl(d) { collectGlobal(env, d) }
         i = i + 1
     }
     var j: Int = 0
