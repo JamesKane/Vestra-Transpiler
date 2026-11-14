@@ -8840,6 +8840,13 @@ func deeper(_ indent: Str) using Alloc -> String {
     return s
 }
 
+// §A12 (§14.6.3) prefix `&decl` is a plain C++ `&` over the operand (a
+// function name taken as a value, or a global / static).
+func emitAddrOf(_ env: inout TyEnv, _ x: Vec[Nd]) using Alloc, Log {
+    print("&")
+    emitBoxed(env, x)
+}
+
 func emitBoxed(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc, Log {
     if v.len() > 0 { emitExpr(env, v.get(0) ?? Nd.wildcard) }
 }
@@ -8856,6 +8863,7 @@ func emitExpr(_ env: inout TyEnv, _ e: Nd) using Alloc, Log {
         case .strLit(let s): emitStr(s)
         case .paren(let inner): emitParen(env, inner)
         case .unary(let op, let x): emitUnary(env, op, x)
+        case .addrOf(let x): emitAddrOf(env, x)
         case .binary(let op, let l, let r): emitBinary(env, op, l, r)
         case .call(let callee, let args): emitCall(env, callee, args)
         case .member(let base, let name, let chain): emitMember(env, base, name, chain)

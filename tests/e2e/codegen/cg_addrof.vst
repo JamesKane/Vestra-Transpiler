@@ -1,0 +1,21 @@
+// §A12 prefix `&decl` lowers to a plain C++ `&` over the operand. Taking a
+// function's address gives a function-pointer value: bound at an annotated
+// local and chosen between in an if-expression. In ARGUMENT position `&` is
+// the inout call-site marker instead, so `apply(&twice, v)` passes `twice`.
+func twice(_ x: Int32) -> Int32 { return x * 2 }
+func thrice(_ x: Int32) -> Int32 { return x * 3 }
+
+func apply(_ f: (Int32) -> Int32, _ v: Int32) -> Int32 {
+    return f(v)
+}
+
+func table(_ v: Int32) -> Int32 {
+    let a: (Int32) -> Int32 = &twice
+    let b: (Int32) -> Int32 = &thrice
+    return a(v) + b(v) + apply(&twice, v)
+}
+
+func pick(_ big: Bool, _ v: Int32) -> Int32 {
+    let f: (Int32) -> Int32 = if big { &thrice } else { &twice }
+    return f(v)
+}
