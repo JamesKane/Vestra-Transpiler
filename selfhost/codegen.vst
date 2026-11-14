@@ -9875,6 +9875,13 @@ func emitPrefixE(_ env: inout TyEnv, _ kw: Str, _ inner: Vec[Nd]) using Alloc, L
         }
         return
     }
+    // `copy x` is a fresh value: C++23's decay-copy, as the bootstrap emits (F20).
+    if streq(kw, "copy ") {
+        print("auto(")
+        emitBoxed(env, inner)
+        print(")")
+        return
+    }
     if streq(kw, "await ") {
         print("co_await (")
         emitBoxed(env, inner)
@@ -11553,11 +11560,22 @@ func emitCallArg(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int, _ a
 func emitCallArgVal(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int, _ val: Vec[Nd]) using Alloc, Log {
     var sinkArg: Bool = false
     if streq(owner, "") && !streq(fname, "") {
-        sinkArg = streq(tyParamMode(env, fname, idx), "sink ")
+        sinkArg = streq(tyParamMode(env, fname, idx), "sink ") && !isCopyArg(val)
     }
     if sinkArg { print("std::move(") }
     emitCallArgInner(env, owner, fname, idx, val)
     if sinkArg { print(")") }
+}
+
+// A `copy x` argument is already a fresh prvalue (the bootstrap doesn't wrap it).
+func isCopyArg(_ val: Vec[Nd]) -> Bool {
+    if let v = val.get(0) {
+        return match v {
+            case .prefixE(let kw, let inner): streq(kw, "copy ")
+            default: false
+        }
+    }
+    return false
 }
 
 func emitCallArgInner(_ env: inout TyEnv, _ owner: Str, _ fname: Str, _ idx: Int, _ val: Vec[Nd]) using Alloc, Log {

@@ -2597,6 +2597,13 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         emit_expr(os, *static_cast<const ast::ParenExpr&>(e).inner);
         os << ")";
         break;
+    case ast::NodeKind::CopyExpr:
+        // §6 `copy x` is a fresh value, leaving `x` usable: C++23's
+        // decay-copy `auto(x)` (F20).
+        os << "auto(";
+        emit_expr(os, *static_cast<const ast::CopyExpr&>(e).inner);
+        os << ")";
+        break;
     case ast::NodeKind::TupleLitExpr: {
         // §6 `(e1, e2, …)` → `std::tuple{e1, e2, …}`. CTAD picks the
         // element types from the brace-init list, matching the sema
@@ -4125,11 +4132,13 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             // For a sink param, the value must arrive as an rvalue. The
             // simplest correct lowering: always std::move at the call site.
             // (`std::move(temporary)` is harmless — it just stays an rvalue.)
-            if (is_sink) {
+            // A `copy x` is already a fresh prvalue, and isn't wrapped.
+            const bool wrap = is_sink && c.args[i].value->kind != ast::NodeKind::CopyExpr;
+            if (wrap) {
                 os << "std::move(";
             }
             emit_expr(os, *c.args[i].value);
-            if (is_sink) {
+            if (wrap) {
                 os << ")";
             }
         }

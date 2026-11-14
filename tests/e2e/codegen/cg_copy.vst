@@ -1,0 +1,17 @@
+// §6 `copy x` lowers to a fresh value (F20), passed to a sink parameter unwrapped.
+enum Held {
+    case client(UInt32)
+    case token(UInt64)
+}
+struct Slot { var held: Held }
+func isClient(_ h: Held) -> Bool {
+    return match h {
+        case .client: true
+        default: false
+    }
+}
+func keep(_ h: sink Held) -> Slot { return Slot(held: h) }
+func f(_ h: sink Held) -> Bool {
+    let s = keep(copy h)
+    return isClient(h) && isClient(s.held)
+}
