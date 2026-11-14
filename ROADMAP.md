@@ -116,8 +116,8 @@ first, in both front ends (bootstrap and `selfhost/sema.vst`, held to
 identical diagnostics), because the new backend will trust whatever sema
 accepts. Ordered by how likely each is to let a wrong program through:
 
-1. **Immutability:** `let` and `static` immutability, including field and
-   index writes through a `let` and `&letVar` to an `inout` (Gaps §3-4).
+1. **Immutability:** `static` immutability (only an immutable value or an
+   `Atomic`; Gaps §4). `let` and `read` parameters are done.
 2. **Move checking:**
    - moves inside loop bodies;
    - field-level moves;
@@ -179,7 +179,8 @@ not keep chasing the C++ output.
 - **Inline asm** stays bootstrap-only until the LLVM backend, where it becomes
   LLVM inline asm in one place for both compilers.
 - **The self-hosting milestone:** the self-hosted compiler, built by the
-  bootstrap, compiles itself to a working binary through the LLVM backend.
+  bootstrap, compiles itself to a working binary through the LLVM backend,
+  once that backend is ported from the bootstrap.
 
 ## Language features still missing
 
@@ -293,22 +294,23 @@ Most of this is cheaper to do once, in the LLVM backend, than twice:
 
 These block or shape work above and are the user's to make:
 
-1. **Where the LLVM backend is written.** Either in the bootstrap (C++, fast
-   to build, one more C++ component to replace later) or in `selfhost/`
-   (Vestra, on the self-hosting path, but it first needs the sema breadth
-   above). Recommendation: write the mid-level IR and the `.ll` emitter in
-   Vestra under `selfhost/`, and keep the bootstrap's C++ backend frozen as
-   the reference and the bootstrap path until the self-hosted compiler builds
-   itself.
-2. **Textual IR versus the LLVM C API.** Recommendation: textual `.ll`
-   (above). Revisit if compile times or debug-info emission demand the API.
-3. **Spec holes** (SPEC_GAPS, "Spec holes"):
+Decided (least prework first):
+
+- **The LLVM backend is written in the bootstrap (C++).** It needs no
+  self-hosted sema breadth first. The self-hosted compiler reaches LLVM by
+  porting the backend once the bootstrap's is proven.
+- **Textual `.ll`, not the LLVM C API.** No new library dependency; revisit
+  if compile times or debug-info emission demand the API.
+
+Still open:
+
+1. **Spec holes** (SPEC_GAPS, "Spec holes"):
    - `Ordering` names both the comparison result and the atomic memory
      order;
    - `Hash` vs `Hashable`;
    - the `type Element = ...` production;
    - whether `internal` is module- or package-scoped.
-4. **Questions the spike raised** (Vestra-POC `FINDINGS.md`):
+2. **Questions the spike raised** (Vestra-POC `FINDINGS.md`):
    - enum raw values, `[x; n]` repeat literals, `case a, b`;
    - `&` on an element of a static array;
    - a pointer accessor on `Span` (for a syscall's `(ptr, len)`);
