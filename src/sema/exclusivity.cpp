@@ -361,10 +361,11 @@ std::optional<ExclusivityChecker::Place> ExclusivityChecker::as_place(const ast:
         if (sym == nullptr) {
             return std::nullopt;
         }
-        // Only Local/Parameter symbols are storage we care about for the
-        // exclusivity rule. Calls, consts, statics, type symbols — none of
-        // those are places a caller can &x into.
-        if (sym->kind != SymbolKind::Local && sym->kind != SymbolKind::Parameter) {
+        // Locals, parameters and statics are storage a caller can `&x` into
+        // (§19.3: the law is about storage locations, wherever they live).
+        // Calls, consts and type symbols are not places.
+        if (sym->kind != SymbolKind::Local && sym->kind != SymbolKind::Parameter
+            && sym->kind != SymbolKind::Static) {
             return std::nullopt;
         }
         (void)ident;
@@ -388,6 +389,29 @@ std::optional<ExclusivityChecker::Place> ExclusivityChecker::as_place(const ast:
         base->path.push_back("." + m.member);
         return base;
     }
+    case ast::NodeKind::IndexExpr: {
+        // §19.3 an element is a place inside its array. Two elements are
+        // disjoint only when both indices are distinct integer constants: the
+        // compiler never proves index arithmetic disjoint (disjointness comes
+        // from the partition primitives' provenance, §5 clause 4).
+        const auto& ix = static_cast<const ast::IndexExpr&>(e);
+        auto base = as_place(*ix.base);
+        if (!base || ix.indices.size() != 1) {
+            return base;  // a multi-index view: the whole base, conservatively
+        }
+        const ast::Expr* i = ix.indices[0].get();
+        while (i->kind == ast::NodeKind::ParenExpr) {
+            i = static_cast<const ast::ParenExpr&>(*i).inner.get();
+        }
+        if (i->kind == ast::NodeKind::IntLit) {
+            base->path.push_back("[" + static_cast<const ast::IntLit&>(*i).text + "]");
+        } else if (i->kind == ast::NodeKind::IdentExpr) {
+            base->path.push_back("[" + static_cast<const ast::IdentExpr&>(*i).name + "]?");
+        } else {
+            base->path.push_back("[?]");
+        }
+        return base;
+    }
     default:
         return std::nullopt;
     }
@@ -403,9 +427,22 @@ bool ExclusivityChecker::overlap(const Place& a, const Place& b) noexcept {
     const auto& shorter = a.path.size() < b.path.size() ? a.path : b.path;
     const auto& longer = a.path.size() < b.path.size() ? b.path : a.path;
     for (std::size_t i = 0; i < shorter.size(); ++i) {
-        if (shorter[i] != longer[i]) {
-            return false;
+        if (shorter[i] == longer[i]) {
+            continue;
         }
+        // Two element segments: disjoint only for two different constants
+        // (`[0]` vs `[1]`); a computed index (`[i]?`, `[?]`) may be either.
+        const bool idx_a = shorter[i].starts_with("[");
+        const bool idx_b = longer[i].starts_with("[");
+        if (idx_a && idx_b) {
+            const bool const_a = shorter[i].back() == ']';
+            const bool const_b = longer[i].back() == ']';
+            if (const_a && const_b) {
+                return false;
+            }
+            continue;  // may be the same element
+        }
+        return false;  // different fields
     }
     return true;
 }
@@ -425,7 +462,13 @@ std::string ExclusivityChecker::render_place(const Place& p) {
     }
     std::string s = "'" + root;
     for (const auto& seg : p.path) {
-        s += seg;
+        if (seg == "[?]") {
+            s += "[...]";
+        } else if (seg.ends_with("]?")) {
+            s += seg.substr(0, seg.size() - 1);  // `[i]?` reads as `[i]`
+        } else {
+            s += seg;
+        }
     }
     s += "'";
     return s;

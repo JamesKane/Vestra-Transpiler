@@ -300,3 +300,37 @@ TEST_CASE("a non-mutating Vec method does not borrow its receiver inout") {
               .error_count
           == 0);
 }
+
+// ---- §19.3 elements and statics are places (F17b) ----------------------------
+
+namespace {
+const char* kElems = "struct D {\n    var a: UInt64\n    var b: UInt64\n}\n"
+                     "static ds: [4]D = [D(a: 0, b: 0), D(a: 0, b: 0), D(a: 0, b: 0), D(a: 0, b: 0)]\n"
+                     "func both(_ x: inout D, _ y: inout D) { }\n"
+                     "func two(_ x: inout UInt64, _ y: inout UInt64) { }\n"
+                     "func peek(_ x: inout [4]D, _ y: UInt64) { }\n";
+}  // namespace
+
+TEST_CASE("two inouts to one element of a static conflict") {
+    auto r = check(std::string(kElems) + "func f() {\n    both(&ds[0], &ds[0])\n}\n");
+    CHECK(r.error_count == 1);
+    CHECK(r.first_message.find("'ds[0]' is borrowed twice") != std::string::npos);
+}
+
+TEST_CASE("elements conflict unless their indices are distinct constants") {
+    CHECK(check(std::string(kElems) + "func f() {\n    both(&ds[0], &ds[1])\n}\n").error_count == 0);
+    auto r = check(std::string(kElems)
+                   + "func f(_ k: inout [4]D, _ i: Int, _ j: Int) {\n    both(&k[i], &k[j])\n}\n");
+    CHECK(r.first_message.find("'k[i]' and 'k[j]' overlap") != std::string::npos);
+    // Distinct fields of one element stay independent.
+    CHECK(check(std::string(kElems)
+                + "func f(_ k: inout [4]D, _ i: Int) {\n    two(&k[i].a, &k[i].b)\n}\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("reading part of a place while lending all of it inout conflicts") {
+    auto r = check(std::string(kElems)
+                   + "func f(_ k: inout [4]D, _ i: Int) {\n    peek(&k, k[i].a)\n}\n");
+    CHECK(r.first_message.find("'k' and 'k[i].a' overlap") != std::string::npos);
+}
