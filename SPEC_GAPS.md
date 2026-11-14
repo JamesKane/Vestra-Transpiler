@@ -131,9 +131,7 @@ Each gap has one of four kinds:
 | §7 | A const generic `N` as a value in the body | missing | "undefined name 'N'". |
 | §17.3 | Const-expression array lengths `[N + 1]T` | missing | Parse error. |
 | §7 | Bounds `Primitive`, `Trivial`, `Copyable`, `Iterator` | missing | "bound 'Primitive' is not supported yet". (`Ord` and `Hashable` are checked as `Comparable` and `Hash`.) |
-| §7 | Operations on `T` are gated by its bounds | unsound | `a > b` on an unbounded `T` is accepted, and the C++ compiler catches it later, if at all. |
-| §7 | Transitive bound checking | unsound | An unbounded `g[T]` calling `h[T: Comparable]` is accepted. |
-| §7 | Bounds on generic structs at inferred construction | unsound (partial) | Enforced on an annotation `W[N]`, but not on `W(v: N(...))`. |
+| §7 | Fields of `self` in a generic struct's method | unsound | `self.a` where `a: T` has no type, so `self.a - self.b` in a method returning `Bool` is accepted. A parameter typed `T` is checked (its `<` needs `T: Comparable`). |
 | §7 | Protocol conformance | missing | An extension missing a required method is accepted. A protocol method on a bounded `T` gives "no field or method". Extensions on primitive types don't attach. |
 | §7 | `some P` | missing | Erased to the protocol type. `-> some Shape` returning `Sq` is a type mismatch. |
 | §7 | `dyn P` existentials | missing | `let d: dyn Shape = Sq(...)` is a mismatch. |

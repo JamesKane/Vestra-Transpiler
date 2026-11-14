@@ -8,10 +8,8 @@ func identity[T](_ x: T) -> T {
     return x
 }
 
-// Pick the larger of two values. C++ template instantiation requires T to
-// have `operator>` for each instantiation; Vestra side just treats T as
-// opaque in the body (phase-1 bounds are not enforced yet).
-func max_of[T](_ a: T, _ b: T) -> T {
+// Pick the larger of two values. `>` on T needs the bound `T: Comparable`.
+func max_of[T: Comparable](_ a: T, _ b: T) -> T {
     return if a > b { a } else { b }
 }
 

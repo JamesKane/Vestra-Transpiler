@@ -1342,6 +1342,26 @@ TypePtr Resolver::check_binary(const ast::BinaryExpr& b, TypePtr expected) {
         if (!require_match()) {
             return types_->error();
         }
+        // §7 an operation on a generic parameter is gated by its bounds:
+        // `==`/`!=` need Eq, the orderings need Ord (Comparable).
+        if (lhs->kind() == TypeKind::GenericParam) {
+            const bool equality = b.op == ast::BinaryOp::Eq || b.op == ast::BinaryOp::Ne;
+            const std::string_view need = equality ? "Eq" : "Comparable";
+            const char* op_text = b.op == ast::BinaryOp::Eq   ? "=="
+                                  : b.op == ast::BinaryOp::Ne ? "!="
+                                  : b.op == ast::BinaryOp::Lt ? "<"
+                                  : b.op == ast::BinaryOp::Le ? "<="
+                                  : b.op == ast::BinaryOp::Gt ? ">"
+                                                              : ">=";
+            if (!generic_param_has_bound(lhs, need)) {
+                error_at(b.range,
+                         std::format("operator '{}' on {} requires the bound '{}: {}'",
+                                     op_text,
+                                     lhs->describe(),
+                                     lhs->describe(),
+                                     need));
+            }
+        }
         return types_->boolean();
 
     case ast::BinaryOp::And:

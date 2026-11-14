@@ -120,19 +120,16 @@ accepts. Ordered by how likely each is to let a wrong program through:
    admitted while the builtin `split` and `args()` return one; the decision is
    a lazy `split` iterator or tracking sources through the container).
 
-2. **Generics checked against bounds:** operations on `T` gated by its
-   bounds, transitive bound checking, bounds at inferred construction (Gaps
-   §7).
-3. **Atomics:** ordering legality (`load(.release)` is an error), CAS
+2. **Atomics:** ordering legality (`load(.release)` is an error), CAS
    arguments bound by label, not by position (Annex §14.9).
-4. **Patterns:** exhaustiveness through nested patterns and guarded arms; a
+3. **Patterns:** exhaustiveness through nested patterns and guarded arms; a
    bare identifier pattern matches an existing value (Gaps §6).
-5. **Comptime purity:** no capabilities or runtime calls in `comptime`;
+4. **Comptime purity:** no capabilities or runtime calls in `comptime`;
    every `@when` branch type-checked; `cfg` follows the build target, not the
    compiler's host, and `cfg.has` folds against `--target-features` (Gaps
    §12.1, §12.6).
-6. **Argument labels enforced** (Gaps §7).
-7. **Smaller unsound items:**
+5. **Argument labels enforced** (Gaps §7).
+6. **Smaller unsound items:**
     - `@noinit` limited to `Trivial` types (the spike's `sys.kernel`, a
       table of linear capabilities, then moves to `Trivial` byte storage
       viewed through a `MutPtr`);
@@ -140,9 +137,11 @@ accepts. Ordered by how likely each is to let a wrong program through:
     - `MmioView[T]` requires `T: Primitive`;
     - `compilerFence(.relaxed)` rejected;
     - `using InterruptsOff` rejected;
-    - `@kernel_init` reachable only from init code, including through `&f`.
+    - `@kernel_init` reachable only from init code, including through `&f`;
+    - `self.field` typed inside a generic struct's methods (today it has no
+      type, so nothing about it is checked; Gaps §7).
 
-    (Annex A table)
+    (Annex A table, and Gaps §7 for the last)
 
 ## Self-hosting
 
@@ -188,7 +187,7 @@ SPEC_GAPS):
    generics as values and in array lengths (`[N + 1]T`) (Gaps §7, §17).
 4. **Errors and optionals:** `.none`; several `catch` clauses and pattern
    catches (Gaps §9).
-5. **Comptime and reflection:**
+4. **Comptime and reflection:**
    - `comptime if` / `comptime match`;
    - `Type` as a value and `Type.structOf`;
    - reflection of enum cases, signatures and attributes;

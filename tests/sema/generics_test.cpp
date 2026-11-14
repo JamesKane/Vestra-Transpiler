@@ -52,7 +52,7 @@ TEST_CASE("identity function infers T from a single argument") {
 }
 
 TEST_CASE("generic over two same-typed args binds T once") {
-    CHECK(check("func max_of[T](_ a: T, _ b: T) -> T { return if a > b { a } else { b } }\n"
+    CHECK(check("func max_of[T: Comparable](_ a: T, _ b: T) -> T { return if a > b { a } else { b } }\n"
                 "func ok() -> Int32 {\n"
                 "    let a: Int32 = 1\n"
                 "    let b: Int32 = 2\n"
@@ -77,7 +77,7 @@ TEST_CASE("expected-type propagation: max_of(typed, literal) binds both at the t
     // The literal `35` would default to Int and conflict with the Int32
     // `i` unless we substitute the bound-so-far T into the second arg's
     // expected type during pass 1.
-    CHECK(check("func max_of[T](_ a: T, _ b: T) -> T { return if a > b { a } else { b } }\n"
+    CHECK(check("func max_of[T: Comparable](_ a: T, _ b: T) -> T { return if a > b { a } else { b } }\n"
                 "func ok() -> Int32 {\n"
                 "    let i: Int32 = 1\n"
                 "    return max_of(i, 35)\n"
@@ -114,7 +114,7 @@ TEST_CASE("conflicting bindings for a single generic are reported") {
 TEST_CASE("the generics example checks clean") {
     CHECK(check("module examples.generics\n"
                 "func identity[T](_ x: T) -> T { return x }\n"
-                "func max_of[T](_ a: T, _ b: T) -> T {\n"
+                "func max_of[T: Comparable](_ a: T, _ b: T) -> T {\n"
                 "    return if a > b { a } else { b }\n"
                 "}\n"
                 "func compute() -> Int32 {\n"
@@ -442,6 +442,67 @@ TEST_CASE("derive(Eq, Hash, Debug) on a generic struct and enum check clean") {
                 "derive(Eq, Hash, Debug) for Pair\n"
                 "enum Maybe[T] { case just(T)  case nothing }\n"
                 "derive(Eq, Hash, Debug) for Maybe\n")
+              .error_count
+          == 0);
+}
+
+// ---- §7 operations and calls gated by bounds --------------------------------
+
+TEST_CASE("an ordering on an unbounded T is rejected") {
+    auto r = check("func gt[T](_ a: T, _ b: T) -> Bool { a > b }\n");
+    CHECK(r.error_count == 1);
+    CHECK(r.first_message == "operator '>' on T requires the bound 'T: Comparable'");
+}
+
+TEST_CASE("equality on an unbounded T is rejected") {
+    auto r = check("func eq[T](_ a: T, _ b: T) -> Bool { a != b }\n");
+    CHECK(r.error_count == 1);
+    CHECK(r.first_message == "operator '!=' on T requires the bound 'T: Eq'");
+}
+
+TEST_CASE("Ord and Comparable admit orderings and equality; Eq admits equality") {
+    CHECK(check("func a[T: Ord](_ x: T, _ y: T) -> Bool { x < y && x == y }\n"
+                "func b[T](_ x: T, _ y: T) -> Bool where T: Comparable { x >= y }\n"
+                "func c[T: Eq](_ x: T, _ y: T) -> Bool { x == y }\n"
+                "func d[T: Hash & Eq](_ x: T, _ y: T) -> Bool { x == y }\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a generic caller must carry the callee's bound (transitive)") {
+    auto r = check("func h[T: Comparable](_ a: T, _ b: T) -> Bool { a < b }\n"
+                   "func g[T: Eq](_ a: T, _ b: T) -> Bool { h(a, b) }\n");
+    CHECK(r.error_count == 1);
+    CHECK(r.first_message == "type T does not satisfy the bound 'T: Comparable'");
+    CHECK(check("func h[T: Comparable](_ a: T, _ b: T) -> Bool { a < b }\n"
+                "func g[U: Ord](_ a: U, _ b: U) -> Bool { h(a, b) }\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a user protocol bound implies the protocols it refines") {
+    CHECK(check("protocol Keyed: Comparable { func key() -> Int32 }\n"
+                "func h[T: Comparable](_ a: T, _ b: T) -> Bool { a < b }\n"
+                "func g[T: Keyed](_ a: T, _ b: T) -> Bool { h(a, b) && a == b }\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("a Display or Debug bound makes T interpolable") {
+    CHECK(check("func s[T: Display](_ a: T) -> String { \"\\(a)\" }\n"
+                "func d[T: Debug](_ a: T) -> String { \"\\(a)\" }\n")
+              .error_count
+          == 0);
+}
+
+TEST_CASE("bounds are checked at an inferred generic struct construction") {
+    auto r = check("struct W[T: Comparable] { let v: T }\n"
+                   "struct N { let x: Int32 }\n"
+                   "func f() { let w = W(v: N(x: 1)) }\n");
+    CHECK(r.error_count == 1);
+    CHECK(r.first_message == "type N does not satisfy the bound 'T: Comparable'");
+    CHECK(check("struct W[T: Comparable] { let v: T }\n"
+                "func f() { let w = W(v: 3) }\n")
               .error_count
           == 0);
 }

@@ -1269,8 +1269,12 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
         // seeds the map so an annotated binding pins the width.
         const bool is_generic = named_type_param_count(s_decl.generics) > 0;
         std::unordered_map<std::string, TypePtr> gbindings;
+        // A binding seeded from the expected type was bound-checked where
+        // that type was written; only inferred bindings are checked here.
+        bool seeded = false;
         if (is_generic && expected != nullptr && expected->kind() == TypeKind::Struct
             && expected->nominal_decl() == &s_decl) {
+            seeded = true;
             const auto& ep = expected->parts();
             std::size_t gi = 0;
             for (const auto& gp : s_decl.generics) {
@@ -1376,6 +1380,9 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
             } else {
                 inst_args.push_back(bit->second);
             }
+        }
+        if (!seeded) {
+            check_generic_bounds(s_decl.generics, gbindings, c.range);
         }
         return types_->make_struct_instance(callee_type->nominal_decl(), std::move(inst_args));
     }

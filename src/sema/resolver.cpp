@@ -523,6 +523,7 @@ TypePtr Resolver::function_type_of(const ast::FuncDecl& f) {
         s.kind = SymbolKind::GenericParam;
         s.type = types_->make_generic_param(gp.name);
         s.definition_range = gp.range;
+        s.generic = &gp;
         (void)g.scope().insert(std::move(s));
     }
 

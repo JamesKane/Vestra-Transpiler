@@ -1,0 +1,24 @@
+// §7 operations on a generic parameter are gated by its bounds, and a generic
+// caller must carry the bounds of the generic it calls. Each use here is
+// covered: `Ord` implies `Eq`, and a `where` clause adds bounds.
+
+func less[T: Comparable](_ a: T, _ b: T) -> Bool { return a < b }
+
+func same[T: Eq](_ a: T, _ b: T) -> Bool { return a == b }
+
+func both[U: Ord](_ a: U, _ b: U) -> Bool { return less(a, b) && same(a, b) && a != b }
+
+func later[T](_ a: T, _ b: T) -> Bool where T: Comparable { return a >= b }
+
+func keyed[K: Hash & Eq](_ a: K, _ b: K) -> Bool { return same(a, b) }
+
+struct Pair[T: Comparable] {
+    var a: T
+    var b: T
+    func before(_ x: T, _ y: T) -> Bool { return x <= y }
+}
+
+func main() -> Int32 {
+    if less(1, 2) && both(3, 4) { return 0 }
+    return 1
+}

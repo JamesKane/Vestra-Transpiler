@@ -38,6 +38,8 @@ bool Resolver::is_display_conformant(TypePtr t) const {
         return true;
     }
     switch (t->kind()) {
+    case TypeKind::GenericParam:
+        return generic_param_has_bound(t, "Display") || generic_param_has_bound(t, "Debug");
     case TypeKind::Vector:
         return is_display_conformant(t->inner());
     case TypeKind::Optional:
@@ -143,12 +145,10 @@ bool Resolver::type_satisfies_bound(TypePtr t, std::string_view protocol) const 
     if (t == nullptr || t->is_error()) {
         return true;  // suppress cascading errors on already-broken types
     }
-    // A generic parameter standing in for a concrete type can't be checked
-    // structurally here; accept it. The enclosing scope's own bound on that
-    // parameter is the relevant constraint — transitive bound checking is a
-    // follow-on.
+    // A generic parameter standing in for a concrete type satisfies the
+    // bounds its own declaration lists, and nothing more.
     if (t->kind() == TypeKind::GenericParam) {
-        return true;
+        return generic_param_has_bound(t, protocol);
     }
     if (protocol == "Display") {
         return is_display_conformant(t);
@@ -205,6 +205,63 @@ bool Resolver::type_satisfies_bound(TypePtr t, std::string_view protocol) const 
     // general conformance table, which v0.5 doesn't have. Accept rather than
     // reject a construct we can't check.
     return true;
+}
+
+namespace {
+
+std::string_view canonical_bound(std::string_view p) {
+    if (p == "Hashable") {
+        return "Hash";
+    }
+    if (p == "Ord" || p == "Ordered") {
+        return "Comparable";
+    }
+    return p;
+}
+
+}  // namespace
+
+bool Resolver::bound_implies(std::string_view have, std::string_view want, int depth) const {
+    have = canonical_bound(have);
+    want = canonical_bound(want);
+    if (have == want || (have == "Comparable" && want == "Eq")) {
+        return true;
+    }
+    if (depth > 8) {
+        return false;
+    }
+    const auto* sym = scopes_.global().lookup_local(have);
+    if (sym == nullptr || sym->kind != SymbolKind::Protocol || sym->decl == nullptr
+        || sym->decl->kind != ast::NodeKind::Protocol) {
+        return false;
+    }
+    const auto& pd = static_cast<const ast::ProtocolDecl&>(*sym->decl);
+    for (const auto& r : pd.refines) {
+        if (r != nullptr && r->kind == ast::NodeKind::NamedType) {
+            const auto& nt = static_cast<const ast::NamedType&>(*r);
+            if (!nt.path.empty() && bound_implies(nt.path.back(), want, depth + 1)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool Resolver::generic_param_has_bound(TypePtr t, std::string_view protocol) const {
+    const auto* sym = scopes_.current().lookup(t->generic_name());
+    if (sym == nullptr || sym->kind != SymbolKind::GenericParam || sym->generic == nullptr) {
+        return true;  // no declaration in scope to check against
+    }
+    for (const auto& proto : sym->generic->bound.protocols) {
+        if (proto == nullptr || proto->kind != ast::NodeKind::NamedType) {
+            continue;
+        }
+        const auto& nt = static_cast<const ast::NamedType&>(*proto);
+        if (!nt.path.empty() && bound_implies(nt.path.back(), protocol, 0)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void Resolver::check_generic_bounds(const std::vector<ast::GenericParam>& generics,

@@ -56,6 +56,9 @@ struct Symbol {
     // identical, scope-stable object.
     const Symbol* provenance_root = nullptr;
     std::string provenance_segment;
+    // §7 for a GenericParam symbol, the declaring parameter, whose bounds
+    // gate what the body may do with a value of that type.
+    const ast::GenericParam* generic = nullptr;
 };
 
 // A lexical scope. The owner uses `enter()` / `leave()` (or the RAII
@@ -104,6 +107,8 @@ public:
 
     [[nodiscard]] Scope& current() noexcept { return *active_; }
     [[nodiscard]] Scope& global() noexcept { return *scopes_.front(); }
+    [[nodiscard]] const Scope& current() const noexcept { return *active_; }
+    [[nodiscard]] const Scope& global() const noexcept { return *scopes_.front(); }
 
     Scope& push();
     void pop();

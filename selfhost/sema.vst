@@ -6966,6 +6966,15 @@ struct TyEnv {
     var esAwName: Vec[String]   // view bindings ...
     var esAwAt: Vec[Int]        // ... and the await count when each was made
     var esAwRep: Vec[String]    // already reported
+    var gName: Vec[String]      // §7 generic parameters in scope: name ...
+    var gBound: Vec[String]     // ... one bound per row ("" for an unbounded one) ...
+    var gSeq: Vec[Int]          // ... and which declaration the row belongs to
+    var gNext: Int              // the last declaration number handed out
+    var fgFn: Vec[String]       // global: per-bound rows of each function's generics ("" bound for none): function ...
+    var fgName: Vec[String]     // ... parameter name ...
+    var fgBound: Vec[String]    // ... -> bound as written
+    var prName: Vec[String]     // global: `protocol P: Q, R` refinement rows: P ...
+    var prRef: Vec[String]      // ... -> Q
 }
 
 func tyCheck(_ env: inout TyEnv, _ u: NUnit) using Alloc {
@@ -7157,6 +7166,7 @@ func tyFieldType(_ env: inout TyEnv, _ structName: String, _ label: String) usin
 func tyRecordFuncV(_ env: inout TyEnv, _ mods: String, _ name: String, _ g: Vec[Nd], _ params: Vec[Nd],
                    _ caps: Vec[Nd], _ thr: Vec[Nd], _ result: Vec[Nd]) using Alloc {
     tyRecordFunc(env, name, params, result)
+    tyRecordFuncBounds(env, name, g)
     if g.len() > 0 || thr.len() > 0 { env.funcSpell.push(own("")); return }
     var ps: Vec[Nd] = Vec.new()
     var i: Int = 0
@@ -7171,6 +7181,33 @@ func tyRecordFuncV(_ env: inout TyEnv, _ mods: String, _ name: String, _ g: Vec[
     tyRowNames(caps, row)
     if containsSub(mods, "async") && !esInList(row, "Async") { row.push("Async") }
     env.funcSpell.push(tyFnSpell(ps, row, result))
+}
+
+func tyRecordFuncBounds(_ env: inout TyEnv, _ name: String, _ g: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < g.len() {
+        match g.get(i) ?? Nd.wildcard {
+            case .genType(let n, let bounds): tyRecordGenBounds(env, name, n, bounds)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func tyRecordGenBounds(_ env: inout TyEnv, _ fname: String, _ n: String, _ bounds: Vec[Nd]) using Alloc {
+    if bounds.len() == 0 {
+        env.fgFn.push(own(fname))
+        env.fgName.push(own(n))
+        env.fgBound.push(own(""))
+        return
+    }
+    var i: Int = 0
+    while i < bounds.len() {
+        env.fgFn.push(own(fname))
+        env.fgName.push(own(n))
+        env.fgBound.push(tyBoundName(bounds.get(i) ?? Nd.wildcard))
+        i = i + 1
+    }
 }
 
 func tyPushFirst(_ out: inout Vec[Nd], _ ty: Vec[Nd]) using Alloc {
@@ -7372,12 +7409,227 @@ func tyIsStruct(_ env: inout TyEnv, _ name: String) -> Bool {
 func tyCheckDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
-            tyCheckFuncAll(env, mods, name, params, r, b)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyCheckStructD(env, fl, m)
-        case .enumD(let vis, let name, let cs, let m, let generics): tyCheckMethods(env, m)
+            tyCheckFuncG(env, mods, name, g, params, r, b)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyCheckStructG(env, generics, fl, m)
+        case .enumD(let vis, let name, let cs, let m, let generics): tyCheckEnumG(env, generics, m)
         case .constD(let vis, let name, let ty, let v): tyCheckConst(env, ty, v)
         default: noop()
     }
+}
+
+// §7 a declaration's generic parameters are in scope (with their bounds) while
+// its body, or its methods' bodies, are checked.
+func tyCheckFuncG(_ env: inout TyEnv, _ mods: String, _ name: String, _ g: Vec[Nd], _ params: Vec[Nd],
+                  _ result: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    let mark = env.gName.len()
+    tyGenPush(env, g)
+    tyCheckFuncAll(env, mods, name, params, result, body)
+    tyGenPop(env, mark)
+}
+
+func tyCheckStructG(_ env: inout TyEnv, _ g: Vec[Nd], _ fl: Vec[Nd], _ m: Vec[Nd]) using Alloc {
+    let mark = env.gName.len()
+    tyGenPush(env, g)
+    tyCheckStructD(env, fl, m)
+    tyGenPop(env, mark)
+}
+
+func tyCheckEnumG(_ env: inout TyEnv, _ g: Vec[Nd], _ m: Vec[Nd]) using Alloc {
+    let mark = env.gName.len()
+    tyGenPush(env, g)
+    tyCheckMethods(env, m)
+    tyGenPop(env, mark)
+}
+
+func tyGenPush(_ env: inout TyEnv, _ gens: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < gens.len() {
+        match gens.get(i) ?? Nd.wildcard {
+            case .genType(let n, let bounds): tyGenPushOne(env, n, bounds)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func tyGenPushOne(_ env: inout TyEnv, _ n: String, _ bounds: Vec[Nd]) using Alloc {
+    env.gNext = env.gNext + 1
+    if bounds.len() == 0 {
+        tyGenRow(env, n, own(""))
+        return
+    }
+    var i: Int = 0
+    while i < bounds.len() {
+        tyGenRow(env, n, tyBoundName(bounds.get(i) ?? Nd.wildcard))
+        i = i + 1
+    }
+}
+
+func tyGenRow(_ env: inout TyEnv, _ n: String, _ b: String) using Alloc {
+    env.gName.push(own(n))
+    env.gBound.push(b)
+    env.gSeq.push(env.gNext)
+}
+
+func tyGenPop(_ env: inout TyEnv, _ mark: Int) {
+    while env.gName.len() > mark {
+        let _ = env.gName.pop()
+        let _ = env.gBound.pop()
+        let _ = env.gSeq.pop()
+    }
+}
+
+func tyBoundName(_ b: Nd) using Alloc -> String {
+    return match b {
+        case .named(let path, let g, let a): own(path)
+        default: own("")
+    }
+}
+
+// The innermost declaration of generic parameter `name`, or -1 if none is in scope.
+func tyGenSeq(_ env: inout TyEnv, _ name: String) -> Int {
+    var i: Int = env.gName.len() - 1
+    while i >= 0 {
+        if let n = env.gName.get(i) {
+            if streq(n, name) { return env.gSeq.get(i) ?? -1 }
+        }
+        i = i - 1
+    }
+    return -1
+}
+
+// Does the in-scope generic parameter `name` carry a bound implying `want`?
+// (A name with no declaration in scope is accepted, as the resolver does.)
+func tyGenHas(_ env: inout TyEnv, _ name: String, _ want: String) using Alloc -> Bool {
+    let seq = tyGenSeq(env, name)
+    if seq < 0 { return true }
+    var i: Int = 0
+    while i < env.gName.len() {
+        if (env.gSeq.get(i) ?? -1) == seq {
+            if tyBoundImplies(env, env.gBound.get(i) ?? own(""), want, 0) { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func tyBoundCanon(_ b: String) using Alloc -> String {
+    if streq(b, "Hashable") { return own("Hash") }
+    if streq(b, "Ord") || streq(b, "Ordered") { return own("Comparable") }
+    return own(b)
+}
+
+// `Ord` / `Comparable` imply `Eq`, and a user protocol implies what it refines.
+func tyBoundImplies(_ env: inout TyEnv, _ have: String, _ want: String, _ depth: Int) using Alloc -> Bool {
+    let h = tyBoundCanon(have)
+    let w = tyBoundCanon(want)
+    if streq(h, w) || (streq(h, "Comparable") && streq(w, "Eq")) { return true }
+    if depth > 8 { return false }
+    var i: Int = 0
+    while i < env.prName.len() {
+        if let pn = env.prName.get(i) {
+            if streq(pn, h) {
+                if tyBoundImplies(env, env.prRef.get(i) ?? own(""), want, depth + 1) { return true }
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// `protocol P: Q, R` rows, by token scan (the parser drops protocol decls).
+func tyRefines(_ env: inout TyEnv, _ toks: Vec[Token]) using Alloc {
+    var i: Int = 0
+    while i + 2 < toks.len() {
+        let t = toks.get(i) ?? eofTok()
+        if streq(spelling(t.kind), "protocol") {
+            let n = toks.get(i + 1) ?? eofTok()
+            var j: Int = i + 2
+            var more: Bool = cfgTokIs(toks, j, ":", "")
+            while more {
+                let r = toks.get(j + 1) ?? eofTok()
+                env.prName.push(own(n.text))
+                env.prRef.push(own(r.text))
+                j = j + 2
+                more = cfgTokIs(toks, j, ",", "")
+            }
+        }
+        i = i + 1
+    }
+}
+
+// §7 a call to a generic function: an argument whose type is the caller's own
+// generic parameter must carry each bound of the callee parameter it binds.
+// (Concrete arguments are not checked against bounds here yet.)
+func tyCheckCallBounds(_ env: inout TyEnv, _ fname: String, _ args: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < env.fgFn.len() {
+        if let f = env.fgFn.get(i) {
+            if streq(f, fname) {
+                tyCheckCallBound(env, fname, env.fgName.get(i) ?? own(""), env.fgBound.get(i) ?? own(""), args)
+            }
+        }
+        i = i + 1
+    }
+}
+
+func tyCheckCallBound(_ env: inout TyEnv, _ fname: String, _ g: String, _ b: String, _ args: Vec[Nd]) using Alloc {
+    if streq(b, "") { return }
+    var k: Int = 0
+    while k < args.len() {
+        if streq(tyParamType(env, fname, k), g) {
+            let at = tyArgType(env, args.get(k) ?? Nd.wildcard)
+            if tyGenSeq(env, at) >= 0 && !tyGenHas(env, at, b) { env.bad.push(tyBoundMsg(at, g, b)) }
+            return
+        }
+        k = k + 1
+    }
+}
+
+func tyIsCalleeGen(_ env: inout TyEnv, _ fname: String, _ t: String) -> Bool {
+    var i: Int = 0
+    while i < env.fgFn.len() {
+        if let f = env.fgFn.get(i) {
+            if streq(f, fname) {
+                if let n = env.fgName.get(i) {
+                    if streq(n, t) { return true }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func tyArgType(_ env: inout TyEnv, _ a: Nd) using Alloc -> String {
+    return match a {
+        case .arg(let label, let isInout, let val): tyInferBoxed(env, val)
+        default: own("")
+    }
+}
+
+func tyBoundMsg(_ at: String, _ g: String, _ b: String) using Alloc -> String {
+    var s: String = "type "
+    s.append(at)
+    s.append(" does not satisfy the bound '")
+    s.append(g)
+    s.append(": ")
+    s.append(b)
+    s.append("'")
+    return s
+}
+
+func tyGenOpMsg(_ op: String, _ t: String, _ need: String) using Alloc -> String {
+    var s: String = "operator '"
+    s.append(op)
+    s.append("' on ")
+    s.append(t)
+    s.append(" requires the bound '")
+    s.append(t)
+    s.append(": ")
+    s.append(need)
+    s.append("'")
+    return s
 }
 
 func tyCheckMethods(_ env: inout TyEnv, _ methods: Vec[Nd]) using Alloc {
@@ -8269,6 +8521,7 @@ func tyCheckCallArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) usi
             tyCheckArg(env, fname, i, args.get(i) ?? Nd.wildcard)
             i = i + 1
         }
+        tyCheckCallBounds(env, fname, args)
         return
     }
     if tyIsStruct(env, fname) { tyCheckCtor(env, fname, args) }
@@ -8342,6 +8595,7 @@ func tyCheckArg(_ env: inout TyEnv, _ fname: String, _ idx: Int, _ a: Nd) using 
 func tyCheckArgVal(_ env: inout TyEnv, _ fname: String, _ idx: Int, _ val: Vec[Nd]) using Alloc {
     let at = tyInferBoxed(env, val)
     let pt = tyParamType(env, fname, idx)
+    if tyIsCalleeGen(env, fname, pt) { return }   // a `T` parameter binds, rather than constrains
     if !tyFits(at, val, pt) { env.bad.push(tyArgMsg(idx + 1, at, pt)) }
 }
 
@@ -9499,6 +9753,12 @@ func tyCheckBinOp(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) 
         else if !tyReqMatch(lt, rt) { env.bad.push(tyDiffMsg(lt, rt)) }
     } else if isCmpOp(op) {
         if !tyReqMatch(lt, rt) { env.bad.push(tyDiffMsg(lt, rt)) }
+        else if tyGenSeq(env, lt) >= 0 {
+            // §7 `==` / `!=` on a generic parameter need Eq, orderings Ord.
+            var need: String = "Comparable"
+            if streq(op, "==") || streq(op, "!=") { need = "Eq" }
+            if !tyGenHas(env, lt, need) { env.bad.push(tyGenOpMsg(op, lt, need)) }
+        }
     }
 }
 
@@ -10594,7 +10854,11 @@ func main() -> Int32 {
                                      esVName: Vec.new(), esVOrig: Vec.new(), esRaw: 0, esMmio: 0,
                                      esDepth: 0, esLocDepth: Vec.new(), esVDepth: Vec.new(),
                                      esRawD: Vec.new(), esMmioD: Vec.new(),
-                                     esAsync: false, esAwaits: 0, esAwName: Vec.new(), esAwAt: Vec.new(), esAwRep: Vec.new())
+                                     esAsync: false, esAwaits: 0, esAwName: Vec.new(), esAwAt: Vec.new(), esAwRep: Vec.new(),
+                                     gName: Vec.new(), gBound: Vec.new(), gSeq: Vec.new(), gNext: 0,
+                                     fgFn: Vec.new(), fgName: Vec.new(), fgBound: Vec.new(),
+                                     prName: Vec.new(), prRef: Vec.new())
+                    tyRefines(&tenv, p.toks)
                     tyCheck(&tenv, u)
                     var ti: Int = 0
                     while ti < tenv.bad.len() {

@@ -305,9 +305,17 @@ private:
     // (a generic parameter's `where T: P` / `[T: P]` constraint)? The
     // derivable built-ins (Eq, Hash, Comparable/Ordered, Display, Debug,
     // Clone, Default) are checked against primitives + the relevant
-    // derive(P); a GenericParam argument and an unrecognized (user-defined)
-    // protocol are accepted, since v0.5 has no general conformance table.
+    // derive(P). A GenericParam satisfies exactly the bounds its declaring
+    // parameter lists (transitive bound checking); an unrecognized
+    // (user-defined) protocol on a concrete type is accepted, since v0.5 has
+    // no general conformance table.
     [[nodiscard]] bool type_satisfies_bound(TypePtr t, std::string_view protocol) const;
+
+    // §7 does the in-scope generic parameter `t` carry a bound implying
+    // `protocol`? `Ord`/`Comparable` imply `Eq`, and a user protocol implies
+    // what it refines. A parameter with no in-scope declaration is accepted.
+    [[nodiscard]] bool generic_param_has_bound(TypePtr t, std::string_view protocol) const;
+    [[nodiscard]] bool bound_implies(std::string_view have, std::string_view want, int depth) const;
 
     // §7 generics — enforce every bound on a generic parameter list against
     // the inferred/supplied argument types. `bindings` maps each parameter

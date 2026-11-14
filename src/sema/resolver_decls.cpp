@@ -110,6 +110,7 @@ void Resolver::check_decl(const ast::Decl& d) {
             gs.kind = SymbolKind::GenericParam;
             gs.type = types_->make_generic_param(gp.name);
             gs.definition_range = gp.range;
+            gs.generic = &gp;
             (void)struct_generics_g.scope().insert(std::move(gs));
         }
         for (const auto& m : s.methods) {
@@ -179,6 +180,7 @@ void Resolver::check_decl(const ast::Decl& d) {
             gs.kind = SymbolKind::GenericParam;
             gs.type = types_->make_generic_param(gp.name);
             gs.definition_range = gp.range;
+            gs.generic = &gp;
             (void)enum_generics_g.scope().insert(std::move(gs));
         }
         for (const auto& m : e.methods) {
@@ -297,6 +299,7 @@ void Resolver::check_decl(const ast::Decl& d) {
             gs.kind = SymbolKind::GenericParam;
             gs.type = types_->make_generic_param(gp.name);
             gs.definition_range = gp.range;
+            gs.generic = &gp;
             (void)derive_generics_g.scope().insert(std::move(gs));
         }
         for (const auto& f : sd.fields) {
@@ -630,6 +633,7 @@ void Resolver::check_func(const ast::FuncDecl& f) {
         s.kind = SymbolKind::GenericParam;
         s.type = types_->make_generic_param(gp.name);
         s.definition_range = gp.range;
+        s.generic = &gp;
         if (auto* prev = g.scope().insert(std::move(s))) {
             duplicate_definition(*prev, gp.name, gp.range);
         }

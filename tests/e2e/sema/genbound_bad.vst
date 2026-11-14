@@ -1,0 +1,22 @@
+// §7 an operation on an unbounded (or under-bounded) generic parameter used to
+// be accepted and left for the C++ compiler to catch, if it did.
+
+func gt[T](_ a: T, _ b: T) -> Bool { return a > b }
+
+func ne[T](_ a: T, _ b: T) -> Bool { return a != b }
+
+func eqOnly[T: Eq](_ a: T, _ b: T) -> Bool { return a <= b }
+
+func less[T: Comparable](_ a: T, _ b: T) -> Bool { return a < b }
+
+func caller[U](_ a: U, _ b: U) -> Bool { return less(a, b) }
+
+func hashed[K: Hash](_ a: K, _ b: K) -> Bool { return less(a, b) }
+
+struct Pair[T] {
+    var a: T
+    var b: T
+    func before(_ x: T, _ y: T) -> Bool { return x < y }
+}
+
+func main() -> Int32 { return 0 }
