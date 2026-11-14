@@ -37,13 +37,13 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
 
 ## Current state
 
-- **1566 / 1566 tests pass** (`ctest --test-dir build/debug`), Debug build,
-  format-check clean. Of these, **276 are `e2e_selfhost`** (4 lexer, 11 parser,
-  74 sema, 183 codegen, 4 end-to-end demo).
-- Latest slice: `7d5316f` (codegen slice 93, span queries and iterator
-  combinators; corpus burndown 39). **135 commits** carry the `selfhost:` prefix.
-- **Corpus burndown: 131 of 150 examples byte-identical, 739 divergent lines**
-  (625 of them parked by design or in practice, so 114 live; see
+- **1576 / 1576 tests pass** (`ctest --test-dir build/debug`), Debug build,
+  format-check clean. Of these, **286 are `e2e_selfhost`** (4 lexer, 11 parser,
+  74 sema, 193 codegen, 4 end-to-end demo).
+- Latest slice: `4b81978` (codegen slice 98, tuple-pattern parameters and
+  payloads; corpus burndown 44). **140 commits** carry the `selfhost:` prefix.
+- **Corpus burndown: 136 of 150 examples byte-identical, 686 divergent lines**
+  (625 of them parked by design or in practice, so 61 live; see
   the ranking below). The baseline when the burndown started was 11 examples
   and 23394 lines.
 - Phase status:
@@ -60,7 +60,7 @@ earlier phase plus more), so a parser change is mirrored into the downstream fil
     generics tracking (unknown-type, is-not-generic), all match families
     (guard-Bool, exhaustiveness, arm-type, pattern checks), and multi-file
     modules (import resolution, qualified member + type).
-  - **Codegen: 93 slices; the close-out roadmap is complete and the corpus
+  - **Codegen: 98 slices; the close-out roadmap is complete and the corpus
     burndown is active.** See "Where to pick up" below.
 
 ## Where to pick up: codegen
@@ -79,12 +79,15 @@ byte-for-byte vs `vestra build`:
 ### The next action
 
 The completion standard is the whole `examples/` corpus byte-identical, the same
-bar the lexer and parser already met. **131 of 150** examples are there;
-**739 divergent lines** remain, of which **625 are parked** (by design or
-in practice; see the ranking), leaving **114 live**. Families #1 to #8 and #10 have shipped (slices 75 to 93, session of
-2026-11-14), reaching 131 identical. **Only the family #9 one-offs remain
-live**, eight examples of 6 to 27 lines each; take them smallest first
-(`simd_demo`, `map_error`), each as its own slice. First re-establish the baseline, since it is also
+bar the lexer and parser already met. **136 of 150** examples are there;
+**686 divergent lines** remain, of which **625 are parked** (by design or
+in practice; see the ranking), leaving **61 live**. Families #1 to #8 and #10 have shipped, and five of the eight family #9
+one-offs (slices 75 to 98, session of 2026-11-14), reaching 136 identical.
+**Three live examples remain**, each a larger lowering than the ones before
+it and each already listed under the known gaps below: `docatch_where` (14,
+the do/catch `where` guard as a cond-hoist), `soa_demo` (20, the Soa method
+surface) and `midtry` (27, an `if` cond-hoist at an unannotated binding and
+mid-expression). Probe each against its bootstrap emitter before sizing it. First re-establish the baseline, since it is also
 the regression check:
 
 ```
@@ -115,7 +118,7 @@ example totals, "flips" the examples a family would make identical.
 | 6 | ~~**Atomics / sync surface**~~ DONE in slices 84 to 87, including the `atomics` example itself; `panic_handler` moved to #5 | | | |
 | 7 | ~~**Raw pointers and MMIO**~~ DONE in slices 80, 84, 86 and 92 (mints, spans, MMIO views, `p.value`, mem intrinsics, digit separators) | | | |
 | 8 | ~~**Spans and iterator adapters**~~ DONE in slice 93 (span `.count` / `.isEmpty` / `split` / `chunks`; `zip` / `take` / `map` / `filter` with typed closures; iterator-protocol tuple binders) | | | |
-| 9 | **Medium one-offs** | `simd_demo` 6, `map_error` 7 (closure with a match body), `const_generic` 12 (array literal element type from a generic field), `tuple_params` 14 (tuple-pattern parameters), `docatch_where` 14, `parallel_demo` 14 (closure param types), `soa_demo` 20, `midtry` 27 (an `if` cond-hoist at an unannotated binding and mid-expression) | 1 each | varies |
+| 9 | **Medium one-offs**: five DONE in slices 94 to 98 (`simd_demo` vector arithmetic, `map_error` typed closures, `const_generic` generic substitution, `parallel_demo`, `tuple_params`); three remain | `docatch_where` 14, `soa_demo` 20, `midtry` 27 (an `if` cond-hoist at an unannotated binding and mid-expression) | 1 each | medium |
 | 10 | ~~**Typed system registers**~~ DONE in slice 91 (`__vstr::sysreg::<name>`, barrier-gated `write_<reg>` unless `@no_auto_barrier`) | | | |
 
 **Atomics decision (answered 2026-11-14).** Unparked. The `atomics` example
@@ -129,8 +132,8 @@ the example is now identical.
 `embed` 2, `inline_layout` 16 and `spans` 11). The bootstrap folds comptime
 functions and drops them from the output, and comptime is already a known
 unmirrored gap. `async_demo` (20) is a `select`, the same parked family as
-`channel_select_demo`. Counting those, 625 of the 739 remaining lines are
-parked and 114 are live (measured from the sweep report after slice 93).
+`channel_select_demo`. Counting those, 625 of the 686 remaining lines are
+parked and 61 are live (measured from the sweep report after slice 98).
 
 **A pattern worth checking first.** When many examples share the same small
 divergence count (44 `interp_*` demos at exactly 4 lines each), the cause is
@@ -168,7 +171,7 @@ generated output directly over reading the `<`/`>` markers.
 
 ### What codegen covers
 
-Ninety-three slices; the close-out roadmap is complete and the corpus burndown
+Ninety-eight slices; the close-out roadmap is complete and the corpus burndown
 is active. The per-slice engineering log — every lowering, its bootstrap source
 line, and its gotchas — is in the `project_dogfood_compiler.md` memory file.
 The capability summary:
@@ -225,7 +228,9 @@ a wider `Box[PerCpu[T]]` annotation would differ; `Ptr.unchecked` /
 binding or a returned value (elsewhere they spell the bootstrap's
 defensive `void`); `map(xs, f)` types its element as unknown (it would
 need the closure's result type), so a loop variable over a map is untyped;
-Soa methods.
+an else-less `if` as the LAST statement of a closure body (the bootstrap
+lowers it as a value if with a `decltype(...){}` else branch; vgen prints
+`/*?expr*/`); Soa methods.
 
 **Known SHARED bootstrap gaps**, mirrored rather than fixed — both produce
 non-compiling C++ on BOTH sides, so the differential stays textual:
