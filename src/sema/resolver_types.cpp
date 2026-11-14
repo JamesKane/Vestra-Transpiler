@@ -477,6 +477,8 @@ bool Resolver::non_escapable(TypePtr t, int depth) const {
     case TypeKind::Span:
     case TypeKind::MutSpan:
     case TypeKind::Str:
+    case TypeKind::MmioView:    // Annex §10.5 / §14.11: bound by the Mmio discharge
+    case TypeKind::MmioRegion:
         return true;
     case TypeKind::Optional:
     case TypeKind::Vector:
@@ -524,7 +526,8 @@ bool Resolver::ast_non_escapable(const ast::Type* t, int depth) const {
     case ast::NodeKind::NamedType: {
         const auto& n = static_cast<const ast::NamedType&>(*t);
         if (n.path.size() == 1
-            && (n.path[0] == "Span" || n.path[0] == "MutSpan" || n.path[0] == "Str")) {
+            && (n.path[0] == "Span" || n.path[0] == "MutSpan" || n.path[0] == "Str"
+                || n.path[0] == "MmioView" || n.path[0] == "MmioRegion")) {
             return true;
         }
         for (const auto& a : n.type_args) {

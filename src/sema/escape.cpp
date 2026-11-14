@@ -84,6 +84,8 @@ bool EscapeChecker::is_view(TypePtr t, int depth) const {
     case TypeKind::Span:
     case TypeKind::MutSpan:
     case TypeKind::Str:
+    case TypeKind::MmioView:    // Annex §10.5 / §14.11: bound by the Mmio discharge
+    case TypeKind::MmioRegion:
         return true;
     case TypeKind::Optional:
     case TypeKind::Vector:
@@ -129,7 +131,8 @@ bool EscapeChecker::ast_is_view(const ast::Type* t, int depth) const {
     case ast::NodeKind::NamedType: {
         const auto& n = static_cast<const ast::NamedType&>(*t);
         if (n.path.size() == 1
-            && (n.path[0] == "Span" || n.path[0] == "MutSpan" || n.path[0] == "Str")) {
+            && (n.path[0] == "Span" || n.path[0] == "MutSpan" || n.path[0] == "Str"
+                || n.path[0] == "MmioView" || n.path[0] == "MmioRegion")) {
             return true;
         }
         // Owned containers of views (`Vec[Str]`, as `split` and `args()`
@@ -177,6 +180,10 @@ void EscapeChecker::check_func(const ast::FuncDecl& f) {
     locals_.clear();
     raw_blocks_.clear();
     mmio_blocks_.clear();
+    raw_depths_.clear();
+    mmio_depths_.clear();
+    decl_depth_.clear();
+    depth_ = 1;
     result_is_view_ = ast_is_view(f.result.get());
     // §11.1 a Future can't outlive the scope that spawned it.
     if (f.result != nullptr && f.result->kind == ast::NodeKind::NamedType) {
@@ -218,8 +225,12 @@ void EscapeChecker::check_stmt(const ast::Stmt& s) {
         }
         check_expr(*value);
         const auto* sym = resolution_->binding_symbol(&s);
+        if (sym != nullptr) {
+            decl_depth_[sym] = depth_;
+        }
         if (sym != nullptr && is_view(sym->type)) {
             locals_[sym] = origins(*value);
+            check_store(sym, depth_, locals_[sym], value->range);
         }
         break;
     }
@@ -232,6 +243,8 @@ void EscapeChecker::check_stmt(const ast::Stmt& s) {
             const auto* sym = resolution_->symbol_of(&strip(*a.target));
             if (sym != nullptr && locals_.contains(sym) && a.value != nullptr) {
                 locals_[sym] = origins(*a.value);
+                auto dd = decl_depth_.find(sym);
+                check_store(sym, dd != decl_depth_.end() ? dd->second : 1, locals_[sym], s.range);
             }
         }
         break;
@@ -281,18 +294,22 @@ void EscapeChecker::check_stmt(const ast::Stmt& s) {
         }
         if (raw && w.body) {
             raw_blocks_.push_back(w.body->range);
+            raw_depths_.push_back(depth_ + 1);
         }
         if (mmio && w.body) {
             mmio_blocks_.push_back(w.body->range);
+            mmio_depths_.push_back(depth_ + 1);
         }
         if (w.body) {
             check_expr(*w.body);
         }
         if (raw && w.body) {
             raw_blocks_.pop_back();
+            raw_depths_.pop_back();
         }
         if (mmio && w.body) {
             mmio_blocks_.pop_back();
+            mmio_depths_.pop_back();
         }
         break;
     }
@@ -304,9 +321,11 @@ void EscapeChecker::check_stmt(const ast::Stmt& s) {
 void EscapeChecker::check_expr(const ast::Expr& e) {
     switch (e.kind) {
     case ast::NodeKind::BlockExpr:
+        ++depth_;
         for (const auto& st : static_cast<const ast::BlockExpr&>(e).stmts) {
             check_stmt(*st);
         }
+        --depth_;
         break;
     case ast::NodeKind::IfExpr: {
         const auto& i = static_cast<const ast::IfExpr&>(e);
@@ -387,6 +406,55 @@ void EscapeChecker::check_return(const ast::Expr& value, diag::SourceRange site)
     }
 }
 
+void EscapeChecker::check_store(const Symbol* target,
+                                int depth,
+                                const Origins& o,
+                                diag::SourceRange site) {
+    for (const auto& og : o) {
+        switch (og.kind) {
+        case Origin::Kind::Local:
+            if (og.depth > depth && og.sym != nullptr) {
+                reporter_->report(
+                    diag::Diagnostic::error(std::format("'{}' would outlive '{}', which its view "
+                                                        "comes from: '{}' ends with an inner block",
+                                                        target->name,
+                                                        og.sym->name,
+                                                        og.sym->name))
+                        .at(site));
+                return;
+            }
+            break;
+        case Origin::Kind::Temp:
+            reporter_->report(
+                diag::Diagnostic::error(std::format("'{}' would hold a view of a temporary, which "
+                                                    "ends with this statement",
+                                                    target->name))
+                    .at(site));
+            return;
+        case Origin::Kind::Raw:
+            if (og.depth > depth) {
+                reporter_->report(
+                    diag::Diagnostic::error(std::format("'{}' would outlive the `with RawMemory` "
+                                                        "block that minted its view (Annex §10.5)",
+                                                        target->name))
+                        .at(site));
+                return;
+            }
+            break;
+        case Origin::Kind::Mmio:
+            if (og.depth > depth) {
+                reporter_->report(
+                    diag::Diagnostic::error(std::format("'{}' would outlive the `with Mmio` block "
+                                                        "that minted its view (Annex §14.11)",
+                                                        target->name))
+                        .at(site));
+                return;
+            }
+            break;
+        }
+    }
+}
+
 EscapeChecker::Origins EscapeChecker::storage_of(const ast::Expr& e0) const {
     const ast::Expr& e = strip(e0);
     switch (e.kind) {
@@ -399,14 +467,15 @@ EscapeChecker::Origins EscapeChecker::storage_of(const ast::Expr& e0) const {
             if (auto it = locals_.find(sym); it != locals_.end()) {
                 return it->second;  // a view local: what it views
             }
-            return {Origin{Origin::Kind::Local, sym, {}}};
+            auto dd = decl_depth_.find(sym);
+            return {Origin{Origin::Kind::Local, sym, {}, dd != decl_depth_.end() ? dd->second : 1}};
         }
         // A `sink` parameter is the callee's own value; a `read` / `inout`
         // one is the caller's, which outlives the call.
         if (sym->kind == SymbolKind::Parameter && func_ != nullptr) {
             for (const auto& p : func_->params) {
                 if (p.name == sym->name && p.mode == ast::ParamMode::Sink) {
-                    return {Origin{Origin::Kind::Local, sym, {}}};
+                    return {Origin{Origin::Kind::Local, sym, {}, 1}};
                 }
             }
         }
@@ -476,13 +545,15 @@ EscapeChecker::Origins EscapeChecker::origins(const ast::Expr& e0) const {
         if (callee_is(c, "Span", "raw") || callee_is(c, "MutSpan", "raw")) {
             return {Origin{Origin::Kind::Raw,
                            nullptr,
-                           raw_blocks_.empty() ? diag::SourceRange{} : raw_blocks_.back()}};
+                           raw_blocks_.empty() ? diag::SourceRange{} : raw_blocks_.back(),
+                           raw_depths_.empty() ? 0 : raw_depths_.back()}};
         }
         if (callee_is(c, "MmioView", "at") || callee_is(c, "MmioRegion", "at")
             || callee_is(c, "MmioWireView", "at")) {
             return {Origin{Origin::Kind::Mmio,
                            nullptr,
-                           mmio_blocks_.empty() ? diag::SourceRange{} : mmio_blocks_.back()}};
+                           mmio_blocks_.empty() ? diag::SourceRange{} : mmio_blocks_.back(),
+                           mmio_depths_.empty() ? 0 : mmio_depths_.back()}};
         }
         Origins out;
         // A projection (`s.slice(..)`, `xs.split(at:)`, a method of a view)

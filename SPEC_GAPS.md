@@ -180,7 +180,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §10, §19.4 | `Span`/`MutSpan` cannot escape | unsound (partial) | A view stored into a binding that outlives its source (`outer = view of an inner local`) is accepted; `Vec[Str]` is admitted because the builtin `split` and `args()` return one. (Returning a view of the function's own storage, a temporary, or a `with RawMemory` mint is rejected, as is a `Box` / `Channel` of a non-escapable type.) |
+| §10, §19.4 | Owned containers of views | unsound (partial) | `Vec[Str]` (and `HashMap` over views) is admitted, because the builtin `split` and `args()` return one; the views' sources aren't tracked through it. (Returns, stores into longer-lived bindings, and `Box` / `Channel` of a view are checked.) |
 | §10 | `Buffer[T]`, `Buffer(fixed:)` | missing | "undefined name". `Vec` is the substitute. |
 | §10, §11 | `Arc[T]` | missing | "undefined name". |
 | §10 | `StridedSpan[T]` | missing | "unknown type". |
@@ -347,7 +347,7 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | §6.8 | A `@repr(union)` must be `Trivial` | unsound | A union with a `String` field passes. |
 | §6.8 | `Type.of(T)`, top-level `comptime { assert(...) }` | missing | `T.size` and `T.fields[i].offset` do work. |
 | §7.8 | `@inline(.always)` failure is a correctness error | weaker | Left to `[[gnu::always_inline]]`. A recursive `.always` passes sema. |
-| §10.5 rule 2 | A raw-minted view's lifetime ends with the `RawMemory` discharge | unsound | A `MutSpan.raw` returned out of `with RawMemory`, stored outside it, or captured by `spawn` is accepted. |
+| §10.5 rule 2 | A raw-minted view's lifetime ends with the `RawMemory` discharge | unsound (partial) | Capturing one in a `spawn` is accepted. (Returning one out of `with RawMemory`, or storing it in a binding declared outside the block, is rejected.) |
 | §14.6.3 | `&table[i]` slot address | missing | "&decl operand must be a static or func identifier". |
 | §14.6.1 | Calling conventions are lowered | weaker | `@extern("hvc64")` and `("win64")` are validated, then emitted as plain `extern "C"`. |
 | §14.4 rule 1 | An implicit clobber is an error | unsound | An `asm` block that writes an undeclared `x11`, sets flags (`adds`) or writes `daif` passes. Only named registers are validated (`resolver_decls.cpp:1013`). |
@@ -372,7 +372,6 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | §14.10.3 | Strict cache-range alignment | weaker | A runtime `panic` using the `CTR_EL0` line size, not a compile error against `cfg.option`. Hosted builds make every cache op a no-op. |
 | §14.10.6 | `prefetch` | missing | |
 | §14.11.1 | `MmioView[T]` requires `T: Primitive` | unsound | `MmioView.at(MutPtr[S])` with a struct `S` passes. |
-| §14.11.1 | An MMIO view's lifetime ends with the `Mmio` discharge | unsound | Returning a view out of `with Mmio` passes. |
 | §14.11.1 | Debug-build alignment check | missing | The prelude `MmioView` is a bare volatile pointer. |
 | §14.12.3 | RISC-V auto-barriers (`SFENCE.VMA` after `satp`) | unsound | `satp` has `sync_after_write = false` (`sysregs.hpp`). On non-aarch64 targets the post-write barrier is a plain thread fence. |
 | §14.12.2 | Register spellings and typed handles | divergent (minor) | `currentEL` is unknown (the table spells it `currentel`). Every handle is `UInt64`. |

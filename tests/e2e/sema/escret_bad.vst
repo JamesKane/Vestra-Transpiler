@@ -35,3 +35,9 @@ async func work() -> Int32 { return 1 }
 func fut() using Async -> Future[Int32] {
     return spawn work()
 }
+func outOfWith(_ a: UInt64) using RawMemory -> MmioView[UInt32] {
+    let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: a)
+    with Mmio {
+        return MmioView.at(p)
+    }
+}

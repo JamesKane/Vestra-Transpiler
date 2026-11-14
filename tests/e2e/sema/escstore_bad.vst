@@ -1,0 +1,25 @@
+// §19.4 a view stored into a binding that outlives its source: an inner block's
+// local, a temporary, a `with RawMemory` mint.
+func mkArr() -> [4]Int32 { return [1, 2, 3, 4] }
+func sum(_ s: Span[Int32]) -> Int32 { return s[0] }
+func inner() -> Int32 {
+    let a: [4]Int32 = [1, 2, 3, 4]
+    var v: Span[Int32] = a
+    if true {
+        let b: [4]Int32 = [5, 6, 7, 8]
+        v = b
+    }
+    return sum(v)
+}
+func temp() -> Int32 {
+    let v: Span[Int32] = mkArr()
+    return sum(v)
+}
+func raw(_ p: Ptr[Int32]) -> Int32 {
+    let a: [4]Int32 = [1, 2, 3, 4]
+    var v: Span[Int32] = a
+    with RawMemory {
+        v = Span.raw(at: p, count: 4)
+    }
+    return sum(v)
+}

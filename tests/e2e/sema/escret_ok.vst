@@ -17,3 +17,7 @@ func lit() -> Str {
 func rawCaller(_ p: Ptr[UInt8]) using RawMemory -> Span[UInt8] {
     return Span.raw(at: p, count: 4)
 }
+func viaCaller(_ a: UInt64) using RawMemory, Mmio -> MmioView[UInt32] {
+    let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: a)
+    return MmioView.at(p)
+}

@@ -41,6 +41,7 @@ private:
         enum class Kind : std::uint8_t { Local, Temp, Raw, Mmio } kind;
         const Symbol* sym = nullptr;  // Local: the binding viewed
         diag::SourceRange block{};    // Raw / Mmio: the `with` block (invalid: the caller's)
+        int depth = 0;                // Local: the binding's block depth; Raw / Mmio: the block's
     };
     using Origins = std::vector<Origin>;
 
@@ -48,6 +49,9 @@ private:
     void check_stmt(const ast::Stmt& s);
     void check_expr(const ast::Expr& e);
     void check_return(const ast::Expr& value, diag::SourceRange site);
+    // §19.4 storing a view into `target` (a binding at block depth `depth`)
+    // that would outlive one of its sources.
+    void check_store(const Symbol* target, int depth, const Origins& o, diag::SourceRange site);
 
     // The sources of `e`, a value flowing into a view-typed slot: a view
     // carries its own sources; a non-view value coerced into one is a view
@@ -69,6 +73,11 @@ private:
     // The `with RawMemory` / `with Mmio` blocks around the current point.
     std::vector<diag::SourceRange> raw_blocks_;
     std::vector<diag::SourceRange> mmio_blocks_;
+    std::vector<int> raw_depths_;   // the block depth of each `with` body above
+    std::vector<int> mmio_depths_;
+    // Block nesting: the function body is depth 1.
+    int depth_ = 0;
+    std::unordered_map<const Symbol*, int> decl_depth_;
 };
 
 }  // namespace vestra::sema

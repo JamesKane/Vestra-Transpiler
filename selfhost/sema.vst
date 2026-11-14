@@ -2953,6 +2953,8 @@ func addBuiltins(_ env: inout Env) using Alloc {
     addName(env, "Span")      // Annex §10.5 Span.raw / MutSpan.raw
     addName(env, "MutSpan")
     addName(env, "Channel")   // §11 Channel.new
+    addName(env, "MmioView")  // Annex §14.11 MmioView.at
+    addName(env, "MmioRegion")
     addName(env, "String")
     addName(env, "Str")
     addName(env, "Box")
@@ -3456,6 +3458,7 @@ func tnSeedBuiltins(_ env: inout TnEnv) using Alloc {
     env.types.push("Duration"); env.types.push("Self"); env.types.push("Never")
     env.types.push("Ptr"); env.types.push("MutPtr")   // §14.1 raw pointers
     env.types.push("Padded"); env.types.push("PerCpu") // Annex §14.8
+    env.types.push("MmioView"); env.types.push("MmioRegion")   // Annex §14.11
 }
 
 func tnCollectType(_ env: inout TnEnv, _ d: Nd) using Alloc {
@@ -6647,6 +6650,11 @@ struct TyEnv {
     var esVOrig: Vec[String]    // ... and their sources ("L:a,T,R1", see esOrig)
     var esRaw: Int              // `with RawMemory` blocks around the current point
     var esMmio: Int             // `with Mmio` blocks around the current point
+    var esDepth: Int            // block nesting (the function body is 1)
+    var esLocDepth: Vec[Int]    // parallel to esLocals: each one's block depth
+    var esVDepth: Vec[Int]      // parallel to esVName
+    var esRawD: Vec[Int]        // the block depth of each `with RawMemory` body around
+    var esMmioD: Vec[Int]       // ... and `with Mmio`
 }
 
 func tyCheck(_ env: inout TyEnv, _ u: NUnit) using Alloc {
@@ -7950,6 +7958,7 @@ func tyWhile(_ env: inout TyEnv, _ cond: Vec[Nd], _ body: Vec[Nd]) using Alloc {
 }
 
 func tyBlock(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc {
+    env.esDepth = env.esDepth + 1
     muEnter(env)
     var i: Int = 0
     while i < stmts.len() {
@@ -7957,6 +7966,7 @@ func tyBlock(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc {
         i = i + 1
     }
     muLeave(env)
+    env.esDepth = env.esDepth - 1
 }
 
 func tyStmt(_ env: inout TyEnv, _ s: Nd) using Alloc {
@@ -8094,6 +8104,7 @@ func esNonEsc(_ env: inout TyEnv, _ sp0: Str, _ depth: Int) using Alloc -> Bool 
     let n = sp.len()
     if n == 0 { return false }
     if streq(sp, "Str") || tyStartsWith(sp, "Span[") || tyStartsWith(sp, "MutSpan[") { return true }
+    if tyStartsWith(sp, "MmioView[") || tyStartsWith(sp, "MmioRegion[") { return true }   // Annex §14.11
     if (sp.byteAt(n - 1) ?? 0) == 63 { return esNonEsc(env, sp.slice(0, n - 1), depth + 1) }
     if (sp.byteAt(0) ?? 0) == 91 {
         var i: Int = 1
@@ -8216,11 +8227,11 @@ func tyRet(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc {
 func tyWithEs(_ env: inout TyEnv, _ caps: Vec[Nd], _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc {
     let raw = esHasCap(caps, "RawMemory")
     let mmio = esHasCap(caps, "Mmio")
-    if raw { env.esRaw = env.esRaw + 1 }
-    if mmio { env.esMmio = env.esMmio + 1 }
+    if raw { env.esRaw = env.esRaw + 1; env.esRawD.push(env.esDepth + 1) }
+    if mmio { env.esMmio = env.esMmio + 1; env.esMmioD.push(env.esDepth + 1) }
     tyWith(env, vals, body)
-    if raw { env.esRaw = env.esRaw - 1 }
-    if mmio { env.esMmio = env.esMmio - 1 }
+    if raw { env.esRaw = env.esRaw - 1; let _r = env.esRawD.pop() }
+    if mmio { env.esMmio = env.esMmio - 1; let _m = env.esMmioD.pop() }
 }
 
 func esHasCap(_ caps: Vec[Nd], _ name: Str) using Alloc -> Bool {
@@ -8261,6 +8272,11 @@ func esEnter(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ result: Ve
     while env.esVOrig.len() > 0 { let _ = env.esVOrig.pop() }
     env.esRaw = 0
     env.esMmio = 0
+    env.esDepth = 0
+    while env.esLocDepth.len() > 0 { let _ = env.esLocDepth.pop() }
+    while env.esVDepth.len() > 0 { let _ = env.esVDepth.pop() }
+    while env.esRawD.len() > 0 { let _ = env.esRawD.pop() }
+    while env.esMmioD.len() > 0 { let _ = env.esMmioD.pop() }
     var i: Int = 0
     while i < params.len() {
         match params.get(i) ?? Nd.wildcard {
@@ -8303,13 +8319,85 @@ func esLet(_ env: inout TyEnv, _ p: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using 
 
 func esLetName(_ env: inout TyEnv, _ n: String, _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     env.esLocals.push(own(n))
+    env.esLocDepth.push(env.esDepth)
     var sp: String = tyAnnSpelling(ty)
     if streq(sp, "") && v.len() > 0 { sp = tyInferBoxed(env, v) }
     if v.len() > 0 && esNonEsc(env, sp, 0) {
         let o = esOrig(env, v)
         env.esVName.push(own(n))
-        env.esVOrig.push(o)
+        env.esVOrig.push(own(o))
+        let d = env.esDepth
+        env.esVDepth.push(d)
+        esCheckStore(env, n, d, o)
     }
+}
+
+// §19.4 a view stored into a binding (at block depth `d`) that outlives one of
+// its sources: an inner block's local, a temporary, a `with` block's mint.
+func esCheckStore(_ env: inout TyEnv, _ n: String, _ d: Int, _ o: String) using Alloc {
+    let parts = o.split(",")
+    var i: Int = 0
+    while i < parts.len() {
+        let p = own(parts.get(i) ?? "")
+        if streq(p, "T") {
+            var m: String = "'"
+            m.append(n)
+            m.append("' would hold a view of a temporary, which ends with this statement")
+            env.esBad.push(m)
+            return
+        }
+        let k = esOrigDepth(p)
+        if p.len() > 0 && (p.byteAt(0) ?? 0) == 76 && k > d {   // 'L'
+            let src = esOrigName(p)
+            var m: String = "'"
+            m.append(n)
+            m.append("' would outlive '")
+            m.append(src)
+            m.append("', which its view comes from: '")
+            m.append(src)
+            m.append("' ends with an inner block")
+            env.esBad.push(m)
+            return
+        }
+        if p.len() > 0 && (p.byteAt(0) ?? 0) == 82 && k > d {   // 'R'
+            var m: String = "'"
+            m.append(n)
+            m.append("' would outlive the `with RawMemory` block that minted its view (Annex §10.5)")
+            env.esBad.push(m)
+            return
+        }
+        if p.len() > 0 && (p.byteAt(0) ?? 0) == 77 && k > d {   // 'M'
+            var m: String = "'"
+            m.append(n)
+            m.append("' would outlive the `with Mmio` block that minted its view (Annex §14.11)")
+            env.esBad.push(m)
+            return
+        }
+        i = i + 1
+    }
+}
+
+// "L3:a" -> 3, "R2" -> 2, "T" -> 0.
+func esOrigDepth(_ p: Str) -> Int {
+    var v: Int = 0
+    var i: Int = 1
+    while i < p.len() {
+        let c = Int(p.byteAt(i) ?? 0)
+        if c < 48 || c > 57 { return v }
+        v = v * 10 + c - 48
+        i = i + 1
+    }
+    return v
+}
+
+// "L3:a" -> "a".
+func esOrigName(_ p: Str) using Alloc -> String {
+    var i: Int = 0
+    while i < p.len() {
+        if (p.byteAt(i) ?? 0) == 58 { return own(p.slice(i + 1, p.len())) }   // ':'
+        i = i + 1
+    }
+    return own("")
 }
 
 func esAssign(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
@@ -8323,7 +8411,10 @@ func esAssign(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
 
 func esReassign(_ env: inout TyEnv, _ n: String, _ v: Vec[Nd]) using Alloc {
     let i = esViewIdx(env, n)
-    if i >= 0 { env.esVOrig.set(i, esOrig(env, v)) }
+    if i < 0 { return }
+    let o = esOrig(env, v)
+    env.esVOrig.set(i, own(o))
+    esCheckStore(env, n, env.esVDepth.get(i) ?? 1, o)
 }
 
 func esViewIdx(_ env: inout TyEnv, _ n: Str) using Alloc -> Int {
@@ -8381,12 +8472,14 @@ func esMintOrig(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc -> String {
 
 func esMintCallee(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
     if esCalleeIs(callee, "Span", "raw") || esCalleeIs(callee, "MutSpan", "raw") {
-        if env.esRaw > 0 { return own("R1") }
-        return own("R0")
+        var s: String = "R"
+        s.append(intToStr(env.esRawD.get(env.esRawD.len() - 1) ?? 0))
+        return s
     }
     if esCalleeIs(callee, "MmioView", "at") || esCalleeIs(callee, "MmioRegion", "at") || esCalleeIs(callee, "MmioWireView", "at") {
-        if env.esMmio > 0 { return own("M1") }
-        return own("M0")
+        var s: String = "M"
+        s.append(intToStr(env.esMmioD.get(env.esMmioD.len() - 1) ?? 0))
+        return s
     }
     return own("")
 }
@@ -8448,14 +8541,6 @@ func esArmOrig(_ env: inout TyEnv, _ a: Nd) using Alloc -> String {
 }
 
 func esCallOrig(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc -> String {
-    if esCalleeIs(callee, "Span", "raw") || esCalleeIs(callee, "MutSpan", "raw") {
-        if env.esRaw > 0 { return own("R1") }
-        return own("R0")
-    }
-    if esCalleeIs(callee, "MmioView", "at") || esCalleeIs(callee, "MmioRegion", "at") || esCalleeIs(callee, "MmioWireView", "at") {
-        if env.esMmio > 0 { return own("M1") }
-        return own("M0")
-    }
     // A projection views what its receiver views.
     var o: String = esCalleeRecvOrig(env, callee)
     let fname = exCalleeNameBoxed(callee)
@@ -8519,12 +8604,24 @@ func esStorage(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc -> String {
 func esStorageName(_ env: inout TyEnv, _ x: String) using Alloc -> String {
     let vi = esViewIdx(env, x)
     if vi >= 0 { return own(env.esVOrig.get(vi) ?? own("")) }
-    if esInList(env.esLocals, x) || esInList(env.esSinks, x) {
-        var s: String = "L:"
+    let li = esLocalIdx(env, x)
+    if li >= 0 || esInList(env.esSinks, x) {
+        var s: String = "L"
+        if li >= 0 { s.append(intToStr(env.esLocDepth.get(li) ?? 1)) } else { s.append("1") }
+        s.append(":")
         s.append(x)
         return s
     }
     return own("")
+}
+
+func esLocalIdx(_ env: inout TyEnv, _ x: Str) using Alloc -> Int {
+    var i: Int = env.esLocals.len() - 1
+    while i >= 0 {
+        if streq(env.esLocals.get(i) ?? own(""), x) { return i }
+        i = i - 1
+    }
+    return -1
 }
 
 func esInList(_ xs: Vec[String], _ n: Str) using Alloc -> Bool {
@@ -8548,9 +8645,9 @@ func esCheckRet(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc {
     var i: Int = 0
     while i < parts.len() {
         let p = own(parts.get(i) ?? "")
-        if tyStartsWith(p, "L:") {
+        if p.len() > 0 && (p.byteAt(0) ?? 0) == 76 {   // 'L'
             var m: String = "can't return a view of '"
-            m.append(p.slice(2, p.len()))
+            m.append(esOrigName(p))
             m.append("': it's local to '")
             m.append(env.esFn)
             m.append("', so the view would outlive it")
@@ -8558,8 +8655,8 @@ func esCheckRet(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc {
             return
         }
         if streq(p, "T") { env.esBad.push(own("can't return a view of a temporary: it ends with this statement, so the view would outlive it")); return }
-        if streq(p, "R1") { env.esBad.push(own("can't return a view minted under `with RawMemory`: its lifetime ends with that block (Annex §10.5)")); return }
-        if streq(p, "M1") { env.esBad.push(own("can't return an MMIO view minted under `with Mmio`: its lifetime ends with that block (Annex §14.11)")); return }
+        if tyStartsWith(p, "R") && esOrigDepth(p) > 0 { env.esBad.push(own("can't return a view minted under `with RawMemory`: its lifetime ends with that block (Annex §10.5)")); return }
+        if tyStartsWith(p, "M") && esOrigDepth(p) > 0 { env.esBad.push(own("can't return an MMIO view minted under `with Mmio`: its lifetime ends with that block (Annex §14.11)")); return }
         i = i + 1
     }
 }
@@ -9649,7 +9746,9 @@ func main() -> Int32 {
                                      muKind: Vec.new(), muMarks: Vec.new(),
                                      stName: Vec.new(), stAtomic: Vec.new(),
                                      esBad: Vec.new(), esFn: own(""), esLocals: Vec.new(), esSinks: Vec.new(),
-                                     esVName: Vec.new(), esVOrig: Vec.new(), esRaw: 0, esMmio: 0)
+                                     esVName: Vec.new(), esVOrig: Vec.new(), esRaw: 0, esMmio: 0,
+                                     esDepth: 0, esLocDepth: Vec.new(), esVDepth: Vec.new(),
+                                     esRawD: Vec.new(), esMmioD: Vec.new())
                     tyCheck(&tenv, u)
                     var ti: Int = 0
                     while ti < tenv.bad.len() {

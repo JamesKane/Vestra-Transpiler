@@ -1,0 +1,21 @@
+// §19.4 views stored into bindings that don't outlive their sources.
+func mkArr() -> [4]Int32 { return [1, 2, 3, 4] }
+func sum(_ s: Span[Int32]) -> Int32 { return s[0] }
+func sameBlock() -> Int32 {
+    let a: [4]Int32 = [1, 2, 3, 4]
+    var v: Span[Int32] = a
+    let b: [4]Int32 = [5, 6, 7, 8]
+    v = b
+    return sum(v)
+}
+func rawInside(_ p: Ptr[Int32]) -> Int32 {
+    var t: Int32 = 0
+    with RawMemory {
+        let v = Span.raw(at: p, count: 4)
+        t = sum(v)
+    }
+    return t
+}
+func argTemp() -> Int32 {
+    return sum(mkArr())
+}
