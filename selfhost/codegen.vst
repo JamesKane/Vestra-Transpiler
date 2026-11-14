@@ -917,7 +917,7 @@ enum Nd {
     case genConst(String, Vec[Nd])           // name, const type
     case genType(String, Vec[Nd])            // name, bounds (types joined by " & ")
     // a function parameter
-    case param(Bool, String, String, Bool, String, Vec[Nd]) // labelOmitted, label, name, nonesc, mode, type
+    case param(Bool, String, String, Bool, String, Vec[Nd], Vec[Nd]) // labelOmitted, label, name, nonesc, mode, type, tuple pattern (empty unless `(a, b): T`)
     // struct / enum members
     case field(String, String, Vec[Nd], Vec[Nd])  // kind ("let "/"var "/"embed "), name, type, attributes (attrN)
     case enumCase(String, Vec[Nd])           // name, payload (payElem list)
@@ -1439,21 +1439,26 @@ func parseParams(_ p: inout Ps) using Alloc -> Vec[Nd] {
     var params: Vec[Nd] = Vec.new()
     eat(p, TokKind.lparen)
     if !isKind(p, TokKind.rparen) {
-        params.push(parseParam(&p))
-        while eat(p, TokKind.comma) { params.push(parseParam(&p)) }
+        params.push(parseParam(&p, 0))
+        while eat(p, TokKind.comma) { params.push(parseParam(&p, params.len())) }
     }
     eat(p, TokKind.rparen)
     return params
 }
 
-func parseParam(_ p: inout Ps) using Alloc -> Nd {
+func parseParam(_ p: inout Ps, _ idx: Int) using Alloc -> Nd {
     var labelOmitted: Bool = false
     var label: String = ""
     var name: String = ""
+    var pat: Vec[Nd] = Vec.new()
     if isKind(p, TokKind.lparen) {
         // §6 tuple-destructuring parameter `(a, b): T` — the C++ printer renders it
-        // as `_ : T` (label omitted, no name, pattern dropped). Consume the pattern.
-        skipBalancedParens(&p)
+        // as `_ : T` (label omitted, no name). The pattern is kept for codegen,
+        // and the parameter takes the bootstrap's synthetic `__vstr_arg<i>`
+        // name, which the body's destructuring prologue reads.
+        pat.push(parsePattern(&p))
+        name = own("__vstr_arg")
+        name.append(intToStr(idx))
         labelOmitted = true
     } else if isKind(p, TokKind.underscore) {
         advP(&p)
@@ -1477,7 +1482,7 @@ func parseParam(_ p: inout Ps) using Alloc -> Nd {
     else if isKind(p, TokKind.kwSink) { advP(&p); mode = "sink " }
     else if isKind(p, TokKind.kwRead) { advP(&p) }
     let ty = bT(parseType(&p))
-    return Nd.param(labelOmitted, label, name, nonesc, mode, ty)
+    return Nd.param(labelOmitted, label, name, nonesc, mode, ty, pat)
 }
 
 func parseType(_ p: inout Ps) using Alloc -> Nd {
@@ -2499,12 +2504,12 @@ func printGenType(_ name: String, _ bounds: Vec[Nd]) using Alloc, Log {
 }
 
 func errParam() using Alloc -> Nd {
-    return Nd.param(false, "", "?", false, "", noT())
+    return Nd.param(false, "", "?", false, "", noT(), emptyNdBox())
 }
 
 func printParam(_ pm: Nd) using Alloc, Log {
     match pm {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): printParamBody(lo, lbl, nm, ne, md, ty)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): printParamBody(lo, lbl, nm, ne, md, ty)
         default: print("")
     }
 }
@@ -3315,7 +3320,7 @@ func tyPushMethod(_ env: inout TyEnv, _ owner: String, _ name: String, _ gens: V
 
 func tyPushMethodParam(_ env: inout TyEnv, _ owner: String, _ name: String, _ idx: Int, _ p: Nd) using Alloc {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyPushMethodParamRow(env, owner, name, idx, tyAnnNode(ty))
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): tyPushMethodParamRow(env, owner, name, idx, tyAnnNode(ty))
         default: noop()
     }
 }
@@ -3498,7 +3503,7 @@ func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ thr: 
 
 func tyRecordParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ p: Nd) using Alloc {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyPushParam(env, name, idx, tyAnnSpelling(ty), tyAnnNode(ty), md)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): tyPushParam(env, name, idx, tyAnnSpelling(ty), tyAnnNode(ty), md)
         default: noop()
     }
 }
@@ -3664,7 +3669,7 @@ func tyRegisterParams(_ env: inout TyEnv, _ params: Vec[Nd]) using Alloc {
 
 func tyRegisterParam(_ env: inout TyEnv, _ p: Nd) using Alloc {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyAddSym(env, nm, ty)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): tyAddSym(env, nm, ty)
         default: noop()
     }
 }
@@ -6665,9 +6670,35 @@ func emitFunc(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd], _
     tySetThrowsNode(&env, thr)
     env.curAsync = isA
     if isEntryMain(env, name) { print("    __vstr::args_init(argc, argv);\n") }
+    emitTupleParamPrologue(env, params)
     emitBody(env, body)
     if isA && res.len() == 0 && !blockEndsInReturn(body) { print("    co_return;\n") }
     print("}\n\n")
+}
+
+// §6 a tuple-pattern parameter (`(a, b): (A, B)`) arrives as `__vstr_arg<i>`
+// and is destructured first thing in the body, nested sub-tuples unpacking
+// through the shared follow-on placeholders (emit_tuple_param_prologue).
+func emitTupleParamPrologue(_ env: inout TyEnv, _ params: Vec[Nd]) using Alloc, Log {
+    var i: Int = 0
+    while i < params.len() {
+        emitParamPrologue(env, params.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func emitParamPrologue(_ env: inout TyEnv, _ p: Nd) using Alloc, Log {
+    match p {
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): emitParamPrologueParts(env, nm, ppat)
+        default: noop()
+    }
+}
+
+func emitParamPrologueParts(_ env: inout TyEnv, _ nm: Str, _ ppat: Vec[Nd]) using Alloc, Log {
+    if ppat.len() == 0 { return }
+    var v: Vec[Nd] = Vec.new()
+    v.push(Nd.ident(own(nm)))
+    emitTupleBinding(env, "    ", ppat, v)
 }
 
 // The modifier string is the parser's spelling ("async " / "comptime async "
@@ -6777,7 +6808,7 @@ func emitParamsMode(_ params: Vec[Nd], _ isAsync: Bool, _ ptrByVal: Bool) using 
 
 func emitValueParam(_ p: Nd) using Alloc, Log {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): emitValueParamParts(nm, ty)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): emitValueParamParts(nm, ty)
         default: noop()
     }
 }
@@ -6790,7 +6821,7 @@ func emitValueParamParts(_ nm: Str, _ ty: Vec[Nd]) using Alloc, Log {
 
 func emitParam(_ p: Nd, _ ptrByVal: Bool) using Alloc, Log {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): emitModeParam(md, nm, ty, ptrByVal)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): emitModeParam(md, nm, ty, ptrByVal)
         default: noop()
     }
 }
@@ -9482,6 +9513,7 @@ func emitBindingList(_ env: inout TyEnv, _ i16: Str, _ enumName: Str, _ cname: S
 }
 
 func emitOneBinding(_ env: inout TyEnv, _ i16: Str, _ enumName: Str, _ cname: Str, _ child: Nd, _ idx: Int) using Alloc, Log {
+    if isTuplePNode(child) { emitTuplePayloadBinding(env, i16, enumName, cname, child, idx); return }
     let bn = patNameOf(child)
     if streq(bn, "") { return }
     // The binding takes the case's DECLARED field type, so everything typed on
@@ -9504,6 +9536,36 @@ func emitOneBinding(_ env: inout TyEnv, _ i16: Str, _ enumName: Str, _ cname: St
         print(fn)
     }
     print(";\n")
+}
+
+// §6 a tuple-pattern payload child (`case .point((let x, let y))`) binds by
+// structured binding off the payload field, `auto&& [x, y] = __vstr_alt.p;`,
+// nested sub-tuples unpacking in follow-ons; the names type as the field's
+// tuple elements.
+func emitTuplePayloadBinding(_ env: inout TyEnv, _ i16: Str, _ enumName: Str, _ cname: Str, _ child: Nd, _ idx: Int) using Alloc, Log {
+    var fNames: Vec[String] = Vec.new()
+    var fPats: Vec[Nd] = Vec.new()
+    print(i16)
+    print("auto&& [")
+    emitNestedPatNames(env, child, &fNames, &fPats)
+    print("] = __vstr_alt.")
+    let fn = tyPayFieldName(env, enumName, cname, idx)
+    if streq(fn, "") {
+        print("_")
+        print(intToStr(idx))
+    } else {
+        print(fn)
+    }
+    print(";\n")
+    emitTupleFollowons(env, i16, fNames, fPats)
+    tyRegisterTuplePat(&env, child, tyPayFieldTy(env, enumName, cname, idx))
+}
+
+func isTuplePNode(_ p: Nd) -> Bool {
+    return match p {
+        case .tupleP(let elems): true
+        default: false
+    }
 }
 
 func armCaseName(_ pat: Vec[Nd]) using Alloc -> String {

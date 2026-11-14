@@ -1,0 +1,28 @@
+// §6 tuple patterns in parameters and match payloads. A tuple-pattern
+// parameter becomes `__vstr_arg<i>` (its position in the list) and is
+// destructured first in the body; a nested sub-tuple unpacks through a
+// `__vstr_tp<N>` follow-on and a `_` element takes a `__vstr_tp_unused_<N>`
+// name, from one counter shared across the file. A tuple-pattern payload
+// binds `auto&& [..] = __vstr_alt.<field>`. Destructured names type as their
+// tuple elements, so `s.len()` on a Str element takes the builtin path.
+func mixed(_ k: Int32, (s, n): (Str, Int32), _ m: Int32) -> Int {
+    return s.len() + Int(n + k + m)
+}
+
+func nested(((a, _), b): ((Int32, Int32), Int32), (c, d): (Int32, Int32)) -> Int32 {
+    return a + b + c + d
+}
+
+enum Shape {
+    case dot
+    case line((Int32, Int32))
+    case box(((Int32, Int32), Int32))
+}
+
+func measure(_ s: Shape) -> Int32 {
+    return match s {
+        case .dot: 0
+        case .line((let x, let y)): y - x
+        case .box(((let w, let h), let depth)): w * h * depth
+    }
+}
