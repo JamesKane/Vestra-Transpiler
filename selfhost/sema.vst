@@ -7988,16 +7988,212 @@ func harvestType(_ env: inout Env, _ modPath: Str, _ vis: Str, _ name: Str) usin
     env.modTypName.push(own(name))
 }
 
+// ----- §15.5 hosted-runtime features under --no-libc ------------------------
+// The bootstrap's TargetContext::freestanding rule: a hosted capability in a
+// `using` row or a `with`, an `async func`, or a heap type (String, Vec, Box,
+// HashMap, Channel) is an error. Order as the bootstrap reports: signature
+// types while declarations are collected (types first, then functions), then
+// each function's using row, `async`, and body.
+func hlCheck(_ u: NUnit, _ out: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < u.decls.len() {
+        match u.decls.get(i) ?? Nd.wildcard {
+            case .structD(let vis, let name, let fl, let m, let dn, let lin, let g): hlV(fl, out)
+            case .enumD(let vis, let name, let cs, let m, let g): hlV(cs, out)
+            default: noop()
+        }
+        i = i + 1
+    }
+    i = 0
+    while i < u.decls.len() {
+        match u.decls.get(i) ?? Nd.wildcard {
+            case .funcD(let vis, let mods, let name, let g, let ps, let c, let t, let r, let b): hlSig(ps, r, out)
+            case .constD(let vis, let name, let ty, let v): hlV(ty, out)
+            case .staticD(let vis, let name, let ty, let v): hlV(ty, out)
+            default: noop()
+        }
+        i = i + 1
+    }
+    i = 0
+    while i < u.decls.len() {
+        hlDecl(u.decls.get(i) ?? Nd.wildcard, out)
+        i = i + 1
+    }
+}
+
+func hlSig(_ ps: Vec[Nd], _ r: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    hlV(ps, out)
+    hlV(r, out)
+}
+
+func hlDecl(_ d: Nd, _ out: inout Vec[String]) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let ps, let c, let t, let r, let b): hlFunc(mods, c, b, out)
+        case .structD(let vis, let name, let fl, let m, let dn, let lin, let g): hlMethods(m, out)
+        case .enumD(let vis, let name, let cs, let m, let g): hlMethods(m, out)
+        default: noop()
+    }
+}
+
+func hlMethods(_ ms: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < ms.len() {
+        match ms.get(i) ?? Nd.wildcard {
+            case .funcD(let vis, let mods, let name, let g, let ps, let c, let t, let r, let b): hlMethod(mods, ps, r, c, b, out)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func hlMethod(_ mods: String, _ ps: Vec[Nd], _ r: Vec[Nd], _ caps: Vec[Nd], _ body: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    hlSig(ps, r, out)
+    hlFunc(mods, caps, body, out)
+}
+
+func hlFunc(_ mods: String, _ caps: Vec[Nd], _ body: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    hlCaps(caps, out)
+    if containsSub(mods, "async") { out.push(hlCapMsg("Async")) }
+    hlV(body, out)
+}
+
+func hlCaps(_ caps: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < caps.len() {
+        match caps.get(i) ?? Nd.wildcard {
+            case .named(let path, let g, let a): hlCap(path, out)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func hlCap(_ path: String, _ out: inout Vec[String]) using Alloc {
+    let n = hlLastSeg(path)
+    if streq(n, "Alloc") || streq(n, "Log") || streq(n, "Async") || streq(n, "Fs") || streq(n, "Net")
+        || streq(n, "Clock") || streq(n, "Rand") { out.push(hlCapMsg(n)) }
+}
+
+func hlLastSeg(_ p: String) using Alloc -> String {
+    var at: Int = 0
+    var i: Int = 0
+    while i < p.len() {
+        if (p.byteAt(i) ?? 0) == 46 { at = i + 1 }
+        i = i + 1
+    }
+    return own(p.slice(at, p.len()))
+}
+
+func hlCapMsg(_ n: Str) using Alloc -> String {
+    var s: String = "`"
+    s.append(n)
+    s.append("` needs the hosted runtime, which a --no-libc build doesn't have (no heap, logging, files, async, clock, network or randomness)")
+    return s
+}
+
+func hlTypeMsg(_ n: Str) using Alloc -> String {
+    var s: String = "`"
+    s.append(n)
+    s.append("` needs the hosted runtime (a heap), which a --no-libc build doesn't have")
+    return s
+}
+
+func hlV(_ xs: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < xs.len() {
+        hlN(xs.get(i) ?? Nd.wildcard, out)
+        i = i + 1
+    }
+}
+
+// Walk statements, expressions and types for heap types and `with` caps.
+func hlN(_ n: Nd, _ out: inout Vec[String]) using Alloc {
+    match n {
+        case .named(let path, let g, let args): hlNamed(path, args, out)
+        case .opt(let x): hlV(x, out)
+        case .vecT(let len, let x): hlV(x, out)
+        case .tupleT(let xs): hlV(xs, out)
+        case .someT(let x): hlV(x, out)
+        case .dynT(let x): hlV(x, out)
+        case .fnT(let ps, let cs, let t, let r): hlFnT(ps, r, out)
+        case .param(let lo, let l, let nm, let ne, let md, let t): hlV(t, out)
+        case .field(let k, let nm, let t): hlV(t, out)
+        case .enumCase(let nm, let ps): hlV(ps, out)
+        case .payElem(let l, let t): hlV(t, out)
+        case .block(let ss): hlV(ss, out)
+        case .letS(let p, let t, let v): hlPair(t, v, out)
+        case .varS(let p, let t, let v): hlPair(t, v, out)
+        case .exprS(let x): hlV(x, out)
+        case .retS(let x): hlV(x, out)
+        case .assignS(let op, let t, let v): hlPair(t, v, out)
+        case .whileS(let c, let b): hlPair(c, b, out)
+        case .forS(let p, let it, let b): hlPair(it, b, out)
+        case .withS(let caps, let vals, let b): hlWith(caps, vals, b, out)
+        case .ifE(let ln, let li, let c, let t, let e): hlIf(li, c, t, e, out)
+        case .matchE(let sc, let arms): hlPair(sc, arms, out)
+        case .matchArm(let d, let pt, let g, let b): hlPair(g, b, out)
+        case .closureE(let ps, let b): hlV(b, out)
+        case .call(let c, let a): hlPair(c, a, out)
+        case .arg(let l, let io, let v): hlV(v, out)
+        case .paren(let x): hlV(x, out)
+        case .unary(let op, let x): hlV(x, out)
+        case .binary(let op, let a, let b): hlPair(a, b, out)
+        case .asE(let v, let t, let o): hlPair(v, t, out)
+        case .prefixE(let kw, let x): hlV(x, out)
+        default: noop()
+    }
+}
+
+func hlPair(_ a: Vec[Nd], _ b: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    hlV(a, out)
+    hlV(b, out)
+}
+
+func hlFnT(_ ps: Vec[Nd], _ r: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    hlV(ps, out)
+    hlV(r, out)
+}
+
+func hlIf(_ li: Vec[Nd], _ c: Vec[Nd], _ t: Vec[Nd], _ e: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    hlV(li, out)
+    hlV(c, out)
+    hlV(t, out)
+    hlV(e, out)
+}
+
+func hlWith(_ caps: Vec[Nd], _ vals: Vec[Nd], _ body: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    hlCaps(caps, out)
+    hlV(vals, out)
+    hlV(body, out)
+}
+
+func hlNamed(_ path: String, _ args: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    if streq(path, "String") || streq(path, "Vec") || streq(path, "Box") || streq(path, "HashMap")
+        || streq(path, "Channel") {
+        out.push(hlTypeMsg(path))
+        return
+    }
+    hlV(args, out)
+}
+
 func main() -> Int32 {
     with Alloc {
         with Fs {
             with Log {
                 let argv = args()
                 if argv.len() < 2 {
-                    eprintln("usage: vsema <file.vst>")
+                    eprintln("usage: vsema [--no-libc] <file.vst>")
                     return 1
                 }
-                let path = argv.get(1) ?? ""
+                // `--no-libc` (§15.5): reject what needs the hosted runtime.
+                var noLibc: Bool = false
+                var path: Str = ""
+                var ai: Int = 1
+                while ai < argv.len() {
+                    let a = argv.get(ai) ?? ""
+                    if streq(a, "--no-libc") { noLibc = true } else { path = a }
+                    ai = ai + 1
+                }
                 if let src = readFile(path) {
                     let toks = tokenize(src)
                     var p = Ps(toks: toks, pos: 0)
@@ -8045,6 +8241,13 @@ func main() -> Int32 {
                         if let msg = tnenv.bad.get(tni) { println(msg) }
                         tni = tni + 1
                     }
+                    var hosted: Vec[String] = Vec.new()
+                    if noLibc { hlCheck(u, hosted) }
+                    var hli: Int = 0
+                    while hli < hosted.len() {
+                        if let msg = hosted.get(hli) { println(msg) }
+                        hli = hli + 1
+                    }
                     var i: Int = 0
                     while i < env.bad.len() {
                         if let nm = env.bad.get(i) {
@@ -8059,7 +8262,7 @@ func main() -> Int32 {
                     // mirrors the driver: type checking is part of resolution (so
                     // its errors gate too), then ownership, exclusivity, capability.
                     if env.bad.len() > 0 || env.dups.len() > 0 || env.throwBad.len() > 0
-                        || env.modBad.len() > 0 || tnenv.bad.len() > 0 { return 1 }
+                        || env.modBad.len() > 0 || tnenv.bad.len() > 0 || hosted.len() > 0 { return 1 }
                     var tenv = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(),
                                      pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(),
                                      structs: Vec.new(), sFldStruct: Vec.new(), sFldName: Vec.new(),

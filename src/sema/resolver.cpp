@@ -381,6 +381,50 @@ void Resolver::collect_struct(const ast::StructDecl& s_) {
     if (auto* prev = scopes_.global().insert(std::move(s))) {
         duplicate_definition(*prev, s_.name, s_.range);
     }
+    if (target_.freestanding) {
+        for (const auto& f : s_.fields) {
+            reject_hosted_types(f.type.get());
+        }
+    }
+}
+
+void Resolver::reject_hosted_types(const ast::Type* t) {
+    if (t == nullptr) {
+        return;
+    }
+    switch (t->kind) {
+    case ast::NodeKind::NamedType: {
+        const auto& n = static_cast<const ast::NamedType&>(*t);
+        if (n.path.size() == 1
+            && (n.path[0] == "String" || n.path[0] == "Vec" || n.path[0] == "Box"
+                || n.path[0] == "HashMap" || n.path[0] == "Channel")) {
+            if (hosted_reported_.insert(t->range.begin.offset).second) {
+                error_at(t->range,
+                         std::format("`{}` needs the hosted runtime (a heap), which a --no-libc "
+                                     "build doesn't have",
+                                     n.path[0]));
+            }
+            return;
+        }
+        for (const auto& a : n.type_args) {
+            reject_hosted_types(a.get());
+        }
+        return;
+    }
+    case ast::NodeKind::VectorType:
+        reject_hosted_types(static_cast<const ast::VectorType&>(*t).element.get());
+        return;
+    case ast::NodeKind::OptionalType:
+        reject_hosted_types(static_cast<const ast::OptionalType&>(*t).inner.get());
+        return;
+    case ast::NodeKind::TupleType:
+        for (const auto& el : static_cast<const ast::TupleType&>(*t).elements) {
+            reject_hosted_types(el.get());
+        }
+        return;
+    default:
+        return;
+    }
 }
 
 void Resolver::collect_enum(const ast::EnumDecl& e) {
@@ -393,6 +437,13 @@ void Resolver::collect_enum(const ast::EnumDecl& e) {
     s.visibility = e.visibility;
     if (auto* prev = scopes_.global().insert(std::move(s))) {
         duplicate_definition(*prev, e.name, e.range);
+    }
+    if (target_.freestanding) {
+        for (const auto& c : e.cases) {
+            for (const auto& [label, ty] : c.payload) {
+                reject_hosted_types(ty.get());
+            }
+        }
     }
 }
 

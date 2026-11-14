@@ -275,6 +275,12 @@ foreach(prog resolve_ok resolve_bad resolve_scope cap_ok cap_missing excl_ok exc
     set_tests_properties(e2e_selfhost_sema_diff_${prog} PROPERTIES DEPENDS e2e_selfhost_sema_compile)
 endforeach()
 
+# §15.5 the --no-libc hosted-feature rejections, both compilers given the flag.
+add_test(
+    NAME    e2e_selfhost_sema_diff_nolibc_bad
+    COMMAND sh -c "mkdir -p ${sema_workdir} && $<TARGET_FILE:vestra> check ${sema_dir}/nolibc_bad.vst --no-libc 2>&1 | grep -oE '`[A-Za-z]*` needs the hosted runtime[^.]*' > ${sema_workdir}/nolibc_c.txt; ${e2e_workdir}/vsema --no-libc ${sema_dir}/nolibc_bad.vst | grep -oE '`[A-Za-z]*` needs the hosted runtime[^.]*' > ${sema_workdir}/nolibc_v.txt; test -s ${sema_workdir}/nolibc_c.txt && diff ${sema_workdir}/nolibc_c.txt ${sema_workdir}/nolibc_v.txt")
+set_tests_properties(e2e_selfhost_sema_diff_nolibc_bad PROPERTIES DEPENDS e2e_selfhost_sema_compile)
+
 # ---------------------------------------------------------------------------
 # Self-hosted C++ code generator (selfhost/codegen.vst). It re-uses the lexer +
 # parser, then emits the generated `.cpp` definitions to stdout. The differential

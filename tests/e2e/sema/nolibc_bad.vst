@@ -1,0 +1,19 @@
+// §15.5 under --no-libc, what needs the hosted runtime is an error: a heap type,
+// a hosted capability in a `using` row or a `with`, an `async func`.
+struct Holder {
+    var name: String
+}
+func a(_ s: String) { }
+func b() using Log {
+    println("hi")
+}
+async func c() { }
+func d() {
+    with Alloc {
+        let v: Vec[Int32] = Vec.new()
+    }
+}
+func ok(_ x: UInt64) -> UInt64 { return x }
+enum E {
+    case s(String)
+}

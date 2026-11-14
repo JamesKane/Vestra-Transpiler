@@ -211,6 +211,8 @@ private:
     // One report per source position (a parameter type resolves more than once).
     std::unordered_set<std::size_t> hosted_reported_;
     void reject_hosted_cap(std::string_view cap, diag::SourceRange r);
+    // §15.5 a heap type anywhere in a field / payload type tree.
+    void reject_hosted_types(const ast::Type* t);
     // §14.5 interrupt-handler body rules.
     [[nodiscard]] bool in_interrupt_handler() const;
     void check_interrupt_static_write(const ast::Expr& target, diag::SourceRange site);
