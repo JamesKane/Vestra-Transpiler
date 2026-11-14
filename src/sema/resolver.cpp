@@ -12,6 +12,7 @@
 
 #include "resolver_internal.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <format>
@@ -136,6 +137,7 @@ void Resolver::resolve() {
     // BarrierKind enums registered there.
     register_builtin_sync();
     register_builtin_io();
+    check_attribute_names();
     collect_top_level();
     for (const auto& d : unit_->decls) {
         // §12.6: same gate as collect_top_level. Skipping here keeps the
@@ -667,6 +669,104 @@ bool Resolver::gated_out(const ast::Decl& decl) {
     return false;
 }
 
+// ----- attribute names ----------------------------------------------------
+
+namespace {
+
+// The attributes the compiler acts on.
+constexpr std::array<std::string_view, 19> kKnownAttributes{
+    "when",     "repr",      "inline",    "visibility",      "stack_protector",
+    "section",  "symbol",    "weak",      "alias",           "extern",
+    "naked",    "boot",      "interrupt", "kernel_init",     "panic_handler",
+    "no_auto_barrier",       "noinit",    "align",           "bits"};
+
+// Attributes the spec defines that this compiler does not implement yet. They
+// are rejected rather than ignored, so code written against them doesn't
+// silently lose its meaning.
+constexpr std::array<std::string_view, 6> kUnimplementedAttributes{
+    "deterministic", "retry_loop", "allow_weak_cas", "retroactive", "volatile", "padding"};
+
+void collect_attributes(const ast::Decl& d, std::vector<const ast::Attribute*>& out) {
+    auto add = [&](const std::vector<ast::Attribute>& as) {
+        for (const auto& a : as) {
+            out.push_back(&a);
+        }
+    };
+    switch (d.kind) {
+    case ast::NodeKind::Func:
+        add(static_cast<const ast::FuncDecl&>(d).attributes);
+        break;
+    case ast::NodeKind::Struct: {
+        const auto& s = static_cast<const ast::StructDecl&>(d);
+        add(s.attributes);
+        for (const auto& f : s.fields) {
+            add(f.attributes);
+        }
+        for (const auto& m : s.methods) {
+            collect_attributes(*m, out);
+        }
+        break;
+    }
+    case ast::NodeKind::Enum: {
+        const auto& e = static_cast<const ast::EnumDecl&>(d);
+        add(e.attributes);
+        for (const auto& m : e.methods) {
+            collect_attributes(*m, out);
+        }
+        break;
+    }
+    case ast::NodeKind::Protocol:
+        add(static_cast<const ast::ProtocolDecl&>(d).attributes);
+        break;
+    case ast::NodeKind::Extension: {
+        const auto& x = static_cast<const ast::ExtensionDecl&>(d);
+        add(x.attributes);
+        for (const auto& m : x.members) {
+            collect_attributes(*m, out);
+        }
+        break;
+    }
+    case ast::NodeKind::Static:
+        add(static_cast<const ast::StaticDecl&>(d).attributes);
+        break;
+    default:
+        break;
+    }
+}
+
+}  // namespace
+
+void Resolver::check_attribute_names() {
+    std::vector<const ast::Attribute*> attrs;
+    std::vector<std::string_view> macros(unit_->macro_names.begin(), unit_->macro_names.end());
+    for (const auto& d : unit_->decls) {
+        collect_attributes(*d, attrs);
+        // A unit resolved without macro expansion still holds its macros.
+        if (d->kind == ast::NodeKind::Func) {
+            const auto& fn = static_cast<const ast::FuncDecl&>(*d);
+            if (fn.is_comptime) {
+                macros.push_back(fn.name);
+            }
+        }
+    }
+    // Source order, so a struct's fields and methods report as written.
+    std::ranges::stable_sort(attrs, {}, [](const ast::Attribute* a) {
+        return a->range.begin.offset;
+    });
+    for (const auto* a : attrs) {
+        const auto is = [&](std::string_view n) { return n == a->name; };
+        if (std::ranges::any_of(kKnownAttributes, is)
+            || std::ranges::any_of(macros, is)) {
+            continue;
+        }
+        if (std::ranges::any_of(kUnimplementedAttributes, is)) {
+            error_at(a->range, std::format("attribute '@{}' is not supported yet", a->name));
+        } else {
+            error_at(a->range, std::format("unknown attribute '@{}'", a->name));
+        }
+    }
+}
+
 // ----- §12.4 declaration-macro expansion ---------------------------------
 
 namespace {
@@ -721,6 +821,14 @@ void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticRepor
     }
     if (macros.empty()) {
         return;
+    }
+    for (const auto& d : unit.decls) {
+        if (d->kind == ast::NodeKind::Func) {
+            const auto& fn = static_cast<const ast::FuncDecl&>(*d);
+            if (is_decl_macro(fn)) {
+                unit.macro_names.push_back(fn.name);
+            }
+        }
     }
 
     std::vector<ast::DeclPtr> out;

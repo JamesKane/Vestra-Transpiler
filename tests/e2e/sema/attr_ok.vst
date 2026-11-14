@@ -1,0 +1,19 @@
+// Every attribute here is one the compiler acts on. (A unit's declaration
+// macros are known too; examples/quote_demo.vst covers them.)
+
+@repr(C)
+struct Pair {
+    var a: Int32
+    var b: Int32
+    @inline(.always) func sum() -> Int32 { return self.a + self.b }
+}
+
+@inline(.never)
+func helper() -> Int32 { return 1 }
+
+@when(cfg.os == .linux)
+func linuxOnly() -> Int32 { return 2 }
+
+@noinit @section(".bss.buf") static buf: [4]UInt8
+
+func main() -> Int32 { return helper() }

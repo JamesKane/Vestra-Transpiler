@@ -945,6 +945,7 @@ struct NUnit {
 struct Ps {
     var toks: Vec[Token]
     var pos: Int
+    var attrs: Vec[String]  // every declaration attribute name, in source order
 }
 
 struct BP {
@@ -1127,14 +1128,15 @@ func parseVisibility(_ p: inout Ps) -> Str {
 
 // Skip declaration attributes `@name` / `@name(...)` (the C++ printer does not emit
 // them). Consumes any run of attributes, balancing parens in their argument lists.
-func skipAttributes(_ p: inout Ps) { let _ = skipAttrsNaked(&p) }
+func skipAttributes(_ p: inout Ps) using Alloc { let _ = skipAttrsNaked(&p) }
 
 // As skipAttributes, and says whether one was `@naked` or `@boot` (an asm body
 // the divergence checks don't hold to their rules, as in the bootstrap).
-func skipAttrsNaked(_ p: inout Ps) -> Bool {
+func skipAttrsNaked(_ p: inout Ps) using Alloc -> Bool {
     var naked: Bool = false
     while isKind(p, TokKind.at) {
         advP(&p)  // '@'
+        p.attrs.push(curText(p))
         if streq(curRaw(p), "naked") || streq(curRaw(p), "boot") { naked = true }
         advP(&p)  // name (identifier or reserved word)
         if isKind(p, TokKind.lparen) {
@@ -9976,7 +9978,7 @@ func loadImportPath(_ isC: Bool, _ dotted: String, _ dir: Str, _ errs: inout Vec
 // module path. A file with no `module` line exports nothing addressable.
 func harvestModule(_ env: inout Env, _ contents: Str) using Alloc {
     let toks = tokenize(contents)
-    var p = Ps(toks: toks, pos: 0)
+    var p = Ps(toks: toks, pos: 0, attrs: Vec.new())
     let mu = parseUnit(&p)
     if !mu.hasMod { return }
     env.modPaths.push(own(mu.modPath))
@@ -10214,6 +10216,59 @@ func hlNamed(_ path: String, _ args: Vec[Nd], _ out: inout Vec[String]) using Al
     hlV(args, out)
 }
 
+// An attribute must be one the compiler acts on or a comptime function of this
+// unit (a declaration macro); the spec's unimplemented ones are rejected too.
+func attrCheck(_ u: NUnit, _ attrs: Vec[String]) using Alloc -> Vec[String] {
+    var macros: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < u.decls.len() {
+        match u.decls.get(i) ?? Nd.wildcard {
+            case .funcD(let v, let mods, let name, let g, let ps, let cs, let th, let r, let b):
+                attrNoteMacro(macros, mods, name, b)
+            default: noop()
+        }
+        i = i + 1
+    }
+    var bad: Vec[String] = Vec.new()
+    var j: Int = 0
+    while j < attrs.len() {
+        let a = attrs.get(j) ?? own("")
+        if !attrKnown(a) && !tnContains(macros, a) {
+            var m: String = ""
+            if attrUnimplemented(a) {
+                m.append("attribute '@")
+                m.append(a)
+                m.append("' is not supported yet")
+            } else {
+                m.append("unknown attribute '@")
+                m.append(a)
+                m.append("'")
+            }
+            bad.push(m)
+        }
+        j = j + 1
+    }
+    return bad
+}
+
+func attrNoteMacro(_ macros: inout Vec[String], _ mods: String, _ name: String, _ body: Vec[Nd]) using Alloc {
+    if containsSub(mods, "comptime ") { macros.push(own(name)) }
+}
+
+func attrKnown(_ n: String) -> Bool {
+    return streq(n, "when") || streq(n, "repr") || streq(n, "inline") || streq(n, "visibility")
+        || streq(n, "stack_protector") || streq(n, "section") || streq(n, "symbol")
+        || streq(n, "weak") || streq(n, "alias") || streq(n, "extern") || streq(n, "naked")
+        || streq(n, "boot") || streq(n, "interrupt") || streq(n, "kernel_init")
+        || streq(n, "panic_handler") || streq(n, "no_auto_barrier") || streq(n, "noinit")
+        || streq(n, "align") || streq(n, "bits")
+}
+
+func attrUnimplemented(_ n: String) -> Bool {
+    return streq(n, "deterministic") || streq(n, "retry_loop") || streq(n, "allow_weak_cas")
+        || streq(n, "retroactive") || streq(n, "volatile") || streq(n, "padding")
+}
+
 func main() -> Int32 {
     with Alloc {
         with Fs {
@@ -10234,8 +10289,9 @@ func main() -> Int32 {
                 }
                 if let src = readFile(path) {
                     let toks = tokenize(src)
-                    var p = Ps(toks: toks, pos: 0)
+                    var p = Ps(toks: toks, pos: 0, attrs: Vec.new())
                     let u = parseUnit(&p)
+                    let attrBad = attrCheck(u, p.attrs)
                     // §5 module loading: every `import a.b.c` must resolve to a
                     // file <dir>/a/b/c.vst; a missing one aborts before sema (as
                     // the driver does), reporting the searched path.
@@ -10252,6 +10308,11 @@ func main() -> Int32 {
                     }
                     if impErrs.len() > 0 { return 1 }
                     addBuiltins(&env)
+                    var abi: Int = 0
+                    while abi < attrBad.len() {
+                        if let msg = attrBad.get(abi) { println(msg) }
+                        abi = abi + 1
+                    }
                     resolve(&env, u)
                     var di: Int = 0
                     while di < env.dups.len() {
@@ -10300,7 +10361,7 @@ func main() -> Int32 {
                     // mirrors the driver: type checking is part of resolution (so
                     // its errors gate too), then ownership, exclusivity, capability.
                     if env.bad.len() > 0 || env.dups.len() > 0 || env.throwBad.len() > 0
-                        || env.modBad.len() > 0 || tnenv.bad.len() > 0 || hosted.len() > 0 { return 1 }
+                        || attrBad.len() > 0 || env.modBad.len() > 0 || tnenv.bad.len() > 0 || hosted.len() > 0 { return 1 }
                     var tenv = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(), funcSpell: Vec.new(),
                                      pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(),
                                      structs: Vec.new(), sFldStruct: Vec.new(), sFldName: Vec.new(),

@@ -51,10 +51,12 @@ Each gap has one of four kinds:
    - `??` evaluates its right side eagerly.
    - An illegal atomic ordering such as `load(.release)` is passed straight
      through to `std::memory_order_release`.
-3. **Unknown names are accepted silently.** These include unknown attributes
-   (`@bogus`, `@deterministic`, `@retry_loop`), unknown protocol bounds
-   (`T: Ord`, `T: Send`), unknown `derive` names and unknown `cfg.has(...)` features. A misspelling becomes a no-op, and several
-   spec features "work" only in the sense that they are ignored.
+3. **Unknown names are accepted silently.** These include unknown protocol
+   bounds (`T: Ord`, `T: Send`), unknown `derive` names and unknown
+   `cfg.has(...)` features. A misspelling becomes a no-op, and several spec
+   features "work" only in the sense that they are ignored. (Attributes are
+   now checked: an unknown one is an error, and one the spec defines but the
+   compiler doesn't implement reports "is not supported yet".)
 4. **Unfoldable comptime constructs degrade to a warning.** `build` prints
    "codegen does not yet support: expression" and emits
    `/* unsupported: expression */`. The output then either fails to compile
@@ -215,6 +217,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 | §12.4 | `error(at:, msg)` from a macro | missing | The macro fails with "did not expand to a declaration list". |
 | §12.4 | `quote` yielding a `Stmt` | missing | "expected expression, got let". |
 | §12.4 | `quote` only inside a comptime func | divergent (extension) | A plain function may use `quote` as an identity template. |
+| §12.4 | A marker attribute read only by a macro | missing | An attribute is known only if the compiler acts on it or it names a `comptime func` of the same unit. A user marker that a macro of another name reads through `d.attribute(...)` (as the spec's `bitField` reads `@bits`, which happens to be built in) is "unknown attribute". |
 
 ### §13: numerics and SIMD
 
@@ -225,7 +228,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 | §13.1 | Comparisons to `[N]Bool` masks, and vector `select` | missing | `select(...)` parses as the concurrency form. |
 | §13.1 | Swizzles, reductions, `any`/`all`, saturating ops, `shuffle` | missing | "no field or method". |
 | §13 | Explicit vector lowering, no reliance on the auto-vectorizer | divergent | A loop over `std::array` relies on the C++ compiler's auto-vectorizer. |
-| §13.3 | `@deterministic` FP contract | weaker | Accepted, then ignored: plain `a * b + 1.0`, with no FMA or reassociation control. |
+| §13.3 | `@deterministic` FP contract | missing | "attribute '@deterministic' is not supported yet". |
 | §13, §18.8 | `core.math`, `Matrix`, `Quat` | missing | Unknown module or type. |
 | §13 | Math functions over `Float32` | missing (partial) | `Float64` only. |
 | §13 | `Soa[T]` | missing (partial) | Works. The open items are in ROADMAP §9. *(docs)* |
@@ -237,7 +240,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 | §14.1 | `Ptr.load()`, unchecked indexing | missing | |
 | §14.2 | `Mmio.narrowed(to:)`, `MmioRegion(base:size:)` minting | missing | The `Mmio` capability carries no value (`capability.hpp:32`). |
 | §14.3 | `Volatile[T]`, `Volatile(in:at:)` | missing | "unknown type". The annex's `MmioView` is the substitute. |
-| §14.3 | `@volatile` fields | unsound | Accepted and emitted as a plain non-volatile field. |
+| §14.3 | `@volatile` fields | missing | "attribute '@volatile' is not supported yet". |
 | §14.5 | `@interrupt` with no arguments | divergent | It requires an `inout TrapFrame` first param, which is the annex's model. |
 | §14.6 | `import c` synthesizes declarations, `T*` becomes `Ptr[T]?` | missing | It lowers only to `#include`, and `@extern` prototypes are hand-written. *(code)* |
 
@@ -264,8 +267,8 @@ spec guarantees follow from that choice:
 
 `unsafe`, `yield`, `null`, `class`, `#ifdef`, `any(N)` and `try`/`catch` are
 all correctly rejected. Some things are admitted only because unknown names are
-not validated: the `T: Send` / `T: Sync` bounds and the `@strict` /
-`@forExpansion` attributes. `<` on a struct with no ordering passes sema and
+not validated: the `T: Send` / `T: Sync` bounds. (`@strict` and
+`@forExpansion` are now unknown attributes.) `<` on a struct with no ordering passes sema and
 fails in clang.
 
 ### §18: standard library surface
@@ -352,7 +355,7 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | §14.9.3 | CAS argument labels | unsound | Labels are ignored, so reordered labeled arguments bind positionally: `compareExchange(desired: 1, expected: 0, ...)` emits expected = 1, desired = 0. |
 | §14.9.2 | `fetchSet` / `fetchClear` on `Atomic[Bool]` | missing | |
 | §14.9.3 | Admitted weak-CAS loop shapes | unsound (partial) | `repeat { } while` is a parse error. Any `while true` admits any number of weak sites (`resolver_decls.cpp:1300`). |
-| §14.9.3 | `@retry_loop` predicate, `@allow_weak_cas` | missing | `@retry_loop` is accepted with no clause checks. `@allow_weak_cas` on a statement is a parse error. |
+| §14.9.3 | `@retry_loop` predicate, `@allow_weak_cas` | missing | `@retry_loop` is "not supported yet". `@allow_weak_cas` on a statement is a parse error. |
 | §14.9.4 | Wide-atomic gate on `aarch64 +lse` / `x86_64 +cx16` | divergent | It requires `lse2` and rejects plain `+lse`. A host or unset target bypasses the gate (`resolver.cpp:203`), so a lock-based libatomic fallback is possible. It is checked at compile time, not at link time. |
 | §14.10 | `Cpu.` / `Cache.` / `Tlb.` namespaces, labeled `range:` / `scope:` | divergent | Free functions only. "undefined name 'Cpu'". |
 | §14.10.1 | `compilerFence(.relaxed)` is rejected | unsound | Accepted. |

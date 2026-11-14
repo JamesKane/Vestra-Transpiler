@@ -1,0 +1,21 @@
+// A misspelt or invented attribute is an error, not a silent no-op, and an
+// attribute the spec defines but this compiler doesn't implement says so.
+
+@inlin(.always)
+func f() -> Int32 { return 1 }
+
+@deterministic
+func g() -> Int32 { return 2 }
+
+struct S {
+    @bitz(3) var x: Int32
+    @frobnicate func m() -> Int32 { return 1 }
+}
+
+@when(cfg.os == .linux)
+@nope
+func h() -> Int32 { return 3 }
+
+@noinit @secton(".bss.buf") static buf: [4]UInt8
+
+func main() -> Int32 { return f() + g() }

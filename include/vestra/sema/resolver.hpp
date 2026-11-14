@@ -393,6 +393,9 @@ private:
     // sema and never reach codegen. A non-foldable predicate is treated
     // as live (we don't want a missing fold to silently delete code).
     [[nodiscard]] bool gated_out(const ast::Decl& decl);
+    // An attribute must be one the compiler knows or a declaration macro of
+    // this unit (Gaps headline 3).
+    void check_attribute_names();
 
     // ---- helpers ---------------------------------------------------------
     void error_at(diag::SourceRange r, std::string msg);

@@ -938,6 +938,10 @@ struct CompilationUnit {
     std::unique_ptr<ModuleDecl> module;
     std::vector<std::unique_ptr<ImportDecl>> imports;
     std::vector<DeclPtr> decls;
+    // §12.4 the declaration macros this unit defined, recorded by macro
+    // expansion (which drops their definitions), so an attribute naming one
+    // is known to the resolver.
+    std::vector<std::string> macro_names;
 };
 
 }  // namespace vestra::ast
