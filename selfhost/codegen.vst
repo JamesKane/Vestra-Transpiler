@@ -923,12 +923,13 @@ enum Nd {
     case payElem(String, Vec[Nd])            // label ("" if positional), type
     // declarations
     case importD(Bool, String)               // is_c_header, payload (joined path or header)
-    case funcD(String, String, String, Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd])
+    case funcD(String, String, String, Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd], Vec[Nd])  // ..., attributes (attrN; top-level only)
     // visibilityPrefix, modifiers (async/recv), name, generics, params, usingCaps, throwsType?, result?, body?
-    case structD(String, String, Vec[Nd], Vec[Nd], Vec[Nd], Bool, Vec[Nd]) // vis, name, fields, methods, deinit?, isLinear, generics
+    case structD(String, String, Vec[Nd], Vec[Nd], Vec[Nd], Bool, Vec[Nd], Vec[Nd]) // vis, name, fields, methods, deinit?, isLinear, generics, attributes
     case enumD(String, String, Vec[Nd], Vec[Nd], Vec[Nd])   // vis, name, cases, methods, generics
     case constD(String, String, Vec[Nd], Vec[Nd])           // vis, name, type?, value
-    case staticD(String, String, Vec[Nd], Vec[Nd])          // vis, name, type, value?
+    case staticD(String, String, Vec[Nd], Vec[Nd], Vec[Nd])  // vis, name, type, value?, attributes
+    case attrN(String, Vec[Nd])                 // `@name` / `@name(arg, ...)`: name, first argument (boxed; empty if none)
     case opaqueD(String, String, Vec[Nd])                   // vis, name, underlying type
     case deriveD(Vec[Nd], Vec[Nd])                          // protocols, target type
 }
@@ -1145,8 +1146,49 @@ func skipAttributes(_ p: inout Ps) {
     }
 }
 
+// A top-level declaration with its leading attributes, which attach to a
+// func / static / struct (the decls whose lowering reads them); on any other
+// decl they are dropped, as before.
 func parseDecl(_ p: inout Ps) using Alloc -> Nd {
-    skipAttributes(&p)
+    let attrs = parseAttrs(&p)
+    return attachAttrs(parseDeclBody(&p), attrs)
+}
+
+// `@name` or `@name(arg, ...)` repeated, newlines between. Attribute
+// arguments are ordinary expressions (parser.cpp parse_attributes); only the
+// first is kept, as only it is read by the lowerings vgen mirrors.
+func parseAttrs(_ p: inout Ps) using Alloc -> Vec[Nd] {
+    var out: Vec[Nd] = Vec.new()
+    while isKind(p, TokKind.at) {
+        advP(&p)  // '@'
+        let name = curText(p)
+        advP(&p)  // name (identifier or reserved word, e.g. `inline`)
+        var arg: Vec[Nd] = Vec.new()
+        if eat(p, TokKind.lparen) {
+            if !isKind(p, TokKind.rparen) {
+                arg.push(parseExpr(&p))
+                while eat(p, TokKind.comma) { let extra = parseExpr(&p) }
+            }
+            eat(p, TokKind.rparen)
+        }
+        out.push(Nd.attrN(name, arg))
+        skipNL(&p)
+    }
+    return out
+}
+
+func attachAttrs(_ d: Nd, _ attrs: Vec[Nd]) using Alloc -> Nd {
+    return match d {
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b, let old):
+            Nd.funcD(vis, mods, name, g, params, caps, t, r, b, ndsCopy(attrs))
+        case .staticD(let vis, let name, let ty, let v, let old): Nd.staticD(vis, name, ty, v, ndsCopy(attrs))
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics, let old):
+            Nd.structD(vis, name, fl, m, dn, isLinear, generics, ndsCopy(attrs))
+        default: d
+    }
+}
+
+func parseDeclBody(_ p: inout Ps) using Alloc -> Nd {
     let vis = own(parseVisibility(&p))
     if isKind(p, TokKind.kwStruct) { return parseStruct(&p, vis, false) }
     // §5 `linear struct Foo { … }` — the modifier (admitted on structs in v0.5)
@@ -1183,7 +1225,7 @@ func parseStatic(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
     if eat(p, TokKind.colon) { ty.push(parseType(&p)) }
     var val: Vec[Nd] = Vec.new()
     if eat(p, TokKind.assign) { val.push(parseExpr(&p)) }
-    return Nd.staticD(vis, name, ty, val)
+    return Nd.staticD(vis, name, ty, val, emptyNdBox())
 }
 
 func parseOpaque(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
@@ -1244,7 +1286,7 @@ func parseStruct(_ p: inout Ps, _ vis: String, _ isLinear: Bool) using Alloc -> 
         skipNL(&p)
     }
     eat(p, TokKind.rbrace)
-    return Nd.structD(vis, name, fields, methods, deinitB, isLinear, g)
+    return Nd.structD(vis, name, fields, methods, deinitB, isLinear, g, emptyNdBox())
 }
 
 func parseEnum(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
@@ -1318,7 +1360,7 @@ func parseFunc(_ p: inout Ps, _ vis: String, _ mods: String) using Alloc -> Nd {
     generics = mergeWhere(generics, parseWhereClause(&p))
     var body: Vec[Nd] = Vec.new()
     if isKind(p, TokKind.lbrace) { body.push(parseBlock(&p)) }
-    return Nd.funcD(vis, mods, name, generics, params, usingCaps, throwsT, result, body)
+    return Nd.funcD(vis, mods, name, generics, params, usingCaps, throwsT, result, body, emptyNdBox())
 }
 
 func parseWhereClause(_ p: inout Ps) using Alloc -> Vec[Nd] {
@@ -2200,14 +2242,14 @@ func printImportBody(_ isC: Bool, _ payload: String) using Log {
 
 func printDecl(_ d: Nd, _ indent: Int) using Alloc, Log {
     match d {
-        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
+        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body, let attrs):
             printFunc(vis, mods, name, gens, params, caps, thr, res, body, indent)
-        case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics):
+        case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics, let attrs):
             printStruct(vis, name, fields, methods, deinitB, indent)
         case .enumD(let vis, let name, let cases, let methods, let generics):
             printEnum(vis, name, cases, methods, indent)
         case .constD(let vis, let name, let ty, let val): printConst(vis, name, ty, val, indent)
-        case .staticD(let vis, let name, let ty, let val): printStatic(vis, name, ty, val, indent)
+        case .staticD(let vis, let name, let ty, let val, let attrs): printStatic(vis, name, ty, val, indent)
         case .opaqueD(let vis, let name, let under): printOpaque(vis, name, under, indent)
         case .deriveD(let protocols, let target): printDerive(protocols, target, indent)
         default: print("")
@@ -2954,6 +2996,7 @@ struct TyEnv {
     var armTo: String           // per-match: Vestra type SPELLING an arm body flows into ("" if none) — resolves a leading-dot case in an arm
     var curThrowsNode: Vec[Nd]  // per-function: the `throws(E)` type node (empty when the function does not throw)
     var curAsync: Bool          // per-function: enclosing function is `async` (returns lower to co_return)
+    var curAttrs: Vec[Nd]       // per-declaration: the top-level func / static being emitted's attributes
     var imports: Vec[String]    // global: imported module paths (a member base naming one qualifies with `::`)
     var hasModule: Bool         // global: unit declares `module ...` (an entry `main` only exists OUTSIDE a module)
     var tpN: Int                // file-global `__vstr_tp_unused_<N>` tuple-wildcard counter (monotonic, matches the bootstrap)
@@ -2976,14 +3019,14 @@ func tyCheck(_ env: inout TyEnv, _ u: NUnit) using Alloc {
 // ----- pass 1: function return types and struct names -----------------------
 func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
-        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b, let attrs):
             tyRecordFunc(env, name, params, t, r)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyRecordStructDecl(env, name, fl, m, generics)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics, let attrs): tyRecordStructDecl(env, name, fl, m, generics)
         case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumDecl(env, name, cs, m, generics)
         case .deriveD(let protocols, let target): tyRecordDerive(env, protocols, target)
         case .opaqueD(let vis, let name, let under): tyRecordOpaque(env, name, under)
         case .constD(let vis, let name, let ty, let v): tyRecordGlobal(env, name, ty)
-        case .staticD(let vis, let name, let ty, let v): tyRecordGlobal(env, name, ty)
+        case .staticD(let vis, let name, let ty, let v, let attrs): tyRecordGlobal(env, name, ty)
         default: noop()
     }
 }
@@ -3238,7 +3281,7 @@ func tyRecordMethods(_ env: inout TyEnv, _ owner: String, _ methods: Vec[Nd]) us
 
 func tyRecordMethod(_ env: inout TyEnv, _ owner: String, _ m: Nd) using Alloc {
     match m {
-        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b, let attrs):
             tyPushMethod(env, owner, name, g, params, r)
         default: noop()
     }
@@ -3440,9 +3483,9 @@ func tyIsStruct(_ env: inout TyEnv, _ name: String) -> Bool {
 // ----- pass 2: per-function walk --------------------------------------------
 func tyCheckDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
-        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b, let attrs):
             tyCheckFunc(env, name, params, r, b)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyCheckMethods(env, m)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics, let attrs): tyCheckMethods(env, m)
         case .enumD(let vis, let name, let cs, let m, let generics): tyCheckMethods(env, m)
         case .constD(let vis, let name, let ty, let v): tyCheckConst(env, ty, v)
         default: noop()
@@ -4947,7 +4990,7 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     dvTarget: Vec.new(), dvProto: Vec.new(),
                     opName: Vec.new(), opUnder: Vec.new(), moveOnly: Vec.new(),
                     symName: Vec.new(), symType: Vec.new(), gName: Vec.new(), gType: Vec.new(),
-                    curRet: own(""), curRetNode: Vec.new(),
+                    curRet: own(""), curRetNode: Vec.new(), curAttrs: Vec.new(),
                     tryN: 0, hoistName: Vec.new(), hoistExpr: Vec.new(),
                     hoistKind: Vec.new(), hoistNext: 0,
                     condUse: own(""), condTy: Vec.new(), condTyStr: own(""), armTo: own(""),
@@ -5083,7 +5126,166 @@ func emitUnit(_ u: NUnit, _ stem: Str) using Alloc, Log {
         emitDecl(&env, u.decls.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    emitPanicRegistration(u.decls)
     emitNsClose(u.hasMod, u.modPath)
+}
+
+// §A10 (§15.5) the FIRST function carrying `@panic_handler` is registered with
+// the runtime's delegation slot by a static-init block, inside the namespace
+// so the name resolves unqualified (cpp_emitter.cpp, after the decl loop).
+func emitPanicRegistration(_ decls: Vec[Nd]) using Alloc, Log {
+    var i: Int = 0
+    while i < decls.len() {
+        let d = decls.get(i) ?? Nd.wildcard
+        if isFuncD(d) && attrHas(declAttrs(d), "panic_handler") {
+            print("\n[[maybe_unused]] static const bool __vstr_register_panic_handler = []{\n")
+            print("    __vstr::panic_handler = &")
+            print(declName(d))
+            print(";\n    return true;\n}();\n")
+            return
+        }
+        i = i + 1
+    }
+}
+
+func isFuncD(_ d: Nd) -> Bool {
+    return match d {
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b, let attrs): true
+        default: false
+    }
+}
+
+func declName(_ d: Nd) using Alloc -> String {
+    return match d {
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b, let attrs): own(name)
+        default: own("")
+    }
+}
+
+func declAttrs(_ d: Nd) using Alloc -> Vec[Nd] {
+    return match d {
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b, let attrs): ndsCopy(attrs)
+        case .staticD(let vis, let name, let ty, let v, let attrs): ndsCopy(attrs)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics, let attrs): ndsCopy(attrs)
+        default: emptyNdBox()
+    }
+}
+
+// ----- §A1 link attributes (cpp_emitter.cpp read_link_attrs) ---------------
+// The GNU prefix shared by funcs and statics, in the bootstrap's fixed order:
+// section, weak, alias, visibility, then @interrupt -> used, @boot -> naked,
+// @stack_protector(.none) -> no_stack_protector, @inline(.always / .never).
+// For a repeated attribute the LAST occurrence wins, as in read_link_attrs.
+func emitLinkPrefix(_ attrs: Vec[Nd]) using Alloc, Log {
+    let sec = attrStr(attrs, "section")
+    if !streq(sec, "") {
+        print("[[gnu::section(\"")
+        print(sec)
+        print("\")]] ")
+    }
+    if attrHas(attrs, "weak") { print("[[gnu::weak]] ") }
+    let al = attrStr(attrs, "alias")
+    if !streq(al, "") {
+        print("[[gnu::alias(\"")
+        print(al)
+        print("\")]] ")
+    }
+    let vis = attrDot(attrs, "visibility")
+    if streq(vis, "default") || streq(vis, "hidden") || streq(vis, "protected") {
+        print("[[gnu::visibility(\"")
+        print(vis)
+        print("\")]] ")
+    }
+    if attrHas(attrs, "interrupt") { print("[[gnu::used]] ") }
+    if attrHas(attrs, "boot") { print("[[gnu::naked]] ") }
+    if streq(attrDot(attrs, "stack_protector"), "none") { print("[[gnu::no_stack_protector]] ") }
+    let im = attrDot(attrs, "inline")
+    if streq(im, "always") { print("[[gnu::always_inline]] ") }
+    else if streq(im, "never") { print("[[gnu::noinline]] ") }
+}
+
+// The `inline` decl-specifier for @inline(.always) / @inline(.hint), printed
+// after [[nodiscard]] so the attribute binds to the declaration.
+func emitInlineSpec(_ attrs: Vec[Nd]) using Alloc, Log {
+    let im = attrDot(attrs, "inline")
+    if streq(im, "always") || streq(im, "hint") { print("inline ") }
+}
+
+func emitAsmLabel(_ sym: Str) using Alloc, Log {
+    if streq(sym, "") { return }
+    print(" asm(\"")
+    print(sym)
+    print("\")")
+}
+
+func attrHas(_ attrs: Vec[Nd], _ name: Str) using Alloc -> Bool {
+    var i: Int = 0
+    while i < attrs.len() {
+        if streq(attrNameOf(attrs.get(i) ?? Nd.wildcard), name) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// The string-literal argument of the last `@name(...)`, or "".
+func attrStr(_ attrs: Vec[Nd], _ name: Str) using Alloc -> String {
+    var out: String = ""
+    var i: Int = 0
+    while i < attrs.len() {
+        let a = attrs.get(i) ?? Nd.wildcard
+        if streq(attrNameOf(a), name) { out = attrArgStr(a) }
+        i = i + 1
+    }
+    return out
+}
+
+// The leading-dot argument (`.hidden`) of the last `@name(...)`, or "".
+func attrDot(_ attrs: Vec[Nd], _ name: Str) using Alloc -> String {
+    var out: String = ""
+    var i: Int = 0
+    while i < attrs.len() {
+        let a = attrs.get(i) ?? Nd.wildcard
+        if streq(attrNameOf(a), name) { out = attrArgDot(a) }
+        i = i + 1
+    }
+    return out
+}
+
+func attrNameOf(_ a: Nd) using Alloc -> String {
+    return match a {
+        case .attrN(let n, let arg): own(n)
+        default: own("")
+    }
+}
+
+func attrArgStr(_ a: Nd) using Alloc -> String {
+    return match a {
+        case .attrN(let n, let arg): boxStrLit(arg)
+        default: own("")
+    }
+}
+
+func attrArgDot(_ a: Nd) using Alloc -> String {
+    return match a {
+        case .attrN(let n, let arg): boxLeadingDot(arg)
+        default: own("")
+    }
+}
+
+func boxStrLit(_ b: Vec[Nd]) using Alloc -> String {
+    if b.len() == 0 { return own("") }
+    return match b.get(0) ?? Nd.wildcard {
+        case .strLit(let t): own(t)
+        default: own("")
+    }
+}
+
+func boxLeadingDot(_ b: Vec[Nd]) using Alloc -> String {
+    if b.len() == 0 { return own("") }
+    return match b.get(0) ?? Nd.wildcard {
+        case .leadingDot(let n): own(n)
+        default: own("")
+    }
 }
 
 // §5: a `module a.b` declaration wraps the unit's declarations in a C++
@@ -5116,8 +5318,9 @@ func dotsToColons(_ s: Str) using Alloc -> String {
 }
 
 func emitDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
+    env.curAttrs = declAttrs(d)
     match d {
-        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
+        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body, let attrs):
             emitFuncOrSkip(env, mods, gens, name, params, thr, res, body)
         default: noop()
     }
@@ -5127,6 +5330,9 @@ func emitDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
 // lives entirely in the header.
 func emitFuncOrSkip(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
     if gens.len() > 0 { return }
+    let attrs = ndsCopy(env.curAttrs)
+    emitLinkPrefix(attrs)
+    emitInlineSpec(attrs)
     emitFunc(env, mods, name, params, thr, res, body)
 }
 
@@ -5178,7 +5384,7 @@ func emitHashSpecs(_ env: inout TyEnv, _ u: NUnit, _ qp: Str) using Alloc, Log {
 
 func emitHashSpecDecl(_ env: inout TyEnv, _ d: Nd, _ qp: Str) using Alloc, Log {
     match d {
-        case .structD(let vis, let name, let fields, let m, let dn, let isLinear, let generics):
+        case .structD(let vis, let name, let fields, let m, let dn, let isLinear, let generics, let attrs):
             emitHashSpecStruct(env, name, fields, generics, qp)
         case .enumD(let vis, let name, let cases, let m, let generics):
             emitHashSpecEnum(env, name, cases, generics, qp)
@@ -5359,7 +5565,7 @@ func emitDebugSpecs(_ env: inout TyEnv, _ u: NUnit, _ qp: Str) using Alloc, Log 
 
 func emitDebugSpecDecl(_ env: inout TyEnv, _ d: Nd, _ qp: Str) using Alloc, Log {
     match d {
-        case .structD(let vis, let name, let fields, let m, let dn, let isLinear, let generics):
+        case .structD(let vis, let name, let fields, let m, let dn, let isLinear, let generics, let attrs):
             emitDebugSpecStruct(env, name, fields, generics, qp)
         case .enumD(let vis, let name, let cases, let m, let generics):
             emitDebugSpecEnum(env, name, cases, generics, qp)
@@ -5660,17 +5866,18 @@ func dotsToSlashes(_ s: Str) using Alloc -> String {
 }
 
 func emitHppDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
+    env.curAttrs = declAttrs(d)
     match d {
-        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
+        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body, let attrs):
             emitHppFunc(env, mods, gens, name, params, thr, res, body)
-        case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics):
+        case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics, let attrs):
             emitGenStructDef(env, generics, name, fields, methods)
         case .enumD(let vis, let name, let cases, let methods, let generics):
             emitGenEnumDecl(env, generics, name, cases, methods)
         case .constD(let vis, let name, let ty, let value):
             emitGlobalDef(env, "inline constexpr ", name, ty, value)
-        case .staticD(let vis, let name, let ty, let value):
-            emitGlobalDef(env, "inline ", name, ty, value)
+        case .staticD(let vis, let name, let ty, let value, let attrs):
+            emitStaticDef(env, name, ty, value)
         case .opaqueD(let vis, let name, let under): emitOpaqueDecl(name, under)
         default: noop()
     }
@@ -5694,11 +5901,24 @@ func emitOpaqueDecl(_ name: Str, _ under: Vec[Nd]) using Alloc, Log {
 // nothing for them. An unannotated global spells its type `auto`. A static
 // with no value is the §A1 `@noinit` form (the only way the bootstrap parser
 // skips `= value`), so it drops the initializer: `inline <type> <name>;`.
+// §A1 a static carries the link-attribute prefix and, for `@symbol`, the
+// `asm("<name>")` label after its name.
+func emitStaticDef(_ env: inout TyEnv, _ name: Str, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    let attrs = ndsCopy(env.curAttrs)
+    emitLinkPrefix(attrs)
+    emitGlobalDefSym(env, "inline ", name, ty, value, attrStr(attrs, "symbol"))
+}
+
 func emitGlobalDef(_ env: inout TyEnv, _ prefix: Str, _ name: Str, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    emitGlobalDefSym(env, prefix, name, ty, value, "")
+}
+
+func emitGlobalDefSym(_ env: inout TyEnv, _ prefix: Str, _ name: Str, _ ty: Vec[Nd], _ value: Vec[Nd], _ sym: Str) using Alloc, Log {
     print(prefix)
     if ty.len() > 0 { emitTypeBoxed(ty) } else { print("auto") }
     print(" ")
     print(name)
+    emitAsmLabel(sym)
     if value.len() > 0 {
         print(" = ")
         emitBoxed(env, value)
@@ -5922,7 +6142,7 @@ func emitStructDef(_ env: inout TyEnv, _ name: Str, _ fields: Vec[Nd], _ methods
 
 func emitMethod(_ env: inout TyEnv, _ owner: Str, _ d: Nd) using Alloc, Log {
     match d {
-        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
+        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body, let attrs):
             emitMethodDef(env, owner, mods, name, params, res, body)
         default: noop()
     }
@@ -5983,7 +6203,10 @@ func emitHppFunc(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, 
 func emitTemplateFunc(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
     emitTemplateHead(gens)
     emitRequiresClause(gens)
+    let attrs = ndsCopy(env.curAttrs)
+    emitLinkPrefix(attrs)
     if res.len() > 0 || thr.len() > 0 { print("[[nodiscard]] ") }
+    emitInlineSpec(attrs)
     emitFunc(env, mods, name, params, thr, res, body)
 }
 
@@ -6071,14 +6294,20 @@ func genName(_ g: Nd) using Alloc -> String {
 // throws clause (the fallible result must not be dropped); an omitted return
 // type gets a bare `void`.
 func emitFwdDecl(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
+    let attrs = ndsCopy(env.curAttrs)
+    emitLinkPrefix(attrs)
     if res.len() > 0 || thr.len() > 0 { print("[[nodiscard]] ") }
+    emitInlineSpec(attrs)
     emitTaskRet(isAsyncMods(mods), thr, res)
     print(" ")
     print(name)
     print("(")
     if isEntryMain(env, name) { print("int argc, char** argv") }
     else { emitParamsMode(params, isAsyncMods(mods), true) }
-    print(");\n")
+    print(")")
+    // The asm label rides only on the declaration (a definition cannot take it).
+    emitAsmLabel(attrStr(attrs, "symbol"))
+    print(";\n")
 }
 
 // The entry `main` (a `func main` OUTSIDE any module declaration) captures the

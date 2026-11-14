@@ -1,0 +1,60 @@
+// §A1 / §A2 / §A8-§A10 link attributes on functions and statics. Each
+// lowers to a GNU attribute in a fixed order (section, weak, visibility,
+// @interrupt -> used, @boot -> naked, @stack_protector(.none),
+// @inline(.always / .never)) on the header declaration AND the .cpp
+// definition; `@symbol` becomes an `asm("...")` label on the declaration
+// only; @inline(.always / .hint) also adds the `inline` specifier after
+// [[nodiscard]]. An unmapped argument (`.strong`) emits nothing, a repeated
+// attribute keeps its last value, a generic function takes the prefix under
+// its template head, and the first @panic_handler is registered with the
+// runtime by a static-init block. (`@alias` is left out: Darwin, where the
+// reference is compiled, does not support aliases.)
+@section("__DATA,__tbl") @symbol("cap_table_sym")
+static table: UInt32 = 4
+
+@noinit @section("__DATA,__scratch")
+static scratch: [8]UInt8
+
+@weak
+func fallback() -> Int32 { return 0 }
+
+@section("__TEXT,__boot") @visibility(.hidden) @symbol("entry_sym")
+func entry() -> Int32 { return 1 }
+
+@visibility(.hidden) @visibility(.protected)
+func reexported() -> Int32 { return 2 }
+
+struct TrapFrame {
+    var x0: UInt64
+}
+
+@interrupt(0)
+func isr(_ frame: inout TrapFrame) {
+    frame.x0 = frame.x0 + 1
+}
+
+@boot
+func start() {}
+
+@stack_protector(.none)
+func hot(_ x: Int32) -> Int32 { return x }
+
+@stack_protector(.strong)
+func guarded(_ x: Int32) -> Int32 { return x }
+
+@inline(.always)
+func tiny(_ x: Int32) -> Int32 { return x + 1 }
+
+@inline(.never)
+func cold(_ x: Int32) -> Int32 { return x - 1 }
+
+@inline(.hint)
+func hinted(_ x: Int32) -> Int32 { return x * 2 }
+
+@inline(.always)
+func ident[T](_ v: T) -> T { return v }
+
+@panic_handler
+func onPanic(_ message: Str, _ file: StrConst, _ line: Int) -> Never {
+    abort()
+}
