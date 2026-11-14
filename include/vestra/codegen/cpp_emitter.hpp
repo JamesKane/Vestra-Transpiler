@@ -65,6 +65,11 @@ private:
     // when needed so it is a C++20 coroutine.
     void
     emit_async_void_coreturn(std::ostream& os, const ast::FuncDecl& f, const ast::BlockExpr& blk);
+    void
+    emit_unit_throws_return(std::ostream& os, const ast::FuncDecl& f, const ast::BlockExpr& blk);
+    static bool is_unit_result(const ast::FuncDecl& f);
+    static bool is_never_result(const ast::FuncDecl& f);
+    bool is_unit_typed(const ast::Expr& e) const;
     void emit_struct(std::ostream& hdr, const ast::StructDecl& s);
     void emit_enum(std::ostream& hdr, const ast::EnumDecl& e);
     // §12.3 derive(Hash): emit a `template <> struct std::hash<Q::T>`
@@ -284,6 +289,12 @@ private:
     // §11 — true while emitting an `async func` body, so a `return` lowers
     // to `co_return` (the function is a C++20 coroutine returning Task<T>).
     bool current_func_is_async_ = false;
+
+    // §9 — true while emitting the body of a Unit-returning `throws(E)`
+    // function (C++ `std::expected<void, E>`). A bare `return` must then
+    // carry the success value (`return {};`), and so must the end of the
+    // body (F9b). Cleared inside closures, whose `return` is their own.
+    bool current_func_unit_throws_ = false;
 
     // §18.5 — re-entry guard for the string-view→String coercion wrap, so the
     // `std::string(...)` wrap is emitted exactly once around the coerced expr.

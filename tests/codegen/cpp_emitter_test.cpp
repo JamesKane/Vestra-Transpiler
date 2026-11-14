@@ -3353,3 +3353,30 @@ TEST_CASE("@extern functions pass read parameters by value (Tier C)") {
     CHECK(f.out.source.find("std::uint64_t plain(const std::uint64_t& a) {")
           != std::string::npos);
 }
+
+TEST_CASE("a Unit-returning throws function always returns its success value (F9b)") {
+    // std::expected<void, E>: falling off the end is UB, a bare `return;` is
+    // ill-formed, and `*r` is void (no binding, no `std::optional{*r}`).
+    SemaEmitFixture f("enum No {\n    case dead\n}\n"
+                      "func check(_ x: Int32) throws(No) {\n"
+                      "    if x < 0 { throw No.dead }\n"
+                      "    if x == 0 { return }\n"
+                      "}\n"
+                      "func use(_ x: Int32) throws(No) -> Int32 {\n"
+                      "    try check(x)\n"
+                      "    try? check(x)\n"
+                      "    return x\n"
+                      "}\n");
+    CHECK(f.out.source.find("if (x == 0) { return {};") != std::string::npos);
+    CHECK(f.out.source.find("    return {};\n}") != std::string::npos);
+    CHECK(f.out.source.find("auto __vstr_t0 = *") == std::string::npos);
+    CHECK(f.out.source.find("    *__vstr_t0_r;") != std::string::npos);
+    CHECK(f.out.source.find("std::optional<std::monostate>{std::in_place}") != std::string::npos);
+}
+
+TEST_CASE("a -> Never function is declared [[noreturn]] (F9)") {
+    SemaEmitFixture f("func halt() -> Never { while true { } }\n"
+                      "func g() -> Int32 { halt() }\n");
+    CHECK(f.out.header.find("[[noreturn]] __vstr::Never halt();") != std::string::npos);
+    CHECK(f.out.header.find("[[nodiscard]] std::int32_t g();") != std::string::npos);
+}

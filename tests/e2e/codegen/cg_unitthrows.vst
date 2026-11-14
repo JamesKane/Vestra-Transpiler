@@ -1,0 +1,34 @@
+enum No {
+  case dead
+  case stale
+}
+func check(_ x: Int32) throws(No) {
+  if x < 0 { throw No.dead }
+  if x == 0 { return }
+}
+func check2(_ x: Int32) throws(No) {
+}
+func useIt(_ x: Int32) throws(No) -> Int32 {
+  try check(x)
+  let r = try? check(x)
+  return x
+}
+func halt() -> Never {
+  while true { }
+}
+func fail(_ m: Str) -> Never {
+  halt()
+}
+func g() -> Int32 {
+  halt()
+}
+func mixedForms(_ x: Int32) throws(No) {
+  try check(x + 1)
+  try? check(x)
+  if x > 3 { return }
+  try! check(x)
+}
+async func later(_ x: Int32) throws(No) {
+  if x < 0 { throw No.dead }
+  if x == 0 { return }
+}

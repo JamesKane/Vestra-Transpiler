@@ -264,6 +264,11 @@ void CppEmitter::emit_try_hoist(std::ostream& os, const TryHoist& h, int indent)
         os << "if (!" << r << ".has_value()) { "
            << (current_func_is_async_ ? "co_return" : "return") << " std::unexpected{" << r
            << ".error()}; }\n";
+        if (is_unit_typed(tx)) {
+            // §9 `*r` of a std::expected<void, E> is void: there is no value
+            // to bind (F9b). The use site reads `*r` directly.
+            return;
+        }
         write_indent(os, indent);
         // §10 move the unwrapped value out of the std::expected when it is
         // move-only (a Box-owning AST node, say) — `*expected` is an lvalue, so a

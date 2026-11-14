@@ -2782,3 +2782,37 @@ TEST_CASE("indexing a chunks result yields a mutable sub-view for a MutSpan") {
                        "}\n")
           == 0);
 }
+
+TEST_CASE("a -> Never function whose body can complete normally is rejected (F9)") {
+    auto r = check_detail("func bad() -> Never { }\n");
+    CHECK(r.error_count == 1);
+    CHECK(r.first_message.find("returns Never but its body can complete normally")
+          != std::string::npos);
+    // A `while true` that can `break` out of itself still completes.
+    CHECK(check_errors("func brk(_ c: Bool) -> Never {\n"
+                       "    while true { if c { break } }\n"
+                       "}\n")
+          == 1);
+    // An `if` without an `else` can fall through.
+    CHECK(check_errors("func halt() -> Never { while true { } }\n"
+                       "func half(_ c: Bool) -> Never {\n"
+                       "    if c { halt() }\n"
+                       "}\n")
+          == 1);
+}
+
+TEST_CASE("-> Never bodies that diverge are accepted (F9)") {
+    CHECK(check_errors("func halt() -> Never { while true { } }\n"
+                       "func viaCall(_ m: Str) -> Never { halt() }\n"
+                       "func viaPanic() -> Never { panic(\"no\") }\n"
+                       "func viaBranches(_ c: Bool) -> Never {\n"
+                       "    if c { halt() } else { panic(\"x\") }\n"
+                       "}\n"
+                       "func viaInnerBreak() -> Never {\n"
+                       "    while true { while true { break } }\n"
+                       "}\n"
+                       "func viaLet() -> Never {\n"
+                       "    let x: Int32 = halt()\n"
+                       "}\n")
+          == 0);
+}

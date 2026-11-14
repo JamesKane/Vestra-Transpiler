@@ -2216,6 +2216,15 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         ~AsyncRestore() { self->current_func_is_async_ = prev; }
     } _async_restore{this, prev_is_async};
 
+    // §9 Unit-returning throws: see current_func_unit_throws_.
+    const bool prev_unit_throws = current_func_unit_throws_;
+    current_func_unit_throws_ = f.effects.throws_type != nullptr && is_unit_result(f);
+    struct UnitThrowsRestore {
+        CppEmitter* self;
+        bool prev;
+        ~UnitThrowsRestore() { self->current_func_unit_throws_ = prev; }
+    } _unit_throws_restore{this, prev_unit_throws};
+
     // §7 generics: a Vestra generic function lowers to a C++ template. The
     // host compiler then monomorphizes per instantiation, which is what
     // Vestra semantically requires anyway. A const generic ([const N: Int])
@@ -2474,6 +2483,12 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
     // `[[nodiscard]]` is invalid on void-returning functions — emit it
     // only when there's a real result type or a `throws(E)` wrapper.
     const bool has_result = f.result != nullptr || f.effects.throws_type != nullptr;
+    // §4 a `-> Never` function never returns: `[[noreturn]]` tells the C++
+    // compiler so, which keeps a caller that ends in a Never call from
+    // "falling off the end" (F9). `[[nodiscard]]` is dropped for it, since
+    // a Never call is almost always a statement.
+    const bool never_returns = f.effects.throws_type == nullptr && is_never_result(f);
+    const char* result_attr = never_returns ? "[[noreturn]] " : "[[nodiscard]] ";
 
     // Templates must be visible at every instantiation site, so a generic
     // function lives entirely in the header. Non-generics keep the
@@ -2482,7 +2497,7 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         emit_template_prefix(hdr);
         emit_link_attr_prefix(hdr, link_attrs);
         if (has_result) {
-            hdr << "[[nodiscard]] ";
+            hdr << result_attr;
         }
         emit_inline_specifier(hdr, link_attrs);
         // Templates emit body inline in the header, so this is both
@@ -2504,6 +2519,7 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
                 emit_stmt(hdr, *s, 1);
             }
             emit_async_void_coreturn(hdr, f, blk);
+            emit_unit_throws_return(hdr, f, blk);
         } else {
             unsupported(hdr, "non-block function body", f.body->range);
         }
@@ -2513,7 +2529,7 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
 
     emit_link_attr_prefix(hdr, link_attrs);
     if (has_result) {
-        hdr << "[[nodiscard]] ";
+        hdr << result_attr;
     }
     emit_inline_specifier(hdr, link_attrs);
     emit_signature(hdr, /*is_decl=*/true);
@@ -2537,6 +2553,7 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
             emit_stmt(src, *s, 1);
         }
         emit_async_void_coreturn(src, f, blk);
+        emit_unit_throws_return(src, f, blk);
     } else {
         unsupported(src, "non-block function body", f.body->range);
     }
@@ -2549,7 +2566,9 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
 void CppEmitter::emit_async_void_coreturn(std::ostream& os,
                                           const ast::FuncDecl& f,
                                           const ast::BlockExpr& blk) {
-    if (!f.is_async || f.result != nullptr) {
+    // A throws fn returns Task<std::expected<void, E>>: emit_unit_throws_return
+    // supplies its `co_return {};` instead.
+    if (!f.is_async || f.result != nullptr || f.effects.throws_type != nullptr) {
         return;
     }
     const bool ends_in_return =
@@ -2558,6 +2577,58 @@ void CppEmitter::emit_async_void_coreturn(std::ostream& os,
         write_indent(os, 1);
         os << "co_return;\n";
     }
+}
+
+// §9 — a Unit-returning `throws(E)` function returns `std::expected<void, E>`,
+// so falling off the end of its body is undefined behaviour (F9b). Unless the
+// body already ends in a `return`, append the success value.
+void CppEmitter::emit_unit_throws_return(std::ostream& os,
+                                         const ast::FuncDecl& f,
+                                         const ast::BlockExpr& blk) {
+    if (f.effects.throws_type == nullptr || !is_unit_result(f)) {
+        return;
+    }
+    const bool ends_in_return =
+        !blk.stmts.empty() && blk.stmts.back()->kind == ast::NodeKind::ReturnStmt;
+    if (!ends_in_return) {
+        write_indent(os, 1);
+        os << (f.is_async ? "co_return {};\n" : "return {};\n");
+    }
+}
+
+bool CppEmitter::is_unit_typed(const ast::Expr& e) const {
+    if (resolution_ == nullptr) {
+        return false;
+    }
+    auto t = resolution_->type_of(&e);
+    if (t == nullptr) {
+        return false;
+    }
+    // A `try` types as its success value; the throws call it wraps types as
+    // Result[T, E], so look through that to T.
+    if (t->kind() == sema::TypeKind::Result) {
+        t = t->inner();
+    }
+    return t != nullptr && t->kind() == sema::TypeKind::Unit;
+}
+
+bool CppEmitter::is_never_result(const ast::FuncDecl& f) {
+    if (f.result == nullptr || f.result->kind != ast::NodeKind::NamedType) {
+        return false;
+    }
+    const auto& nt = static_cast<const ast::NamedType&>(*f.result);
+    return nt.path.size() == 1 && nt.path[0] == "Never" && !nt.has_generics;
+}
+
+bool CppEmitter::is_unit_result(const ast::FuncDecl& f) {
+    if (f.result == nullptr) {
+        return true;
+    }
+    if (f.result->kind != ast::NodeKind::NamedType) {
+        return false;
+    }
+    const auto& nt = static_cast<const ast::NamedType&>(*f.result);
+    return nt.path.size() == 1 && nt.path[0] == "Unit" && !nt.has_generics;
 }
 
 void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
@@ -3481,13 +3552,26 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         if (tx.form == ast::TryExpr::Form::Optional) {
             os << "([&]{ auto __vstr_r = ";
             emit_expr(os, *tx.inner);
-            os << "; return __vstr_r.has_value() ? std::optional{*__vstr_r} : std::nullopt; }())";
+            // §9 a Unit-returning callee has no value to wrap (`*r` is void),
+            // so `try?` yields an engaged `std::optional<std::monostate>`.
+            if (is_unit_typed(*tx.inner)) {
+                os << "; return __vstr_r.has_value() ? std::optional<std::monostate>{std::in_place}"
+                      " : std::nullopt; }())";
+            } else {
+                os << "; return __vstr_r.has_value() ? std::optional{*__vstr_r} : std::nullopt; }())";
+            }
             break;
         }
         // Propagating with a hoist registered → emit the hoisted name.
         if (tx.form == ast::TryExpr::Form::Propagating) {
             if (const auto* name = lookup_try_hoist(&tx)) {
-                os << *name;
+                // A Unit hoist binds no value (see emit_try_hoist): use the
+                // void `*r` of the std::expected<void, E> itself.
+                if (is_unit_typed(tx)) {
+                    os << "*" << *name << "_r";
+                } else {
+                    os << *name;
+                }
                 break;
             }
         }
@@ -5286,6 +5370,10 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             os << " " << cx.params[i];
         }
         os << ") { ";
+        // A `return` in the closure body returns from the lambda, not from
+        // the enclosing (possibly Unit-throws) function.
+        const bool prev_unit_throws = current_func_unit_throws_;
+        current_func_unit_throws_ = false;
         for (std::size_t i = 0; i < cx.body.size(); ++i) {
             const auto& s = *cx.body[i];
             bool last = (i + 1 == cx.body.size());
@@ -5300,6 +5388,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << tmp.str();
             }
         }
+        current_func_unit_throws_ = prev_unit_throws;
         os << " }";
         break;
     }

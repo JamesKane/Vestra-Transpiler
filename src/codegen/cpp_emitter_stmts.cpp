@@ -209,7 +209,10 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         if (r.value) {
             emit_stmt_expr(os, *r.value, /*return_value=*/true);
         } else {
-            os << (current_func_is_async_ ? "co_return;\n" : "return;\n");
+            // §9 a Unit throws fn returns std::expected<void, E>: a bare
+            // return must still produce the success value (F9b).
+            const char* tail = current_func_unit_throws_ ? " {};\n" : ";\n";
+            os << (current_func_is_async_ ? "co_return" : "return") << tail;
         }
         break;
     }

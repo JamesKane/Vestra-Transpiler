@@ -683,9 +683,136 @@ void Resolver::check_func(const ast::FuncDecl& f) {
         }
     }
 
+    // §4 a `-> Never` function must not return at all: an explicit `return`
+    // is a type error above, and falling off the end of the body is caught
+    // here (F9). The C++ side is `[[noreturn]]`, so this is UB otherwise.
+    if (expected_result != nullptr && expected_result->is_never() && !expr_diverges(*f.body)) {
+        error_at(f.body->range,
+                 std::format("function '{}' returns Never but its body can complete normally; "
+                             "end it with a call to a Never function, `panic(...)`, or a loop "
+                             "that doesn't exit",
+                             f.name));
+    }
+
     return_stack_.pop_back();
     throws_stack_.pop_back();
     do_catch_infer_stack_ = std::move(saved_infer);
+}
+
+namespace {
+
+// True when `body` holds a `break` that leaves the loop it belongs to: an
+// unlabeled break outside any nested loop, or a break naming `label`.
+// Closures are their own control context and are not entered.
+bool breaks_out(const ast::Node& n, std::string_view label, bool nested);
+
+bool expr_breaks_out(const ast::Expr* e, std::string_view label, bool nested) {
+    return e != nullptr && breaks_out(*e, label, nested);
+}
+
+bool breaks_out(const ast::Node& n, std::string_view label, bool nested) {
+    switch (n.kind) {
+    case ast::NodeKind::BreakStmt: {
+        const auto& b = static_cast<const ast::BreakStmt&>(n);
+        return b.label.empty() ? !nested : b.label == label;
+    }
+    case ast::NodeKind::BlockExpr:
+        for (const auto& s : static_cast<const ast::BlockExpr&>(n).stmts) {
+            if (breaks_out(*s, label, nested)) {
+                return true;
+            }
+        }
+        return false;
+    case ast::NodeKind::ExprStmt:
+        return expr_breaks_out(static_cast<const ast::ExprStmt&>(n).expr.get(), label, nested);
+    case ast::NodeKind::IfExpr: {
+        const auto& i = static_cast<const ast::IfExpr&>(n);
+        return expr_breaks_out(i.then_branch.get(), label, nested)
+               || expr_breaks_out(i.else_branch.get(), label, nested);
+    }
+    case ast::NodeKind::MatchExpr:
+        for (const auto& a : static_cast<const ast::MatchExpr&>(n).arms) {
+            if (expr_breaks_out(a.body.get(), label, nested)) {
+                return true;
+            }
+        }
+        return false;
+    case ast::NodeKind::WhileStmt:
+        return expr_breaks_out(static_cast<const ast::WhileStmt&>(n).body.get(), label, true);
+    case ast::NodeKind::ForStmt:
+        return expr_breaks_out(static_cast<const ast::ForStmt&>(n).body.get(), label, true);
+    case ast::NodeKind::WithStmt:
+        return expr_breaks_out(static_cast<const ast::WithStmt&>(n).body.get(), label, nested);
+    default:
+        return false;
+    }
+}
+
+}  // namespace
+
+bool Resolver::expr_diverges(const ast::Expr& e) const {
+    if (auto t = resolution_.type_of(&e); t != nullptr && t->is_never()) {
+        return true;
+    }
+    switch (e.kind) {
+    case ast::NodeKind::BlockExpr:
+        for (const auto& s : static_cast<const ast::BlockExpr&>(e).stmts) {
+            if (stmt_diverges(*s)) {
+                return true;
+            }
+        }
+        return false;
+    case ast::NodeKind::IfExpr: {
+        const auto& i = static_cast<const ast::IfExpr&>(e);
+        return i.then_branch != nullptr && i.else_branch != nullptr
+               && expr_diverges(*i.then_branch) && expr_diverges(*i.else_branch);
+    }
+    case ast::NodeKind::MatchExpr: {
+        const auto& m = static_cast<const ast::MatchExpr&>(e);
+        if (m.arms.empty()) {
+            return false;
+        }
+        for (const auto& a : m.arms) {
+            if (a.body == nullptr || !expr_diverges(*a.body)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+bool Resolver::stmt_diverges(const ast::Stmt& s) const {
+    switch (s.kind) {
+    case ast::NodeKind::ReturnStmt:
+        return true;
+    case ast::NodeKind::ExprStmt: {
+        const auto& es = static_cast<const ast::ExprStmt&>(s);
+        return es.expr != nullptr && expr_diverges(*es.expr);
+    }
+    case ast::NodeKind::LetStmt: {
+        const auto& l = static_cast<const ast::LetStmt&>(s);
+        return l.value != nullptr && expr_diverges(*l.value);
+    }
+    case ast::NodeKind::VarStmt: {
+        const auto& v = static_cast<const ast::VarStmt&>(s);
+        return v.value != nullptr && expr_diverges(*v.value);
+    }
+    case ast::NodeKind::WhileStmt: {
+        const auto& w = static_cast<const ast::WhileStmt&>(s);
+        const bool forever = w.cond != nullptr && w.cond->kind == ast::NodeKind::BoolLit
+                             && static_cast<const ast::BoolLit&>(*w.cond).value;
+        return forever && !expr_breaks_out(w.body.get(), w.label, false);
+    }
+    case ast::NodeKind::WithStmt: {
+        const auto& ws = static_cast<const ast::WithStmt&>(s);
+        return ws.body != nullptr && expr_diverges(*ws.body);
+    }
+    default:
+        return false;
+    }
 }
 
 TypePtr Resolver::check_block_expr(const ast::BlockExpr& b, TypePtr expected) {

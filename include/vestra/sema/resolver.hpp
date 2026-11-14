@@ -164,6 +164,12 @@ private:
     // ---- pass 2: resolve bodies ------------------------------------------
     void check_decl(const ast::Decl& d);
     void check_func(const ast::FuncDecl& f);
+    // §4 `-> Never`: conservative "cannot complete normally" over a checked
+    // body (F9). Diverging: `return`, a Never-typed expression (a call to a
+    // Never function, `panic`, `throw`), `while true` with no `break` out of
+    // it, and an `if`/`else` or `match` whose every branch diverges.
+    [[nodiscard]] bool stmt_diverges(const ast::Stmt& s) const;
+    [[nodiscard]] bool expr_diverges(const ast::Expr& e) const;
 
     // §A1 (§6.7): validate shapes of the link-attribute family —
     // @section / @symbol / @alias / @weak / @noinit / @visibility.

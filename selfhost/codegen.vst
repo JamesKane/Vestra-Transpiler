@@ -3014,6 +3014,7 @@ struct TyEnv {
     var armTo: String           // per-match: Vestra type SPELLING an arm body flows into ("" if none) — resolves a leading-dot case in an arm
     var curThrowsNode: Vec[Nd]  // per-function: the `throws(E)` type node (empty when the function does not throw)
     var curAsync: Bool          // per-function: enclosing function is `async` (returns lower to co_return)
+    var curUnitThrows: Bool     // per-function: Unit-returning `throws(E)` (std::expected<void, E>): a bare return is `return {};` (F9b)
     var curAttrs: Vec[Nd]       // per-declaration: the top-level func / static being emitted's attributes
     var imports: Vec[String]    // global: imported module paths (a member base naming one qualifies with `::`)
     var hasModule: Bool         // global: unit declares `module ...` (an entry `main` only exists OUTSIDE a module)
@@ -5185,6 +5186,7 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     condUse: own(""), condTy: Vec.new(), condTyStr: own(""), armTo: own(""),
                     curThrowsNode: Vec.new(),
                     curAsync: false,
+                    curUnitThrows: false,
                     imports: Vec.new(),
                     hasModule: u.hasMod,
                     tpN: 0,
@@ -6377,6 +6379,7 @@ func emitMethodDef(_ env: inout TyEnv, _ owner: Str, _ mods: Str, _ name: Str, _
     let noThrows: Vec[Nd] = Vec.new()
     tySetThrowsNode(&env, noThrows)
     env.curAsync = false
+    env.curUnitThrows = false
     if body.len() > 0 { emitBlockStmts(env, body.get(0) ?? Nd.wildcard, "        ") }
     print("    }\n")
 }
@@ -6542,7 +6545,7 @@ func emitTemplateFunc(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: 
     emitRequiresClause(gens)
     let attrs = ndsCopy(env.curAttrs)
     emitLinkPrefix(attrs)
-    if res.len() > 0 || thr.len() > 0 { print("[[nodiscard]] ") }
+    emitResultAttr(thr, res)
     emitInlineSpec(attrs)
     emitFunc(env, mods, name, params, thr, res, body)
 }
@@ -6633,7 +6636,7 @@ func genName(_ g: Nd) using Alloc -> String {
 func emitFwdDecl(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
     let attrs = ndsCopy(env.curAttrs)
     emitLinkPrefix(attrs)
-    if res.len() > 0 || thr.len() > 0 { print("[[nodiscard]] ") }
+    emitResultAttr(thr, res)
     emitInlineSpec(attrs)
     emitTaskRet(isAsyncMods(mods), thr, res)
     print(" ")
@@ -6670,11 +6673,44 @@ func emitFunc(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd], _
     tySetRetNode(&env, res)
     tySetThrowsNode(&env, thr)
     env.curAsync = isA
+    env.curUnitThrows = thr.len() > 0 && isUnitRes(res)
     if isEntryMain(env, name) { print("    __vstr::args_init(argc, argv);\n") }
     emitTupleParamPrologue(env, params)
     emitBody(env, body)
-    if isA && res.len() == 0 && !blockEndsInReturn(body) { print("    co_return;\n") }
+    if isA && res.len() == 0 && thr.len() == 0 && !blockEndsInReturn(body) { print("    co_return;\n") }
+    // §9 a Unit throws fn returns std::expected<void, E>: falling off the end
+    // must still produce the success value (F9b).
+    if env.curUnitThrows && !blockEndsInReturn(body) {
+        if isA { print("    co_return {};\n") } else { print("    return {};\n") }
+    }
+    env.curUnitThrows = false
     print("}\n\n")
+}
+
+// An omitted result, or a written `-> Unit`.
+func isUnitRes(_ res: Vec[Nd]) using Alloc -> Bool {
+    if res.len() == 0 { return true }
+    return isNamedTy(res, "Unit")
+}
+
+// A written `-> Never` (the function lowers `[[noreturn]]`, F9).
+func isNeverRes(_ res: Vec[Nd]) using Alloc -> Bool {
+    return isNamedTy(res, "Never")
+}
+
+func isNamedTy(_ ty: Vec[Nd], _ want: Str) using Alloc -> Bool {
+    if ty.len() == 0 { return false }
+    return match ty.get(0) ?? Nd.wildcard {
+        case .named(let path, let hasG, let args): streq(path, want) && !hasG
+        default: false
+    }
+}
+
+// `[[noreturn]]` for a non-throwing `-> Never`, else `[[nodiscard]]` when the
+// result is written or the function throws (the bootstrap's result_attr).
+func emitResultAttr(_ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
+    if thr.len() == 0 && isNeverRes(res) { print("[[noreturn]] "); return }
+    if res.len() > 0 || thr.len() > 0 { print("[[nodiscard]] ") }
 }
 
 // §6 a tuple-pattern parameter (`(a, b): (A, B)`) arrives as `__vstr_arg<i>`
@@ -7470,6 +7506,16 @@ func emitStmtHoists(_ env: inout TyEnv, _ indent: Str) using Alloc, Log {
 
 // The canonical 3-line escape: evaluate the fallible call into `<n>_r`,
 // re-propagate its error, unwrap the success value into `<n>`.
+// A `try` operand whose callee returns Unit (a void std::expected).
+func isUnitTry(_ env: inout TyEnv, _ ex: Nd) using Alloc -> Bool {
+    return streq(tyInfer(env, ex), "Unit")
+}
+
+func isUnitTryBoxed(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc -> Bool {
+    if v.len() == 0 { return false }
+    return isUnitTry(env, v.get(0) ?? Nd.wildcard)
+}
+
 func emitTryHoistEntry(_ env: inout TyEnv, _ indent: Str, _ nm: Str, _ ex: Nd) using Alloc, Log {
     print(indent)
     print("auto ")
@@ -7485,6 +7531,9 @@ func emitTryHoistEntry(_ env: inout TyEnv, _ indent: Str, _ nm: Str, _ ex: Nd) u
     print(" std::unexpected{")
     print(nm)
     print("_r.error()}; }\n")
+    // §9 `*r` of a std::expected<void, E> is void: no value to bind (F9b);
+    // the use site reads `*<n>_r` directly.
+    if isUnitTry(env, ex) { return }
     // §10 move the unwrapped value out of the std::expected when it is
     // move-only — `*r` is an lvalue, so a plain copy is a hard error.
     print(indent)
@@ -8539,6 +8588,7 @@ func emitReturn(_ env: inout TyEnv, _ indent: Str, _ v: Vec[Nd]) using Alloc, Lo
     print(indent)
     emitRetKw(env)
     if v.len() > 0 { print(" "); emitReturnValue(env, v) }
+    else if env.curUnitThrows { print(" {}") }   // std::expected<void, E> success (F9b)
     print(";\n")
 }
 
@@ -9739,6 +9789,7 @@ func emitExpr(_ env: inout TyEnv, _ e: Nd) using Alloc, Log {
 func emitPrefixE(_ env: inout TyEnv, _ kw: Str, _ inner: Vec[Nd]) using Alloc, Log {
     if streq(kw, "try ") {
         let nm = takeHoistName(&env)
+        if !streq(nm, "") && isUnitTryBoxed(env, inner) { print("*"); print(nm); print("_r"); return }
         if !streq(nm, "") { print(nm); return }
         emitUnwrapExp(env, inner)
         return
@@ -9747,7 +9798,12 @@ func emitPrefixE(_ env: inout TyEnv, _ kw: Str, _ inner: Vec[Nd]) using Alloc, L
     if streq(kw, "try? ") {
         print("([&]{ auto __vstr_r = ")
         emitBoxed(env, inner)
-        print("; return __vstr_r.has_value() ? std::optional{*__vstr_r} : std::nullopt; }())")
+        if isUnitTryBoxed(env, inner) {
+            // A Unit callee has no value to wrap (F9b).
+            print("; return __vstr_r.has_value() ? std::optional<std::monostate>{std::in_place} : std::nullopt; }())")
+        } else {
+            print("; return __vstr_r.has_value() ? std::optional{*__vstr_r} : std::nullopt; }())")
+        }
         return
     }
     if streq(kw, "await ") {
@@ -11739,7 +11795,11 @@ func emitClosure(_ env: inout TyEnv, _ cparams: Vec[Nd], _ body: Vec[Nd], _ ptyp
     print(") { ")
     let outer = elemBoxCopy(env.curRetNode)
     if resTy.len() > 0 { tySetRetNode(&env, resTy) }
+    // A closure's `return` is its own, not the enclosing Unit throws fn's.
+    let outerUnitThrows = env.curUnitThrows
+    env.curUnitThrows = false
     emitClosureBody(env, body, resTy)
+    env.curUnitThrows = outerUnitThrows
     tySetRetNode(&env, outer)
     print(" }")
 }
