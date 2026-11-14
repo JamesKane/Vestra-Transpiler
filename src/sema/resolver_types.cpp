@@ -33,6 +33,19 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
     switch (t.kind) {
     case ast::NodeKind::NamedType: {
         const auto& n = static_cast<const ast::NamedType&>(t);
+        // §15.5 the heap-backed library types need the hosted runtime.
+        if (target_.freestanding && n.path.size() == 1
+            && (n.path[0] == "String" || n.path[0] == "Vec" || n.path[0] == "Box"
+                || n.path[0] == "HashMap" || n.path[0] == "Channel")
+            && scopes_.current().lookup(n.path[0]) == nullptr) {
+            if (hosted_reported_.insert(t.range.begin.offset).second) {
+                error_at(t.range,
+                         std::format("`{}` needs the hosted runtime (a heap), which a --no-libc "
+                                     "build doesn't have",
+                                     n.path[0]));
+            }
+            return types_->error();
+        }
         if (n.path.size() == 1) {
             // §10 builtin `Box[T]` — the unique-ownership heap pointer.
             // Recognized here before generic-symbol lookup so it never

@@ -95,6 +95,11 @@ private:
 struct TargetContext {
     std::string arch = "host";
     std::vector<std::string> features;
+    // §15.5 `--no-libc`: no hosted runtime behind the program, so the
+    // capabilities and types that need one (heap, logging, files, async,
+    // clock, network, randomness) are rejected in Vestra, not left to the
+    // C++ compiler.
+    bool freestanding = false;
 
     [[nodiscard]] bool has_feature(std::string_view name) const noexcept {
         for (const auto& f : features) {
@@ -200,6 +205,11 @@ private:
     void check_asm(const ast::AsmStmt& a);
     // §14.7 a @naked (or @boot) body is operand-free asm only.
     void check_naked_body(const ast::FuncDecl& f);
+    // §15.5 a hosted-runtime capability or type under --no-libc.
+    [[nodiscard]] static bool needs_hosted_runtime(std::string_view cap);
+    // One report per source position (a parameter type resolves more than once).
+    std::unordered_set<std::size_t> hosted_reported_;
+    void reject_hosted_cap(std::string_view cap, diag::SourceRange r);
     // §14.5 interrupt-handler body rules.
     [[nodiscard]] bool in_interrupt_handler() const;
     void check_interrupt_static_write(const ast::Expr& target, diag::SourceRange site);

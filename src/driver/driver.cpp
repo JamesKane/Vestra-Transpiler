@@ -661,7 +661,7 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
         return 1;
     }
 
-    const sema::TargetContext target_ctx{opts.target, opts.target_features};
+    const sema::TargetContext target_ctx{opts.target, opts.target_features, opts.no_libc};
     if (!opts.emit_only) {
         fs::create_directories(opts.out_dir);
     }

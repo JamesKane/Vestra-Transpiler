@@ -2766,7 +2766,7 @@ set(fs_workdir ${e2e_workdir}/_freestanding)
 set(fs_flags_str "-ffreestanding -nostdlibinc -fno-exceptions -fno-rtti -std=c++26 -O2")
 foreach(prog hello mmio mmio_wire mmio_union sysreg cache_tlb sync_intrinsics atomics
              interrupt_handler panic_handler panic link_attrs layout inline_layout padded per_cpu
-             boot_chain no_auto_barrier raw_mint mem_intrinsics stack_protector result docatch
+             no_auto_barrier raw_mint mem_intrinsics stack_protector result docatch
              generic_enum match tuples optional spans chunks_demo iter_combinators derive_eq
              derive_hash)
     add_test(
@@ -2883,6 +2883,14 @@ add_test(
     COMMAND sh -c "printf 'struct F {\\n    var pc: UInt64\\n}\\n@interrupt\\nfunc h(_ f: inout F) {\\n    f.pc = 0\\n}\\nstatic t: [2]@interrupt(F) = [h, h]\\n' > ${e2e_workdir}/vt_bad.vst && $<TARGET_FILE:vestra> build ${e2e_workdir}/vt_bad.vst --no-libc -o ${e2e_workdir}/_vt_bad 2>&1; true")
 set_tests_properties(e2e_vectable_frame_fields PROPERTIES
     PASS_REGULAR_EXPRESSION "lacks the fields the compiler-emitted vector table saves into: x: \\[31\\]UInt64, sp: UInt64")
+
+# §15.5 under --no-libc the hosted-runtime capabilities and heap types are
+# Vestra errors (examples/boot_chain's `using Alloc` init needs a hosted heap).
+add_test(
+    NAME    e2e_nolibc_rejects_hosted
+    COMMAND sh -c "$<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/examples/boot_chain.vst --no-libc -o ${e2e_workdir}/_nolibc_bc 2>&1; true")
+set_tests_properties(e2e_nolibc_rejects_hosted PROPERTIES
+    PASS_REGULAR_EXPRESSION "`Alloc` needs the hosted runtime, which a --no-libc build")
 
 # §5 visibility: referencing a non-public (internal) decl of an imported module
 # must fail to resolve. `vestra check` is expected to exit non-zero.

@@ -660,6 +660,19 @@ void Resolver::check_func(const ast::FuncDecl& f) {
     do_catch_infer_stack_.clear();
 
     check_naked_body(f);
+    if (target_.freestanding) {
+        for (const auto& cap : f.effects.using_caps) {
+            if (cap != nullptr && cap->kind == ast::NodeKind::NamedType) {
+                const auto& nt = static_cast<const ast::NamedType&>(*cap);
+                if (!nt.path.empty()) {
+                    reject_hosted_cap(nt.path.back(), cap->range);
+                }
+            }
+        }
+        if (f.is_async) {
+            reject_hosted_cap("Async", f.range);
+        }
+    }
     const auto* prev_func = current_func_;
     current_func_ = &f;
     struct FuncRestore {
@@ -1054,6 +1067,21 @@ void Resolver::check_asm(const ast::AsmStmt& a) {
     }
 }
 
+bool Resolver::needs_hosted_runtime(std::string_view cap) {
+    return cap == "Alloc" || cap == "Log" || cap == "Async" || cap == "Fs" || cap == "Net"
+           || cap == "Clock" || cap == "Rand";
+}
+
+void Resolver::reject_hosted_cap(std::string_view cap, diag::SourceRange r) {
+    if (!needs_hosted_runtime(cap) || !hosted_reported_.insert(r.begin.offset).second) {
+        return;
+    }
+    error_at(r,
+             std::format("`{}` needs the hosted runtime, which a --no-libc build doesn't have "
+                         "(no heap, logging, files, async, clock, network or randomness)",
+                         cap));
+}
+
 bool Resolver::in_interrupt_handler() const {
     return current_func_ != nullptr
            && std::ranges::any_of(current_func_->attributes,
@@ -1374,6 +1402,16 @@ void Resolver::check_stmt(const ast::Stmt& s) {
         // binding into the scope at the value's type; then recurse
         // into the body.
         const auto& w = static_cast<const ast::WithStmt&>(s);
+        if (target_.freestanding) {
+            for (const auto& b : w.bindings) {
+                if (b.cap_type != nullptr && b.cap_type->kind == ast::NodeKind::NamedType) {
+                    const auto& nt = static_cast<const ast::NamedType&>(*b.cap_type);
+                    if (!nt.path.empty()) {
+                        reject_hosted_cap(nt.path.back(), b.cap_type->range);
+                    }
+                }
+            }
+        }
         // §14.5 an interrupt handler has no heap, no awaits and no FFI: it
         // can't open them with `with` any more than declare them with `using`
         // (and a call that needs one then has nothing to resolve it).
