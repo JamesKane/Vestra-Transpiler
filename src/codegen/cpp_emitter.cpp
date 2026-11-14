@@ -4,6 +4,7 @@
 #include "vestra/codegen/cpp_emitter.hpp"
 
 #include "cpp_emitter_internal.hpp"
+#include "vestra/sema/sysregs.hpp"
 
 #include <algorithm>
 #include <format>
@@ -2463,15 +2464,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 const auto& base_mem = static_cast<const ast::MemberExpr&>(*mem.base);
                 if (base_mem.base != nullptr && base_mem.base->kind == ast::NodeKind::IdentExpr) {
                     const auto& root = static_cast<const ast::IdentExpr&>(*base_mem.base);
-                    static const std::unordered_set<std::string_view> gated_writes = {
-                        "sctlr_el1",
-                        "vbar_el1",
-                        "ttbr0_el1",
-                        "ttbr1_el1",
-                        "tcr_el1",
-                        "mair_el1",
-                    };
-                    if (root.name == "Sysreg" && gated_writes.contains(base_mem.member)
+                    if (root.name == "Sysreg" && sema::sysreg_write_is_gated(base_mem.member)
                         && !current_no_auto_barrier_) {
                         os << "__vstr::sysreg::write_" << base_mem.member << "(";
                         emit_expr(os, *c.args[0].value);

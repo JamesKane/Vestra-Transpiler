@@ -9,6 +9,8 @@
 
 #include "cpp_emitter_internal.hpp"
 
+#include "vestra/sema/sysregs.hpp"
+
 #include <array>
 #include <ostream>
 #include <string_view>
@@ -1193,54 +1195,14 @@ struct SelectAwaiter {
     hdr << "    [[nodiscard]] T read() const noexcept { return cell; }\n";
     hdr << "    void write(T v) noexcept { cell = v; }\n";
     hdr << "};\n";
-    // Canonical aarch64 EL1 subset for v0.5. Each instance lives at
-    // file scope with `inline` so multi-TU builds share one storage
-    // cell per sysreg. Zero-initialized at static-init; the kernel
-    // target replaces these with the architectural register's own
-    // power-on / reset value.
-    // §14.12.2 — keep this list in lock-step with the resolver's
-    // sysregs_ro + sysregs_rw sets. Hosted v0.5 backs each register
-    // with a static cell; the kernel target replaces the Handle
-    // template's read/write methods with the architectural
-    // instruction per arch (mrs/msr on aarch64, rdmsr/wrmsr on
-    // x86_64, csrr/csrw on RISC-V).
-    static const std::array<std::string_view, 29> sysreg_names = {
-        // aarch64 EL1 — read-only
-        "midr_el1",
-        "mpidr_el1",
-        "cntfrq_el0",
-        "cntpct_el0",
-        "dczid_el0",
-        // aarch64 EL1 — read-write
-        "daif",
-        "sctlr_el1",
-        "vbar_el1",
-        "ttbr0_el1",
-        "ttbr1_el1",
-        "tcr_el1",
-        "mair_el1",
-        "esr_el1",
-        "far_el1",
-        "elr_el1",
-        "spsr_el1",
-        "tpidr_el1",
-        // x86_64 MSRs
-        "ia32_efer",
-        "ia32_lstar",
-        "ia32_apic_base",
-        "ia32_pat",
-        // RISC-V S-mode CSRs
-        "sstatus",
-        "sie",
-        "stvec",
-        "sscratch",
-        "sepc",
-        "scause",
-        "stval",
-        "satp",
-    };
-    for (const auto& name : sysreg_names) {
-        hdr << "inline Handle<std::uint64_t> " << name << ";\n";
+    // One cell per register in the target table (vestra/sema/sysregs.hpp).
+    // Each instance lives at file scope with `inline` so multi-TU builds
+    // share one storage cell per register, zero-initialized at static init.
+    // Hosted, a register is only a cell, so e2e tests can check round trips
+    // without privileged access; the freestanding prelude lowers each to its
+    // architectural instruction instead.
+    for (const auto& r : sema::sysreg_table()) {
+        hdr << "inline Handle<std::uint64_t> " << r.name << ";\n";
     }
 
     // §14.12.3 auto-emitted post-write barrier. The aarch64 target
@@ -1261,23 +1223,15 @@ struct SelectAwaiter {
     hdr << "    std::atomic_thread_fence(std::memory_order_seq_cst);\n";
     hdr << "#endif\n";
     hdr << "}\n";
-    // §14.12.3 aarch64 EL1 sysregs that require ISB on the trailing
-    // edge — control / TLB / vector-base / memory-attribute sysregs
-    // whose retire affects fetch / decode state. ttbr1_el1 + tcr_el1
-    // + mair_el1 join sctlr_el1 / vbar_el1 / ttbr0_el1 here because
-    // they all change the MMU's view of mappings or attributes;
-    // subsequent fetches need to see the new state, hence the ISB.
-    static const std::array<std::string_view, 6> gated_writes = {
-        "sctlr_el1",
-        "vbar_el1",
-        "ttbr0_el1",
-        "ttbr1_el1",
-        "tcr_el1",
-        "mair_el1",
-    };
-    for (const auto& name : gated_writes) {
-        hdr << "inline void write_" << name << "(std::uint64_t v) noexcept {\n";
-        hdr << "    " << name << ".write(v);\n";
+    // §14.12.3 the registers whose writes change translation, exception or
+    // interrupt-routing context get a `write_<name>` wrapper that pairs the
+    // write with the barrier (the table's sync_after_write column).
+    for (const auto& r : sema::sysreg_table()) {
+        if (!r.sync_after_write) {
+            continue;
+        }
+        hdr << "inline void write_" << r.name << "(std::uint64_t v) noexcept {\n";
+        hdr << "    " << r.name << ".write(v);\n";
         hdr << "    post_write_barrier();\n";
         hdr << "}\n";
     }
@@ -1973,52 +1927,27 @@ inline PanicHandlerFn panic_handler = nullptr;
 // `mrs` / `rdmsr` / `csrr`, and a register from another architecture is a
 // deleted function. `Handle<T>` (the type of a SysregHandle value) carries
 // the register's id and dispatches on it.
-struct SysregInfo {
-    std::string_view name;
-    std::string_view arch;  // the guarding macro
-    bool writable;
-    std::string_view msr;   // x86_64 MSR number; empty elsewhere
-};
+using sema::SysregAccess;
+using sema::SysregInfo;
 
-constexpr std::array<SysregInfo, 29> kSysregs = {{
-    {"midr_el1", "__aarch64__", false, ""},
-    {"mpidr_el1", "__aarch64__", false, ""},
-    {"cntfrq_el0", "__aarch64__", false, ""},
-    {"cntpct_el0", "__aarch64__", false, ""},
-    {"dczid_el0", "__aarch64__", false, ""},
-    {"daif", "__aarch64__", true, ""},
-    {"sctlr_el1", "__aarch64__", true, ""},
-    {"vbar_el1", "__aarch64__", true, ""},
-    {"ttbr0_el1", "__aarch64__", true, ""},
-    {"ttbr1_el1", "__aarch64__", true, ""},
-    {"tcr_el1", "__aarch64__", true, ""},
-    {"mair_el1", "__aarch64__", true, ""},
-    {"esr_el1", "__aarch64__", true, ""},
-    {"far_el1", "__aarch64__", true, ""},
-    {"elr_el1", "__aarch64__", true, ""},
-    {"spsr_el1", "__aarch64__", true, ""},
-    {"tpidr_el1", "__aarch64__", true, ""},
-    {"ia32_efer", "__x86_64__", true, "0xC0000080u"},
-    {"ia32_lstar", "__x86_64__", true, "0xC0000082u"},
-    {"ia32_apic_base", "__x86_64__", true, "0x1Bu"},
-    {"ia32_pat", "__x86_64__", true, "0x277u"},
-    {"sstatus", "__riscv", true, ""},
-    {"sie", "__riscv", true, ""},
-    {"stvec", "__riscv", true, ""},
-    {"sscratch", "__riscv", true, ""},
-    {"sepc", "__riscv", true, ""},
-    {"scause", "__riscv", true, ""},
-    {"stval", "__riscv", true, ""},
-    {"satp", "__riscv", true, ""},
-}};
+// The preprocessor macro that selects a register's architecture.
+std::string_view arch_macro(std::string_view arch) {
+    if (arch == "aarch64") {
+        return "__aarch64__";
+    }
+    if (arch == "x86_64") {
+        return "__x86_64__";
+    }
+    return "__riscv";
+}
 
 void emit_sysreg_read(std::ostream& hdr, const SysregInfo& r) {
     hdr << "    [[nodiscard]] std::uint64_t read() const noexcept {\n";
-    if (r.arch == "__aarch64__") {
+    if (r.arch == "aarch64") {
         hdr << "        std::uint64_t v;\n";
         hdr << "        __asm__ volatile(\"mrs %0, " << r.name << "\" : \"=r\"(v));\n";
         hdr << "        return v;\n";
-    } else if (r.arch == "__x86_64__") {
+    } else if (r.arch == "x86_64") {
         hdr << "        std::uint32_t lo, hi;\n";
         hdr << "        __asm__ volatile(\"rdmsr\" : \"=a\"(lo), \"=d\"(hi) : \"c\"(" << r.msr << "));\n";
         hdr << "        return (static_cast<std::uint64_t>(hi) << 32) | lo;\n";
@@ -2032,9 +1961,9 @@ void emit_sysreg_read(std::ostream& hdr, const SysregInfo& r) {
 
 void emit_sysreg_write(std::ostream& hdr, const SysregInfo& r) {
     hdr << "    void write(std::uint64_t v) noexcept {\n";
-    if (r.arch == "__aarch64__") {
+    if (r.arch == "aarch64") {
         hdr << "        __asm__ volatile(\"msr " << r.name << ", %0\" :: \"r\"(v) : \"memory\");\n";
-    } else if (r.arch == "__x86_64__") {
+    } else if (r.arch == "x86_64") {
         hdr << "        __asm__ volatile(\"wrmsr\" :: \"c\"(" << r.msr
             << "), \"a\"(static_cast<std::uint32_t>(v)), \"d\"(static_cast<std::uint32_t>(v >> 32)) : "
                "\"memory\");\n";
@@ -2044,20 +1973,22 @@ void emit_sysreg_write(std::ostream& hdr, const SysregInfo& r) {
     hdr << "    }\n";
 }
 
-std::string_view arch_label(std::string_view macro) {
-    if (macro == "__aarch64__") {
-        return "aarch64";
-    }
-    if (macro == "__x86_64__") {
-        return "x86_64";
-    }
-    return "RISC-V";
+std::string_view arch_label(std::string_view arch) {
+    return arch == "riscv64" ? "RISC-V" : arch;
+}
+
+bool readable(const SysregInfo& r) {
+    return r.access != SysregAccess::WriteOnly;
+}
+bool writable(const SysregInfo& r) {
+    return r.access != SysregAccess::ReadOnly;
 }
 
 void emit_freestanding_sysregs(std::ostream& hdr) {
+    const auto& table = sema::sysreg_table();
     hdr << "namespace sysreg {\n";
     hdr << "enum class Reg : unsigned {\n";
-    for (const auto& r : kSysregs) {
+    for (const auto& r : table) {
         hdr << "    " << r.name << ",\n";
     }
     hdr << "};\n";
@@ -2067,17 +1998,22 @@ void emit_freestanding_sysregs(std::ostream& hdr) {
     hdr << "    [[nodiscard]] T read() const noexcept;\n";
     hdr << "    void write(T v) noexcept;\n";
     hdr << "};\n\n";
-    for (const auto& r : kSysregs) {
+    for (const auto& r : table) {
         hdr << "struct " << r.name << "_t {\n";
-        hdr << "#if defined(" << r.arch << ")\n";
-        emit_sysreg_read(hdr, r);
-        if (r.writable) {
+        hdr << "#if defined(" << arch_macro(r.arch) << ")\n";
+        if (readable(r)) {
+            emit_sysreg_read(hdr, r);
+        } else {
+            hdr << "    std::uint64_t read() const noexcept VESTRA_UNLOWERED(\"" << r.name
+                << " is write-only\");\n";
+        }
+        if (writable(r)) {
             emit_sysreg_write(hdr, r);
         }
         hdr << "#else\n";
         hdr << "    std::uint64_t read() const noexcept VESTRA_UNLOWERED(\"" << r.name << " is an "
             << arch_label(r.arch) << " register\");\n";
-        if (r.writable) {
+        if (writable(r)) {
             hdr << "    void write(std::uint64_t) noexcept VESTRA_UNLOWERED(\"" << r.name << " is an "
                 << arch_label(r.arch) << " register\");\n";
         }
@@ -2098,15 +2034,15 @@ void emit_freestanding_sysregs(std::ostream& hdr) {
         }
         hdr << "    switch (id) {\n";
         std::string_view open_arch;
-        for (const auto& r : kSysregs) {
-            if (w == 1 && !r.writable) {
+        for (const auto& r : table) {
+            if (w == 0 ? !readable(r) : !writable(r)) {
                 continue;
             }
             if (r.arch != open_arch) {
                 if (!open_arch.empty()) {
                     hdr << "#endif\n";
                 }
-                hdr << "#if defined(" << r.arch << ")\n";
+                hdr << "#if defined(" << arch_macro(r.arch) << ")\n";
                 open_arch = r.arch;
             }
             if (w == 0) {
@@ -2134,23 +2070,21 @@ void emit_freestanding_sysregs(std::ostream& hdr) {
 #endif
 }
 )__fs";
-    // The gated set is all aarch64 registers; elsewhere the wrappers are as
-    // unavailable as the registers themselves.
-    hdr << "#if defined(__aarch64__)\n";
-    for (const std::string_view name :
-         {"sctlr_el1", "vbar_el1", "ttbr0_el1", "ttbr1_el1", "tcr_el1", "mair_el1"}) {
-        hdr << "inline void write_" << name << "(std::uint64_t v) noexcept {\n";
-        hdr << "    " << name << ".write(v);\n";
+    // On another architecture a wrapper is as unavailable as its register.
+    for (const auto& r : table) {
+        if (!r.sync_after_write) {
+            continue;
+        }
+        hdr << "#if defined(" << arch_macro(r.arch) << ")\n";
+        hdr << "inline void write_" << r.name << "(std::uint64_t v) noexcept {\n";
+        hdr << "    " << r.name << ".write(v);\n";
         hdr << "    post_write_barrier();\n";
         hdr << "}\n";
+        hdr << "#else\n";
+        hdr << "inline void write_" << r.name << "(std::uint64_t) noexcept VESTRA_UNLOWERED(\""
+            << r.name << " is an " << arch_label(r.arch) << " register\");\n";
+        hdr << "#endif\n";
     }
-    hdr << "#else\n";
-    for (const std::string_view name :
-         {"sctlr_el1", "vbar_el1", "ttbr0_el1", "ttbr1_el1", "tcr_el1", "mair_el1"}) {
-        hdr << "inline void write_" << name << "(std::uint64_t) noexcept VESTRA_UNLOWERED(\""
-            << name << " is an aarch64 register\");\n";
-    }
-    hdr << "#endif\n";
     hdr << "}  // namespace sysreg\n\n";
 }
 

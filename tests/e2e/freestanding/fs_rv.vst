@@ -29,5 +29,6 @@ func probe(_ buf: Span[UInt8], _ z: MutSpan[UInt8]) using Asm, RawMemory {
 func rv(_ v: UInt64) using Asm -> UInt64 {
     Sysreg.satp.write(v)
     Sysreg.stvec.write(v)
-    return Sysreg.scause.read()
+    Sysreg.sip.write(0)
+    return Sysreg.scause.read() + Sysreg.time.read() + Sysreg.cycle.read()
 }

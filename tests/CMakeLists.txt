@@ -2832,6 +2832,14 @@ add_test(
 set_tests_properties(e2e_asm_bad_register PROPERTIES
     PASS_REGULAR_EXPRESSION "'rax' is not a register on aarch64.*'x31' is not a register on aarch64")
 
+# §14.12 under a named --target, another architecture's register is a Vestra
+# error, not just a deleted function in the C++ (F4).
+add_test(
+    NAME    e2e_sysreg_wrong_target
+    COMMAND sh -c "$<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/tests/e2e/freestanding/fs_x86.vst --target=aarch64 -o ${e2e_workdir}/_sysreg_wrong 2>&1; true")
+set_tests_properties(e2e_sysreg_wrong_target PROPERTIES
+    PASS_REGULAR_EXPRESSION "Sysreg.ia32_efer is an x86_64 register; this build targets aarch64")
+
 # §5 visibility: referencing a non-public (internal) decl of an imported module
 # must fail to resolve. `vestra check` is expected to exit non-zero.
 add_test(

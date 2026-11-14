@@ -10582,9 +10582,14 @@ func sysregRegOf(_ root: Vec[Nd], _ reg: Str) using Alloc -> String {
     return own(reg)
 }
 
+// §14.12.3 the writes that get the post-write barrier: the sync_after_write
+// rows of the bootstrap's target table (include/vestra/sema/sysregs.hpp).
 func isGatedSysreg(_ r: Str) -> Bool {
-    return streq(r, "sctlr_el1") || streq(r, "vbar_el1") || streq(r, "ttbr0_el1")
-        || streq(r, "ttbr1_el1") || streq(r, "tcr_el1") || streq(r, "mair_el1")
+    return streq(r, "sctlr_el1") || streq(r, "actlr_el1") || streq(r, "cpacr_el1")
+        || streq(r, "vbar_el1") || streq(r, "ttbr0_el1") || streq(r, "ttbr1_el1")
+        || streq(r, "tcr_el1") || streq(r, "mair_el1") || streq(r, "amair_el1")
+        || streq(r, "contextidr_el1") || streq(r, "mdscr_el1") || streq(r, "icc_sre_el1")
+        || streq(r, "icc_ctlr_el1") || streq(r, "icc_igrpen0_el1") || streq(r, "icc_igrpen1_el1")
 }
 
 // Static calls on two runtime namespaces, mirroring cpp_emitter.cpp:

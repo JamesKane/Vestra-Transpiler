@@ -32,5 +32,15 @@ func arm(_ v: UInt64) using Asm -> UInt64 {
     Sysreg.daif.write(v)
     waitForEvent()
     signalEvent()
+    // F4: the GICv3 CPU interface, the timer, and EL1 state the old table lacked.
+    Sysreg.icc_sre_el1.write(7)
+    Sysreg.icc_pmr_el1.write(0xff)
+    Sysreg.icc_igrpen1_el1.write(1)
+    Sysreg.icc_eoir1_el1.write(Sysreg.icc_iar1_el1.read())
+    Sysreg.cntp_tval_el0.write(v)
+    Sysreg.cntp_ctl_el0.write(1)
+    Sysreg.cpacr_el1.write(3 << 20)
+    Sysreg.sp_el0.write(v)
     return Sysreg.midr_el1.read() + Sysreg.cntpct_el0.read() + Sysreg.esr_el1.read()
+        + Sysreg.currentel.read() + Sysreg.cntvct_el0.read() + Sysreg.id_aa64mmfr0_el1.read()
 }

@@ -9,6 +9,7 @@
 #include "vestra/ast/nodes.hpp"
 #include "vestra/sema/builtins.hpp"
 #include "vestra/sema/resolver.hpp"
+#include "vestra/sema/sysregs.hpp"
 #include "vestra/sema/scope.hpp"
 #include "vestra/sema/types.hpp"
 
@@ -661,67 +662,37 @@ TypePtr Resolver::check_member(const ast::MemberExpr& m, TypePtr expected) {
     if (m.base->kind == ast::NodeKind::IdentExpr) {
         const auto& base_ident = static_cast<const ast::IdentExpr&>(*m.base);
         if (base_ident.name == "Sysreg" && scopes_.current().lookup("Sysreg") == nullptr) {
-            // v0.5 target-description table. Read-only entries are
-            // identification / clock-frequency reads that have no
-            // architectural write path: MIDR_EL1 carries the CPU
-            // model ID, CNTFRQ_EL0 is the system counter frequency
-            // (firmware-set at boot). The kernel target extends both
-            // sets with the full per-architecture lists; the WO set
-            // is empty in v0.5's canonical subset but the TypeKind
-            // is reachable for the wider name set the kernel needs.
-            static const std::unordered_set<std::string_view> sysregs_ro = {
-                // aarch64 EL1 — read-only
-                "midr_el1",
-                "mpidr_el1",
-                "cntfrq_el0",
-                "cntpct_el0",
-                "dczid_el0",
-            };
-            static const std::unordered_set<std::string_view> sysregs_rw = {
-                // aarch64 EL1 — read-write
-                "daif",
-                "sctlr_el1",
-                "vbar_el1",
-                "ttbr0_el1",
-                "ttbr1_el1",
-                "tcr_el1",
-                "mair_el1",
-                "esr_el1",
-                "far_el1",
-                "elr_el1",
-                "spsr_el1",
-                "tpidr_el1",
-                // x86_64 MSRs — uniformly read-write at ring 0
-                "ia32_efer",
-                "ia32_lstar",
-                "ia32_apic_base",
-                "ia32_pat",
-                // RISC-V S-mode CSRs — all read-write through csrr / csrw
-                "sstatus",
-                "sie",
-                "stvec",
-                "sscratch",
-                "sepc",
-                "scause",
-                "stval",
-                "satp",
-            };
-            TypeKind kind;
-            if (sysregs_ro.contains(m.member)) {
-                kind = TypeKind::SysregHandleRO;
-            } else if (sysregs_rw.contains(m.member)) {
-                kind = TypeKind::SysregHandle;
-            } else {
+            // §14.12.2 the target table (vestra/sema/sysregs.hpp): its access
+            // column picks the handle kind, so a write to a read-only register
+            // or a read of a write-only one is a no-such-method error.
+            const auto* reg = find_sysreg(m.member);
+            if (reg == nullptr) {
                 error_at(m.range,
-                         std::format("Sysreg.{} — unknown system register; v0.5 admits the "
-                                     "aarch64 EL1 + x86_64 MSR + RISC-V S-mode CSR canonical "
-                                     "set (see §14.12.2)",
+                         std::format("Sysreg.{} — unknown system register; the Sysreg table "
+                                     "(§14.12.2) has no register by that name on any target",
                                      m.member));
                 return types_->error();
             }
+            // A named --target pins the ISA; a host build leaves it to the
+            // runtime prelude, which deletes another architecture's registers.
+            if (target_.arch != "host" && reg->arch != target_.arch) {
+                error_at(m.range,
+                         std::format("Sysreg.{} is an {} register; this build targets {}",
+                                     m.member,
+                                     reg->arch,
+                                     target_.arch));
+                return types_->error();
+            }
             auto inner = types_->primitive(TypeKind::UInt64);
-            return kind == TypeKind::SysregHandleRO ? types_->make_sysreg_handle_ro(inner)
-                                                    : types_->make_sysreg_handle(inner);
+            switch (reg->access) {
+            case SysregAccess::ReadOnly:
+                return types_->make_sysreg_handle_ro(inner);
+            case SysregAccess::WriteOnly:
+                return types_->make_sysreg_handle_wo(inner);
+            case SysregAccess::ReadWrite:
+                break;
+            }
+            return types_->make_sysreg_handle(inner);
         }
     }
     // If the base is an IdentExpr resolving to a Type symbol (Struct/Enum/...),

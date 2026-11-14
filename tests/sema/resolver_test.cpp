@@ -2859,3 +2859,23 @@ TEST_CASE("a @naked body holds only operand-free asm") {
               .first_message.find("can't take operands or clobbers")
           != std::string::npos);
 }
+
+// ---- §14.12 the Sysreg target table (F4) --------------------------------------
+
+TEST_CASE("Sysreg access follows the table's access column") {
+    CHECK(check_errors("func f() using Asm -> UInt64 {\n"
+                       "    Sysreg.icc_sre_el1.write(7)\n"
+                       "    Sysreg.icc_eoir1_el1.write(Sysreg.icc_iar1_el1.read())\n"
+                       "    return Sysreg.currentel.read() + Sysreg.cntp_ctl_el0.read()\n"
+                       "}\n")
+          == 0);
+    CHECK(check_detail("func f() using Asm {\n    Sysreg.icc_iar1_el1.write(1)\n}\n")
+              .first_message.find("no field or method 'write' on type ReadOnlySysreg")
+          != std::string::npos);
+    CHECK(check_detail("func f() using Asm -> UInt64 {\n    return Sysreg.icc_eoir1_el1.read()\n}\n")
+              .first_message.find("no field or method 'read' on type WriteOnlySysreg")
+          != std::string::npos);
+    CHECK(check_detail("func f() using Asm -> UInt64 {\n    return Sysreg.icc_bogus_el1.read()\n}\n")
+              .first_message.find("unknown system register")
+          != std::string::npos);
+}

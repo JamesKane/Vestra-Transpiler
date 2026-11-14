@@ -3418,3 +3418,16 @@ TEST_CASE("asm lowers to GCC/Clang inline asm (§14.4)") {
     CHECK(f.out.header.find("[[gnu::naked]] [[noreturn]] __vstr::Never entry();") != std::string::npos);
     CHECK(f.out.source.find("__asm__ volatile(\"b entry\");") != std::string::npos);
 }
+
+TEST_CASE("the Sysreg table's gated writes get the post-write barrier (F4)") {
+    SemaEmitFixture f("func f(_ v: UInt64) using Asm {\n"
+                      "    Sysreg.cpacr_el1.write(v)\n"
+                      "    Sysreg.icc_igrpen1_el1.write(1)\n"
+                      "    Sysreg.icc_eoir1_el1.write(v)\n"
+                      "}\n");
+    CHECK(f.out.source.find("__vstr::sysreg::write_cpacr_el1(v);") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::sysreg::write_icc_igrpen1_el1(1);") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::sysreg::icc_eoir1_el1.write(v);") != std::string::npos);
+    CHECK(f.out.header.find("inline void write_icc_sre_el1(std::uint64_t v) noexcept {")
+          != std::string::npos);
+}

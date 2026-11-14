@@ -14,6 +14,7 @@
 #include "vestra/sema/exclusivity.hpp"
 #include "vestra/sema/ownership.hpp"
 #include "vestra/sema/resolver.hpp"
+#include "vestra/sema/sysregs.hpp"
 #include "vestra/sema/types.hpp"
 
 #include <cstdint>
@@ -1032,18 +1033,8 @@ struct SysregAuditor {
     void emit_record(diag::SourceRange range, std::string_view name, std::string_view op) {
         auto lc = sm.line_col(range.begin);
         auto path = sm.name(range.begin.file);
-        // The gated set must match the codegen's table — these are the
-        // sysregs that need an ISB on the trailing edge per §14.12.3.
-        static const std::array<std::string_view, 6> gated = {
-            "sctlr_el1",
-            "vbar_el1",
-            "ttbr0_el1",
-            "ttbr1_el1",
-            "tcr_el1",
-            "mair_el1",
-        };
-        const bool is_gated_write =
-            (op == "write") && std::find(gated.begin(), gated.end(), name) != gated.end();
+        // §14.12.3 the same gated set codegen uses (the target table).
+        const bool is_gated_write = (op == "write") && sema::sysreg_write_is_gated(name);
         const bool barrier = is_gated_write && !in_no_auto_barrier;
         out << path << ":" << lc.line << ":" << lc.col << ": Sysreg." << name << "." << op
             << " [barrier:" << (barrier ? "yes" : "no") << "]\n";
