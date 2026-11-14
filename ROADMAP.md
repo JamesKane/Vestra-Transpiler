@@ -121,9 +121,7 @@ accepts. Ordered by how likely each is to let a wrong program through:
    a lazy `split` iterator or tracking sources through the container).
 
 2. **Comptime purity:** no capabilities or runtime calls in `comptime`;
-   every `@when` branch type-checked; `cfg` follows the build target, not the
-   compiler's host, and `cfg.has` folds against `--target-features` (Gaps
-   §12.1, §12.6).
+   every `@when` branch type-checked (Gaps §12.1, §12.6).
 3. **Argument labels enforced** (Gaps §7).
 4. **Smaller unsound items:**
     - `@noinit` limited to `Trivial` types (the spike's `sys.kernel`, a

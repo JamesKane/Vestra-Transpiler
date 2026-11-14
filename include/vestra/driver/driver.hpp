@@ -40,6 +40,8 @@ struct BuildOptions {
     // AtomicTaggedPointer[T] since it builds on the wide-atomic
     // primitive.
     std::string target = "host";
+    // §12.6 `cfg.profile` (`--profile=NAME`, default debug).
+    std::string profile = "debug";
     std::vector<std::string> target_features;
     // §5 import search roots (repeatable `-I DIR`). An `import a.b.c` resolves
     // against the entry file's directory first, then each of these in order;

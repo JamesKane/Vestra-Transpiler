@@ -642,59 +642,6 @@ ast::TypePtr materialize_type(const ComptimeValue& v) {
     return nt;
 }
 
-// §12.6: the `cfg` value's fields. Phase 1 hardcodes them based on
-// build-time host detection; later phases will let the build system
-// override via -D flags or a manifest.
-std::optional<ComptimeValue> cfg_field(std::string_view name) {
-#if defined(__APPLE__)
-    constexpr std::string_view OsName = "macos";
-#elif defined(__linux__)
-    constexpr std::string_view OsName = "linux";
-#elif defined(_WIN32)
-    constexpr std::string_view OsName = "windows";
-#else
-    constexpr std::string_view OsName = "freestanding";
-#endif
-#if defined(__aarch64__) || defined(__arm64__)
-    constexpr std::string_view ArchName = "arm64";
-#elif defined(__x86_64__) || defined(_M_X64)
-    constexpr std::string_view ArchName = "x86_64";
-#elif defined(__riscv) && (__riscv_xlen == 64)
-    constexpr std::string_view ArchName = "riscv64";
-#elif defined(__riscv) && (__riscv_xlen == 32)
-    constexpr std::string_view ArchName = "riscv32";
-#elif defined(__wasm32__)
-    constexpr std::string_view ArchName = "wasm32";
-#else
-    constexpr std::string_view ArchName = "unknown";
-#endif
-
-    if (name == "os") {
-        return make_string(std::string{OsName});
-    }
-    if (name == "arch") {
-        return make_string(std::string{ArchName});
-    }
-    if (name == "endian") {
-        return make_string("little");
-    }
-    if (name == "pointerBits") {
-        ComptimeValue cv;
-        cv.kind = ComptimeValue::Kind::Int;
-        cv.i = static_cast<std::int64_t>(sizeof(void*) * 8);
-        cv.type = TypeKind::Int;
-        return cv;
-    }
-    if (name == "profile") {
-#ifdef NDEBUG
-        return make_string("release");
-#else
-        return make_string("debug");
-#endif
-    }
-    return std::nullopt;
-}
-
 // Promote `a` and `b` to a common numeric kind for arithmetic / comparison.
 // Phase 1 only deals with same-kind operands; mixed-mode arithmetic isn't
 // supported (Vestra doesn't allow implicit conversions anyway).
@@ -705,6 +652,58 @@ bool same_numeric_kind(const ComptimeValue& a, const ComptimeValue& b) {
 }
 
 }  // namespace
+
+BuildConfig BuildConfig::host() {
+    BuildConfig c;
+#if defined(__APPLE__)
+    c.os = "macos";
+#elif defined(__linux__)
+    c.os = "linux";
+#elif defined(_WIN32)
+    c.os = "windows";
+#else
+    c.os = "freestanding";
+#endif
+#if defined(__aarch64__) || defined(__arm64__)
+    c.arch = "arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+    c.arch = "x86_64";
+#elif defined(__riscv) && (__riscv_xlen == 64)
+    c.arch = "riscv64";
+#elif defined(__riscv) && (__riscv_xlen == 32)
+    c.arch = "riscv32";
+#elif defined(__wasm32__)
+    c.arch = "wasm32";
+#else
+    c.arch = "unknown";
+#endif
+    c.pointer_bits = static_cast<std::int64_t>(sizeof(void*) * 8);
+    return c;
+}
+
+// §12.6: the `cfg` value's fields, from the build configuration.
+std::optional<ComptimeValue> ComptimeFolder::cfg_field(std::string_view name) const {
+    if (name == "os") {
+        return make_string(config_.os);
+    }
+    if (name == "arch") {
+        return make_string(config_.arch);
+    }
+    if (name == "endian") {
+        return make_string(config_.endian);
+    }
+    if (name == "pointerBits") {
+        ComptimeValue cv;
+        cv.kind = ComptimeValue::Kind::Int;
+        cv.i = config_.pointer_bits;
+        cv.type = TypeKind::Int;
+        return cv;
+    }
+    if (name == "profile") {
+        return make_string(config_.profile);
+    }
+    return std::nullopt;
+}
 
 std::optional<ComptimeValue>
 ComptimeFolder::fold(const ast::Expr& e, const Env& env, TypeKind hint, int depth) const {
@@ -1029,6 +1028,24 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
         // locals slate — phase 3 doesn't expose the caller's bindings
         // (no closures).
         const auto& c = static_cast<const ast::CallExpr&>(e);
+
+        // §12.6 `cfg.has("f")`: is the feature enabled for this build?
+        if (c.callee->kind == ast::NodeKind::MemberExpr && c.args.size() == 1) {
+            const auto& m = static_cast<const ast::MemberExpr&>(*c.callee);
+            if (m.member == "has" && m.base && m.base->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*m.base).name == "cfg") {
+                auto fv = fold_with(*c.args[0].value, env, frame, TypeKind::Unit, depth + 1);
+                if (!fv || fv->kind != ComptimeValue::Kind::String) {
+                    return std::nullopt;
+                }
+                for (const auto& f : config_.features) {
+                    if (f == fv->s) {
+                        return make_bool(true);
+                    }
+                }
+                return make_bool(false);
+            }
+        }
 
         // §12.4 attribute reflection: method calls on a `Decl` value.
         //   `d.hasAttribute("x")` → Bool;

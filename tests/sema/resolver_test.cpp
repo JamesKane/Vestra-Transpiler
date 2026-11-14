@@ -2973,3 +2973,53 @@ TEST_CASE("§4 a write through a view held in a let changes the view's memory") 
                        "    let q = mp\n    q.value = 3\n}\n")
           == 0);
 }
+
+// ---- §12.6 cfg follows the build target ------------------------------------
+//
+// Each source gates two `f`s on a cfg test; only the selected one returns
+// Int32, so `g` checks clean exactly when the gate picked it.
+
+namespace {
+
+std::size_t cfg_pick_errors(std::string_view predicate, vestra::sema::TargetContext target) {
+    std::string src = "@when(" + std::string{predicate} + ")\n"
+                      "func f() -> Int32 { return 1 }\n"
+                      "@when(!(" + std::string{predicate} + "))\n"
+                      "func f() -> Bool { return true }\n"
+                      "func g() -> Int32 { return f() }\n";
+    return check_detail_target(std::move(src), std::move(target)).error_count;
+}
+
+}  // namespace
+
+TEST_CASE("cfg.arch and cfg.pointerBits follow --target, not the host") {
+    vestra::sema::TargetContext x86;
+    x86.arch = "x86_64";
+    CHECK(cfg_pick_errors("cfg.arch == .x86_64", x86) == 0);
+    vestra::sema::TargetContext arm;
+    arm.arch = "aarch64";
+    CHECK(cfg_pick_errors("cfg.arch == .arm64", arm) == 0);
+    CHECK(cfg_pick_errors("cfg.arch == .x86_64", arm) == 1);
+    CHECK(cfg_pick_errors("cfg.pointerBits == 64", arm) == 0);
+}
+
+TEST_CASE("cfg.has folds against --target-features") {
+    vestra::sema::TargetContext with;
+    with.arch = "aarch64";
+    with.features = {"lse2"};
+    CHECK(cfg_pick_errors("cfg.has(\"lse2\")", with) == 0);
+    vestra::sema::TargetContext without;
+    without.arch = "aarch64";
+    CHECK(cfg_pick_errors("cfg.has(\"lse2\")", without) == 1);
+}
+
+TEST_CASE("cfg.os is freestanding under --no-libc; cfg.profile follows --profile") {
+    vestra::sema::TargetContext fs;
+    fs.freestanding = true;
+    CHECK(cfg_pick_errors("cfg.os == .freestanding", fs) == 0);
+    vestra::sema::TargetContext rel;
+    rel.profile = "release";
+    CHECK(cfg_pick_errors("cfg.profile == .release", rel) == 0);
+    vestra::sema::TargetContext dbg;
+    CHECK(cfg_pick_errors("cfg.profile == .debug", dbg) == 0);
+}

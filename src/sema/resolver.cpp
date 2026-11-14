@@ -125,6 +125,30 @@ Resolver::Resolver(const ast::CompilationUnit& unit,
     : unit_(&unit), types_(&types), reporter_(&reporter),
       folder_(&scopes_.global(), std::move(embed_reader)), target_(std::move(target)) {
     resolution_.set_types(types_);
+    // §12.6 `cfg` describes the build target, not the compiler's host. A
+    // `--target` arch sets arch and pointer width; `--no-libc` makes the OS
+    // freestanding; the features are the --target-features list.
+    BuildConfig cfg = BuildConfig::host();
+    if (target_.arch == "aarch64" || target_.arch == "arm64") {
+        cfg.arch = "arm64";
+    } else if (target_.arch == "x86_64" || target_.arch == "riscv64") {
+        cfg.arch = target_.arch;
+    } else if (target_.arch == "riscv32" || target_.arch == "wasm32") {
+        cfg.arch = target_.arch;
+        cfg.pointer_bits = 32;
+    }
+    if (target_.arch != "host") {
+        cfg.endian = "little";
+        if (cfg.arch == "arm64" || cfg.arch == "x86_64" || cfg.arch == "riscv64") {
+            cfg.pointer_bits = 64;
+        }
+    }
+    if (target_.freestanding) {
+        cfg.os = "freestanding";
+    }
+    cfg.profile = target_.profile;
+    cfg.features = target_.features;
+    folder_.set_config(std::move(cfg));
 }
 
 void Resolver::resolve() {

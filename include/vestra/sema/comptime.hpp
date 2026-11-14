@@ -126,6 +126,20 @@ class Resolution;  // forward — defined in resolver.hpp
 // nullopt). The caller is welcome to fall back to runtime evaluation —
 // phase 1 doesn't treat unfolded as an error, just as "no constant value
 // known."
+// §12.6 the build configuration `cfg` describes. `host()` is the compiler's
+// own platform (the v0.5 hosted default); the resolver replaces it with the
+// one the driver's --target / --target-features / --no-libc / --profile give.
+struct BuildConfig {
+    std::string arch;
+    std::string os;
+    std::string endian = "little";
+    std::int64_t pointer_bits = 64;
+    std::string profile = "debug";
+    std::vector<std::string> features;
+
+    [[nodiscard]] static BuildConfig host();
+};
+
 class ComptimeFolder {
 public:
     // Environment of names that are already known to be compile-time
@@ -160,6 +174,9 @@ public:
     // disables @embed.
     explicit ComptimeFolder(const Scope* global_scope = nullptr, EmbedReader embed_reader = {})
         : global_scope_(global_scope), embed_reader_(std::move(embed_reader)) {}
+
+    void set_config(BuildConfig config) { config_ = std::move(config); }
+    [[nodiscard]] const BuildConfig& config() const noexcept { return config_; }
 
     // Fold `e` against `env`. If `hint` is non-Unit and the expression is
     // an integer/float literal, the result's `type` field uses the hint
@@ -220,6 +237,9 @@ private:
 
     const Scope* global_scope_ = nullptr;
     EmbedReader embed_reader_;
+    BuildConfig config_ = BuildConfig::host();
+
+    [[nodiscard]] std::optional<ComptimeValue> cfg_field(std::string_view name) const;
 
     // §12.4 hygiene: monotonic counter behind the `gensym()` builtin. One
     // folder is reused across all declaration-macro expansions in a unit, so

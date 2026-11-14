@@ -100,6 +100,8 @@ struct TargetContext {
     // clock, network, randomness) are rejected in Vestra, not left to the
     // C++ compiler.
     bool freestanding = false;
+    // §12.6 `cfg.profile` (`--profile=NAME`).
+    std::string profile = "debug";
 
     [[nodiscard]] bool has_feature(std::string_view name) const noexcept {
         for (const auto& f : features) {

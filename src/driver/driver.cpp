@@ -44,7 +44,7 @@ constexpr std::string_view UsageText = R"(usage: vestra <subcommand> [options]
 Subcommands:
   build <file.vst> [-o DIR] [-I DIR ...] [--emit-only] [--dump-ast]
                    [--dump-tokens] [--skip-check] [--no-libc]
-                   [--target=ARCH] [--target-features=LIST]
+                   [--target=ARCH] [--target-features=LIST] [--profile=NAME]
         Parse, semantically check, then transpile a Vestra source file to
         C++ (.hpp + .cpp) under DIR. §5: `import a.b.c` is followed to
         <entry-dir>/a/b/c.vst, and every transitively-imported module is
@@ -64,7 +64,12 @@ Subcommands:
         ISA features (e.g. lse2,cx16). Wide atomics (Atomic[UInt128] /
         AtomicTaggedPointer[T]) require the matching feature when the
         target is non-host: lse2 on aarch64, cx16 on x86_64 (§14.9.4).
+        The target also sets `cfg` (§12.6): cfg.arch and cfg.pointerBits
+        follow --target, cfg.os is freestanding under --no-libc (else the
+        host's), cfg.has("f") is true for each --target-features entry,
+        and cfg.profile is --profile (default debug).
   check <file.vst> [-I DIR ...] [--target=ARCH] [--target-features=LIST] [--no-libc]
+                   [--profile=NAME]
         Parse and run name resolution + type checking; print any diagnostics.
         Exits 0 on a clean check. -I DIR adds an import search root (as in
         build), so `check` resolves imports identically; the target options
@@ -158,6 +163,8 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
                 opts.target = std::string{a.substr(std::string_view{"--target="}.size())};
             } else if (a.starts_with("--target-features=")) {
                 split_features(a, opts.target_features);
+            } else if (a.starts_with("--profile=")) {
+                opts.profile = std::string{a.substr(std::string_view{"--profile="}.size())};
             } else if (!a.empty() && a[0] != '-') {
                 opts.input = std::string{a};
             } else {
@@ -186,6 +193,8 @@ int run(std::span<const std::string_view> argv, std::ostream& out, std::ostream&
                 target.arch = std::string{a.substr(std::string_view{"--target="}.size())};
             } else if (a.starts_with("--target-features=")) {
                 split_features(a, target.features);
+            } else if (a.starts_with("--profile=")) {
+                target.profile = std::string{a.substr(std::string_view{"--profile="}.size())};
             } else if (!a.empty() && a[0] != '-') {
                 input = std::string{a};
             } else {
@@ -675,7 +684,8 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
         return 1;
     }
 
-    const sema::TargetContext target_ctx{opts.target, opts.target_features, opts.no_libc};
+    const sema::TargetContext target_ctx{opts.target, opts.target_features, opts.no_libc,
+                                         opts.profile};
     if (!opts.emit_only) {
         fs::create_directories(opts.out_dir);
     }
