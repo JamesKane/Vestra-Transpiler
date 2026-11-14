@@ -4294,7 +4294,7 @@ func tyBracketInner(_ s: String) using Alloc -> String {
 // and `field` is one of its fields; a `?.` chain (optional result) and anything
 // else stay unknown. Nested access (`a.b.c`) falls out of the recursion.
 func tyInferMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain: Bool) using Alloc -> String {
-    if chain { return own("") }
+    if chain { return tyInferChainMember(env, base, name) }
     let bt = tyInferBoxed(env, base)
     if tyHasField(env, bt, name) { return tyFieldType(env, bt, name) }
     // §3 `q.value` on an opaque newtype types as its underlying.
@@ -4304,6 +4304,17 @@ func tyInferMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain:
     let en = identBaseName(base)
     if !streq(en, "") && tyIsEnum(env, en) && tyEnumHasCase(env, en, name) { return en }
     return own("")
+}
+
+// `base?.f` over a `S?` base types as the field made optional once: `F?`, or
+// the field's own type when it is already optional (the `.and_then` flatten).
+// Any other base stays unknown.
+func tyInferChainMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String) using Alloc -> String {
+    let inner = tyUnwrapOpt(tyInferBoxed(env, base))
+    if streq(inner, "") || !tyHasField(env, inner, name) { return own("") }
+    var ft = tyFieldType(env, inner, name)
+    if streq(tyUnwrapOpt(ft), "") { ft.append("?") }
+    return ft
 }
 
 // A binary expression's type, mirroring the resolver's result types (and its
@@ -9267,14 +9278,26 @@ func emitMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool)
 
 // Optional-chain field access `base?.name` lowers to std::optional::transform:
 // `base.transform([](auto&& __vstr_o) { return __vstr_o.<name>; })` — an
-// engaged optional maps to the field, an empty one stays empty. The bootstrap's
-// sema allows only a single field hop through `?.` (no method calls, no deeper
-// member access), so this is the whole family.
+// engaged optional maps to the field, an empty one stays empty. When the base is
+// an optional STRUCT whose field is itself declared optional, the hop flattens
+// through `.and_then` instead (transform would nest `T??`), as the bootstrap's
+// declared-field-type test does. The bootstrap's sema allows only a single
+// field hop through `?.` (no method calls, no deeper member access), so this is
+// the whole family.
 func emitChainMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str) using Alloc, Log {
+    let flatten = chainFieldIsOpt(env, tyInferBoxed(env, base), name)
     emitBoxed(env, base)
-    print(".transform([](auto&& __vstr_o) { return __vstr_o.")
+    if flatten { print(".and_then") } else { print(".transform") }
+    print("([](auto&& __vstr_o) { return __vstr_o.")
     print(name)
     print("; })")
+}
+
+func chainFieldIsOpt(_ env: inout TyEnv, _ bt: String, _ name: Str) using Alloc -> Bool {
+    let inner = tyUnwrapOpt(bt)
+    if streq(inner, "") || !tyIsStruct(env, inner) { return false }
+    let ft = tyFieldType(env, inner, own(name))
+    return !streq(tyUnwrapOpt(ft), "")
 }
 
 // An enum whose declaration has at least one payload-carrying case (so it lowers

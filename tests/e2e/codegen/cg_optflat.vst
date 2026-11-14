@@ -1,0 +1,37 @@
+// §9 an optional-chain hop through a field DECLARED optional flattens with
+// `.and_then`; a hop through a plain field maps with `.transform`. Covered:
+// a scalar optional field, a struct optional field, a plain field, and a
+// three-hop chain whose middle hop is optional too.
+struct Leaf {
+    var n: Int32
+    var tag: Str?
+}
+
+struct Mid {
+    var leaf: Leaf?
+    var depth: Int32
+}
+
+struct Root {
+    var mid: Mid?
+}
+
+func tagOf(_ l: Leaf?) -> Str? {
+    return l?.tag
+}
+
+func depthOf(_ m: Mid?) -> Int32? {
+    return m?.depth
+}
+
+func leafOf(_ m: Mid?) -> Leaf? {
+    return m?.leaf
+}
+
+func deepN(_ r: Root?) -> Int32? {
+    return r?.mid?.leaf?.n
+}
+
+func deepTag(_ r: Root?) -> Str? {
+    return r?.mid?.leaf?.tag
+}
