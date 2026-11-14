@@ -4372,6 +4372,7 @@ func tyInferMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain:
     // §3 `q.value` on an opaque newtype types as its underlying.
     if streq(name, "value") && tyIsOpaque(env, bt) { return typeSpelling(tyOpaqueUnder(env, bt)) }
     if streq(name, "value") && tyStartsWith(bt, "Box[") { return own(bt.slice(4, bt.len() - 1)) }
+    if streq(name, "value") && (tyStartsWith(bt, "Ptr[") || tyStartsWith(bt, "MutPtr[")) { return tyBracketInner(bt) }
     // §A11 (§14.8) `Padded[T].value` is the padded cell itself.
     if streq(name, "value") && tyStartsWith(bt, "Padded[") { return tyBracketInner(bt) }
     // A bare case of a user enum (`List.empty`) types as the enum.
@@ -8014,6 +8015,7 @@ func emitMatchBindingVal(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyS
 // `var xs: Vec[Int32] = Vec.new()` -> `std::vector<std::int32_t> xs =
 // std::vector<std::int32_t>{};` (the bare `Vec` carries no element type).
 func emitBindingValue(_ env: inout TyEnv, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
+    if ty.len() > 0 && tryEmitRawMint(env, tyAnnSpelling(ty), value) { return }
     if ty.len() > 0 && valIsDoCatch(value) {
         let tb = elemBoxCopy(ty)
         emitDoCatchValue(env, tb, value)
@@ -8329,6 +8331,7 @@ func emitReturnValue(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc, Log {
         return
     }
     let to = own(env.curRet)
+    if tryEmitRawMint(env, to, v) { return }
     if tryEmitLeadingDot(env, to, v) { return }
     let from = tyInferBoxed(env, v)
     let wrap = needsStrCoercion(from, to)
@@ -9415,6 +9418,18 @@ func emitAddrOf(_ env: inout TyEnv, _ x: Vec[Nd]) using Alloc, Log {
     emitBoxed(env, x)
 }
 
+// §17.1 `_` digit separators (`1_000`, `0xCAFE_BABE`) are stripped: C++
+// would read `_BABE` as a user-defined literal suffix.
+func emitIntText(_ t: Str) using Alloc, Log {
+    var out: String = ""
+    var i: Int = 0
+    while i < t.len() {
+        if (t.byteAt(i) ?? 0) != 95 { out.append(t.slice(i, i + 1)) }   // '_' == 95
+        i = i + 1
+    }
+    print(out)
+}
+
 func emitBoxed(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc, Log {
     if v.len() > 0 { emitExpr(env, v.get(0) ?? Nd.wildcard) }
 }
@@ -9424,7 +9439,7 @@ func emitExpr(_ env: inout TyEnv, _ e: Nd) using Alloc, Log {
         case .ident(let n): print(n)
         case .nilLit: print("std::nullopt")
         case .selfE: print("(*this)")
-        case .intLit(let s): print(s)
+        case .intLit(let s): emitIntText(s)
         case .floatLit(let s): print(s)
         case .boolLit(let b): emitBool(b)
         case .charLit(let s): emitChar(s)
@@ -9811,8 +9826,10 @@ func emitMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ chain: Bool)
     // §3 `q.value` extracts an opaque newtype's underlying T via one static_cast.
     if streq(name, "value") {
         let bt = tyInferBoxed(env, base)
-        // §10 Box[T]: `box.value` reads the heap pointee via `*box`.
-        if tyStartsWith(bt, "Box[") {
+        // §10 Box[T]: `box.value` reads the heap pointee via `*box`; §A3 a
+        // Ptr[T] / MutPtr[T] `p.value` dereferences the raw pointer the same
+        // way (also as an assignment target).
+        if tyStartsWith(bt, "Box[") || tyStartsWith(bt, "Ptr[") || tyStartsWith(bt, "MutPtr[") {
             print("(*")
             emitBoxed(env, base)
             print(")")
@@ -9951,7 +9968,8 @@ func tryEmitLeadingDotCase(_ env: inout TyEnv, _ to: Str, _ n: Str, _ args: Vec[
     if streq(base, "Ordering") { emitMemoryOrder(n); return true }
     // §A5 the prelude's payload-free builtin enums (`enum class BarrierScope`
     // and friends): a plain scoped reference, with no unit declaration to find.
-    if streq(base, "BarrierScope") || streq(base, "BarrierKind") || streq(base, "TlbScope") {
+    if streq(base, "BarrierScope") || streq(base, "BarrierKind") || streq(base, "TlbScope")
+        || streq(base, "Endianness") {
         print(base)
         print("::")
         print(n)
@@ -10038,6 +10056,7 @@ func emitStr(_ s: Str) using Alloc, Log {
 // member callee (not an identifier) and so never match.
 func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log {
     if tryEmitSysregWrite(env, callee, args) { return }
+    if tryEmitRawCall(env, callee, args) { return }
     if tryEmitSysStatic(env, callee, args) { return }
     if tryEmitBoxNew(env, callee, args) { return }
     if tryEmitDeriveDefault(env, callee, args) { return }
@@ -10063,6 +10082,118 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     print("(")
     emitCallArgList(env, "", fname, args)
     print(")")
+}
+
+// ----- §A3 / §A6 raw memory (cpp_emitter.cpp, the CallExpr raw-mint block) --
+// `Ptr.unchecked(fromAddress: a)` / `MutPtr.unchecked(...)` ->
+// `reinterpret_cast<[const ]T*>(a)`. The bootstrap reads T off the call's
+// resolved type; vgen knows it where the call is the whole initializer of an
+// annotated binding or a returned value (`expected` is that slot's spelling),
+// and otherwise spells the bootstrap's defensive `void`.
+func tryEmitRawMint(_ env: inout TyEnv, _ expected: Str, _ value: Vec[Nd]) using Alloc, Log -> Bool {
+    if value.len() == 0 { return false }
+    return match value.get(0) ?? Nd.wildcard {
+        case .call(let callee, let args): emitRawMintCall(env, expected, callee, args)
+        default: false
+    }
+}
+
+func emitRawMintCall(_ env: inout TyEnv, _ expected: Str, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    let ns = staticCalleeNs(callee, "unchecked")
+    let isPtr = streq(ns, "Ptr")
+    if !(isPtr || streq(ns, "MutPtr")) || args.len() != 1 { return false }
+    var t: String = ""
+    if tyStartsWith(own(expected), "Ptr[") || tyStartsWith(own(expected), "MutPtr[") {
+        t = cppOfSpelling(tyBracketInner(own(expected)))
+    }
+    if streq(t, "") { t = own("void") }
+    print("reinterpret_cast<")
+    if isPtr { print("const ") }
+    print(t)
+    print("*>(")
+    emitArg(env, args.get(0) ?? Nd.wildcard)
+    print(")")
+    return true
+}
+
+// `<Ns>.<member>` with a bare identifier namespace -> Ns, else "".
+func staticCalleeNs(_ callee: Vec[Nd], _ member: Str) using Alloc -> String {
+    if callee.len() == 0 { return own("") }
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let name, let chain): nsIfMember(base, name, member)
+        default: own("")
+    }
+}
+
+func nsIfMember(_ base: Vec[Nd], _ name: Str, _ member: Str) using Alloc -> String {
+    if !streq(name, member) { return own("") }
+    return identBaseName(base)
+}
+
+// The rest of the raw-memory statics, each taking T from its pointer
+// argument (the type the bootstrap's resolver derives the result from):
+//   * `Span.raw(at: p, count: n)` / `MutSpan.raw(...)` ->
+//     `std::span<[const ]T>(p, static_cast<std::size_t>(n))`
+//   * `MmioView.at(p)` -> `__vstr::MmioView<T>{reinterpret_cast<T volatile*>(p)}`
+//   * `MmioRegion.at(p, n)` -> `... , static_cast<std::intptr_t>(n)}`
+//   * `MmioWireView.at(p, e)` -> `__vstr::MmioWireView<T>{..., <Endianness>}`
+// plus `Ptr.unchecked` outside a typed slot (T unknown: `void`).
+func tryEmitRawCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    let noTy: String = ""
+    var box: Vec[Nd] = Vec.new()
+    let rawNs = staticCalleeNs(callee, "raw")
+    if (streq(rawNs, "Span") || streq(rawNs, "MutSpan")) && args.len() == 2 {
+        print("std::span<")
+        if streq(rawNs, "Span") { print("const ") }
+        print(rawElemCpp(env, args))
+        print(">(")
+        emitArg(env, args.get(0) ?? Nd.wildcard)
+        print(", static_cast<std::size_t>(")
+        emitArg(env, args.get(1) ?? Nd.wildcard)
+        print("))")
+        return true
+    }
+    let atNs = staticCalleeNs(callee, "at")
+    let isView = streq(atNs, "MmioView") && args.len() == 1
+    let isRegion = streq(atNs, "MmioRegion") && args.len() == 2
+    let isWire = streq(atNs, "MmioWireView") && args.len() == 2
+    if isView || isRegion || isWire {
+        let t = rawElemCpp(env, args)
+        print("__vstr::")
+        print(atNs)
+        print("<")
+        print(t)
+        print(">{reinterpret_cast<")
+        print(t)
+        print(" volatile*>(")
+        emitArg(env, args.get(0) ?? Nd.wildcard)
+        print(")")
+        if isRegion {
+            print(", static_cast<std::intptr_t>(")
+            emitArg(env, args.get(1) ?? Nd.wildcard)
+            print(")")
+        }
+        if isWire {
+            print(", ")
+            emitSlotArg(env, "Endianness", args.get(1) ?? Nd.wildcard)
+        }
+        print("}")
+        return true
+    }
+    let mintNs = staticCalleeNs(callee, "unchecked")
+    if (streq(mintNs, "Ptr") || streq(mintNs, "MutPtr")) && args.len() == 1 {
+        box.push(Nd.call(ndsCopy(callee), ndsCopy(args)))
+        return tryEmitRawMint(env, noTy, box)
+    }
+    return false
+}
+
+// The C++ element type behind a raw-memory call's pointer argument
+// (`p: MutPtr[UInt32]` -> `std::uint32_t`), `void` when unknown.
+func rawElemCpp(_ env: inout TyEnv, _ args: Vec[Nd]) using Alloc -> String {
+    let pt = tyInferArg(env, args)
+    if tyStartsWith(pt, "Ptr[") || tyStartsWith(pt, "MutPtr[") { return cppOfSpelling(tyBracketInner(pt)) }
+    return own("void")
 }
 
 // §14.12.3 a write to one of the six barrier-gated EL1 registers
@@ -10721,6 +10852,7 @@ func tryEmitBuiltin(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using All
         return true
     }
     if emitSyncIntrinsic(env, fname, args) { return true }
+    if emitMemIntrinsic(env, fname, args) { return true }
     if tyArity(env, fname) >= 0 { return false }
     if streq(fname, "readFile") && args.len() == 1 {
         print("__vstr::read_file(")
@@ -10758,6 +10890,30 @@ func emitSyncIntrinsic(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using 
     while i < args.len() {
         if i > 0 { print(", ") }
         emitSlotArg(env, syncParamType(fname, i), args.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    print(")")
+    return true
+}
+
+// §A10 (§15.4) `memcpy` / `memset` / `memmove` -> the `__builtin_*` forms,
+// matched by name as the bootstrap's table is; the trailing length widens to
+// std::size_t.
+func emitMemIntrinsic(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if !(streq(fname, "memcpy") || streq(fname, "memset") || streq(fname, "memmove")) { return false }
+    print("__builtin_")
+    print(fname)
+    print("(")
+    var i: Int = 0
+    while i < args.len() {
+        if i > 0 { print(", ") }
+        if i + 1 == args.len() {
+            print("static_cast<std::size_t>(")
+            emitArg(env, args.get(i) ?? Nd.wildcard)
+            print(")")
+        } else {
+            emitArg(env, args.get(i) ?? Nd.wildcard)
+        }
         i = i + 1
     }
     print(")")

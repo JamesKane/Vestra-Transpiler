@@ -1,0 +1,62 @@
+// §A3 / §A6 / §A10 raw memory. `Ptr.unchecked` / `MutPtr.unchecked` mint a
+// pointer as `reinterpret_cast<[const ]T*>`, T read off the annotated
+// binding or the function's result; `p.value` dereferences it (read, write,
+// compound); `Span.raw` / `MutSpan.raw` build a `std::span` with a size_t
+// count; the MMIO views wrap a volatile cast of the pointer (a region with an
+// intptr_t count, a wire view with its Endianness); memcpy / memset / memmove
+// lower to the `__builtin_*` forms with a size_t length. Integer literals
+// drop their `_` digit separators.
+func bump(_ addr: UInt64, _ delta: UInt32) -> UInt32 {
+    var out: UInt32 = 0
+    with RawMemory {
+        let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)
+        p.value = p.value + delta
+        p.value = 0x00FF_00FF
+        out = p.value
+    }
+    return out
+}
+
+func peek(_ addr: UInt64) using RawMemory -> Ptr[UInt16] {
+    return Ptr.unchecked(fromAddress: addr)
+}
+
+func spans(_ addr: UInt64, _ n: Int) -> UInt8 {
+    var out: UInt8 = 0
+    with RawMemory {
+        let w: MutPtr[UInt8] = MutPtr.unchecked(fromAddress: addr)
+        let r: Ptr[UInt8] = Ptr.unchecked(fromAddress: addr)
+        let ws = MutSpan.raw(at: w, count: n)
+        let rs = Span.raw(at: r, count: 1_024)
+        ws[0] = 7
+        out = rs[0]
+    }
+    return out
+}
+
+func devices(_ addr: UInt64) -> UInt32 {
+    var out: UInt32 = 0
+    with RawMemory {
+        with Mmio {
+            let p: MutPtr[UInt32] = MutPtr.unchecked(fromAddress: addr)
+            let v = MmioView.at(p)
+            let r = MmioRegion.at(p, 8)
+            let b = MmioWireView.at(p, .big)
+            let l = MmioWireView.at(p, .little)
+            v.write(1)
+            b.write(2)
+            out = v.read() + b.read() + l.read()
+        }
+    }
+    return out
+}
+
+func copies(_ d: UInt64, _ s: UInt64, _ n: Int) {
+    with RawMemory {
+        let dst: MutPtr[UInt8] = MutPtr.unchecked(fromAddress: d)
+        let src: Ptr[UInt8] = Ptr.unchecked(fromAddress: s)
+        memcpy(dst, src, n)
+        memset(dst, 0, 0b1000_0000)
+        memmove(dst, src, n)
+    }
+}
