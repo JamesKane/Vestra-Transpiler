@@ -313,6 +313,19 @@ foreach(prog cg_func cg_copy cg_expr cg_stmt cg_if cg_for cg_struct cg_index cgh
     set_tests_properties(e2e_selfhost_codegen_diff_${prog} PROPERTIES DEPENDS e2e_selfhost_codegen_compile)
 endforeach()
 
+# §5 cross-module enums and functions (F19): vgen loads the imported module
+# (examples/modenum_demo/kern/ipc.vst) and lowers references to it as the
+# bootstrap does, in the .cpp and the header tail.
+set(cg_mod_dir ${cg_workdir}/modenum)
+add_test(
+    NAME    e2e_selfhost_codegen_diff_modenum
+    COMMAND sh -c "mkdir -p ${cg_mod_dir} && $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/examples/modenum_demo/main.vst -o ${cg_mod_dir} >/dev/null 2>&1; ${e2e_workdir}/vgen ${CMAKE_SOURCE_DIR}/examples/modenum_demo/main.vst > ${cg_mod_dir}/main_got.cpp; diff ${cg_mod_dir}/main.cpp ${cg_mod_dir}/main_got.cpp")
+set_tests_properties(e2e_selfhost_codegen_diff_modenum PROPERTIES DEPENDS e2e_selfhost_codegen_compile)
+add_test(
+    NAME    e2e_selfhost_codegen_hpp_modenum
+    COMMAND sh -c "mkdir -p ${cg_mod_dir} && $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/examples/modenum_demo/main.vst -o ${cg_mod_dir} >/dev/null 2>&1; awk 'f{print} index(\$0, \"#endif  // VESTRA_RUNTIME_PRELUDE\"){f=1}' ${cg_mod_dir}/main.hpp > ${cg_mod_dir}/main_href.txt; ${e2e_workdir}/vgen --hpp ${CMAKE_SOURCE_DIR}/examples/modenum_demo/main.vst > ${cg_mod_dir}/main_hgot.txt; diff ${cg_mod_dir}/main_href.txt ${cg_mod_dir}/main_hgot.txt")
+set_tests_properties(e2e_selfhost_codegen_hpp_modenum PROPERTIES DEPENDS e2e_selfhost_codegen_compile)
+
 # Header (`.hpp`) differential: `vgen --hpp` emits the per-program tail of the
 # generated header (declarations after the fixed runtime prelude); the reference
 # is the real .hpp with everything up to and including the
