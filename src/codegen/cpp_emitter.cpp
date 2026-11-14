@@ -1220,6 +1220,12 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         return;
     }
 
+    // §14.6 an `@extern` function has C linkage (F21): without a `@symbol`
+    // it then links against its plain name, not a mangled (or namespaced)
+    // C++ one. A Vestra definition inherits it from this declaration.
+    if (is_foreign_abi) {
+        hdr << "extern \"C\" ";
+    }
     emit_link_attr_prefix(hdr, link_attrs);
     if (has_result) {
         hdr << result_attr;

@@ -3440,3 +3440,12 @@ TEST_CASE("p.address and @align on a static lower to C++ (F6)") {
     CHECK(f.out.source.find("static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>((&l1)))")
           != std::string::npos);
 }
+
+TEST_CASE("@extern functions have C linkage (F21)") {
+    SemaEmitFixture f("@extern(\"C\") func ext_plain(_ x: UInt64) -> UInt64\n"
+                      "@extern(\"C\") @symbol(\"named\") func extNamed(_ x: UInt64)\n");
+    CHECK(f.out.header.find("extern \"C\" [[nodiscard]] std::uint64_t ext_plain(std::uint64_t x);")
+          != std::string::npos);
+    CHECK(f.out.header.find("extern \"C\" void extNamed(std::uint64_t x) asm(\"named\");")
+          != std::string::npos);
+}

@@ -6670,6 +6670,8 @@ func genName(_ g: Nd) using Alloc -> String {
 // type gets a bare `void`.
 func emitFwdDecl(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
     let attrs = ndsCopy(env.curAttrs)
+    // §14.6 an `@extern` function has C linkage, as the bootstrap emits.
+    if isForeignAbi(attrs) { print("extern \"C\" ") }
     emitLinkPrefix(attrs)
     emitResultAttr(thr, res)
     emitInlineSpec(attrs)
