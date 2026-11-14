@@ -5955,8 +5955,80 @@ func emitHppFunc(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, 
 // explicitly written result type or a throws clause).
 func emitTemplateFunc(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
     emitTemplateHead(gens)
+    emitRequiresClause(gens)
     if res.len() > 0 || thr.len() > 0 { print("[[nodiscard]] ") }
     emitFunc(env, mods, name, params, thr, res, body)
+}
+
+// §7 a generic FUNCTION's protocol bounds (inline or `where`, already merged
+// into each genType) that have a standard C++20 concept become one
+// `requires (<c1> && <c2>)` line under the template head: Eq ->
+// equality_comparable, Comparable / Ordered -> totally_ordered, Default ->
+// default_initializable. Other protocols are omitted; with none, no line.
+// Struct and enum heads carry no clause, as in the bootstrap.
+func emitRequiresClause(_ gens: Vec[Nd]) using Alloc, Log {
+    var cs: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < gens.len() {
+        pushGenConstraints(&cs, gens.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    if cs.len() == 0 { return }
+    print("requires (")
+    var k: Int = 0
+    while k < cs.len() {
+        if k > 0 { print(" && ") }
+        print(cs.get(k) ?? own(""))
+        k = k + 1
+    }
+    print(")\n")
+}
+
+func pushGenConstraints(_ cs: inout Vec[String], _ g: Nd) using Alloc {
+    match g {
+        case .genType(let nm, let bounds): pushBoundConstraints(&cs, nm, bounds)
+        default: noop()
+    }
+}
+
+func pushBoundConstraints(_ cs: inout Vec[String], _ nm: Str, _ bounds: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < bounds.len() {
+        let c = boundConcept(bounds.get(i) ?? Nd.wildcard)
+        if !streq(c, "") {
+            var s: String = own(c)
+            s.append("<")
+            s.append(nm)
+            s.append(">")
+            cs.push(s)
+        }
+        i = i + 1
+    }
+}
+
+func boundConcept(_ b: Nd) using Alloc -> String {
+    return match b {
+        case .named(let path, let hasG, let args): conceptFor(lastPathSeg(path))
+        default: own("")
+    }
+}
+
+func conceptFor(_ p: Str) using Alloc -> String {
+    if streq(p, "Eq") { return own("std::equality_comparable") }
+    if streq(p, "Comparable") || streq(p, "Ordered") { return own("std::totally_ordered") }
+    if streq(p, "Default") { return own("std::default_initializable") }
+    return own("")
+}
+
+// The last `.`-separated segment of a type path (`a.b.Eq` -> `Eq`).
+func lastPathSeg(_ path: Str) using Alloc -> String {
+    var start: Int = 0
+    var i: Int = 0
+    while i < path.len() {
+        if (path.byteAt(i) ?? 0) == 46 { start = i + 1 }   // '.' == 46
+        i = i + 1
+    }
+    return own(path.slice(start, path.len()))
 }
 
 func genName(_ g: Nd) using Alloc -> String {

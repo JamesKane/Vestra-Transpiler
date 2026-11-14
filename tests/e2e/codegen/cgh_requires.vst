@@ -1,0 +1,28 @@
+// §7 a generic function's protocol bounds with a standard C++20 concept
+// become a `requires (...)` line under its template head, joined with `&&`
+// across bounds and type parameters; inline and `where` bounds merge.
+// Protocols without one (Hash, Clone) are omitted, a function with only
+// those gets no line, and a bounded generic struct carries no clause.
+func same[T: Eq](_ a: T, _ b: T) -> Bool {
+    return a == b
+}
+
+func clamp[T: Comparable & Eq](_ v: T, _ lo: T, _ hi: T) -> T {
+    return if v < lo { lo } else if v > hi { hi } else { v }
+}
+
+func both[A, B](_ a: A, _ b: B) -> Bool where A: Eq & Hash, B: Default & Ordered {
+    return true
+}
+
+func plain[T: Hash & Clone](_ v: T) -> T {
+    return v
+}
+
+func firstOf[T: Eq, const N: Int](_ xs: [N]T) -> T {
+    return xs[0]
+}
+
+struct Boxed[T: Eq] {
+    var v: T
+}
