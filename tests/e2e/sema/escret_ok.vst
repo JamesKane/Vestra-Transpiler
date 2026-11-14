@@ -1,0 +1,19 @@
+// §19.4 returning views that outlive the call: of a parameter, of a view
+// parameter through a call, of a literal, and raw-minted under the caller's
+// RawMemory.
+struct Hold {
+    var s: Span[Int32]
+}
+func id(_ s: Span[Int32]) -> Span[Int32] { return s }
+func param(_ a: [4]Int32) -> Span[Int32] {
+    return a
+}
+func passThrough(_ s: Span[Int32]) -> Span[Int32] {
+    return id(s)
+}
+func lit() -> Str {
+    return "abc"
+}
+func rawCaller(_ p: Ptr[UInt8]) using RawMemory -> Span[UInt8] {
+    return Span.raw(at: p, count: 4)
+}

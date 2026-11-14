@@ -110,7 +110,6 @@ Each gap has one of four kinds:
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
 | §5 | Small `Trivial` structs copy implicitly | divergent | `is_trivial` covers only primitive scalars (`ownership.cpp:688`). Passing `struct P { var a: Int32 }` to `sink` twice is an error. |
-| §5, §19.4 | Inferred lifetimes for returned views | unsound | `return id(localArray)` as `Span[Int32]` is accepted. |
 | §19.3 | Exclusivity across an `inout` method receiver | unsound | `p.bump(&p.a)` is accepted. |
 | §7 | Capturing a `var` in a closure | missing | Rejected outright: function types are plain function pointers, so a capturing closure can't be one. |
 
@@ -181,7 +180,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §10, §19.4 | `Span`/`MutSpan` cannot escape | unsound | Returning a span over a local array, and a struct holding one escaping, are accepted. (`Box` / `Channel` of a non-escapable type is rejected; `Vec[Str]` is still admitted because the builtin `split` and `args()` return one.) |
+| §10, §19.4 | `Span`/`MutSpan` cannot escape | unsound (partial) | A view stored into a binding that outlives its source (`outer = view of an inner local`) is accepted; `Vec[Str]` is admitted because the builtin `split` and `args()` return one. (Returning a view of the function's own storage, a temporary, or a `with RawMemory` mint is rejected, as is a `Box` / `Channel` of a non-escapable type.) |
 | §10 | `Buffer[T]`, `Buffer(fixed:)` | missing | "undefined name". `Vec` is the substitute. |
 | §10, §11 | `Arc[T]` | missing | "undefined name". |
 | §10 | `StridedSpan[T]` | missing | "unknown type". |
@@ -196,7 +195,6 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 | §11.2, §19.4 | The `parallel` body cannot leak its slice | unsound | `ch.send(slice)` inside the body is accepted. |
 | §11.1, §19.8 | `send` takes its argument by `sink` | unsound | `ch.send(b); return b.n` is accepted. A linear value sent on a channel still reports "never consumed". The prelude copies. |
 | §11.1 | Bounded channels | weaker | Unbounded. `Channel.new(capacity: 4)` is accepted, and the capacity is silently dropped. |
-| §11.1 | A future cannot escape its spawning scope | unsound | Returning a `Future` is accepted. (Storing one in a struct field, a `Box` or a `Channel` is rejected.) Awaiting at scope exit does work (`~Future` pumps). |
 | §11.1 | `spawn` rejects non-escapable captures, transitively | unsound (partial) | A direct `Span` param is rejected. A struct holding a `Span` is not. |
 | §11.4 | No borrowed view live across `await` | unsound (partial) | Only `inout` params on an `async func` are rejected. A `Span` param or local used after an `await` passes. |
 | §11.1 | `select` send-when-ready arm | missing | "select event must be a Future[T] or a channel receive". |

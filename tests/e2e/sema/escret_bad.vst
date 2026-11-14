@@ -1,0 +1,37 @@
+// §19.4 / §11.1 a returned view can't be of the function's own storage (directly,
+// through a call, a binding, a struct or a trailing value) or minted under a
+// `with RawMemory` block inside it; a Future can't be returned.
+struct Hold {
+    var s: Span[Int32]
+}
+func id(_ s: Span[Int32]) -> Span[Int32] { return s }
+func local() -> Span[Int32] {
+    let a: [4]Int32 = [1, 2, 3, 4]
+    return a
+}
+func viaId() -> Span[Int32] {
+    let a: [4]Int32 = [1, 2, 3, 4]
+    return id(a)
+}
+func viaLet() -> Span[Int32] {
+    let a: [4]Int32 = [1, 2, 3, 4]
+    let s: Span[Int32] = a
+    return s
+}
+func inStruct() -> Hold {
+    let a: [4]Int32 = [1, 2, 3, 4]
+    return Hold(s: a)
+}
+func tail() -> Span[Int32] {
+    let a: [4]Int32 = [1, 2, 3, 4]
+    a
+}
+func raw(_ p: Ptr[UInt8]) -> Span[UInt8] {
+    with RawMemory {
+        return Span.raw(at: p, count: 4)
+    }
+}
+async func work() -> Int32 { return 1 }
+func fut() using Async -> Future[Int32] {
+    return spawn work()
+}

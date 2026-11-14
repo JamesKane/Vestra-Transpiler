@@ -6639,6 +6639,14 @@ struct TyEnv {
     var muMarks: Vec[Int]       // scope starts in muName
     var stName: Vec[String]     // global: statics ...
     var stAtomic: Vec[Bool]     // ... and whether each is an Atomic (the only writable kind)
+    var esBad: Vec[String]      // §19.4 escape errors (printed after the flow passes, as the bootstrap's pass runs last)
+    var esFn: String            // per-function: its name
+    var esLocals: Vec[String]   // per-function: every let / var it declares
+    var esSinks: Vec[String]    // per-function: its `sink` parameters
+    var esVName: Vec[String]    // per-function: view locals ...
+    var esVOrig: Vec[String]    // ... and their sources ("L:a,T,R1", see esOrig)
+    var esRaw: Int              // `with RawMemory` blocks around the current point
+    var esMmio: Int             // `with Mmio` blocks around the current point
 }
 
 func tyCheck(_ env: inout TyEnv, _ u: NUnit) using Alloc {
@@ -7120,7 +7128,9 @@ func tyNodeBreaksOut(_ n: Nd, _ inLoop: Bool) -> Bool {
 }
 
 func tyCheckFuncAll(_ env: inout TyEnv, _ mods: String, _ name: String, _ params: Vec[Nd], _ result: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    esEnter(env, name, params, result, body)
     tyCheckFunc(env, name, params, result, body)
+    if body.len() > 0 && esNonEsc(env, tyRetSpelling(result), 0) { esCheckTail(env, body) }
     if !containsSub(mods, nakedMark()) { tyCheckDivergence(env, name, body) }
 }
 
@@ -7958,7 +7968,7 @@ func tyStmt(_ env: inout TyEnv, _ s: Nd) using Alloc {
         case .assignS(let op, let t, let v): tyAssign(env, t, v)
         case .whileS(let c, let b): tyWhile(env, c, b)
         case .forS(let pp, let it, let b): tyForMu(env, pp, it, b)
-        case .withS(let caps, let vals, let body): tyWith(env, vals, body)
+        case .withS(let caps, let vals, let body): tyWithEs(env, caps, vals, body)
         default: noop()
     }
 }
@@ -7967,6 +7977,7 @@ func tyLetMu(_ env: inout TyEnv, _ p: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd], _ is
     if ty.len() > 0 { esSlot(env, tyAnnSpelling(ty)) }
     else if esIsBoxNew(v) { esSlot(env, esBoxNewSp(env, v)) }
     tyLet(env, p, ty, v)
+    esLet(env, p, ty, v)
     muBind(env, p, isVar)
 }
 
@@ -8092,8 +8103,11 @@ func esNonEsc(_ env: inout TyEnv, _ sp0: Str, _ depth: Int) using Alloc -> Bool 
     if (sp.byteAt(0) ?? 0) == 40 { return esAnyNonEsc(env, sp.slice(1, n - 1), depth) }
     var b: Int = 0
     while b < n && (sp.byteAt(b) ?? 0) != 91 { b = b + 1 }
-    if b < n && esAnyNonEsc(env, sp.slice(b + 1, n - 1), depth) { return true }
     let base = own(sp.slice(0, b))
+    // Owned containers of views (`Vec[Str]`, as split / args() return) are
+    // admitted for now, as in the bootstrap.
+    if streq(base, "Vec") || streq(base, "HashMap") { return false }
+    if b < n && esAnyNonEsc(env, sp.slice(b + 1, n - 1), depth) { return true }
     var f: Int = 0
     while f < env.sFldStruct.len() {
         if streq(env.sFldStruct.get(f) ?? own(""), base) && esNonEsc(env, env.sFldType.get(f) ?? own(""), depth + 1) { return true }
@@ -8168,6 +8182,7 @@ func tyAddSymSp(_ env: inout TyEnv, _ n: String, _ sp: String) using Alloc {
 // value must be assignable to the target. Only ident targets type to a known
 // slot here; member/index targets are unknown and tolerated.
 func tyAssign(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    esAssign(env, t, v)
     tyBoxed(env, t)
     muCheck(env, t)
     tyBoxed(env, v)
@@ -8189,10 +8204,364 @@ func tyAssignMsg(_ from: String, _ to: String) using Alloc -> String {
 // to the enclosing function's declared result. A bare `return` produces Unit.
 func tyRet(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc {
     tyBoxed(env, v)
+    let cr = own(env.curRet)
+    if v.len() > 0 && esNonEsc(env, cr, 0) { esCheckRet(env, v) }
     if streq(env.curRet, "") { return }
     var rt: String = own("Unit")
     if v.len() > 0 { rt = tyInferBoxed(env, v) }
     if !tyFits(rt, v, env.curRet) { env.bad.push(tyReturnMsg(rt, env.curRet)) }
+}
+
+// A `with RawMemory` / `with Mmio` block bounds what is minted inside it.
+func tyWithEs(_ env: inout TyEnv, _ caps: Vec[Nd], _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    let raw = esHasCap(caps, "RawMemory")
+    let mmio = esHasCap(caps, "Mmio")
+    if raw { env.esRaw = env.esRaw + 1 }
+    if mmio { env.esMmio = env.esMmio + 1 }
+    tyWith(env, vals, body)
+    if raw { env.esRaw = env.esRaw - 1 }
+    if mmio { env.esMmio = env.esMmio - 1 }
+}
+
+func esHasCap(_ caps: Vec[Nd], _ name: Str) using Alloc -> Bool {
+    var i: Int = 0
+    while i < caps.len() {
+        if esCapIs(caps.get(i) ?? Nd.wildcard, name) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func esCapIs(_ c: Nd, _ name: Str) using Alloc -> Bool {
+    return match c {
+        case .named(let path, let g, let a): streq(esLastSeg(path), name)
+        default: false
+    }
+}
+
+func esLastSeg(_ p: String) using Alloc -> String {
+    var at: Int = 0
+    var i: Int = 0
+    while i < p.len() {
+        if (p.byteAt(i) ?? 0) == 46 { at = i + 1 }
+        i = i + 1
+    }
+    return own(p.slice(at, p.len()))
+}
+
+// ----- §19.4 sources of views (the bootstrap's EscapeChecker) ----------------
+// A source list is a comma-separated string: "L:<local>" a view of the
+// function's own binding, "T" a temporary, "R1" / "M1" minted under a
+// `with RawMemory` / `with Mmio` block here ("R0" / "M0": the caller's).
+func esEnter(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ result: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    env.esFn = own(name)
+    while env.esLocals.len() > 0 { let _ = env.esLocals.pop() }
+    while env.esSinks.len() > 0 { let _ = env.esSinks.pop() }
+    while env.esVName.len() > 0 { let _ = env.esVName.pop() }
+    while env.esVOrig.len() > 0 { let _ = env.esVOrig.pop() }
+    env.esRaw = 0
+    env.esMmio = 0
+    var i: Int = 0
+    while i < params.len() {
+        match params.get(i) ?? Nd.wildcard {
+            case .param(let lo, let lbl, let nm, let ne, let md, let ty): esNoteParam(env, nm, md)
+            default: noop()
+        }
+        i = i + 1
+    }
+    if body.len() == 0 { return }
+    // §11.1 a Future can't outlive the scope that spawned it.
+    if let r = result.get(0) {
+        match r {
+            case .named(let path, let g, let a): esFutureRet(env, name, path)
+            default: noop()
+        }
+    }
+}
+
+func esNoteParam(_ env: inout TyEnv, _ nm: String, _ md: String) using Alloc {
+    if streq(md, "sink ") { env.esSinks.push(own(nm)) }
+}
+
+func esFutureRet(_ env: inout TyEnv, _ name: String, _ path: String) using Alloc {
+    if !streq(path, "Future") { return }
+    var m: String = "'"
+    m.append(name)
+    m.append("' can't return a Future: a Future can't outlive the scope that spawned it")
+    env.esBad.push(m)
+}
+
+func esLet(_ env: inout TyEnv, _ p: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    if let pn = p.get(0) {
+        match pn {
+            case .identP(let n): esLetName(env, n, ty, v)
+            case .bindP(let n): esLetName(env, n, ty, v)
+            default: noop()
+        }
+    }
+}
+
+func esLetName(_ env: inout TyEnv, _ n: String, _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    env.esLocals.push(own(n))
+    var sp: String = tyAnnSpelling(ty)
+    if streq(sp, "") && v.len() > 0 { sp = tyInferBoxed(env, v) }
+    if v.len() > 0 && esNonEsc(env, sp, 0) {
+        let o = esOrig(env, v)
+        env.esVName.push(own(n))
+        env.esVOrig.push(o)
+    }
+}
+
+func esAssign(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    if let tn = t.get(0) {
+        match tn {
+            case .ident(let n): esReassign(env, n, v)
+            default: noop()
+        }
+    }
+}
+
+func esReassign(_ env: inout TyEnv, _ n: String, _ v: Vec[Nd]) using Alloc {
+    let i = esViewIdx(env, n)
+    if i >= 0 { env.esVOrig.set(i, esOrig(env, v)) }
+}
+
+func esViewIdx(_ env: inout TyEnv, _ n: Str) using Alloc -> Int {
+    var i: Int = env.esVName.len() - 1
+    while i >= 0 {
+        if streq(env.esVName.get(i) ?? own(""), n) { return i }
+        i = i - 1
+    }
+    return -1
+}
+
+func esJoin(_ a: String, _ b: String) using Alloc -> String {
+    if streq(a, "") { return own(b) }
+    if streq(b, "") { return own(a) }
+    var s = own(a)
+    s.append(",")
+    s.append(b)
+    return s
+}
+
+// The sources of a value flowing into a view-typed slot.
+func esOrig(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc -> String {
+    let mint = esMintOrig(env, v)
+    if !streq(mint, "") { return mint }
+    let sp = tyInferBoxed(env, v)
+    if streq(sp, "") { return own("") }   // an untyped expression: no known source
+    if !esNonEsc(env, sp, 0) { return esStorage(env, v) }
+    if let n = v.get(0) {
+        return match n {
+            case .paren(let x): esOrig(env, x)
+            case .ident(let x): esViewOrig(env, x)
+            case .member(let b, let m, let c): esOrig(env, b)
+            case .index(let b, let i): esOrig(env, b)
+            case .ifE(let ln, let li, let c, let t, let e): esJoin(esOrig(env, esTail(t)), esOrig(env, esTail(e)))
+            case .matchE(let sc, let arms): esArmsOrig(env, arms)
+            case .call(let callee, let args): esCallOrig(env, callee, args)
+            default: own("")
+        }
+    }
+    return own("")
+}
+
+// A raw or MMIO mint, recognised by its callee (its result type may not be
+// inferred here).
+func esMintOrig(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc -> String {
+    if let n = v.get(0) {
+        return match n {
+            case .paren(let x): esMintOrig(env, x)
+            case .call(let callee, let args): esMintCallee(env, callee)
+            default: own("")
+        }
+    }
+    return own("")
+}
+
+func esMintCallee(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
+    if esCalleeIs(callee, "Span", "raw") || esCalleeIs(callee, "MutSpan", "raw") {
+        if env.esRaw > 0 { return own("R1") }
+        return own("R0")
+    }
+    if esCalleeIs(callee, "MmioView", "at") || esCalleeIs(callee, "MmioRegion", "at") || esCalleeIs(callee, "MmioWireView", "at") {
+        if env.esMmio > 0 { return own("M1") }
+        return own("M0")
+    }
+    return own("")
+}
+
+func esIsCall(_ v: Vec[Nd]) -> Bool {
+    if let n = v.get(0) {
+        return match n {
+            case .call(let c, let a): true
+            default: false
+        }
+    }
+    return false
+}
+
+func esViewOrig(_ env: inout TyEnv, _ x: String) using Alloc -> String {
+    let i = esViewIdx(env, x)
+    if i >= 0 { return own(env.esVOrig.get(i) ?? own("")) }
+    return own("")
+}
+
+func esTail(_ b: Vec[Nd]) using Alloc -> Vec[Nd] {
+    var out: Vec[Nd] = Vec.new()
+    if let n = b.get(0) {
+        match n {
+            case .block(let stmts): esTailOf(stmts, out)
+            default: out.push(n)
+        }
+    }
+    return out
+}
+
+func esTailOf(_ stmts: Vec[Nd], _ out: inout Vec[Nd]) using Alloc {
+    if stmts.len() == 0 { return }
+    match stmts.get(stmts.len() - 1) ?? Nd.wildcard {
+        case .exprS(let e): esPushFirst(e, out)
+        default: noop()
+    }
+}
+
+func esPushFirst(_ e: Vec[Nd], _ out: inout Vec[Nd]) using Alloc {
+    if let x = e.get(0) { out.push(x) }
+}
+
+func esArmsOrig(_ env: inout TyEnv, _ arms: Vec[Nd]) using Alloc -> String {
+    var o: String = ""
+    var i: Int = 0
+    while i < arms.len() {
+        o = esJoin(o, esArmOrig(env, arms.get(i) ?? Nd.wildcard))
+        i = i + 1
+    }
+    return o
+}
+
+func esArmOrig(_ env: inout TyEnv, _ a: Nd) using Alloc -> String {
+    return match a {
+        case .matchArm(let d, let pt, let g, let body): esOrig(env, esTail(body))
+        default: own("")
+    }
+}
+
+func esCallOrig(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc -> String {
+    if esCalleeIs(callee, "Span", "raw") || esCalleeIs(callee, "MutSpan", "raw") {
+        if env.esRaw > 0 { return own("R1") }
+        return own("R0")
+    }
+    if esCalleeIs(callee, "MmioView", "at") || esCalleeIs(callee, "MmioRegion", "at") || esCalleeIs(callee, "MmioWireView", "at") {
+        if env.esMmio > 0 { return own("M1") }
+        return own("M0")
+    }
+    // A projection views what its receiver views.
+    var o: String = esCalleeRecvOrig(env, callee)
+    let fname = exCalleeNameBoxed(callee)
+    let isStruct = tyIsStruct(env, fname)
+    var i: Int = 0
+    while i < args.len() {
+        o = esJoin(o, esArgNodeOrig(env, fname, isStruct, i, args.get(i) ?? Nd.wildcard))
+        i = i + 1
+    }
+    return o
+}
+
+func esCalleeRecvOrig(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
+    if let c = callee.get(0) {
+        return match c {
+            case .member(let base, let m, let ch): esRecvOrig(env, base)
+            default: own("")
+        }
+    }
+    return own("")
+}
+
+func esArgNodeOrig(_ env: inout TyEnv, _ fname: String, _ isStruct: Bool, _ idx: Int, _ a: Nd) using Alloc -> String {
+    return match a {
+        case .arg(let label, let io, let val): esArgOrig(env, fname, isStruct, idx, label, val)
+        default: own("")
+    }
+}
+
+func esRecvOrig(_ env: inout TyEnv, _ base: Vec[Nd]) using Alloc -> String {
+    if streq(tyInferBoxed(env, base), "") { return own("") }
+    return esOrig(env, base)
+}
+
+// An argument is a source when its parameter (or field) is a view, or it is one.
+func esArgOrig(_ env: inout TyEnv, _ fname: String, _ isStruct: Bool, _ idx: Int, _ label: String, _ val: Vec[Nd]) using Alloc -> String {
+    var viewSlot: Bool = esNonEsc(env, tyParamType(env, fname, idx), 0)
+    if isStruct && esNonEsc(env, tyFieldType(env, fname, label), 0) { viewSlot = true }
+    if viewSlot || esNonEsc(env, tyInferBoxed(env, val), 0) { return esOrig(env, val) }
+    return own("")
+}
+
+// A non-view value coerced into a view: a view of its storage.
+func esStorage(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc -> String {
+    if let n = v.get(0) {
+        return match n {
+            case .paren(let x): esStorage(env, x)
+            case .ident(let x): esStorageName(env, x)
+            case .member(let b, let m, let c): esStorage(env, b)
+            case .index(let b, let i): esStorage(env, b)
+            case .call(let c, let a): own("T")
+            case .vecLit(let xs): own("T")
+            case .interpE(let p, let xs): own("T")
+            case .tupleLit(let xs): own("T")
+            default: own("")
+        }
+    }
+    return own("")
+}
+
+func esStorageName(_ env: inout TyEnv, _ x: String) using Alloc -> String {
+    let vi = esViewIdx(env, x)
+    if vi >= 0 { return own(env.esVOrig.get(vi) ?? own("")) }
+    if esInList(env.esLocals, x) || esInList(env.esSinks, x) {
+        var s: String = "L:"
+        s.append(x)
+        return s
+    }
+    return own("")
+}
+
+func esInList(_ xs: Vec[String], _ n: Str) using Alloc -> Bool {
+    var i: Int = 0
+    while i < xs.len() {
+        if streq(xs.get(i) ?? own(""), n) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func esCheckTail(_ env: inout TyEnv, _ body: Vec[Nd]) using Alloc {
+    let t = esTail(body)
+    if t.len() > 0 { esCheckRet(env, t) }
+}
+
+// The first source that the return would outlive.
+func esCheckRet(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc {
+    let o = esOrig(env, v)
+    let parts = o.split(",")
+    var i: Int = 0
+    while i < parts.len() {
+        let p = own(parts.get(i) ?? "")
+        if tyStartsWith(p, "L:") {
+            var m: String = "can't return a view of '"
+            m.append(p.slice(2, p.len()))
+            m.append("': it's local to '")
+            m.append(env.esFn)
+            m.append("', so the view would outlive it")
+            env.esBad.push(m)
+            return
+        }
+        if streq(p, "T") { env.esBad.push(own("can't return a view of a temporary: it ends with this statement, so the view would outlive it")); return }
+        if streq(p, "R1") { env.esBad.push(own("can't return a view minted under `with RawMemory`: its lifetime ends with that block (Annex §10.5)")); return }
+        if streq(p, "M1") { env.esBad.push(own("can't return an MMIO view minted under `with Mmio`: its lifetime ends with that block (Annex §14.11)")); return }
+        i = i + 1
+    }
 }
 
 func tyWith(_ env: inout TyEnv, _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc {
@@ -8692,6 +9061,14 @@ func tyAssignable(_ from: String, _ to: String) using Alloc -> Bool {
     if streq(from, "") || streq(to, "") { return true }   // unknown: don't pile on
     if streq(from, to) { return true }
     if tyIsArray(from) && tyIsArray(to) { return tyArrayAssignable(from, to) }
+    // §10 a `[N]T` is viewable as a Span[T] / MutSpan[T]; a MutSpan[T] widens
+    // to a Span[T] (types.cpp's assignable).
+    if tyIsArray(from) && (tyStartsWith(to, "Span[") || tyStartsWith(to, "MutSpan[")) {
+        return streq(tyArrayElem(from), tyBracketInner(to))
+    }
+    if tyStartsWith(from, "MutSpan[") && tyStartsWith(to, "Span[") {
+        return streq(tyBracketInner(from), tyBracketInner(to))
+    }
     if tyIntNatural(from, to) { return true }
     if tyStrLattice(from, to) { return true }
     if tyOptionalWrap(from, to) { return true }
@@ -9270,7 +9647,9 @@ func main() -> Int32 {
                                      curRet: own(""), bad: Vec.new(),
                                      mInout: Vec.new(), muName: Vec.new(), muFlag: Vec.new(),
                                      muKind: Vec.new(), muMarks: Vec.new(),
-                                     stName: Vec.new(), stAtomic: Vec.new())
+                                     stName: Vec.new(), stAtomic: Vec.new(),
+                                     esBad: Vec.new(), esFn: own(""), esLocals: Vec.new(), esSinks: Vec.new(),
+                                     esVName: Vec.new(), esVOrig: Vec.new(), esRaw: 0, esMmio: 0)
                     tyCheck(&tenv, u)
                     var ti: Int = 0
                     while ti < tenv.bad.len() {
@@ -9312,7 +9691,12 @@ func main() -> Int32 {
                         if let msg = cenv.bad.get(k) { println(msg) }
                         k = k + 1
                     }
-                    if oenv.bad.len() > 0 || xenv.bad.len() > 0 || cenv.bad.len() > 0 { return 1 }
+                    var es: Int = 0
+                    while es < tenv.esBad.len() {
+                        if let msg = tenv.esBad.get(es) { println(msg) }
+                        es = es + 1
+                    }
+                    if oenv.bad.len() > 0 || xenv.bad.len() > 0 || cenv.bad.len() > 0 || tenv.esBad.len() > 0 { return 1 }
                     return 0
                 }
                 eprintln("read failed")

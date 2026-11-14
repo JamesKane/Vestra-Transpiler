@@ -11,6 +11,7 @@
 #include "vestra/lex/token.hpp"
 #include "vestra/parse/parser.hpp"
 #include "vestra/sema/capability.hpp"
+#include "vestra/sema/escape.hpp"
 #include "vestra/sema/exclusivity.hpp"
 #include "vestra/sema/ownership.hpp"
 #include "vestra/sema/resolver.hpp"
@@ -712,6 +713,8 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
             exclusivity.check();
             sema::CapabilityChecker capability(unit, resolver.resolution(), rep);
             capability.check();
+            sema::EscapeChecker escape(unit, resolver.resolution(), rep);
+            escape.check();
             if (rep.has_errors()) {
                 rep.render_to(err);
                 return 1;
@@ -816,6 +819,8 @@ int run_check(const std::filesystem::path& input,
             exclusivity.check();
             sema::CapabilityChecker capability(unit, resolver.resolution(), rep);
             capability.check();
+            sema::EscapeChecker escape(unit, resolver.resolution(), rep);
+            escape.check();
         }
         if (rep.has_errors()) {
             rep.render_to(err);
