@@ -9844,6 +9844,8 @@ func cppGenericSpelling(_ sp: String) using Alloc -> String {
     else if streq(base, "Channel") { s.append("__vstr::Channel<") }
     else if streq(base, "Future") { s.append("__vstr::Future<") }
     else if streq(base, "Atomic") { s.append("std::atomic<") }
+    else if streq(base, "Span") { s.append("std::span<const ") }
+    else if streq(base, "MutSpan") { s.append("std::span<") }
     else if streq(base, "Padded") || streq(base, "PerCpu") || streq(base, "AtomicTaggedPointer")
         || streq(base, "MmioView") || streq(base, "MmioRegion") || streq(base, "MmioWireView") {
         s.append("__vstr::")
@@ -11114,6 +11116,7 @@ func tryEmitBuiltin(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using All
     if emitMemIntrinsic(env, fname, args) { return true }
     if tyArity(env, fname) >= 0 { return false }
     if emitAdapter(env, fname, args) { return true }
+    if emitParallel(env, fname, args) { return true }
     if streq(fname, "readFile") && args.len() == 1 {
         print("__vstr::read_file(")
         emitArg(env, args.get(0) ?? Nd.wildcard)
@@ -11177,7 +11180,7 @@ func emitAdapter(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using Alloc,
         print(")")
     } else if isFn {
         let elem = tyIterElem(env, tyInferArg(env, args))
-        emitElemClosureArg(env, elem, args.get(1) ?? Nd.wildcard)
+        emitElemClosureArg(env, elem, args.get(1) ?? Nd.wildcard, true)
     } else {
         emitArg(env, args.get(1) ?? Nd.wildcard)
     }
@@ -11185,17 +11188,33 @@ func emitAdapter(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using Alloc,
     return true
 }
 
-func emitElemClosureArg(_ env: inout TyEnv, _ elem: Str, _ a: Nd) using Alloc, Log {
+// §11.2 `parallel(data, chunks, body)` -> `__vstr::parallel(data,
+// static_cast<std::intptr_t>(chunks), body)`, the runtime splitting `data`
+// into disjoint sub-spans. A closure body takes the data span's own type for
+// its parameter and yields nothing.
+func emitParallel(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if !streq(fname, "parallel") || args.len() != 3 { return false }
+    print("__vstr::parallel(")
+    emitArg(env, args.get(0) ?? Nd.wildcard)
+    print(", static_cast<std::intptr_t>(")
+    emitArg(env, args.get(1) ?? Nd.wildcard)
+    print("), ")
+    emitElemClosureArg(env, tyInferArg(env, args), args.get(2) ?? Nd.wildcard, false)
+    print(")")
+    return true
+}
+
+func emitElemClosureArg(_ env: inout TyEnv, _ elem: Str, _ a: Nd, _ valueRet: Bool) using Alloc, Log {
     match a {
-        case .arg(let label, let isInout, let val): emitElemClosureVal(env, elem, val)
+        case .arg(let label, let isInout, let val): emitElemClosureVal(env, elem, val, valueRet)
         default: noop()
     }
 }
 
-func emitElemClosureVal(_ env: inout TyEnv, _ elem: Str, _ val: Vec[Nd]) using Alloc, Log {
+func emitElemClosureVal(_ env: inout TyEnv, _ elem: Str, _ val: Vec[Nd], _ valueRet: Bool) using Alloc, Log {
     if val.len() == 0 { return }
     match val.get(0) ?? Nd.wildcard {
-        case .closureE(let cparams, let body): emitSpClosure(env, cparams, body, elem)
+        case .closureE(let cparams, let body): emitSpClosure(env, cparams, body, elem, valueRet)
         default: emitBoxed(env, val)
     }
 }
@@ -11203,7 +11222,7 @@ func emitElemClosureVal(_ env: inout TyEnv, _ elem: Str, _ val: Vec[Nd]) using A
 // `[&](<T> p) { return <body>; }` with every parameter typed by the C++
 // spelling of `elem` (`auto` when unknown); the parameters register at that
 // type so the body infers, and the closure always yields its value.
-func emitSpClosure(_ env: inout TyEnv, _ cparams: Vec[Nd], _ body: Vec[Nd], _ elem: Str) using Alloc, Log {
+func emitSpClosure(_ env: inout TyEnv, _ cparams: Vec[Nd], _ body: Vec[Nd], _ elem: Str, _ valueRet: Bool) using Alloc, Log {
     print("[&](")
     var i: Int = 0
     while i < cparams.len() {
@@ -11216,7 +11235,7 @@ func emitSpClosure(_ env: inout TyEnv, _ cparams: Vec[Nd], _ body: Vec[Nd], _ el
         i = i + 1
     }
     print(") { ")
-    emitClosureStmts(env, body, true)
+    emitClosureStmts(env, body, valueRet)
     print(" }")
 }
 

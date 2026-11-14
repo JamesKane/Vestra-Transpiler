@@ -1,0 +1,27 @@
+// §11.2 `parallel(data, chunks, body)` lowers to the runtime splitter,
+// `__vstr::parallel(data, static_cast<std::intptr_t>(chunks), body)`. A
+// closure body takes the data span's own type for its parameter (a MutSpan
+// here, `std::span<T>`) and yields nothing; its statements lower against
+// that type (`.count`, indexing).
+func clear(_ data: MutSpan[UInt8], _ n: Int) using Async {
+    parallel(data, n, { part =>
+        var i = 0
+        while i < part.count {
+            part[i] = 0
+            i = i + 1
+        }
+    })
+}
+
+func offset(_ data: MutSpan[Int64], _ n: Int, _ by: Int64) using Async {
+    parallel(data, n, { part =>
+        if !part.isEmpty {
+            part[0] = part[0] + by
+        }
+        var j = 1
+        while j < part.count {
+            part[j] = part[j] + by
+            j = j + 1
+        }
+    })
+}
