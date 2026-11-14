@@ -1,0 +1,67 @@
+// §A4 (§14.9) the atomic method surface over typed globals. A top-level
+// static types its uses in every function body (a local of the same name
+// shadows it). On an `Atomic[T]` receiver a leading-dot argument is an
+// `Ordering` (`std::memory_order_*`); fetchAdd / fetchSub / fetchAnd /
+// fetchOr / fetchXor take std::atomic's snake_case names; compareExchange /
+// compareExchangeWeak lower to a CASResult IIFE (spelled for the wide
+// UInt128 too). Through `Padded[T].value` and `PerCpu[T].mine()` the inner
+// atomic keeps its surface. An `AtomicTaggedPointer[T]` compareExchange is
+// a direct five-argument `compare_exchange_strong`.
+static hits: Atomic[UInt32] = 0
+static flag: Atomic[Bool] = false
+static wide: Atomic[UInt128] = 0
+@noinit static cell: Padded[Atomic[UInt32]]
+@noinit static perHart: PerCpu[Atomic[UInt32]]
+
+struct Node { var next: UInt64 }
+
+@noinit static head: AtomicTaggedPointer[Node]
+
+func cycle() -> UInt32 {
+    hits.store(0, .release)
+    let a = hits.fetchAdd(3, .acqRel)
+    let b = hits.fetchSub(1, .relaxed)
+    let c = hits.fetchOr(8, .seqCst) + hits.fetchAnd(15, .seqCst) + hits.fetchXor(1, .seqCst)
+    return a + b + c + hits.exchange(5, .seqCst) + hits.load(.acquire)
+}
+
+func raised() -> Bool {
+    flag.store(true, .relaxed)
+    return flag.load(.relaxed)
+}
+
+func swapIn(_ exp: UInt32, _ want: UInt32) -> UInt32 {
+    var r = hits.compareExchange(exp, want, .seqCst, .acquire)
+    while !r.succeeded {
+        r = hits.compareExchangeWeak(r.actual, want, .seqCst, .acquire)
+    }
+    return r.actual
+}
+
+func wideSwap(_ want: UInt128) -> UInt128 {
+    let r = wide.compareExchange(0, want, .seqCst, .acquire)
+    return r.actual
+}
+
+func padded() -> UInt32 {
+    return cell.value.fetchAdd(1, .seqCst) + cell.value.load(.seqCst)
+}
+
+func mine() -> UInt32 {
+    return perHart.mine().fetchAdd(1, .seqCst) + perHart.mine().load(.seqCst)
+}
+
+func shadowed() -> UInt32 {
+    let hits: UInt32 = 7
+    return hits
+}
+
+func push(_ top: MutPtr[Node]) -> UInt64 {
+    let (cur, tag) = head.load(.acquire)
+    let r = head.compareExchange(cur, tag, top, .seqCst, .acquire)
+    if r.succeeded {
+        let (_, t) = head.load(.acquire)
+        return t
+    }
+    return tag
+}

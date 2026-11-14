@@ -2939,6 +2939,8 @@ struct TyEnv {
     var moveOnly: Vec[String]   // global: §10 struct/enum names that transitively own a Box (C++ non-copyable)
     var symName: Vec[String]    // per-function: binding name ...
     var symType: Vec[String]    // ... -> type spelling
+    var gName: Vec[String]      // global: annotated top-level const / static name ...
+    var gType: Vec[String]      // ... -> type spelling (a local of the same name shadows it)
     var curRet: String          // per-function: enclosing function's result spelling ("Unit" if none)
     var curRetNode: Vec[Nd]     // per-function: the result TYPE node (for emitting the C++ return type, e.g. a match lambda)
     var tryN: Int               // file-global `__vstr_t<N>` / `__vstr_c<N>` hoist counter (monotonic, never reset — matches the bootstrap)
@@ -2980,8 +2982,20 @@ func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
         case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumDecl(env, name, cs, m, generics)
         case .deriveD(let protocols, let target): tyRecordDerive(env, protocols, target)
         case .opaqueD(let vis, let name, let under): tyRecordOpaque(env, name, under)
+        case .constD(let vis, let name, let ty, let v): tyRecordGlobal(env, name, ty)
+        case .staticD(let vis, let name, let ty, let v): tyRecordGlobal(env, name, ty)
         default: noop()
     }
+}
+
+// A top-level const / static types every function body's reference to it
+// (`counter.load(.seqCst)` needs the receiver's Atomic type). Only an
+// annotated one has a spelling to record.
+func tyRecordGlobal(_ env: inout TyEnv, _ name: Str, _ ty: Vec[Nd]) using Alloc {
+    let sp = tyAnnSpelling(ty)
+    if streq(sp, "") { return }
+    env.gName.push(own(name))
+    env.gType.push(sp)
 }
 
 // §3 `opaque type Q = T` — one row per newtype, keeping T's node so `q.value`
@@ -3527,6 +3541,13 @@ func tySymType(_ env: inout TyEnv, _ name: String) using Alloc -> String {
             if streq(n, name) { return env.symType.get(i) ?? own("") }
         }
         i = i + 1
+    }
+    var g: Int = 0
+    while g < env.gName.len() {
+        if let n = env.gName.get(g) {
+            if streq(n, name) { return env.gType.get(g) ?? own("") }
+        }
+        g = g + 1
     }
     return own("")
 }
@@ -4300,6 +4321,8 @@ func tyInferMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain:
     // §3 `q.value` on an opaque newtype types as its underlying.
     if streq(name, "value") && tyIsOpaque(env, bt) { return typeSpelling(tyOpaqueUnder(env, bt)) }
     if streq(name, "value") && tyStartsWith(bt, "Box[") { return own(bt.slice(4, bt.len() - 1)) }
+    // §A11 (§14.8) `Padded[T].value` is the padded cell itself.
+    if streq(name, "value") && tyStartsWith(bt, "Padded[") { return tyBracketInner(bt) }
     // A bare case of a user enum (`List.empty`) types as the enum.
     let en = identBaseName(base)
     if !streq(en, "") && tyIsEnum(env, en) && tyEnumHasCase(env, en, name) { return en }
@@ -4587,6 +4610,10 @@ func tyInferMethodCall(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ ch
 // chained builtin calls, force-unwrap, string coercion.
 func tyBuiltinMethodRet(_ bt: String, _ name: String) using Alloc -> String {
     if tyStartsWith(bt, "Vec[") { return tyVecMethodRet(bt, name) }
+    // §A11 `PerCpu[T].mine()` is this hart's T; §A4 the value-returning
+    // atomic operations yield the atomic's T.
+    if tyStartsWith(bt, "PerCpu[") && streq(name, "mine") { return tyBracketInner(bt) }
+    if tyStartsWith(bt, "Atomic[") && atomicRetIsT(name) { return tyBracketInner(bt) }
     if tyStartsWith(bt, "HashMap[") { return tyMapMethodRet(bt, name) }
     if streq(bt, "String") || streq(bt, "Str") || streq(bt, "StrConst") { return tyStrMethodRet(name) }
     if tyIsNumericScalar(bt) && streq(name, "toString") { return own("String") }
@@ -4919,7 +4946,7 @@ func buildTyEnv(_ u: NUnit) using Alloc -> TyEnv {
                     ecfIdx: Vec.new(), ecfName: Vec.new(), ecfTy: Vec.new(),
                     dvTarget: Vec.new(), dvProto: Vec.new(),
                     opName: Vec.new(), opUnder: Vec.new(), moveOnly: Vec.new(),
-                    symName: Vec.new(), symType: Vec.new(),
+                    symName: Vec.new(), symType: Vec.new(), gName: Vec.new(), gType: Vec.new(),
                     curRet: own(""), curRetNode: Vec.new(),
                     tryN: 0, hoistName: Vec.new(), hoistExpr: Vec.new(),
                     hoistKind: Vec.new(), hoistNext: 0,
@@ -9194,6 +9221,13 @@ func cppGenericSpelling(_ sp: String) using Alloc -> String {
     else if streq(base, "Box") { s.append("std::unique_ptr<") }
     else if streq(base, "Channel") { s.append("__vstr::Channel<") }
     else if streq(base, "Future") { s.append("__vstr::Future<") }
+    else if streq(base, "Atomic") { s.append("std::atomic<") }
+    else if streq(base, "Padded") || streq(base, "PerCpu") || streq(base, "AtomicTaggedPointer")
+        || streq(base, "MmioView") || streq(base, "MmioRegion") || streq(base, "MmioWireView") {
+        s.append("__vstr::")
+        s.append(base)
+        s.append("<")
+    }
     else {
         s.append(base)
         s.append("<")
@@ -9819,6 +9853,9 @@ func emitBuiltinMethodOn(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ cha
         return emitStrMethod(env, base, name, args, streq(bt, "String"))
     }
     if streq(bt, "Char") { return emitCharMethod(env, base, name, args) }
+    if tyStartsWith(bt, "Atomic[") || tyStartsWith(bt, "AtomicTaggedPointer[") {
+        return emitAtomicMethod(env, base, bt, name, args)
+    }
     if tyIsNumericScalar(bt) && streq(name, "toString") && args.len() == 0 {
         print("__vstr::to_string(")
         emitBoxed(env, base)
@@ -9826,6 +9863,76 @@ func emitBuiltinMethodOn(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ cha
         return true
     }
     return false
+}
+
+func atomicRetIsT(_ name: Str) -> Bool {
+    return streq(name, "load") || streq(name, "exchange") || streq(name, "fetchAdd")
+        || streq(name, "fetchSub") || streq(name, "fetchAnd") || streq(name, "fetchOr")
+        || streq(name, "fetchXor")
+}
+
+// §A4 (§14.9) methods on an `Atomic[T]` / `AtomicTaggedPointer[T]` receiver,
+// mirroring cpp_emitter.cpp. Every argument goes through an `Ordering` slot:
+// the only enum-typed parameters here are memory orders (T is an integer,
+// Bool or pointer), so a leading-dot argument (`.seqCst`) lowers to its
+// `std::memory_order_*` literal and any other argument emits unchanged.
+//   * Atomic `compareExchange` / `compareExchangeWeak(e, d, s, f)` -> an IIFE
+//     over a local copy of `e`, returning `__vstr::CASResult<T>`.
+//   * Atomic `fetchAdd` / `fetchSub` / `fetchAnd` / `fetchOr` / `fetchXor`
+//     -> std::atomic's snake_case names.
+//   * AtomicTaggedPointer `compareExchange` (5 args) -> a direct
+//     `.compare_exchange_strong(...)` (the template returns the CASResult).
+//   * anything else keeps its name.
+func emitAtomicMethod(_ env: inout TyEnv, _ base: Vec[Nd], _ bt: Str, _ name: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    let isAtomic = tyStartsWith(own(bt), "Atomic[")
+    let strong = streq(name, "compareExchange")
+    let weak = streq(name, "compareExchangeWeak")
+    if isAtomic && (strong || weak) && args.len() == 4 {
+        let ct = cppOfSpelling(tyBracketInner(own(bt)))
+        print("([&]{ ")
+        print(ct)
+        print(" __vstr_e = ")
+        emitOrderingArg(env, args, 0)
+        print("; bool __vstr_ok = ")
+        emitBoxed(env, base)
+        if strong { print(".compare_exchange_strong(__vstr_e, ") } else { print(".compare_exchange_weak(__vstr_e, ") }
+        emitOrderingArg(env, args, 1)
+        print(", ")
+        emitOrderingArg(env, args, 2)
+        print(", ")
+        emitOrderingArg(env, args, 3)
+        print("); return __vstr::CASResult<")
+        print(ct)
+        print(">{__vstr_ok, __vstr_e}; }())")
+        return true
+    }
+    emitBoxed(env, base)
+    print(".")
+    if !isAtomic && strong && args.len() == 5 { print("compare_exchange_strong") }
+    else if isAtomic { print(atomicCppName(name)) }
+    else { print(name) }
+    print("(")
+    var i: Int = 0
+    while i < args.len() {
+        if i > 0 { print(", ") }
+        emitOrderingArg(env, args, i)
+        i = i + 1
+    }
+    print(")")
+    return true
+}
+
+func atomicCppName(_ name: Str) using Alloc -> String {
+    if streq(name, "fetchAdd") { return own("fetch_add") }
+    if streq(name, "fetchSub") { return own("fetch_sub") }
+    if streq(name, "fetchAnd") { return own("fetch_and") }
+    if streq(name, "fetchOr") { return own("fetch_or") }
+    if streq(name, "fetchXor") { return own("fetch_xor") }
+    return own(name)
+}
+
+func emitOrderingArg(_ env: inout TyEnv, _ args: Vec[Nd], _ i: Int) using Alloc, Log {
+    emitSlotArg(env, "Ordering", args.get(i) ?? Nd.wildcard)
 }
 
 func tyIsNumericScalar(_ s: String) -> Bool {
