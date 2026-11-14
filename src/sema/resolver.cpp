@@ -140,6 +140,7 @@ void Resolver::resolve() {
     check_attribute_names();
     collect_top_level();
     check_bound_names();
+    check_derive_names();
     for (const auto& d : unit_->decls) {
         // §12.6: same gate as collect_top_level. Skipping here keeps the
         // body-check pass aligned with the symbols actually registered.
@@ -828,6 +829,38 @@ void Resolver::check_bound_names() {
             error_at(t->range, std::format("bound '{}' is not supported yet", name));
         } else {
             error_at(t->range, std::format("unknown protocol '{}'", name));
+        }
+    }
+}
+
+void Resolver::check_derive_names() {
+    // The derives the emitter implements.
+    constexpr std::array<std::string_view, 6> known{"Eq", "Hash", "Clone",
+                                                    "Debug", "Display", "Default"};
+    for (const auto& d : unit_->decls) {
+        if (d->kind != ast::NodeKind::Derive) {
+            continue;
+        }
+        for (const auto& p : static_cast<const ast::DeriveDecl&>(*d).protocols) {
+            if (p == nullptr || p->kind != ast::NodeKind::NamedType) {
+                continue;
+            }
+            const auto& nt = static_cast<const ast::NamedType&>(*p);
+            if (nt.path.size() != 1) {
+                continue;
+            }
+            const std::string& name = nt.path.front();
+            if (std::ranges::any_of(known, [&](std::string_view n) { return n == name; })) {
+                continue;
+            }
+            // `Ord` and a user protocol's reflective default are spec features
+            // this compiler doesn't have yet.
+            const auto* sym = scopes_.global().lookup(name);
+            if (name == "Ord" || (sym != nullptr && sym->kind == SymbolKind::Protocol)) {
+                error_at(p->range, std::format("derive({}) is not supported yet", name));
+            } else {
+                error_at(p->range, std::format("unknown derive '{}'", name));
+            }
         }
     }
 }

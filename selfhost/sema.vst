@@ -10229,7 +10229,7 @@ func hlNamed(_ path: String, _ args: Vec[Nd], _ out: inout Vec[String]) using Al
 
 // An attribute must be one the compiler acts on or a comptime function of this
 // unit (a declaration macro); the spec's unimplemented ones are rejected too.
-func attrCheck(_ u: NUnit, _ attrs: Vec[String], _ boundBad: Vec[String]) using Alloc -> Vec[String] {
+func attrCheck(_ u: NUnit, _ attrs: Vec[String], _ boundBad: Vec[String], _ protos: Vec[String]) using Alloc -> Vec[String] {
     var macros: Vec[String] = Vec.new()
     var i: Int = 0
     while i < u.decls.len() {
@@ -10264,23 +10264,50 @@ func attrCheck(_ u: NUnit, _ attrs: Vec[String], _ boundBad: Vec[String]) using 
         bad.push(own(boundBad.get(k) ?? own("")))
         k = k + 1
     }
+    var di: Int = 0
+    while di < u.decls.len() {
+        match u.decls.get(di) ?? Nd.wildcard {
+            case .deriveD(let ps, let target): deriveCheck(bad, ps, protos)
+            default: noop()
+        }
+        di = di + 1
+    }
     return bad
+}
+
+// The derives the emitter implements (§12.3); `Ord` and a user protocol's
+// reflective default are spec features not implemented yet.
+func deriveCheck(_ bad: inout Vec[String], _ protos: Vec[Nd], _ unitProtos: Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < protos.len() {
+        match protos.get(i) ?? Nd.wildcard {
+            case .named(let path, let g, let a): deriveName(bad, path, unitProtos)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func deriveName(_ bad: inout Vec[String], _ n: String, _ unitProtos: Vec[String]) using Alloc {
+    if containsSub(n, ".") || streq(n, "Eq") || streq(n, "Hash") || streq(n, "Clone")
+        || streq(n, "Debug") || streq(n, "Display") || streq(n, "Default") { return }
+    var m: String = ""
+    if streq(n, "Ord") || tnContains(unitProtos, n) {
+        m.append("derive(")
+        m.append(n)
+        m.append(") is not supported yet")
+    } else {
+        m.append("unknown derive '")
+        m.append(n)
+        m.append("'")
+    }
+    bad.push(m)
 }
 
 // A generic bound must name a protocol the checker knows (`Ord` and `Hashable`
 // are the spec's spellings) or one this unit declares; a module-qualified one
 // resolves with its module.
-func boundCheck(_ toks: Vec[Token], _ bounds: Vec[String]) using Alloc -> Vec[String] {
-    var protos: Vec[String] = Vec.new()
-    var i: Int = 0
-    while i + 1 < toks.len() {
-        let t = toks.get(i) ?? eofTok()
-        if streq(spelling(t.kind), "protocol") {
-            let n = toks.get(i + 1) ?? eofTok()
-            protos.push(own(n.text))
-        }
-        i = i + 1
-    }
+func boundCheck(_ protos: Vec[String], _ bounds: Vec[String]) using Alloc -> Vec[String] {
     var bad: Vec[String] = Vec.new()
     var j: Int = 0
     while j < bounds.len() {
@@ -10301,6 +10328,21 @@ func boundCheck(_ toks: Vec[Token], _ bounds: Vec[String]) using Alloc -> Vec[St
         j = j + 1
     }
     return bad
+}
+
+// The protocols this unit declares (the parser doesn't keep protocol decls).
+func unitProtocols(_ toks: Vec[Token]) using Alloc -> Vec[String] {
+    var protos: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i + 1 < toks.len() {
+        let t = toks.get(i) ?? eofTok()
+        if streq(spelling(t.kind), "protocol") {
+            let n = toks.get(i + 1) ?? eofTok()
+            protos.push(own(n.text))
+        }
+        i = i + 1
+    }
+    return protos
 }
 
 func boundKnown(_ n: String) -> Bool {
@@ -10349,7 +10391,8 @@ func main() -> Int32 {
                     let toks = tokenize(src)
                     var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new())
                     let u = parseUnit(&p)
-                    let attrBad = attrCheck(u, p.attrs, boundCheck(p.toks, p.bounds))
+                    let protos = unitProtocols(p.toks)
+                    let attrBad = attrCheck(u, p.attrs, boundCheck(protos, p.bounds), protos)
                     // §5 module loading: every `import a.b.c` must resolve to a
                     // file <dir>/a/b/c.vst; a missing one aborts before sema (as
                     // the driver does), reporting the searched path.

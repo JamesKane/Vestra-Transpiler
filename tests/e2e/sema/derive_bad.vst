@@ -1,0 +1,10 @@
+// A misspelt or invented derive used to be a silent no-op. `Ord` is a
+// spec derive this compiler doesn't implement yet.
+
+struct Point {
+    var x: Int32
+}
+derive(Eq, Hsah) for Point
+derive(Ord, Serialize) for Point
+
+func main() -> Int32 { return 0 }

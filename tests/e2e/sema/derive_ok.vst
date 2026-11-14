@@ -1,0 +1,9 @@
+// The six derives the emitter implements.
+
+struct Point {
+    var x: Int32
+    var y: Int32
+}
+derive(Eq, Hash, Clone, Debug, Display, Default) for Point
+
+func main() -> Int32 { return 0 }

@@ -51,10 +51,10 @@ Each gap has one of four kinds:
    - `??` evaluates its right side eagerly.
    - An illegal atomic ordering such as `load(.release)` is passed straight
      through to `std::memory_order_release`.
-3. **Unknown names are accepted silently.** These include unknown `derive`
-   names and unknown `cfg.has(...)` features. A misspelling becomes a no-op,
-   and several spec features "work" only in the sense that they are ignored.
-   (Attributes and generic bounds are now checked: an unknown one is an
+3. **Unknown names are accepted silently.** These include unknown
+   `cfg.has(...)` features. A misspelling becomes a no-op, and several spec
+   features "work" only in the sense that they are ignored. (Attributes,
+   generic bounds and `derive` names are now checked: an unknown one is an
    error, and one the spec defines but the compiler doesn't implement
    reports "is not supported yet".)
 4. **Unfoldable comptime constructs degrade to a warning.** `build` prints
@@ -208,8 +208,8 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 | §12.2 | Reflection of enum cases, function signatures and attributes | missing | Field `offset` is 0 at macro-expansion time. *(code)* |
 | §12.3 | Protocol `comptime` default implementations (`Self.fields`, `self[f]`) | missing | "expected expression, got Self". |
 | §12.3 | `derive` as adoption of a reflective default | divergent | Each derive is hand-written C++ emission (`cpp_emitter.cpp:260`, `:547`). |
-| §12.3 | `derive` validation | unsound | `derive(Bogus)` is accepted. `derive(Eq)` over a non-`Eq` field passes sema and fails in clang. Only `Default` is validated. |
-| §12.3, §18.1 | `derive(Ord)` and `compare()` | missing | "no field or method 'compare'". |
+| §12.3 | `derive` validation | unsound | `derive(Eq)` over a non-`Eq` field passes sema and fails in clang. Only `Default` is validated. (An unknown derive name is an error, and a user protocol's reflective default is "not supported yet".) |
+| §12.3, §18.1 | `derive(Ord)` and `compare()` | missing | "derive(Ord) is not supported yet"; "no field or method 'compare'". |
 | §12.4 | Hygiene (template names resolve at the definition site) | unsound | A quote that references a global `k` captures a local `k` at the use site. `gensym()` is opt-in only. |
 | §12.4 | Compound field types in generated declarations | unsound | A field typed `[4]Int32` or `Int32?` makes the per-field `quote` silently vanish from `expand` and `build`. |
 | §12.4 | `.asType()`, splices in struct-name position | missing | "expected struct name". |

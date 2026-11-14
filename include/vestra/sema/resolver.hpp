@@ -398,6 +398,8 @@ private:
     void check_attribute_names();
     // A generic bound must name a protocol the checker knows or one in scope.
     void check_bound_names();
+    // A `derive` must name one the compiler implements (§12.3).
+    void check_derive_names();
 
     // ---- helpers ---------------------------------------------------------
     void error_at(diag::SourceRange r, std::string msg);
