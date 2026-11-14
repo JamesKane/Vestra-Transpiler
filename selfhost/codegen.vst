@@ -5651,14 +5651,18 @@ func emitOpaqueDecl(_ name: Str, _ under: Vec[Nd]) using Alloc, Log {
 // A top-level `const` / `static` lowers to an inline variable in the header:
 // `inline constexpr <type> <name> = <value>;` / `inline <type> <name> = <value>;`
 // (one line, no trailing blank — like a forward declaration). The `.cpp` emits
-// nothing for them.
+// nothing for them. An unannotated global spells its type `auto`. A static
+// with no value is the §A1 `@noinit` form (the only way the bootstrap parser
+// skips `= value`), so it drops the initializer: `inline <type> <name>;`.
 func emitGlobalDef(_ env: inout TyEnv, _ prefix: Str, _ name: Str, _ ty: Vec[Nd], _ value: Vec[Nd]) using Alloc, Log {
     print(prefix)
-    emitTypeBoxed(ty)
+    if ty.len() > 0 { emitTypeBoxed(ty) } else { print("auto") }
     print(" ")
     print(name)
-    print(" = ")
-    emitBoxed(env, value)
+    if value.len() > 0 {
+        print(" = ")
+        emitBoxed(env, value)
+    }
     print(";\n")
 }
 

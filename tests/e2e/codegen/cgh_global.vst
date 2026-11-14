@@ -1,0 +1,18 @@
+// Top-level globals in the header tail. A §A1 `@noinit static` has no
+// initializer, so it lowers to `inline <type> <name>;` (a scalar and an
+// array here); a plain static keeps its `= value`. An unannotated `const`
+// spells its type `auto`; an annotated one keeps its type.
+@noinit static scratch: [8]UInt8
+@noinit static ticks: UInt64
+static limit: Int32 = 40
+const answer = 42
+const width: Int32 = 16
+
+func bump() -> UInt64 {
+    ticks = ticks + 1
+    return ticks
+}
+
+func room() -> Int32 {
+    return limit - width
+}
