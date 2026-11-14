@@ -984,3 +984,9 @@ TEST_CASE("calling a foreign @extern function needs Extern") {
               .error_count
           == 0);
 }
+
+TEST_CASE("@kernel_init is one-way; @boot can't call ordinary code (§14.7)") {
+    CHECK(check("@kernel_init\nfunc a() { }\n@kernel_init\nfunc b() {\n    a()\n}\n").error_count == 0);
+    auto r = check("@kernel_init\nfunc a() { }\nfunc later() {\n    a()\n}\n");
+    CHECK(r.first_message.find("calls into the init regime are one-way") != std::string::npos);
+}

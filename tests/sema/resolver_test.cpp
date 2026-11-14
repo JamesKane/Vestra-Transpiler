@@ -2921,3 +2921,8 @@ TEST_CASE("an @interrupt handler writes only atomic statics") {
                          "    ticks.fetchAdd(1, .relaxed)\n    f.x0 = count\n}\n")
           == 0);
 }
+
+TEST_CASE("a @boot body can't call ordinary code: it holds only asm (§14.7)") {
+    auto r = check_detail("func ordinary() { }\n@boot\nfunc start() using Asm {\n    ordinary()\n}\n");
+    CHECK(r.first_message.find("may contain only asm") != std::string::npos);
+}

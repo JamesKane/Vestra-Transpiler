@@ -66,6 +66,7 @@ void CapabilityChecker::check_func(const ast::FuncDecl& f) {
     if (!f.body) {
         return;
     }
+    current_func_ = &f;
     // Push a fresh scope holding the function's declared row + Async if async.
     std::unordered_set<std::string> scope;
     for (const auto& cap : f.effects.using_caps) {
@@ -368,6 +369,28 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
             const bool builtin = callee_sym == nullptr || callee_sym->decl == nullptr;
             if (builtin && asm_builtins.contains(callee_id.name) && !in_scope("Asm")) {
                 missing_capability("Asm", c.range);
+            }
+        }
+        // §14.7.1 `@kernel_init` is one-way: init code may call ordinary code,
+        // but ordinary code may not call back into init (it runs before the
+        // scheduler, single-threaded; once that's over, it's over).
+        if (c.callee && resolution_ != nullptr && current_func_ != nullptr) {
+            const auto* sym = resolution_->symbol_of(c.callee.get());
+            auto has = [](const ast::FuncDecl& fd, std::string_view a) {
+                return std::ranges::any_of(fd.attributes,
+                                           [&](const ast::Attribute& at) { return at.name == a; });
+            };
+            if (sym != nullptr && sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Func) {
+                const auto& fd = static_cast<const ast::FuncDecl&>(*sym->decl);
+                if (has(fd, "kernel_init") && !has(*current_func_, "kernel_init")) {
+                    reporter_->report(
+                        diag::Diagnostic::error(
+                            std::format("'{}' is @kernel_init, and calls into the init regime are "
+                                        "one-way: only another @kernel_init function may call it "
+                                        "(§14.7.1)",
+                                        fd.name))
+                            .at(c.range));
+                }
             }
         }
         // §14.6 calling a foreign function (an `@extern` declaration with no

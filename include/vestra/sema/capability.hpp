@@ -78,6 +78,8 @@ private:
     // Stack of capability scopes. Each layer is the set of names added by
     // the enclosing function entry or a `with` block.
     std::vector<std::unordered_set<std::string>> scopes_;
+    // The function whose body is being checked.
+    const ast::FuncDecl* current_func_ = nullptr;
 };
 
 }  // namespace vestra::sema
