@@ -195,8 +195,6 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 | §11.2, §19.4 | The `parallel` body cannot leak its slice | unsound | `ch.send(slice)` inside the body is accepted. |
 | §11.1, §19.8 | `send` takes its argument by `sink` | unsound | `ch.send(b); return b.n` is accepted. A linear value sent on a channel still reports "never consumed". The prelude copies. |
 | §11.1 | Bounded channels | weaker | Unbounded. `Channel.new(capacity: 4)` is accepted, and the capacity is silently dropped. |
-| §11.1 | `spawn` rejects non-escapable captures, transitively | unsound (partial) | A direct `Span` param is rejected. A struct holding a `Span` is not. |
-| §11.4 | No borrowed view live across `await` | unsound (partial) | Only `inout` params on an `async func` are rejected. A `Span` param or local used after an `await` passes. |
 | §11.1 | `select` send-when-ready arm | missing | "select event must be a Future[T] or a channel receive". |
 | §11.1 | `timeout` on a mixed channel/future select | missing | Rejected by design (ROADMAP §2, slice 6). *(docs)* |
 
@@ -347,7 +345,6 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | §6.8 | A `@repr(union)` must be `Trivial` | unsound | A union with a `String` field passes. |
 | §6.8 | `Type.of(T)`, top-level `comptime { assert(...) }` | missing | `T.size` and `T.fields[i].offset` do work. |
 | §7.8 | `@inline(.always)` failure is a correctness error | weaker | Left to `[[gnu::always_inline]]`. A recursive `.always` passes sema. |
-| §10.5 rule 2 | A raw-minted view's lifetime ends with the `RawMemory` discharge | unsound (partial) | Capturing one in a `spawn` is accepted. (Returning one out of `with RawMemory`, or storing it in a binding declared outside the block, is rejected.) |
 | §14.6.3 | `&table[i]` slot address | missing | "&decl operand must be a static or func identifier". |
 | §14.6.1 | Calling conventions are lowered | weaker | `@extern("hvc64")` and `("win64")` are validated, then emitted as plain `extern "C"`. |
 | §14.4 rule 1 | An implicit clobber is an error | unsound | An `asm` block that writes an undeclared `x11`, sets flags (`adds`) or writes `daif` passes. Only named registers are validated (`resolver_decls.cpp:1013`). |

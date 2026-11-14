@@ -6655,6 +6655,11 @@ struct TyEnv {
     var esVDepth: Vec[Int]      // parallel to esVName
     var esRawD: Vec[Int]        // the block depth of each `with RawMemory` body around
     var esMmioD: Vec[Int]       // ... and `with Mmio`
+    var esAsync: Bool           // per-function: an `async func`?
+    var esAwaits: Int           // §11.4 `await`s so far
+    var esAwName: Vec[String]   // view bindings ...
+    var esAwAt: Vec[Int]        // ... and the await count when each was made
+    var esAwRep: Vec[String]    // already reported
 }
 
 func tyCheck(_ env: inout TyEnv, _ u: NUnit) using Alloc {
@@ -7137,6 +7142,7 @@ func tyNodeBreaksOut(_ n: Nd, _ inLoop: Bool) -> Bool {
 
 func tyCheckFuncAll(_ env: inout TyEnv, _ mods: String, _ name: String, _ params: Vec[Nd], _ result: Vec[Nd], _ body: Vec[Nd]) using Alloc {
     esEnter(env, name, params, result, body)
+    esAwEnter(env, containsSub(mods, "async"), params)
     tyCheckFunc(env, name, params, result, body)
     if body.len() > 0 && esNonEsc(env, tyRetSpelling(result), 0) { esCheckTail(env, body) }
     if !containsSub(mods, nakedMark()) { tyCheckDivergence(env, name, body) }
@@ -7459,7 +7465,8 @@ func tyPair(_ env: inout TyEnv, _ a: Vec[Nd], _ b: Vec[Nd]) using Alloc {
 func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
     match e {
         case .call(let callee, let args): tyExprCall(env, callee, args)
-        case .prefixE(let kw, let inner): tyBoxed(env, inner)
+        case .ident(let n): esAwUse(env, n)
+        case .prefixE(let kw, let inner): tyPrefixE(env, kw, inner)
         case .paren(let x): tyBoxed(env, x)
         case .unary(let op, let x): tyUnary(env, op, x)
         case .binary(let op, let l, let r): tyBinary(env, op, l, r)
@@ -7480,6 +7487,40 @@ func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
 // Walk a match: descend the scrutinee and every arm body, and require each arm's
 // `where` guard to be Bool. (Pattern-bound variables type as unknown here and are
 // tolerated; arm-result-type unification is a later slice.)
+func tyPrefixE(_ env: inout TyEnv, _ kw: String, _ inner: Vec[Nd]) using Alloc {
+    tyBoxed(env, inner)
+    if streq(kw, "await ") { env.esAwaits = env.esAwaits + 1 }
+    if streq(kw, "spawn ") { tySpawnArgs(env, inner) }
+}
+
+// §10 / §11 a spawned task captures its arguments by value, so a parameter of
+// a non-escapable type (transitively) can't be passed to one.
+func tySpawnArgs(_ env: inout TyEnv, _ inner: Vec[Nd]) using Alloc {
+    if let n = inner.get(0) {
+        match n {
+            case .call(let callee, let args): tySpawnCall(env, callee, args)
+            default: noop()
+        }
+    }
+}
+
+func tySpawnCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    let fname = exCalleeNameBoxed(callee)
+    if streq(fname, "") { return }
+    let arity = tyArity(env, fname)
+    var i: Int = 0
+    while i < arity {
+        let pt = tyParamType(env, fname, i)
+        if esNonEsc(env, pt, 0) {
+            var m: String = "cannot `spawn` a call with a "
+            m.append(pt)
+            m.append(" parameter — a spawned task captures its arguments by value, but a borrowed view can't be owned (use `parallel` to run work over a view)")
+            env.bad.push(m)
+        }
+        i = i + 1
+    }
+}
+
 func tyMatch(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc {
     tyBoxed(env, scrut)
     var i: Int = 0
@@ -8194,7 +8235,25 @@ func tyAddSymSp(_ env: inout TyEnv, _ n: String, _ sp: String) using Alloc {
 // slot here; member/index targets are unknown and tolerated.
 func tyAssign(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     esAssign(env, t, v)
-    tyBoxed(env, t)
+    if !esIsIdent(t) { tyBoxed(env, t) }
+    tyAssignRest(env, t, v)
+    // A reassigned view binding is made fresh after its value (with any
+    // awaits in it) is evaluated.
+    let tn = esIdentOf(t)
+    if !streq(tn, "") && esViewIdx(env, tn) >= 0 { esAwMade(env, tn) }
+}
+
+func esIdentOf(_ v: Vec[Nd]) using Alloc -> String {
+    if let n = v.get(0) {
+        return match n {
+            case .ident(let x): own(x)
+            default: own("")
+        }
+    }
+    return own("")
+}
+
+func tyAssignRest(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     muCheck(env, t)
     tyBoxed(env, v)
     let lt = tyInferBoxed(env, t)
@@ -8295,6 +8354,61 @@ func esEnter(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ result: Ve
     }
 }
 
+// ----- §11.4 no view held across an `await` (the bootstrap's scan) --------
+func esAwEnter(_ env: inout TyEnv, _ isAsync: Bool, _ params: Vec[Nd]) using Alloc {
+    env.esAsync = isAsync
+    env.esAwaits = 0
+    while env.esAwName.len() > 0 { let _ = env.esAwName.pop() }
+    while env.esAwAt.len() > 0 { let _ = env.esAwAt.pop() }
+    while env.esAwRep.len() > 0 { let _ = env.esAwRep.pop() }
+    if !isAsync { return }
+    var i: Int = 0
+    while i < params.len() {
+        match params.get(i) ?? Nd.wildcard {
+            case .param(let lo, let lbl, let nm, let ne, let md, let ty): esAwParam(env, nm, ty)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func esAwParam(_ env: inout TyEnv, _ nm: String, _ ty: Vec[Nd]) using Alloc {
+    if esNonEsc(env, tyAnnSpelling(ty), 0) {
+        env.esAwName.push(own(nm))
+        env.esAwAt.push(0)
+    }
+}
+
+func esAwIdx(_ env: inout TyEnv, _ n: Str) using Alloc -> Int {
+    var i: Int = env.esAwName.len() - 1
+    while i >= 0 {
+        if streq(env.esAwName.get(i) ?? own(""), n) { return i }
+        i = i - 1
+    }
+    return -1
+}
+
+func esAwUse(_ env: inout TyEnv, _ n: String) using Alloc {
+    if !env.esAsync { return }
+    let i = esAwIdx(env, n)
+    if i < 0 || esInList(env.esAwRep, n) { return }
+    if env.esAwaits > (env.esAwAt.get(i) ?? 0) {
+        env.esAwRep.push(own(n))
+        var m: String = "'"
+        m.append(n)
+        m.append("' is a view held across an `await`: a suspended task keeps only owned values (§11.4)")
+        env.esBad.push(m)
+    }
+}
+
+// A view binding made (or remade) now.
+func esAwMade(_ env: inout TyEnv, _ n: String) using Alloc {
+    if !env.esAsync { return }
+    let i = esAwIdx(env, n)
+    let a = env.esAwaits
+    if i >= 0 { env.esAwAt.set(i, a) } else { env.esAwName.push(own(n)); env.esAwAt.push(a) }
+}
+
 func esNoteParam(_ env: inout TyEnv, _ nm: String, _ md: String) using Alloc {
     if streq(md, "sink ") { env.esSinks.push(own(nm)) }
 }
@@ -8329,6 +8443,7 @@ func esLetName(_ env: inout TyEnv, _ n: String, _ ty: Vec[Nd], _ v: Vec[Nd]) usi
         let d = env.esDepth
         env.esVDepth.push(d)
         esCheckStore(env, n, d, o)
+        esAwMade(env, n)
     }
 }
 
@@ -8482,6 +8597,16 @@ func esMintCallee(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
         return s
     }
     return own("")
+}
+
+func esIsIdent(_ v: Vec[Nd]) -> Bool {
+    if let n = v.get(0) {
+        return match n {
+            case .ident(let x): true
+            default: false
+        }
+    }
+    return false
 }
 
 func esIsCall(_ v: Vec[Nd]) -> Bool {
@@ -9748,7 +9873,8 @@ func main() -> Int32 {
                                      esBad: Vec.new(), esFn: own(""), esLocals: Vec.new(), esSinks: Vec.new(),
                                      esVName: Vec.new(), esVOrig: Vec.new(), esRaw: 0, esMmio: 0,
                                      esDepth: 0, esLocDepth: Vec.new(), esVDepth: Vec.new(),
-                                     esRawD: Vec.new(), esMmioD: Vec.new())
+                                     esRawD: Vec.new(), esMmioD: Vec.new(),
+                                     esAsync: false, esAwaits: 0, esAwName: Vec.new(), esAwAt: Vec.new(), esAwRep: Vec.new())
                     tyCheck(&tenv, u)
                     var ti: Int = 0
                     while ti < tenv.bad.len() {

@@ -184,6 +184,18 @@ void EscapeChecker::check_func(const ast::FuncDecl& f) {
     mmio_depths_.clear();
     decl_depth_.clear();
     depth_ = 1;
+    awaits_ = 0;
+    view_at_.clear();
+    await_reported_.clear();
+    view_params_.clear();
+    if (f.is_async) {
+        // A view parameter is live from the start.
+        for (const auto& p : f.params) {
+            if (ast_is_view(p.type.get())) {
+                view_params_.insert(p.name);
+            }
+        }
+    }
     result_is_view_ = ast_is_view(f.result.get());
     // §11.1 a Future can't outlive the scope that spawned it.
     if (f.result != nullptr && f.result->kind == ast::NodeKind::NamedType) {
@@ -223,10 +235,14 @@ void EscapeChecker::check_stmt(const ast::Stmt& s) {
         if (value == nullptr) {
             break;
         }
+        scan(*value);
         check_expr(*value);
         const auto* sym = resolution_->binding_symbol(&s);
         if (sym != nullptr) {
             decl_depth_[sym] = depth_;
+            if (func_ != nullptr && func_->is_async && is_view(sym->type)) {
+                view_at_[sym] = awaits_;
+            }
         }
         if (sym != nullptr && is_view(sym->type)) {
             locals_[sym] = origins(*value);
@@ -237,7 +253,17 @@ void EscapeChecker::check_stmt(const ast::Stmt& s) {
     case ast::NodeKind::AssignStmt: {
         const auto& a = static_cast<const ast::AssignStmt&>(s);
         if (a.value != nullptr) {
+            scan(*a.value);
             check_expr(*a.value);
+        }
+        if (a.target != nullptr && strip(*a.target).kind == ast::NodeKind::IdentExpr) {
+            // Reassigning a view binding makes it fresh.
+            if (const auto* sym = resolution_->symbol_of(&strip(*a.target));
+                sym != nullptr && view_at_.contains(sym)) {
+                view_at_[sym] = awaits_;
+            }
+        } else if (a.target != nullptr) {
+            scan(*a.target);
         }
         if (a.target != nullptr && strip(*a.target).kind == ast::NodeKind::IdentExpr) {
             const auto* sym = resolution_->symbol_of(&strip(*a.target));
@@ -252,6 +278,7 @@ void EscapeChecker::check_stmt(const ast::Stmt& s) {
     case ast::NodeKind::ReturnStmt: {
         const auto& r = static_cast<const ast::ReturnStmt&>(s);
         if (r.value != nullptr) {
+            scan(*r.value);
             check_expr(*r.value);
             if (result_is_view_) {
                 check_return(*r.value, s.range);
@@ -260,10 +287,12 @@ void EscapeChecker::check_stmt(const ast::Stmt& s) {
         break;
     }
     case ast::NodeKind::ExprStmt:
+        scan(*static_cast<const ast::ExprStmt&>(s).expr);
         check_expr(*static_cast<const ast::ExprStmt&>(s).expr);
         break;
     case ast::NodeKind::WhileStmt: {
         const auto& w = static_cast<const ast::WhileStmt&>(s);
+        scan(*w.cond);
         check_expr(*w.cond);
         if (w.body) {
             check_expr(*w.body);
@@ -272,6 +301,7 @@ void EscapeChecker::check_stmt(const ast::Stmt& s) {
     }
     case ast::NodeKind::ForStmt: {
         const auto& f = static_cast<const ast::ForStmt&>(s);
+        scan(*f.iter);
         check_expr(*f.iter);
         if (f.body) {
             check_expr(*f.body);
@@ -330,9 +360,11 @@ void EscapeChecker::check_expr(const ast::Expr& e) {
     case ast::NodeKind::IfExpr: {
         const auto& i = static_cast<const ast::IfExpr&>(e);
         if (i.cond) {
+            scan(*i.cond);
             check_expr(*i.cond);
         }
         if (i.let_init) {
+            scan(*i.let_init);
             check_expr(*i.let_init);
         }
         if (i.then_branch) {
@@ -345,9 +377,13 @@ void EscapeChecker::check_expr(const ast::Expr& e) {
     }
     case ast::NodeKind::MatchExpr: {
         const auto& m = static_cast<const ast::MatchExpr&>(e);
+        scan(*m.scrutinee);
         check_expr(*m.scrutinee);
         for (const auto& arm : m.arms) {
             if (arm.body) {
+                if (arm.body->kind != ast::NodeKind::BlockExpr) {
+                    scan(*arm.body);
+                }
                 check_expr(*arm.body);
             }
         }
@@ -364,6 +400,101 @@ void EscapeChecker::check_expr(const ast::Expr& e) {
         break;
     default:
         break;
+    }
+}
+
+// §11.4 walk an expression in evaluation order (not into nested blocks, which
+// check_expr walks statement by statement): count `await`s, and flag a view
+// binding used after one that came after the binding was made.
+void EscapeChecker::scan(const ast::Expr& e) {
+    if (func_ == nullptr || !func_->is_async) {
+        return;
+    }
+    switch (e.kind) {
+    case ast::NodeKind::IdentExpr: {
+        const auto* sym = resolution_->symbol_of(&e);
+        if (sym == nullptr || await_reported_.contains(sym)) {
+            return;
+        }
+        int made = -1;
+        if (auto it = view_at_.find(sym); it != view_at_.end()) {
+            made = it->second;
+        } else if (sym->kind == SymbolKind::Parameter
+                   && view_params_.contains(static_cast<const ast::IdentExpr&>(e).name)) {
+            made = 0;
+        }
+        if (made >= 0 && awaits_ > made) {
+            await_reported_.insert(sym);
+            reporter_->report(
+                diag::Diagnostic::error(std::format("'{}' is a view held across an `await`: a "
+                                                    "suspended task keeps only owned values "
+                                                    "(§11.4)",
+                                                    sym->name))
+                    .at(e.range));
+        }
+        return;
+    }
+    case ast::NodeKind::AwaitExpr:
+        scan(*static_cast<const ast::AwaitExpr&>(e).inner);
+        ++awaits_;
+        return;
+    case ast::NodeKind::ParenExpr:
+        scan(*static_cast<const ast::ParenExpr&>(e).inner);
+        return;
+    case ast::NodeKind::UnaryExpr:
+        scan(*static_cast<const ast::UnaryExpr&>(e).operand);
+        return;
+    case ast::NodeKind::BinaryExpr:
+        scan(*static_cast<const ast::BinaryExpr&>(e).lhs);
+        scan(*static_cast<const ast::BinaryExpr&>(e).rhs);
+        return;
+    case ast::NodeKind::CallExpr: {
+        const auto& c = static_cast<const ast::CallExpr&>(e);
+        if (c.callee) {
+            scan(*c.callee);
+        }
+        for (const auto& a : c.args) {
+            if (a.value) {
+                scan(*a.value);
+            }
+        }
+        return;
+    }
+    case ast::NodeKind::MemberExpr:
+        scan(*static_cast<const ast::MemberExpr&>(e).base);
+        return;
+    case ast::NodeKind::IndexExpr: {
+        const auto& ix = static_cast<const ast::IndexExpr&>(e);
+        scan(*ix.base);
+        for (const auto& i : ix.indices) {
+            scan(*i);
+        }
+        return;
+    }
+    case ast::NodeKind::CopyExpr:
+        scan(*static_cast<const ast::CopyExpr&>(e).inner);
+        return;
+    case ast::NodeKind::TryExpr:
+        scan(*static_cast<const ast::TryExpr&>(e).inner);
+        return;
+    case ast::NodeKind::SpawnExpr:
+        scan(*static_cast<const ast::SpawnExpr&>(e).inner);
+        return;
+    case ast::NodeKind::AsExpr:
+        scan(*static_cast<const ast::AsExpr&>(e).value);
+        return;
+    case ast::NodeKind::VectorLitExpr:
+        for (const auto& el : static_cast<const ast::VectorLitExpr&>(e).elements) {
+            scan(*el);
+        }
+        return;
+    case ast::NodeKind::TupleLitExpr:
+        for (const auto& el : static_cast<const ast::TupleLitExpr&>(e).elements) {
+            scan(*el);
+        }
+        return;
+    default:
+        return;  // blocks, if, match: their statements are scanned in turn
     }
 }
 

@@ -1,0 +1,23 @@
+// §11.4 views in async functions that aren't held across an `await`, and a
+// spawned call whose arguments are owned values.
+async func tick() -> Int32 { return 1 }
+func len(_ s: Span[Int32]) -> Int32 { return 1 }
+async func before(_ s: Span[Int32]) -> Int32 {
+    let n = len(s)
+    let t = await tick()
+    return n + t
+}
+async func fresh() -> Int32 {
+    let t = await tick()
+    let a: [4]Int32 = [1, 2, 3, 4]
+    let v: Span[Int32] = a
+    return len(v) + t
+}
+async func sameExpr(_ s: Span[Int32]) -> Int32 {
+    return len(s) + (await tick())
+}
+
+async func useInt(_ n: Int32) -> Int32 { return n }
+func go() using Async {
+    let d = spawn useInt(3)
+}

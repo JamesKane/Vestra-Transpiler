@@ -1,0 +1,13 @@
+// §10 / §11 a spawned call can't take a non-escapable parameter (a Span, a Str,
+// a struct holding one): the task captures its arguments by value.
+struct Hold {
+    var t: Str
+}
+async func useSpan(_ s: Span[Int32]) -> Int32 { return 1 }
+async func useHold(_ h: Hold) -> Int32 { return 1 }
+async func useStr(_ s: Str) -> Int32 { return 1 }
+func go(_ s: Span[Int32], _ h: Hold, _ t: Str) using Async {
+    let a = spawn useSpan(s)
+    let b = spawn useHold(h)
+    let c = spawn useStr(t)
+}

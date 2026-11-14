@@ -666,8 +666,9 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
                 const auto& params = ft->parts();
                 for (std::size_t i = 0; i < params.size(); ++i) {
                     TypePtr pt = params[i];
-                    if (pt == nullptr
-                        || (pt->kind() != TypeKind::Span && pt->kind() != TypeKind::MutSpan)) {
+                    // Any non-escapable type, transitively (a struct holding a
+                    // Str, an Optional view, an MMIO view).
+                    if (pt == nullptr || !non_escapable(pt)) {
                         continue;
                     }
                     // Point at the matching argument when present, else the call.

@@ -16,6 +16,7 @@
 #include "vestra/sema/resolver.hpp"
 
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace vestra::sema {
@@ -78,6 +79,14 @@ private:
     // Block nesting: the function body is depth 1.
     int depth_ = 0;
     std::unordered_map<const Symbol*, int> decl_depth_;
+    // §11.4 in an async function: the `await`s so far, and the count when
+    // each view binding was made; a use after a later `await` holds the view
+    // across a suspension.
+    int awaits_ = 0;
+    std::unordered_map<const Symbol*, int> view_at_;
+    std::unordered_set<const Symbol*> await_reported_;
+    std::unordered_set<std::string> view_params_;
+    void scan(const ast::Expr& e);
 };
 
 }  // namespace vestra::sema

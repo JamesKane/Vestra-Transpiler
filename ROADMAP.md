@@ -116,10 +116,10 @@ first, in both front ends (bootstrap and `selfhost/sema.vst`, held to
 identical diagnostics), because the new backend will trust whatever sema
 accepts. Ordered by how likely each is to let a wrong program through:
 
-1. **Escape analysis for views:** `Span`, `MutSpan`, `Str`, futures,
-   raw-minted and MMIO views may not outlive their scope, their `RawMemory` /
-   `Mmio` discharge, a channel, or a `spawn` (Gaps §10, §11, Annex §10.5,
-   §14.11.1).
+1. **Escape analysis, the rest:** owned containers of views (`Vec[Str]` is
+   admitted while the builtin `split` and `args()` return one; the decision is
+   a lazy `split` iterator or tracking sources through the container).
+
 2. **Capability rows through every call form:** method calls, function
    values, closure bodies, and `with InterruptsOff` callees; `RawMemory`
    for pointer dereference; unknown capability names rejected (Gaps §8,
