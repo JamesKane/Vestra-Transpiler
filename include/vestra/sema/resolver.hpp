@@ -396,6 +396,8 @@ private:
     // An attribute must be one the compiler knows or a declaration macro of
     // this unit (Gaps headline 3).
     void check_attribute_names();
+    // A generic bound must name a protocol the checker knows or one in scope.
+    void check_bound_names();
 
     // ---- helpers ---------------------------------------------------------
     void error_at(diag::SourceRange r, std::string msg);

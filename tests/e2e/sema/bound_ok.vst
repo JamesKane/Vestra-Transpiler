@@ -1,0 +1,12 @@
+// Bounds the checker knows, including the spec's spellings `Ord` and
+// `Hashable`, in brackets and in a `where` clause.
+
+func largest[T: Ord](_ a: T, _ b: T) -> T { return a }
+func keyed[K: Hashable & Eq](_ k: K) -> K { return k }
+func same[T](_ a: T) -> T where T: Comparable { return a }
+
+struct Holder[T: Clone] {
+    var v: T
+}
+
+func main() -> Int32 { return 0 }

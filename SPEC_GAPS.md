@@ -51,12 +51,12 @@ Each gap has one of four kinds:
    - `??` evaluates its right side eagerly.
    - An illegal atomic ordering such as `load(.release)` is passed straight
      through to `std::memory_order_release`.
-3. **Unknown names are accepted silently.** These include unknown protocol
-   bounds (`T: Ord`, `T: Send`), unknown `derive` names and unknown
-   `cfg.has(...)` features. A misspelling becomes a no-op, and several spec
-   features "work" only in the sense that they are ignored. (Attributes are
-   now checked: an unknown one is an error, and one the spec defines but the
-   compiler doesn't implement reports "is not supported yet".)
+3. **Unknown names are accepted silently.** These include unknown `derive`
+   names and unknown `cfg.has(...)` features. A misspelling becomes a no-op,
+   and several spec features "work" only in the sense that they are ignored.
+   (Attributes and generic bounds are now checked: an unknown one is an
+   error, and one the spec defines but the compiler doesn't implement
+   reports "is not supported yet".)
 4. **Unfoldable comptime constructs degrade to a warning.** `build` prints
    "codegen does not yet support: expression" and emits
    `/* unsupported: expression */`. The output then either fails to compile
@@ -136,7 +136,7 @@ Each gap has one of four kinds:
 | §17.5 | Explicit type arguments on a function call, `id[Int32](1)` | missing | They work only on struct and enum construction. |
 | §7 | A const generic `N` as a value in the body | missing | "undefined name 'N'". |
 | §17.3 | Const-expression array lengths `[N + 1]T` | missing | Parse error. |
-| §7 | Bound names `Ord` / `Hashable` | divergent | The checker knows `Comparable`/`Ordered`/`Hash`. Unknown bounds are accepted, so `[T: Ord]` admits anything (`resolver_generics.cpp:203`). |
+| §7 | Bounds `Primitive`, `Trivial`, `Copyable`, `Iterator` | missing | "bound 'Primitive' is not supported yet". (`Ord` and `Hashable` are checked as `Comparable` and `Hash`.) |
 | §7 | Operations on `T` are gated by its bounds | unsound | `a > b` on an unbounded `T` is accepted, and the C++ compiler catches it later, if at all. |
 | §7 | Transitive bound checking | unsound | An unbounded `g[T]` calling `h[T: Comparable]` is accepted. |
 | §7 | Bounds on generic structs at inferred construction | unsound (partial) | Enforced on an annotation `W[N]`, but not on `W(v: N(...))`. |
@@ -266,9 +266,9 @@ spec guarantees follow from that choice:
 ### §16: deliberate omissions
 
 `unsafe`, `yield`, `null`, `class`, `#ifdef`, `any(N)` and `try`/`catch` are
-all correctly rejected. Some things are admitted only because unknown names are
-not validated: the `T: Send` / `T: Sync` bounds. (`@strict` and
-`@forExpansion` are now unknown attributes.) `<` on a struct with no ordering passes sema and
+all correctly rejected, as are the `T: Send` / `T: Sync` bounds (unknown
+protocols) and the `@strict` / `@forExpansion` attributes (unknown
+attributes). `<` on a struct with no ordering passes sema and
 fails in clang.
 
 ### §18: standard library surface

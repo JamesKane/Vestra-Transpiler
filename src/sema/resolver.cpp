@@ -139,6 +139,7 @@ void Resolver::resolve() {
     register_builtin_io();
     check_attribute_names();
     collect_top_level();
+    check_bound_names();
     for (const auto& d : unit_->decls) {
         // §12.6: same gate as collect_top_level. Skipping here keeps the
         // body-check pass aligned with the symbols actually registered.
@@ -734,7 +735,102 @@ void collect_attributes(const ast::Decl& d, std::vector<const ast::Attribute*>& 
     }
 }
 
+// The bounds the checker verifies (`Ord` and `Hashable` are the spec's
+// spellings of `Comparable` and `Hash`).
+constexpr std::array<std::string_view, 10> kKnownBounds{"Display", "Default", "Eq", "Hash",
+                                                        "Hashable", "Debug", "Clone",
+                                                        "Comparable", "Ordered", "Ord"};
+
+// Bounds the spec defines that the checker can't verify yet.
+constexpr std::array<std::string_view, 4> kUnimplementedBounds{"Primitive", "Trivial",
+                                                               "Copyable", "Iterator"};
+
+void collect_generics(const ast::Decl& d, std::vector<const ast::GenericParam*>& out) {
+    auto add = [&](const std::vector<ast::GenericParam>& gs) {
+        for (const auto& g : gs) {
+            out.push_back(&g);
+        }
+    };
+    switch (d.kind) {
+    case ast::NodeKind::Func:
+        add(static_cast<const ast::FuncDecl&>(d).generics);
+        break;
+    case ast::NodeKind::Struct: {
+        const auto& s = static_cast<const ast::StructDecl&>(d);
+        add(s.generics);
+        for (const auto& m : s.methods) {
+            collect_generics(*m, out);
+        }
+        break;
+    }
+    case ast::NodeKind::Enum: {
+        const auto& e = static_cast<const ast::EnumDecl&>(d);
+        add(e.generics);
+        for (const auto& m : e.methods) {
+            collect_generics(*m, out);
+        }
+        break;
+    }
+    case ast::NodeKind::Protocol: {
+        const auto& p = static_cast<const ast::ProtocolDecl&>(d);
+        add(p.generics);
+        for (const auto& m : p.requirements) {
+            collect_generics(*m, out);
+        }
+        break;
+    }
+    case ast::NodeKind::Extension:
+        for (const auto& m : static_cast<const ast::ExtensionDecl&>(d).members) {
+            collect_generics(*m, out);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 }  // namespace
+
+void Resolver::check_bound_names() {
+    std::vector<const ast::GenericParam*> generics;
+    for (const auto& d : unit_->decls) {
+        collect_generics(*d, generics);
+    }
+    std::vector<const ast::NamedType*> bounds;
+    for (const auto* g : generics) {
+        if (g->is_const) {
+            continue;
+        }
+        for (const auto& b : g->bound.protocols) {
+            if (b != nullptr && b->kind == ast::NodeKind::NamedType) {
+                bounds.push_back(static_cast<const ast::NamedType*>(b.get()));
+            }
+        }
+    }
+    // Source order: a `where` clause folds its bounds into the parameter list.
+    std::ranges::stable_sort(bounds, {}, [](const ast::NamedType* t) {
+        return t->range.begin.offset;
+    });
+    for (const auto* t : bounds) {
+        if (t->path.size() != 1) {
+            continue;  // a module-qualified protocol, resolved with the module
+        }
+        const std::string& name = t->path.front();
+        const auto is = [&](std::string_view n) { return n == name; };
+        if (std::ranges::any_of(kKnownBounds, is)) {
+            continue;
+        }
+        if (const auto* sym = scopes_.global().lookup(name);
+            sym != nullptr && sym->kind == SymbolKind::Protocol) {
+            continue;
+        }
+        if (std::ranges::any_of(kUnimplementedBounds, is)) {
+            error_at(t->range, std::format("bound '{}' is not supported yet", name));
+        } else {
+            error_at(t->range, std::format("unknown protocol '{}'", name));
+        }
+    }
+}
 
 void Resolver::check_attribute_names() {
     std::vector<const ast::Attribute*> attrs;

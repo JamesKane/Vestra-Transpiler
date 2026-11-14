@@ -1,0 +1,13 @@
+// An unknown bound used to admit anything. `Send` and `Sync` don't exist
+// (§16), `Eqq` is a misspelling, and `Primitive` is spec-defined but not yet
+// checked.
+
+func a[T: Send](_ x: T) -> T { return x }
+func b[T: Eqq & Clone](_ x: T) -> T { return x }
+func c[T](_ x: T) -> T where T: Primitive { return x }
+
+struct Cell[T: Sync] {
+    var v: T
+}
+
+func main() -> Int32 { return 0 }

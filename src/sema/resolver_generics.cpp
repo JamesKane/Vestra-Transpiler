@@ -156,6 +156,11 @@ bool Resolver::type_satisfies_bound(TypePtr t, std::string_view protocol) const 
     if (protocol == "Default") {
         return is_default_conformant(t);
     }
+    if (protocol == "Hashable") {
+        protocol = "Hash";  // the spec's spelling
+    } else if (protocol == "Ord") {
+        protocol = "Comparable";
+    }
     if (protocol == "Eq" || protocol == "Hash" || protocol == "Debug" || protocol == "Clone") {
         if (t->is_primitive()) {
             return true;
