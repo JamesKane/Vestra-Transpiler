@@ -1,0 +1,19 @@
+// An if-let in VALUE position takes the same test-and-bind head as the
+// statement form, `if (auto __vstr_opt = <init>; __vstr_opt.has_value()) {
+// auto&& <n> = *__vstr_opt; `. In return position it flattens to returning
+// branches, an `else if let` nesting the same head; in a binding it is the
+// value lambda. The bound name types as the optional's inner type, so a
+// builtin method on it (`s.len()`) takes the §18.5 lowering.
+func a(_ o: Int32?, _ p: Int32?) -> Int32 {
+    return if let v = o { v } else if let w = p { w * 2 } else { 0 }
+}
+func b(_ o: Int32?, _ f: Bool) -> Int32 {
+    return if f { 1 } else if let v = o { v } else { 0 }
+}
+func c(_ o: Int32?) -> Int32 {
+    let x: Int32 = if let v = o { v + 1 } else { 0 }
+    return x
+}
+func d(_ o: Str?) -> Int {
+    return if let s = o { s.len() } else { 0 }
+}
