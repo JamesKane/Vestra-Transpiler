@@ -18,6 +18,11 @@
 
 namespace vestra::codegen::detail {
 
+// The runtime prelude between the VESTRA_RUNTIME_PRELUDE guards
+// (cpp_emitter_prelude.cpp): hosted (libc++) or freestanding (`--no-libc`).
+void emit_hosted_prelude(std::ostream& hdr);
+void emit_freestanding_prelude(std::ostream& hdr);
+
 // Emit `indent` levels of four-space indentation.
 inline void write_indent(std::ostream& os, int indent) {
     for (int i = 0; i < indent; ++i) {

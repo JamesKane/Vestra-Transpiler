@@ -1682,23 +1682,20 @@ set_tests_properties(e2e_mg_run PROPERTIES
     PASS_REGULAR_EXPRESSION "match_guards OK")
 
 # §A10 follow-up — @stack_protector + --no-libc (§15.4 / §15.5).
-# The transpile step passes --no-libc so the generated files
-# carry the freestanding marker; the compile step also greps
-# the header for the marker to verify it survived. Runtime
-# verifies both stack_protector-decorated functions still
-# behave correctly.
+# The runtime check builds hosted (its driver uses the C++ standard
+# library, which a --no-libc header deliberately doesn't coexist with);
+# a separate --no-libc transpile checks the freestanding marker. The
+# freestanding compile itself is e2e_freestanding_stack_protector.
 set(e2e_sp_input  ${CMAKE_SOURCE_DIR}/examples/stack_protector.vst)
 set(e2e_sp_driver ${CMAKE_SOURCE_DIR}/tests/e2e/main_stack_protector.cpp)
 
 add_test(
     NAME    e2e_sp_transpile
-    COMMAND $<TARGET_FILE:vestra> build ${e2e_sp_input} -o ${e2e_workdir} --no-libc)
+    COMMAND $<TARGET_FILE:vestra> build ${e2e_sp_input} -o ${e2e_workdir})
 
 add_test(
     NAME    e2e_sp_marker
-    COMMAND grep -q "vestra: no_libc = true" ${e2e_workdir}/stack_protector.hpp)
-set_tests_properties(e2e_sp_marker PROPERTIES
-    DEPENDS e2e_sp_transpile)
+    COMMAND sh -c "$<TARGET_FILE:vestra> build ${e2e_sp_input} -o ${e2e_workdir}/_sp_nolibc --no-libc >/dev/null && grep -q 'vestra: no_libc = true' ${e2e_workdir}/_sp_nolibc/stack_protector.hpp")
 
 add_test(
     NAME    e2e_sp_compile
@@ -2759,6 +2756,56 @@ add_test(
 set_tests_properties(e2e_modenum_demo_run PROPERTIES
     DEPENDS                e2e_modenum_demo_compile
     PASS_REGULAR_EXPRESSION "modenum_demo OK")
+
+# §15.5 freestanding profile (F1/F2): `--no-libc` emits a prelude that needs
+# no C++ standard library. Each example is transpiled with --no-libc and
+# compiled for bare-metal aarch64 with -ffreestanding -nostdlibinc; the
+# fs_<arch> probes are assembled per architecture so the lowered inline asm
+# (barriers, cache/TLB maintenance, system registers) is checked too.
+set(fs_workdir ${e2e_workdir}/_freestanding)
+set(fs_flags_str "-ffreestanding -nostdlibinc -fno-exceptions -fno-rtti -std=c++26 -O2")
+foreach(prog hello mmio mmio_wire mmio_union sysreg cache_tlb sync_intrinsics atomics
+             interrupt_handler panic_handler panic link_attrs layout inline_layout padded per_cpu
+             boot_chain no_auto_barrier raw_mint mem_intrinsics stack_protector result docatch
+             generic_enum match tuples optional spans chunks_demo iter_combinators derive_eq
+             derive_hash)
+    add_test(
+        NAME    e2e_freestanding_${prog}
+        COMMAND sh -c "rm -rf ${fs_workdir}/${prog} && $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/examples/${prog}.vst --no-libc -o ${fs_workdir}/${prog} >/dev/null && ${CMAKE_CXX_COMPILER} --target=aarch64-none-elf ${fs_flags_str} -c -I${fs_workdir}/${prog} ${fs_workdir}/${prog}/${prog}.cpp -o ${fs_workdir}/${prog}/${prog}.o")
+endforeach()
+# A compiler built without some backend (Apple clang has no RISC-V) can still
+# parse for that target; check the prelude's C++ there and skip the assembler.
+foreach(triple aarch64-none-elf x86_64-none-elf riscv64-none-elf)
+    execute_process(
+        COMMAND ${CMAKE_CXX_COMPILER} --target=${triple} -ffreestanding -x c++ -c /dev/null -o /dev/null
+        RESULT_VARIABLE fs_probe_rc OUTPUT_QUIET ERROR_QUIET)
+    if(fs_probe_rc EQUAL 0)
+        set(fs_mode_${triple} "-c")
+    else()
+        set(fs_mode_${triple} "-fsyntax-only")
+    endif()
+endforeach()
+foreach(probe "fs_a64|aarch64-none-elf|" "fs_x86|x86_64-none-elf|-minvpcid"
+              "fs_rv|riscv64-none-elf|-march=rv64gc_zicbom_zicboz")
+    string(REPLACE "|" ";" parts "${probe}")
+    list(GET parts 0 prog)
+    list(GET parts 1 triple)
+    list(LENGTH parts nparts)
+    set(extra "")
+    if(nparts GREATER 2)
+        list(GET parts 2 extra)
+    endif()
+    add_test(
+        NAME    e2e_freestanding_${prog}
+        COMMAND sh -c "rm -rf ${fs_workdir}/${prog} && $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/tests/e2e/freestanding/${prog}.vst --no-libc -o ${fs_workdir}/${prog} >/dev/null && ${CMAKE_CXX_COMPILER} --target=${triple} ${extra} ${fs_flags_str} ${fs_mode_${triple}} -I${fs_workdir}/${prog} ${fs_workdir}/${prog}/${prog}.cpp -o ${fs_workdir}/${prog}/${prog}.o")
+endforeach()
+# A register from another architecture is a compile error that says so,
+# not a silent no-op.
+add_test(
+    NAME    e2e_freestanding_wrong_arch_sysreg
+    COMMAND sh -c "rm -rf ${fs_workdir}/wrongarch && $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/examples/sysreg.vst --no-libc -o ${fs_workdir}/wrongarch >/dev/null && ${CMAKE_CXX_COMPILER} --target=x86_64-none-elf ${fs_flags_str} -fsyntax-only -I${fs_workdir}/wrongarch ${fs_workdir}/wrongarch/sysreg.cpp -o ${fs_workdir}/wrongarch/sysreg.o 2>&1; true")
+set_tests_properties(e2e_freestanding_wrong_arch_sysreg PROPERTIES
+    PASS_REGULAR_EXPRESSION "sctlr_el1 is an aarch64 register")
 
 # §5 visibility: referencing a non-public (internal) decl of an imported module
 # must fail to resolve. `vestra check` is expected to exit non-zero.

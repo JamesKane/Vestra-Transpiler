@@ -1,0 +1,33 @@
+// Freestanding (--no-libc) lowering probe: every barrier, cache, TLB and
+// pipeline-hint intrinsic, plus this architecture's system registers.
+// Compiled to an object (so the inline asm is assembled), not run.
+func probe(_ buf: Span[UInt8], _ z: MutSpan[UInt8]) using Asm, RawMemory {
+    memoryBarrier(.full, .loadLoad)
+    memoryBarrier(.inner, .storeStore)
+    memoryBarrier(.outer, .loadStore)
+    memoryBarrier(.nonShareable, .full)
+    syncBarrier(.full)
+    syncBarrier(.inner)
+    syncBarrier(.outer)
+    syncBarrier(.nonShareable)
+    instructionBarrier()
+    waitForInterrupt()
+    relax()
+    nop()
+    compilerFence(.acqRel)
+    cleanData(buf)
+    invalidateData(buf)
+    cleanInvalidateData(buf)
+    zeroData(z)
+    publishInstructions(buf)
+    invalidateAllInstructions()
+    tlbInvalidateAll(.currentEL)
+    tlbInvalidateAll(.innerShareable)
+    tlbInvalidatePage(0x1000, false, .currentEL)
+    tlbInvalidateAsid(3, .currentEL)
+}
+func rv(_ v: UInt64) using Asm -> UInt64 {
+    Sysreg.satp.write(v)
+    Sysreg.stvec.write(v)
+    return Sysreg.scause.read()
+}

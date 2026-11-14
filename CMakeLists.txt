@@ -76,6 +76,7 @@ set(vestra_sources
     src/codegen/cpp_emitter_match.cpp
     src/codegen/cpp_emitter_stmts.cpp
     src/codegen/cpp_emitter_errors.cpp
+    src/codegen/cpp_emitter_prelude.cpp
     src/driver/driver.cpp)
 
 add_library(vestra_core STATIC ${vestra_sources})
