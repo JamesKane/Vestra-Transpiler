@@ -211,6 +211,11 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
             return types_->make_function(
                 {types_->primitive(TypeKind::Int), types_->primitive(TypeKind::Int)}, str);
         }
+        // §18.6 `bytes() -> Span[UInt8]`: the UTF-8 bytes as a borrowed view,
+        // no allocation (so it works under --no-libc).
+        if (name == "bytes" && owner_type->kind() != TypeKind::String) {
+            return types_->make_function({}, types_->make_span(types_->primitive(TypeKind::UInt8)));
+        }
         if (name == "byteAt") {
             return types_->make_function({types_->primitive(TypeKind::Int)},
                                          types_->make_optional(types_->primitive(TypeKind::UInt8)));

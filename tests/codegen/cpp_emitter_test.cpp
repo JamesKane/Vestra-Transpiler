@@ -3449,3 +3449,9 @@ TEST_CASE("@extern functions have C linkage (F21)") {
     CHECK(f.out.header.find("extern \"C\" void extNamed(std::uint64_t x) asm(\"named\");")
           != std::string::npos);
 }
+
+TEST_CASE("Str.bytes() is a Span[UInt8] view, no allocation (§18.6)") {
+    SemaEmitFixture f("func n(_ s: Str) -> Int { return s.bytes().count }\n");
+    CHECK(f.out.source.find("std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(")
+          != std::string::npos);
+}

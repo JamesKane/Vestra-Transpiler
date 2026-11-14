@@ -3448,6 +3448,15 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     os << "))";
                     break;
                 }
+                if (mem.member == "bytes" && c.args.empty()) {
+                    // Inline (no prelude helper), so it needs nothing hosted.
+                    os << "[](std::string_view __vstr_s) { return std::span<const std::uint8_t>("
+                          "reinterpret_cast<const std::uint8_t*>(__vstr_s.data()), "
+                          "__vstr_s.size()); }(";
+                    emit_expr(os, *mem.base);
+                    os << ")";
+                    break;
+                }
                 if (mem.member == "byteAt" && c.args.size() == 1) {
                     os << "__vstr::str_byte_at(";
                     emit_expr(os, *mem.base);

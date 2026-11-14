@@ -76,3 +76,9 @@ static table: [4]@interrupt(Frame) = [onAny, onAny, onAny, onAny]
 func vbar() -> UInt64 {
     return (&table).address
 }
+
+// §18.6 a string's bytes as a view, with no allocation.
+public func strBytes(_ s: Str) -> Int {
+    let b = s.bytes()
+    return b.count
+}
