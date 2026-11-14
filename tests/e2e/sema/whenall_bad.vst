@@ -1,0 +1,10 @@
+// §12.6 rule 1: a branch the build doesn't select used to go unchecked, so a
+// broken Windows-only or 32-bit-only function passed on this host.
+
+@when(cfg.os == .windows)
+func winOnly() -> Int32 { return missingHelper() }
+
+@when(cfg.pointerBits == 32)
+func narrow(_ x: Int32) -> Int32 { return y }
+
+func main() -> Int32 { return 0 }

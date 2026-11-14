@@ -3023,3 +3023,35 @@ TEST_CASE("cfg.os is freestanding under --no-libc; cfg.profile follows --profile
     vestra::sema::TargetContext dbg;
     CHECK(cfg_pick_errors("cfg.profile == .debug", dbg) == 0);
 }
+
+// ---- §12.6 rule 1: every @when branch is checked ---------------------------
+
+TEST_CASE("an unselected @when branch is type-checked") {
+    vestra::sema::TargetContext arm;
+    arm.arch = "aarch64";
+    auto r = check_detail_target("@when(cfg.arch == .x86_64)\n"
+                                 "func f() -> Int32 { return notDefined }\n",
+                                 arm);
+    CHECK(r.error_count == 1);
+    CHECK(r.first_message == "undefined name 'notDefined'");
+}
+
+TEST_CASE("an unselected branch sees its own declarations over the selected ones") {
+    vestra::sema::TargetContext arm;
+    arm.arch = "aarch64";
+    CHECK(check_detail_target("@when(cfg.arch == .x86_64)\n"
+                              "struct Frame { var rip: UInt64 }\n"
+                              "@when(cfg.arch == .arm64)\n"
+                              "struct Frame { var elr: UInt64 }\n"
+                              "@when(cfg.arch == .x86_64)\n"
+                              "func pc(_ f: Frame) -> UInt64 { return f.rip + helper() }\n"
+                              "@when(cfg.arch == .x86_64)\n"
+                              "func helper() -> UInt64 { return 1 }\n"
+                              "@when(cfg.arch == .arm64)\n"
+                              "func pc(_ f: Frame) -> UInt64 { return f.elr }\n"
+                              "@when(cfg.arch == .x86_64 && cfg.os == .linux)\n"
+                              "func other() -> UInt64 { return helper() }\n",
+                              arm)
+              .error_count
+          == 0);
+}

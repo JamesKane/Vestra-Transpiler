@@ -18,6 +18,8 @@ public:
 
     [[nodiscard]] std::string print(const CompilationUnit& unit);
     void print_to(std::ostream& os, const CompilationUnit& unit);
+    // One expression in canonical source form.
+    [[nodiscard]] std::string expr_text(const Expr& e);
 
 private:
     void print_decl(std::ostream& os, const Decl& d, int indent);

@@ -5,6 +5,7 @@
 
 #include "vestra/ast/clone.hpp"
 #include "vestra/ast/nodes.hpp"
+#include "vestra/ast/printer.hpp"
 #include "vestra/sema/builtins.hpp"
 #include "vestra/sema/comptime.hpp"
 #include "vestra/sema/scope.hpp"
@@ -173,6 +174,7 @@ void Resolver::resolve() {
         }
         check_decl(*d);
     }
+    check_unselected_branches();
     // Only a unit that resolved cleanly is ever imported (the driver stops on
     // the first error), and only then is re-resolving its member types
     // guaranteed silent.
@@ -384,12 +386,12 @@ void Resolver::collect_func(const ast::FuncDecl& f) {
     s.definition_range = f.range;
     s.visibility = f.visibility;
     Symbol keep = s;
-    if (auto* prev = scopes_.global().insert(std::move(s))) {
+    if (auto* prev = collect_scope().insert(std::move(s))) {
         // Annex §15.4: a Vestra `memcpy` / `memset` / `memmove` (the body the
         // compiler's own emitted calls bind to) replaces the builtin.
         if (prev->decl == nullptr && prev->kind == SymbolKind::Func
             && (f.name == "memcpy" || f.name == "memset" || f.name == "memmove")) {
-            if (auto* slot = scopes_.global().lookup_mutable(f.name)) {
+            if (auto* slot = collect_scope().lookup_mutable(f.name)) {
                 *slot = std::move(keep);
             }
             return;
@@ -406,7 +408,7 @@ void Resolver::collect_struct(const ast::StructDecl& s_) {
     s.type = types_->make_nominal(TypeKind::Struct, &s_);
     s.definition_range = s_.range;
     s.visibility = s_.visibility;
-    if (auto* prev = scopes_.global().insert(std::move(s))) {
+    if (auto* prev = collect_scope().insert(std::move(s))) {
         duplicate_definition(*prev, s_.name, s_.range);
     }
     if (target_.freestanding) {
@@ -463,7 +465,7 @@ void Resolver::collect_enum(const ast::EnumDecl& e) {
     s.type = types_->make_nominal(TypeKind::Enum, &e);
     s.definition_range = e.range;
     s.visibility = e.visibility;
-    if (auto* prev = scopes_.global().insert(std::move(s))) {
+    if (auto* prev = collect_scope().insert(std::move(s))) {
         duplicate_definition(*prev, e.name, e.range);
     }
     if (target_.freestanding) {
@@ -483,7 +485,7 @@ void Resolver::collect_protocol(const ast::ProtocolDecl& p) {
     s.type = types_->make_nominal(TypeKind::Protocol, &p);
     s.definition_range = p.range;
     s.visibility = p.visibility;
-    if (auto* prev = scopes_.global().insert(std::move(s))) {
+    if (auto* prev = collect_scope().insert(std::move(s))) {
         duplicate_definition(*prev, p.name, p.range);
     }
 }
@@ -496,7 +498,7 @@ void Resolver::collect_opaque(const ast::OpaqueDecl& o) {
     s.type = types_->make_nominal(TypeKind::OpaqueType, &o);
     s.definition_range = o.range;
     s.visibility = o.visibility;
-    if (auto* prev = scopes_.global().insert(std::move(s))) {
+    if (auto* prev = collect_scope().insert(std::move(s))) {
         duplicate_definition(*prev, o.name, o.range);
     }
 }
@@ -509,7 +511,7 @@ void Resolver::collect_const(const ast::ConstDecl& c) {
     s.type = c.type ? resolve_type(*c.type) : nullptr;
     s.definition_range = c.range;
     s.visibility = c.visibility;
-    if (auto* prev = scopes_.global().insert(std::move(s))) {
+    if (auto* prev = collect_scope().insert(std::move(s))) {
         duplicate_definition(*prev, c.name, c.range);
     }
 }
@@ -522,7 +524,7 @@ void Resolver::collect_static(const ast::StaticDecl& s_) {
     s.type = s_.type ? resolve_type(*s_.type) : nullptr;
     s.definition_range = s_.range;
     s.visibility = s_.visibility;
-    if (auto* prev = scopes_.global().insert(std::move(s))) {
+    if (auto* prev = collect_scope().insert(std::move(s))) {
         duplicate_definition(*prev, s_.name, s_.range);
     }
 }
@@ -694,6 +696,90 @@ bool Resolver::gated_out(const ast::Decl& decl) {
         }
     }
     return false;
+}
+
+// §12.6 rule 1: every branch of a configuration conditional is type-checked,
+// not only the one the build selects. The unselected declarations are grouped
+// by their `@when` predicates (same text, same configuration); each group is
+// collected into a scope that shadows the global one, so it sees its own
+// siblings (a `@when(x86_64)` helper, the x86 `TrapFrame`) over the selected
+// declarations of the same names, and then checked there.
+void Resolver::check_unselected_branches() {
+    std::vector<std::string> keys;
+    std::vector<std::vector<const ast::Decl*>> groups;
+    ast::Printer printer;
+    for (const auto& d : unit_->decls) {
+        if (!resolution_.is_gated_out(d.get())) {
+            continue;
+        }
+        std::string key;
+        if (const auto* attrs = decl_attributes(*d)) {
+            for (const auto& a : *attrs) {
+                if (a.name == "when" && a.predicate) {
+                    key += printer.expr_text(*a.predicate);
+                    key += ";";
+                }
+            }
+        }
+        auto it = std::ranges::find(keys, key);
+        if (it == keys.end()) {
+            keys.push_back(key);
+            groups.emplace_back();
+            groups.back().push_back(d.get());
+        } else {
+            groups[static_cast<std::size_t>(it - keys.begin())].push_back(d.get());
+        }
+    }
+    auto is_type_decl = [](const ast::Decl& d) {
+        return d.kind == ast::NodeKind::Struct || d.kind == ast::NodeKind::Enum
+               || d.kind == ast::NodeKind::Opaque;
+    };
+    auto name_of = [](const ast::Decl& d) -> std::string_view {
+        switch (d.kind) {
+        case ast::NodeKind::Func:
+            return static_cast<const ast::FuncDecl&>(d).name;
+        case ast::NodeKind::Struct:
+            return static_cast<const ast::StructDecl&>(d).name;
+        case ast::NodeKind::Enum:
+            return static_cast<const ast::EnumDecl&>(d).name;
+        case ast::NodeKind::Opaque:
+            return static_cast<const ast::OpaqueDecl&>(d).name;
+        case ast::NodeKind::Protocol:
+            return static_cast<const ast::ProtocolDecl&>(d).name;
+        default:
+            return {};
+        }
+    };
+    for (const auto& group : groups) {
+        ScopeStack::Guard overlay(scopes_);
+        collect_scope_ = &overlay.scope();
+        for (const bool types_pass : {true, false}) {
+            for (const auto* d : group) {
+                if (is_type_decl(*d) == types_pass) {
+                    collect_decl(*d);
+                }
+            }
+            // Rule 3 admits declarations gated by a weaker predicate; without
+            // implication between predicates, any other unselected declaration
+            // whose name nothing else defines is visible too.
+            for (const auto& other : groups) {
+                if (&other == &group) {
+                    continue;
+                }
+                for (const auto* d : other) {
+                    auto n = name_of(*d);
+                    if (is_type_decl(*d) == types_pass && !n.empty()
+                        && scopes_.current().lookup(n) == nullptr) {
+                        collect_decl(*d);
+                    }
+                }
+            }
+        }
+        collect_scope_ = nullptr;
+        for (const auto* d : group) {
+            check_decl(*d);
+        }
+    }
 }
 
 // ----- attribute names ----------------------------------------------------

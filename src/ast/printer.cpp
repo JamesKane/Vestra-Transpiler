@@ -17,6 +17,12 @@ std::string Printer::print(const CompilationUnit& unit) {
     return os.str();
 }
 
+std::string Printer::expr_text(const Expr& e) {
+    std::ostringstream os;
+    print_expr(os, e);
+    return os.str();
+}
+
 void Printer::print_to(std::ostream& os, const CompilationUnit& unit) {
     if (unit.module) {
         os << "module ";

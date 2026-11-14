@@ -497,6 +497,11 @@ private:
     // checked: such code is pure, so it may call only comptime functions and
     // nothing that needs a capability.
     int comptime_depth_ = 0;
+    // §12.6 where collect_decl inserts: the global scope, or the overlay an
+    // unselected @when group is checked in.
+    Scope* collect_scope_ = nullptr;
+    Scope& collect_scope() { return collect_scope_ != nullptr ? *collect_scope_ : scopes_.global(); }
+    void check_unselected_branches();
     void check_comptime_call(const ast::CallExpr& c, TypePtr callee_type);
     // Comptime folder + the const environment it folds against. The env
     // accumulates name→value pairs as we successfully fold each top-level

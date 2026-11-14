@@ -1,0 +1,13 @@
+// §12.6 rule 1: an unselected @when branch is checked too; here every branch
+// is well-formed, whichever the build selects.
+
+@when(cfg.os == .windows)
+func winHelper() -> Int32 { return 7 }
+
+@when(cfg.os == .windows)
+func winOnly() -> Int32 { return winHelper() + 1 }
+
+@when(cfg.pointerBits == 32)
+func narrow(_ x: Int32) -> Int32 { return x }
+
+func main() -> Int32 { return 0 }
