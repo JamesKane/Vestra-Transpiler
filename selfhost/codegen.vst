@@ -4592,7 +4592,16 @@ func tyMapMethodRet(_ bt: String, _ name: String) using Alloc -> String {
     if streq(name, "get") { return tyOptOf(mapValSpelling(bt)) }
     if streq(name, "keys") { return tyVecOf(mapKeySpelling(bt)) }
     if streq(name, "values") { return tyVecOf(mapValSpelling(bt)) }
+    if streq(name, "entries") { return tyVecOf(tyMapEntrySpelling(bt)) }
     return own("")
+}
+
+// `m.entries()` yields `(K, V)` tuples; unknown if either half is.
+func tyMapEntrySpelling(_ bt: String) using Alloc -> String {
+    var parts: Vec[String] = Vec.new()
+    parts.push(mapKeySpelling(bt))
+    parts.push(mapValSpelling(bt))
+    return tyJoinTuple(parts)
 }
 
 func tyStrMethodRet(_ name: String) using Alloc -> String {
@@ -7482,6 +7491,7 @@ func emitWhile(_ env: inout TyEnv, _ indent: Str, _ cond: Vec[Nd], _ body: Vec[N
 // C-style loop with a hoisted `__vstr_end` bound (`<` exclusive, `<=` inclusive),
 // and any other iterable becomes a range-based `for (auto&& v : <iter>)`.
 func emitFor(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ iter: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    tyRegisterForBinder(env, pat, iter)
     if forIsIterProto(env, iter) && !patIsTuple(pat) {
         emitIterProtoFor(env, indent, patName(pat), iter, body)
         return
@@ -7493,6 +7503,19 @@ func emitFor(_ env: inout TyEnv, _ indent: Str, _ pat: Vec[Nd], _ iter: Vec[Nd],
     if body.len() > 0 { emitBlockStmts(env, body.get(0) ?? Nd.wildcard, deeper(indent)) }
     print(indent)
     print("}\n")
+}
+
+// The loop variable types as the iterable's element, so a builtin method on
+// it (`c.isDigit()`, `k.len()`, `field.toInt()`) takes the §18.5 lowering the
+// bootstrap's resolver picks. Only a `Vec[T]` iterable is known here; a tuple
+// element destructures through the same path `let (a, b) = …` uses.
+func tyRegisterForBinder(_ env: inout TyEnv, _ pat: Vec[Nd], _ iter: Vec[Nd]) using Alloc {
+    let it = tyInferBoxed(env, iter)
+    if !tyStartsWith(it, "Vec[") { return }
+    let el = tyBracketInner(it)
+    if streq(el, "") { return }
+    if patIsTuple(pat) { tyRegisterTuplePat(env, pat.get(0) ?? Nd.wildcard, el) }
+    else { tyAddSymSpelling(env, patName(pat), el) }
 }
 
 // §18.5 the iterator protocol: `for v in it` over a USER type (not a range,

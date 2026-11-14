@@ -1,0 +1,48 @@
+// A `for` loop variable types as its iterable's element, so a §18.5 builtin
+// method on it takes the builtin lowering rather than a member call. Covered:
+// a `Vec[Char]` from chars(), a `Vec[Str]` from split() (nested, so the inner
+// iterable's receiver is itself a loop variable), a map's keys(), a map's
+// entries() destructured into `(k, v)`, and an annotated `Vec[String]` local.
+func digits(_ s: Str) using Alloc -> Int {
+    var n: Int = 0
+    for c in s.chars() {
+        if c.isDigit() { n = n + 1 }
+    }
+    return n
+}
+
+func sumFields(_ text: Str) using Alloc -> Int {
+    var total: Int = 0
+    for line in text.split("\n") {
+        for field in line.split(",") {
+            if !field.isEmpty() {
+                total = total + (field.toInt() ?? 0)
+            }
+        }
+    }
+    return total
+}
+
+func keyBytes(_ m: HashMap[Str, Int]) using Alloc -> Int {
+    var acc: Int = 0
+    for k in m.keys() {
+        acc = acc + k.len()
+    }
+    return acc
+}
+
+func weighted(_ m: HashMap[Str, Int]) using Alloc -> Int {
+    var acc: Int = 0
+    for (k, v) in m.entries() {
+        acc = acc + k.len() * v
+    }
+    return acc
+}
+
+func ownedLens(_ words: Vec[String]) -> Int {
+    var acc: Int = 0
+    for w in words {
+        acc = acc + w.len()
+    }
+    return acc
+}
