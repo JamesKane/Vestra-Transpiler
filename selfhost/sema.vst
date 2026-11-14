@@ -5872,9 +5872,32 @@ func tyInferMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain:
 // operand winning (`Int32 + Int` -> Int32), or unknown when the operand rule is
 // violated. Unknown operands stay permissive so a partly-inferred condition is
 // tolerated. Other operators (??, ranges) are unknown.
+// An expression of number literals alone (`48`, `-1`, `(2 * 3)`, `1 + 2`).
+func tyIsNumLitTree(_ e: Vec[Nd]) -> Bool {
+    if let n = e.get(0) {
+        return match n {
+            case .intLit(let t): true
+            case .floatLit(let t): true
+            case .paren(let x): tyIsNumLitTree(x)
+            case .unary(let op, let x): streq(op, "-") && tyIsNumLitTree(x)
+            case .binary(let op, let a, let b): isArithOp(op) && tyIsNumLitTree(a) && tyIsNumLitTree(b)
+            default: false
+        }
+    }
+    return false
+}
+
+// The bootstrap's rule: an operand of literals alone takes the other operand's
+// numeric type, whichever side it is on. Returns `mine`'s type.
+func tyLitAdapt(_ mine: String, _ other: String, _ m: Vec[Nd], _ o: Vec[Nd]) using Alloc -> String {
+    if tyIsNumLitTree(m) && !tyIsNumLitTree(o) && tyIsNumeric(other) { return own(other) }
+    return own(mine)
+}
+
 func tyInferBinary(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc -> String {
-    let lt = tyInferBoxed(env, l)
-    let rt = tyInferBoxed(env, r)
+    let rt0 = tyInferBoxed(env, r)
+    let lt = tyLitAdapt(tyInferBoxed(env, l), rt0, l, r)
+    let rt = tyLitAdapt(rt0, lt, r, l)
     if isCmpOp(op) { return tyCmpResult(lt, rt) }
     if isLogOp(op) { return tyLogResult(lt, rt) }
     if isArithOp(op) { return tyNumResult(lt, rt, false) }
@@ -5969,8 +5992,9 @@ func tyBinary(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) usin
 }
 
 func tyCheckBinOp(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc {
-    let lt = tyInferBoxed(env, l)
-    let rt = tyInferBoxed(env, r)
+    let rt0 = tyInferBoxed(env, r)
+    let lt = tyLitAdapt(tyInferBoxed(env, l), rt0, l, r)
+    let rt = tyLitAdapt(rt0, lt, r, l)
     if streq(lt, "") || streq(rt, "") { return }
     if isLogOp(op) {
         if !streq(lt, "Bool") || !streq(rt, "Bool") { env.bad.push(tyLogMsg()) }

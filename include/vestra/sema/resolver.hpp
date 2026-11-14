@@ -207,6 +207,7 @@ private:
     void check_naked_body(const ast::FuncDecl& f);
     // §15.5 a hosted-runtime capability or type under --no-libc.
     [[nodiscard]] static bool needs_hosted_runtime(std::string_view cap);
+    [[nodiscard]] static bool is_number_literal_tree(const ast::Expr& e);
     // One report per source position (a parameter type resolves more than once).
     std::unordered_set<std::size_t> hosted_reported_;
     void reject_hosted_cap(std::string_view cap, diag::SourceRange r);

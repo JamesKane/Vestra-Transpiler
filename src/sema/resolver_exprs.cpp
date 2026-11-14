@@ -1072,6 +1072,37 @@ TypePtr Resolver::check_unary(const ast::UnaryExpr& u, TypePtr expected) {
     return types_->error();
 }
 
+// An expression of number literals alone: `48`, `-1`, `(2 * 3)`, `1 + 2`.
+bool Resolver::is_number_literal_tree(const ast::Expr& e) {
+    switch (e.kind) {
+    case ast::NodeKind::IntLit:
+    case ast::NodeKind::FloatLit:
+        return true;
+    case ast::NodeKind::ParenExpr:
+        return is_number_literal_tree(*static_cast<const ast::ParenExpr&>(e).inner);
+    case ast::NodeKind::UnaryExpr: {
+        const auto& u = static_cast<const ast::UnaryExpr&>(e);
+        return u.op == ast::UnaryOp::Neg && u.operand != nullptr
+               && is_number_literal_tree(*u.operand);
+    }
+    case ast::NodeKind::BinaryExpr: {
+        const auto& bx = static_cast<const ast::BinaryExpr&>(e);
+        switch (bx.op) {
+        case ast::BinaryOp::Add:
+        case ast::BinaryOp::Sub:
+        case ast::BinaryOp::Mul:
+        case ast::BinaryOp::Div:
+        case ast::BinaryOp::Mod:
+            return is_number_literal_tree(*bx.lhs) && is_number_literal_tree(*bx.rhs);
+        default:
+            return false;
+        }
+    }
+    default:
+        return false;
+    }
+}
+
 TypePtr Resolver::check_binary(const ast::BinaryExpr& b, TypePtr expected) {
     // §9 `lhs ?? rhs` — the result type is T, so the surrounding `expected`
     // (when present) is T. Propagate T as the lhs's expected-Optional<T>
@@ -1106,8 +1137,20 @@ TypePtr Resolver::check_binary(const ast::BinaryExpr& b, TypePtr expected) {
     // single numeric type. Propagate `expected` to the lhs first; then use
     // the lhs's concrete type as the expected type for the rhs (so a literal
     // on either side adapts).
-    auto lhs = check_expr(*b.lhs, expected);
-    auto rhs = check_expr(*b.rhs, lhs);
+    // With nothing expected, a left operand made only of number literals
+    // (`48 + v % 10`, `1 + 2 * v`) takes the right operand's numeric type,
+    // as a literal on the right already takes the left's.
+    TypePtr lhs;
+    TypePtr rhs;
+    if (expected == nullptr && is_number_literal_tree(*b.lhs)
+        && !is_number_literal_tree(*b.rhs)) {
+        rhs = check_expr(*b.rhs, nullptr);
+        const bool numeric = rhs != nullptr && (rhs->is_integer() || rhs->is_float());
+        lhs = check_expr(*b.lhs, numeric ? rhs : nullptr);
+    } else {
+        lhs = check_expr(*b.lhs, expected);
+        rhs = check_expr(*b.rhs, lhs);
+    }
     if (lhs == nullptr || rhs == nullptr) {
         return types_->error();
     }

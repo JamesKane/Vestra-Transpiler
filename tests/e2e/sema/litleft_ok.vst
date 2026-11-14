@@ -1,0 +1,9 @@
+// A left operand of number literals alone takes the right operand's type, as a
+// literal on the right takes the left's.
+func f(_ v: UInt64) -> UInt8 {
+    let a = 48 + v
+    let b = 1 + 2 * v
+    let c = -1 + Int32(3)
+    let d = v % 10 + 48
+    return UInt8(48 + v % 10)
+}
