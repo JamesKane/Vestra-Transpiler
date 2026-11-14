@@ -326,6 +326,18 @@ add_test(
     COMMAND sh -c "mkdir -p ${cg_mod_dir} && $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/examples/modenum_demo/main.vst -o ${cg_mod_dir} >/dev/null 2>&1; awk 'f{print} index(\$0, \"#endif  // VESTRA_RUNTIME_PRELUDE\"){f=1}' ${cg_mod_dir}/main.hpp > ${cg_mod_dir}/main_href.txt; ${e2e_workdir}/vgen --hpp ${CMAKE_SOURCE_DIR}/examples/modenum_demo/main.vst > ${cg_mod_dir}/main_hgot.txt; diff ${cg_mod_dir}/main_href.txt ${cg_mod_dir}/main_hgot.txt")
 set_tests_properties(e2e_selfhost_codegen_hpp_modenum PROPERTIES DEPENDS e2e_selfhost_codegen_compile)
 
+# §15.5 the freestanding profile: `vgen --no-libc` against `vestra build
+# --no-libc` (the marker line, the link-time panic hook, the vector table).
+set(cg_fs_dir ${cg_workdir}/fs)
+add_test(
+    NAME    e2e_selfhost_codegen_diff_vectable
+    COMMAND sh -c "mkdir -p ${cg_fs_dir} && $<TARGET_FILE:vestra> build ${cg_dir}/cgf_vectable.vst --no-libc -o ${cg_fs_dir} >/dev/null 2>&1; ${e2e_workdir}/vgen --no-libc ${cg_dir}/cgf_vectable.vst > ${cg_fs_dir}/vt_got.cpp; diff ${cg_fs_dir}/cgf_vectable.cpp ${cg_fs_dir}/vt_got.cpp")
+set_tests_properties(e2e_selfhost_codegen_diff_vectable PROPERTIES DEPENDS e2e_selfhost_codegen_compile)
+add_test(
+    NAME    e2e_selfhost_codegen_hpp_vectable
+    COMMAND sh -c "mkdir -p ${cg_fs_dir} && $<TARGET_FILE:vestra> build ${cg_dir}/cgf_vectable.vst --no-libc -o ${cg_fs_dir} >/dev/null 2>&1; awk 'f{print} index(\$0, \"#endif  // VESTRA_RUNTIME_PRELUDE\"){f=1}' ${cg_fs_dir}/cgf_vectable.hpp > ${cg_fs_dir}/vt_href.txt; ${e2e_workdir}/vgen --hpp --no-libc ${cg_dir}/cgf_vectable.vst > ${cg_fs_dir}/vt_hgot.txt; diff ${cg_fs_dir}/vt_href.txt ${cg_fs_dir}/vt_hgot.txt")
+set_tests_properties(e2e_selfhost_codegen_hpp_vectable PROPERTIES DEPENDS e2e_selfhost_codegen_compile)
+
 # Header (`.hpp`) differential: `vgen --hpp` emits the per-program tail of the
 # generated header (declarations after the fixed runtime prelude); the reference
 # is the real .hpp with everything up to and including the

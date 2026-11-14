@@ -1357,6 +1357,7 @@ bool CppEmitter::emit_vector_table(std::ostream& hdr, std::ostream& src, const a
     }
     // Layout (C rules over the field types), then the canonical fields.
     std::unordered_map<std::string, std::int64_t> off;
+    std::vector<std::pair<std::string, std::int64_t>> off_in_order;  // declaration order
     std::int64_t at = 0;
     std::int64_t max_al = 1;
     std::int64_t x_count = 0;
@@ -1373,6 +1374,7 @@ bool CppEmitter::emit_vector_table(std::ostream& hdr, std::ostream& src, const a
         }
         at = (at + al - 1) / al * al;
         off[f.name] = at;
+        off_in_order.emplace_back(f.name, at);
         if (f.name == "x" && f.type->kind == ast::NodeKind::VectorType) {
             x_count = static_cast<const ast::VectorType&>(*f.type).length;
         }
@@ -1430,7 +1432,8 @@ bool CppEmitter::emit_vector_table(std::ostream& hdr, std::ostream& src, const a
     src << "#if defined(__aarch64__)\n";
     src << "static_assert(sizeof(" << frame_name << ") == " << frame_size
         << ", \"trap frame layout\");\n";
-    for (const auto& [n, o] : off) {
+    // Field declaration order, so the output doesn't depend on hashing.
+    for (const auto& [n, o] : off_in_order) {
         src << "static_assert(offsetof(" << frame_name << ", " << n << ") == " << o
             << ", \"trap frame layout\");\n";
     }
