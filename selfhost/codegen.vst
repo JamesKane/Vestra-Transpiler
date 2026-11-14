@@ -11837,11 +11837,50 @@ func emitBinary(_ env: inout TyEnv, _ op: Str, _ l: Vec[Nd], _ r: Vec[Nd]) using
         print(")")
         return
     }
+    // F7: the tree encodes §17.7 precedence but C++ re-parses with its own
+    // table (`&`/`^`/`|` looser than the comparisons). Parenthesize an operand
+    // only where the two disagree (mirrors binop_operand_needs_parens).
+    let lp = operandNeedsParens(l, op, false)
+    let rp = operandNeedsParens(r, op, true)
+    if lp { print("(") }
     emitBoxed(env, l)
+    if lp { print(")") }
     print(" ")
     print(op)
     print(" ")
+    if rp { print("(") }
     emitBoxed(env, r)
+    if rp { print(")") }
+}
+
+// C++ binding strength of an emitted infix operator (higher binds tighter);
+// 0 = never infix in the output (`??`, ranges), so never parenthesized.
+func cppBinopPrec(_ op: Str) -> Int {
+    if streq(op, "*") || streq(op, "/") || streq(op, "%") || streq(op, "&*") { return 13 }
+    if streq(op, "+") || streq(op, "-") || streq(op, "&+") || streq(op, "&-") { return 12 }
+    if streq(op, "<<") || streq(op, ">>") { return 11 }
+    if streq(op, "<") || streq(op, "<=") || streq(op, ">") || streq(op, ">=") { return 9 }
+    if streq(op, "==") || streq(op, "!=") { return 8 }
+    if streq(op, "&") { return 7 }
+    if streq(op, "^") { return 6 }
+    if streq(op, "|") { return 5 }
+    if streq(op, "&&") { return 4 }
+    if streq(op, "||") { return 3 }
+    return 0
+}
+
+func operandNeedsParens(_ v: Vec[Nd], _ parentOp: Str, _ isRhs: Bool) -> Bool {
+    if v.len() == 0 { return false }
+    return match v.get(0) ?? Nd.wildcard {
+        case .binary(let cop, let cl, let cr): precRegroups(cppBinopPrec(cop), cppBinopPrec(parentOp), isRhs)
+        case _: false
+    }
+}
+
+func precRegroups(_ c: Int, _ p: Int, _ isRhs: Bool) -> Bool {
+    if c == 0 || p == 0 { return false }
+    if isRhs { return c <= p }
+    return c < p
 }
 
 func isVecArithOp(_ op: Str) -> Bool {

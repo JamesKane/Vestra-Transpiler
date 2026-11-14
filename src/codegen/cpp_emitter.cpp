@@ -2005,6 +2005,66 @@ const char* CppEmitter::binop_text(ast::BinaryOp op) {
     }
 }
 
+namespace {
+
+// C++ binding strength of an emitted binary operator (higher binds tighter).
+// Operators that never lower to infix C++ (`??` -> `.value_or`, ranges)
+// return 0, meaning "an atom": they never need parens as an operand.
+int cpp_binop_prec(ast::BinaryOp op) {
+    switch (op) {
+    case ast::BinaryOp::Mul:
+    case ast::BinaryOp::Div:
+    case ast::BinaryOp::Mod:
+    case ast::BinaryOp::WrappingMul:
+        return 13;
+    case ast::BinaryOp::Add:
+    case ast::BinaryOp::Sub:
+    case ast::BinaryOp::WrappingAdd:
+    case ast::BinaryOp::WrappingSub:
+        return 12;
+    case ast::BinaryOp::Shl:
+    case ast::BinaryOp::Shr:
+        return 11;
+    case ast::BinaryOp::Lt:
+    case ast::BinaryOp::Le:
+    case ast::BinaryOp::Gt:
+    case ast::BinaryOp::Ge:
+        return 9;
+    case ast::BinaryOp::Eq:
+    case ast::BinaryOp::Ne:
+        return 8;
+    case ast::BinaryOp::BitAnd:
+        return 7;
+    case ast::BinaryOp::BitXor:
+        return 6;
+    case ast::BinaryOp::BitOr:
+        return 5;
+    case ast::BinaryOp::And:
+        return 4;
+    case ast::BinaryOp::Or:
+        return 3;
+    default:
+        return 0;
+    }
+}
+
+}  // namespace
+
+bool CppEmitter::binop_operand_needs_parens(const ast::Expr& child, ast::BinaryOp parent_op,
+                                            bool is_rhs) {
+    if (child.kind != ast::NodeKind::BinaryExpr) {
+        return false;
+    }
+    const int c = cpp_binop_prec(static_cast<const ast::BinaryExpr&>(child).op);
+    const int p = cpp_binop_prec(parent_op);
+    if (c == 0 || p == 0) {
+        return false;
+    }
+    // C++ binary operators are left-associative: a right operand at the
+    // same level would also regroup.
+    return is_rhs ? c <= p : c < p;
+}
+
 const char* CppEmitter::unop_text(ast::UnaryOp op) {
     switch (op) {
     case ast::UnaryOp::Neg:
@@ -3589,9 +3649,16 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 break;
             }
         }
+        // The tree already encodes §17.7 precedence, but C++ re-parses the
+        // text with its own table. Parenthesize an operand only where the two
+        // disagree, so already-correct output is unchanged.
+        const bool lp = binop_operand_needs_parens(*b.lhs, b.op, false);
+        const bool rp = binop_operand_needs_parens(*b.rhs, b.op, true);
+        os << (lp ? "(" : "");
         emit_expr(os, *b.lhs);
-        os << " " << binop_text(b.op) << " ";
+        os << (lp ? ")" : "") << " " << binop_text(b.op) << " " << (rp ? "(" : "");
         emit_expr(os, *b.rhs);
+        os << (rp ? ")" : "");
         break;
     }
     case ast::NodeKind::CallExpr: {

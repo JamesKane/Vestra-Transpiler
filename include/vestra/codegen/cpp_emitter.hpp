@@ -264,6 +264,12 @@ private:
     void unsupported(std::ostream& os, std::string_view what, diag::SourceRange r);
 
     static const char* binop_text(ast::BinaryOp op);
+    // §17.7 vs C++ precedence: true when `child`, emitted as an operand of
+    // a `parent_op` binary operator, must be parenthesized so C++ groups it
+    // the way the Vestra tree does (F7: `&`/`^`/`|` bind tighter than the
+    // comparisons in Vestra, looser in C++).
+    static bool binop_operand_needs_parens(const ast::Expr& child, ast::BinaryOp parent_op,
+                                           bool is_rhs);
     static const char* unop_text(ast::UnaryOp op);
 
     diag::DiagnosticReporter* reporter_;

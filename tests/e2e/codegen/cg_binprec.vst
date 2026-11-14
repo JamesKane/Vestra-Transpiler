@@ -1,0 +1,18 @@
+func bitTest(_ x: UInt64) -> Bool {
+  return x & 4 != 0
+}
+func maskEq(_ x: UInt64, _ m: UInt64) -> Bool {
+  return x & m == m
+}
+func xorOr(_ a: UInt64, _ b: UInt64) -> Bool {
+  return a ^ b == 0 || a | b != b
+}
+func rhsMask(_ a: UInt64, _ b: UInt64) -> Bool {
+  return a == b & 1
+}
+func cmpChain(_ a: Int32, _ b: Int32, _ c: Bool) -> Bool {
+  return a == b < c
+}
+func keep(_ a: Int32, _ b: Int32) -> Int32 {
+  return a + b * 2 - (a - b) << 1
+}

@@ -3316,3 +3316,21 @@ TEST_CASE("a chunks result used as a value lowers .count to count() and indexes 
     CHECK(f.out.source.find("(cs).count()") != std::string::npos);
     CHECK(f.out.source.find("cs[static_cast<std::size_t>(") != std::string::npos);
 }
+
+TEST_CASE("binary operands are parenthesized where C++ precedence would regroup them") {
+    // §17.7 binds `&`/`^`/`|` tighter than the comparisons; C++ does the
+    // opposite, so the emitter must parenthesize (F7). Where the two tables
+    // agree, the output stays unparenthesized.
+    SemaEmitFixture f("func t(_ x: UInt64, _ m: UInt64) -> Bool {\n"
+                      "    return x & m != 0 || x ^ m == m\n"
+                      "}\n"
+                      "func r(_ a: UInt64, _ b: UInt64) -> Bool {\n"
+                      "    return a == b | 1\n"
+                      "}\n"
+                      "func k(_ a: Int32, _ b: Int32) -> Int32 {\n"
+                      "    return a + b * 2 << 1\n"
+                      "}\n");
+    CHECK(f.out.source.find("return (x & m) != 0 || (x ^ m) == m;") != std::string::npos);
+    CHECK(f.out.source.find("return a == (b | 1);") != std::string::npos);
+    CHECK(f.out.source.find("return a + b * 2 << 1;") != std::string::npos);
+}
