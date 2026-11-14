@@ -2879,3 +2879,16 @@ TEST_CASE("Sysreg access follows the table's access column") {
               .first_message.find("unknown system register")
           != std::string::npos);
 }
+
+TEST_CASE("a value-returning function must return on every path (F22)") {
+    auto r = check_detail("func c(_ x: Int32) -> Int32 {\n    if x > 0 { return 1 }\n}\n");
+    CHECK(r.error_count == 1);
+    CHECK(r.first_message.find("'c' can reach the end of its body without returning its Int32")
+          != std::string::npos);
+    CHECK(check_errors("func w(_ x: Int32) -> Int32 {\n    while x > 0 { return 1 }\n}\n") == 1);
+    CHECK(check_errors("func a(_ x: Int32) -> Int32 {\n    if x > 0 { return 1 } else { return 2 }\n}\n"
+                       "func b(_ x: Int32) -> Int32 {\n    while true { if x > 0 { return 1 } }\n}\n"
+                       "func c(_ x: Int32) -> Int32 {\n    x + 1\n}\n"
+                       "func d(_ x: Int32) -> Int32 {\n    panic(\"no\")\n}\n")
+          == 0);
+}

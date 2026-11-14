@@ -703,6 +703,24 @@ void Resolver::check_func(const ast::FuncDecl& f) {
                              f.name));
     }
 
+    // §19 a value-returning function returns on every path: its body either
+    // ends in a value of the result type or can't complete normally (F22).
+    // Falling off the end is undefined behaviour in the C++ it lowers to.
+    if (expected_result != nullptr && !expected_result->is_error()
+        && expected_result->kind() != TypeKind::Unit && !expected_result->is_never() && !naked_body
+        && f.body->kind == ast::NodeKind::BlockExpr) {
+        const bool produces = body_type != nullptr && !body_type->is_error()
+                              && body_type->kind() != TypeKind::Unit
+                              && TypeArena::assignable(body_type, expected_result);
+        if (!produces && !expr_diverges(*f.body)) {
+            error_at(f.body->range,
+                     std::format("function '{}' can reach the end of its body without returning "
+                                 "its {} result; return on every path",
+                                 f.name,
+                                 expected_result->describe()));
+        }
+    }
+
     return_stack_.pop_back();
     throws_stack_.pop_back();
     do_catch_infer_stack_ = std::move(saved_infer);
