@@ -1,0 +1,48 @@
+// Linear values through branches, consumed on every path (§5, §19.6).
+linear struct Tok {
+    let id: Int32
+}
+struct Wrap {
+    let t: Tok
+}
+func close(_ t: sink Tok) { }
+func closeW(_ w: sink Wrap) { }
+func make() -> Tok { return Tok(id: 1) }
+func maybe() -> Tok? { return nil }
+func both(_ c: Bool) {
+    let t: Tok = make()
+    if c { close(t) } else { close(t) }
+}
+func arms(_ k: Int32) {
+    let t = make()
+    match k {
+        case 0: close(t)
+        default: close(t)
+    }
+}
+func early(_ c: Bool) -> Tok {
+    let t = make()
+    if c { return t }
+    return t
+}
+func viaIfLet() {
+    if let t = maybe() { close(t) }
+}
+func refill() {
+    var o: Tok? = nil
+    o = maybe()
+    if let t = o.take() { close(t) }
+}
+func wrapped() {
+    let w = Wrap(t: make())
+    closeW(w)
+}
+func loopBreak(_ n: Int32) {
+    let t = make()
+    var i: Int32 = 0
+    while i < n {
+        if i > 3 { break }
+        i = i + 1
+    }
+    close(t)
+}

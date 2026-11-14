@@ -4478,8 +4478,21 @@ struct OwnEnv {
     var sigMode: Vec[String]    // ... and that parameter's mode (for `sink`)
     var ctors: Vec[String]      // global: struct / enum names (constructor args are sinks)
     var bad: Vec[String]
-    var linears: Vec[String]    // global: `linear struct` names
-    var linLocals: Vec[String]  // per function: local bindings of a linear type, in order
+    var linears: Vec[String]    // global: `linear struct` names (closed over fields)
+    var isLin: Vec[Bool]        // parallel to names: is the binding of a linear type?
+    var leakRep: Vec[String]    // per function: linear bindings already reported leaking
+    var fieldOwner: Vec[String] // global: struct name of each field row ...
+    var fieldTy: Vec[Nd]        // ... and that field's type
+    var neverFns: Vec[String]   // global: functions whose result is Never
+    var fnName: Vec[String]     // global: function name ...
+    var fnRet: Vec[Nd]          // ... and its result type (wildcard when Unit)
+}
+
+// One path's binding state, for the branch-aware merge (§10 / §5 phase 2).
+struct OwnSt {
+    var names: Vec[String]
+    var consumed: Vec[Bool]
+    var isLin: Vec[Bool]
 }
 
 func ownCheck(_ env: inout OwnEnv, _ u: NUnit) using Alloc {
@@ -4488,6 +4501,7 @@ func ownCheck(_ env: inout OwnEnv, _ u: NUnit) using Alloc {
         ownCollectDecl(env, u.decls.get(i) ?? Nd.wildcard)
         i = i + 1
     }
+    ownCloseLinears(env)
     var j: Int = 0
     while j < u.decls.len() {
         ownCheckDecl(env, u.decls.get(j) ?? Nd.wildcard)
@@ -4499,16 +4513,112 @@ func ownCheck(_ env: inout OwnEnv, _ u: NUnit) using Alloc {
 func ownCollectDecl(_ env: inout OwnEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
-            ownRecordSig(env, name, params)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): ownCollectStruct(env, name, isLinear)
+            ownCollectFunc(env, name, params, r)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): ownCollectStruct(env, name, isLinear, fl)
         case .enumD(let vis, let name, let cs, let m, let generics): env.ctors.push(name)
         default: noop()
     }
 }
 
-func ownCollectStruct(_ env: inout OwnEnv, _ name: String, _ isLinear: Bool) using Alloc {
+func ownCollectFunc(_ env: inout OwnEnv, _ name: String, _ params: Vec[Nd], _ r: Vec[Nd]) using Alloc {
+    ownRecordSig(env, name, params)
+    env.fnName.push(name)
+    env.fnRet.push(r.get(0) ?? Nd.wildcard)
+    if let t = r.get(0) {
+        match t {
+            case .named(let path, let g, let a): ownNoteNever(env, name, path)
+            default: noop()
+        }
+    }
+}
+
+func ownNoteNever(_ env: inout OwnEnv, _ name: String, _ path: String) using Alloc {
+    if streq(path, "Never") { env.neverFns.push(name) }
+}
+
+func ownCollectStruct(_ env: inout OwnEnv, _ name: String, _ isLinear: Bool, _ fields: Vec[Nd]) using Alloc {
     env.ctors.push(name)
     if isLinear { env.linears.push(name) }
+    var i: Int = 0
+    while i < fields.len() {
+        ownCollectField(env, name, fields.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+}
+
+func ownCollectField(_ env: inout OwnEnv, _ owner: String, _ f: Nd) using Alloc {
+    match f {
+        case .field(let k, let n, let ty): ownPushField(env, owner, ty)
+        default: noop()
+    }
+}
+
+func ownPushField(_ env: inout OwnEnv, _ owner: String, _ ty: Vec[Nd]) using Alloc {
+    env.fieldOwner.push(owner)
+    env.fieldTy.push(ty.get(0) ?? Nd.wildcard)
+}
+
+// §5 a struct with a field of a linear type is linear itself (the bootstrap's
+// Linearity::decl_is_linear): close the set to a fixpoint.
+func ownCloseLinears(_ env: inout OwnEnv) using Alloc {
+    var changed: Bool = true
+    while changed {
+        changed = false
+        var i: Int = 0
+        while i < env.fieldOwner.len() {
+            let owner = env.fieldOwner.get(i) ?? own("")
+            if !ownIsLinearName(env, owner) && ownIsLinTy(env, env.fieldTy.get(i) ?? Nd.wildcard) {
+                env.linears.push(owner)
+                changed = true
+            }
+            i = i + 1
+        }
+    }
+}
+
+// Is a type linear: a linear struct, or an Optional / array / tuple / generic
+// instance (Vec, Box, ...) over one (the bootstrap's Linearity::is_linear).
+func ownIsLinTy(_ env: inout OwnEnv, _ t: Nd) -> Bool {
+    return match t {
+        case .named(let path, let g, let args): ownIsLinearName(env, path) || ownAnyLinTy(env, args)
+        case .opt(let x): ownAnyLinTy(env, x)
+        case .vecT(let n, let x): ownAnyLinTy(env, x)
+        case .tupleT(let xs): ownAnyLinTy(env, xs)
+        default: false
+    }
+}
+
+func ownAnyLinTy(_ env: inout OwnEnv, _ ts: Vec[Nd]) -> Bool {
+    var i: Int = 0
+    while i < ts.len() {
+        if ownIsLinTy(env, ts.get(i) ?? Nd.wildcard) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func ownIsNeverFn(_ env: inout OwnEnv, _ name: String) -> Bool {
+    if streq(name, "panic") || streq(name, "abort") || streq(name, "unreachable") { return true }
+    var i: Int = 0
+    while i < env.neverFns.len() {
+        if let n = env.neverFns.get(i) {
+            if streq(n, name) { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Does calling `name` give a linear value?
+func ownFnRetLin(_ env: inout OwnEnv, _ name: String) -> Bool {
+    var i: Int = 0
+    while i < env.fnName.len() {
+        if let n = env.fnName.get(i) {
+            if streq(n, name) { return ownIsLinTy(env, env.fnRet.get(i) ?? Nd.wildcard) }
+        }
+        i = i + 1
+    }
+    return false
 }
 
 func ownRecordSig(_ env: inout OwnEnv, _ name: String, _ params: Vec[Nd]) using Alloc {
@@ -4583,20 +4693,33 @@ func ownCheckFunc(_ env: inout OwnEnv, _ params: Vec[Nd], _ body: Vec[Nd]) using
 func ownResetBindings(_ env: inout OwnEnv) using Alloc {
     while env.names.len() > 0 { let _ = env.names.pop() }
     while env.consumed.len() > 0 { let _ = env.consumed.pop() }
-    while env.linLocals.len() > 0 { let _ = env.linLocals.pop() }
+    while env.isLin.len() > 0 { let _ = env.isLin.pop() }
+    while env.leakRep.len() > 0 { let _ = env.leakRep.pop() }
 }
 
-// §5 / §19.6 a local linear binding never moved anywhere leaks (the bootstrap's
-// end-of-function check). Parameters carry no obligation. Move tracking here is
-// flow-insensitive, so this is the never-consumed case only.
+// §5 / §19.6 a linear binding still live at the end of the function leaks (the
+// bootstrap's end-of-function check), unless a path leak already named it.
+// Parameters carry no obligation.
 func ownReportLeaks(_ env: inout OwnEnv) using Alloc {
     var i: Int = 0
-    while i < env.linLocals.len() {
-        let n = env.linLocals.get(i) ?? own("")
-        let idx = ownFind(env, n)
-        if idx >= 0 && !(env.consumed.get(idx) ?? true) { env.bad.push(ownLeakMsg(n)) }
+    while i < env.names.len() {
+        let n = env.names.get(i) ?? own("")
+        if (env.isLin.get(i) ?? false) && !(env.consumed.get(i) ?? true) && !ownLeakSeen(env, n) {
+            env.bad.push(ownLeakMsg(n))
+        }
         i = i + 1
     }
+}
+
+func ownLeakSeen(_ env: inout OwnEnv, _ n: String) -> Bool {
+    var i: Int = 0
+    while i < env.leakRep.len() {
+        if let m = env.leakRep.get(i) {
+            if streq(m, n) { return true }
+        }
+        i = i + 1
+    }
+    return false
 }
 
 func ownLeakMsg(_ n: String) using Alloc -> String {
@@ -4617,58 +4740,51 @@ func ownIsLinearName(_ env: inout OwnEnv, _ name: String) -> Bool {
     return false
 }
 
-// The linear struct a `let` binds: from its annotation, else from a
-// constructor-call initializer (`let t = Tok(...)`). "" when not linear.
-func ownLinearOf(_ env: inout OwnEnv, _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc -> String {
-    if let t = ty.get(0) {
-        return match t {
-            case .named(let path, let g, let a): ownLinOrEmpty(env, path)
-            default: own("")
-        }
-    }
+// Is the value a `let` binds linear? From its annotation, else from the
+// initializer: a linear constructor, a function returning a linear type, a
+// linear local, or `.take()` on one.
+func ownInitLinear(_ env: inout OwnEnv, _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc -> Bool {
+    if let t = ty.get(0) { return ownIsLinTy(env, t) }
+    return ownExprLinear(env, v)
+}
+
+func ownExprLinear(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc -> Bool {
     if let e = v.get(0) {
         return match e {
-            case .call(let callee, let args): ownLinCallee(env, callee)
-            default: own("")
+            case .call(let callee, let args): ownCallLinear(env, callee)
+            case .ident(let n): ownLocalLinear(env, n)
+            case .paren(let x): ownExprLinear(env, x)
+            default: false
         }
     }
-    return own("")
+    return false
 }
 
-func ownLinCallee(_ env: inout OwnEnv, _ callee: Vec[Nd]) using Alloc -> String {
+func ownCallLinear(_ env: inout OwnEnv, _ callee: Vec[Nd]) using Alloc -> Bool {
     if let c = callee.get(0) {
         return match c {
-            case .ident(let n): ownLinOrEmpty(env, n)
-            default: own("")
+            case .ident(let n): ownIsLinearName(env, n) || ownFnRetLin(env, n)
+            case .member(let base, let m, let ch): streq(m, "take") && ownExprLinear(env, base)
+            default: false
         }
     }
-    return own("")
+    return false
 }
 
-func ownLinOrEmpty(_ env: inout OwnEnv, _ n: String) using Alloc -> String {
-    if ownIsLinearName(env, n) { return own(n) }
-    return own("")
+func ownLocalLinear(_ env: inout OwnEnv, _ n: String) -> Bool {
+    let idx = ownFind(env, n)
+    return idx >= 0 && (env.isLin.get(idx) ?? false)
 }
 
-// Note a `let x` / `var x` of a linear type: it is tracked for moves (even
-// without an annotation) and must be consumed.
-func ownNoteLinear(_ env: inout OwnEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
-    if streq(ownLinearOf(env, ty, v), "") { return }
-    if let pn = pat.get(0) {
-        match pn {
-            case .identP(let n): ownTrackLinear(env, n)
-            case .bindP(let n): ownTrackLinear(env, n)
-            default: noop()
+func ownIsNilBoxed(_ v: Vec[Nd]) -> Bool {
+    if let e = v.get(0) {
+        return match e {
+            case .nilLit: true
+            case .paren(let x): ownIsNilBoxed(x)
+            default: false
         }
     }
-}
-
-func ownTrackLinear(_ env: inout OwnEnv, _ n: String) using Alloc {
-    if ownFind(env, n) < 0 {
-        env.names.push(n)
-        env.consumed.push(false)
-    }
-    env.linLocals.push(n)
+    return false
 }
 
 func ownRegisterParams(_ env: inout OwnEnv, _ params: Vec[Nd]) using Alloc {
@@ -4687,10 +4803,20 @@ func ownRegisterParam(_ env: inout OwnEnv, _ p: Nd) using Alloc {
 }
 
 func ownRegister(_ env: inout OwnEnv, _ name: String, _ ty: Vec[Nd]) using Alloc {
-    if ownNonTrivialBoxed(ty) {
-        env.names.push(name)
-        env.consumed.push(false)
-    }
+    if ownNonTrivialBoxed(ty) { ownPush(env, name, false, false) }
+}
+
+func ownPush(_ env: inout OwnEnv, _ name: String, _ consumed: Bool, _ lin: Bool) using Alloc {
+    env.names.push(name)
+    env.consumed.push(consumed)
+    env.isLin.push(lin)
+}
+
+// A `let` / `var` binding: tracked when its annotation is non-trivial or its
+// value is linear; a linear one initialized to `nil` holds nothing yet.
+func ownRegisterLet(_ env: inout OwnEnv, _ name: String, _ ty: Vec[Nd], _ lin: Bool, _ isNil: Bool) using Alloc {
+    if lin { ownPush(env, name, isNil, true) }
+    else if ownNonTrivialBoxed(ty) { ownPush(env, name, false, false) }
 }
 
 func ownFind(_ env: inout OwnEnv, _ name: String) -> Int {
@@ -4774,7 +4900,8 @@ func ownExpr(_ env: inout OwnEnv, _ e: Nd) using Alloc {
         case .binary(let op, let l, let r): ownPair(env, l, r)
         case .member(let base, let n, let c): ownBoxed(env, base)
         case .index(let base, let idxs): ownIndex(env, base, idxs)
-        case .ifE(let ln, let li, let cond, let thenB, let els): ownIf(env, li, cond, thenB, els)
+        case .ifE(let ln, let li, let cond, let thenB, let els): ownIf(env, ln, li, cond, thenB, els)
+        case .matchE(let scr, let arms): ownMatch(env, scr, arms)
         case .block(let stmts): ownBlock(env, stmts)
         case .asE(let v, let t, let o): ownBoxed(env, v)
         case .addrOf(let x): ownBoxed(env, x)
@@ -4793,11 +4920,313 @@ func ownIndex(_ env: inout OwnEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc
     }
 }
 
-func ownIf(_ env: inout OwnEnv, _ li: Vec[Nd], _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc {
-    ownBoxed(env, cond)
-    ownBoxed(env, li)
+// ----- branch-aware flow (the bootstrap's §10/§5 phase 2) -------------------
+func ownSnap(_ env: inout OwnEnv) using Alloc -> OwnSt {
+    var st = OwnSt(names: Vec.new(), consumed: Vec.new(), isLin: Vec.new())
+    var i: Int = 0
+    while i < env.names.len() {
+        st.names.push(env.names.get(i) ?? own(""))
+        st.consumed.push(env.consumed.get(i) ?? false)
+        st.isLin.push(env.isLin.get(i) ?? false)
+        i = i + 1
+    }
+    return st
+}
+
+func ownLoad(_ env: inout OwnEnv, _ st: OwnSt) using Alloc {
+    ownClearRows(env)
+    var i: Int = 0
+    while i < st.names.len() {
+        ownPush(env, st.names.get(i) ?? own(""), st.consumed.get(i) ?? false, st.isLin.get(i) ?? false)
+        i = i + 1
+    }
+}
+
+func ownClearRows(_ env: inout OwnEnv) using Alloc {
+    while env.names.len() > 0 { let _ = env.names.pop() }
+    while env.consumed.len() > 0 { let _ = env.consumed.pop() }
+    while env.isLin.len() > 0 { let _ = env.isLin.pop() }
+}
+
+func ownStFind(_ st: OwnSt, _ name: String) -> Int {
+    var i: Int = 0
+    while i < st.names.len() {
+        if let n = st.names.get(i) {
+            if streq(n, name) { return i }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Fold a branch's moves into the current state: a binding moved on any path
+// reaching the join is moved after it.
+func ownMergeIn(_ env: inout OwnEnv, _ br: OwnSt) using Alloc {
+    var i: Int = 0
+    while i < br.names.len() {
+        if br.consumed.get(i) ?? false {
+            let n = br.names.get(i) ?? own("")
+            let j = ownFind(env, n)
+            if j >= 0 { env.consumed.set(j, true) }
+            else { ownPush(env, n, true, br.isLin.get(i) ?? false) }
+        }
+        i = i + 1
+    }
+}
+
+// §5 / §19.6 a linear binding live before a branch must be consumed on every
+// path through it, or on none.
+func ownDivergence(_ env: inout OwnEnv, _ pre: OwnSt, _ brs: Vec[OwnSt]) using Alloc {
+    var i: Int = 0
+    while i < pre.names.len() {
+        if (pre.isLin.get(i) ?? false) && !(pre.consumed.get(i) ?? true) {
+            let n = pre.names.get(i) ?? own("")
+            var anyC: Bool = false
+            var allC: Bool = true
+            var b: Int = 0
+            while b < brs.len() {
+                let st = brs.get(b) ?? OwnSt(names: Vec.new(), consumed: Vec.new(), isLin: Vec.new())
+                let k = ownStFind(st, n)
+                let c = k >= 0 && (st.consumed.get(k) ?? false)
+                anyC = anyC || c
+                allC = allC && c
+                b = b + 1
+            }
+            if anyC && !allC { env.bad.push(ownBranchLeakMsg(n)) }
+        }
+        i = i + 1
+    }
+}
+
+func ownBranchLeakMsg(_ n: String) using Alloc -> String {
+    var s: String = "linear value '"
+    s.append(n)
+    s.append("' is consumed on some branches but leaks on the path(s) that do not consume it")
+    return s
+}
+
+// A branch that leaves the function with a linear value still live leaks it.
+func ownPathLeaks(_ env: inout OwnEnv, _ st: OwnSt) using Alloc {
+    var i: Int = 0
+    while i < st.names.len() {
+        let n = st.names.get(i) ?? own("")
+        if (st.isLin.get(i) ?? false) && !(st.consumed.get(i) ?? true) && !ownLeakSeen(env, n) {
+            env.leakRep.push(n)
+            var m: String = "linear value '"
+            m.append(n)
+            m.append("' leaks on this path, which leaves the function without consuming it")
+            env.bad.push(m)
+        }
+        i = i + 1
+    }
+}
+
+// Can't the branch fall through? (The bootstrap's block_diverges: a block
+// ending in return / break / continue / throw / a Never call.)
+func ownDiverges(_ env: inout OwnEnv, _ v: Vec[Nd]) -> Bool {
+    if let n = v.get(0) {
+        return match n {
+            case .block(let stmts): ownLastDiverges(env, stmts)
+            case .call(let callee, let args): ownNeverCallee(env, callee)
+            default: false
+        }
+    }
+    return false
+}
+
+func ownLastDiverges(_ env: inout OwnEnv, _ stmts: Vec[Nd]) -> Bool {
+    if stmts.len() == 0 { return false }
+    let last = stmts.get(stmts.len() - 1) ?? Nd.wildcard
+    return match last {
+        case .retS(let v): true
+        case .breakS(let l): true
+        case .continueS(let l): true
+        case .exprS(let e): ownExprDiverges(env, e)
+        default: false
+    }
+}
+
+func ownExprDiverges(_ env: inout OwnEnv, _ e: Vec[Nd]) -> Bool {
+    if let n = e.get(0) {
+        return match n {
+            case .throwE(let x): true
+            case .call(let callee, let args): ownNeverCallee(env, callee)
+            default: false
+        }
+    }
+    return false
+}
+
+func ownNeverCallee(_ env: inout OwnEnv, _ callee: Vec[Nd]) -> Bool {
+    if let c = callee.get(0) {
+        return match c {
+            case .ident(let n): ownIsNeverFn(env, n)
+            default: false
+        }
+    }
+    return false
+}
+
+// Does a diverging branch leave the function (rather than break / continue)?
+func ownLeavesFn(_ env: inout OwnEnv, _ v: Vec[Nd]) -> Bool {
+    if let n = v.get(0) {
+        return match n {
+            case .block(let stmts): ownLastNotLoopJump(stmts)
+            default: ownDiverges(env, v)
+        }
+    }
+    return false
+}
+
+func ownLastNotLoopJump(_ stmts: Vec[Nd]) -> Bool {
+    if stmts.len() == 0 { return false }
+    let last = stmts.get(stmts.len() - 1) ?? Nd.wildcard
+    return match last {
+        case .breakS(let l): false
+        case .continueS(let l): false
+        default: true
+    }
+}
+
+// `if` / `if let`: each branch from the same state, then merged at the join.
+// An `if let` over a linear local moves it into the binding, which the
+// then-branch must move on.
+func ownIf(_ env: inout OwnEnv, _ ln: String, _ li: Vec[Nd], _ cond: Vec[Nd], _ thenB: Vec[Nd], _ els: Vec[Nd]) using Alloc {
+    var letOwned: Bool = false
+    if cond.len() > 0 { ownBoxed(env, cond) }
+    else if li.len() > 0 {
+        ownBoxed(env, li)
+        if !streq(ln, "") && ownExprLinear(env, li) {
+            ownConsumeBoxed(env, li)
+            letOwned = true
+        }
+    }
+    let pre = ownSnap(env)
+    if letOwned { ownPush(env, ln, false, true) }
     ownBoxed(env, thenB)
+    if letOwned { ownEndIfLet(env, ln, thenB) }
+    let thenSt = ownSnap(env)
+    ownLoad(env, pre)
     ownBoxed(env, els)
+    let elseSt = ownSnap(env)
+    let thenOut = ownDiverges(env, thenB)
+    let elseOut = els.len() > 0 && ownDiverges(env, els)
+    if thenOut && ownLeavesFn(env, thenB) { ownPathLeaks(env, thenSt) }
+    if elseOut && ownLeavesFn(env, els) { ownPathLeaks(env, elseSt) }
+    if !thenOut && !elseOut {
+        var brs: Vec[OwnSt] = Vec.new()
+        brs.push(ownSnapOf(thenSt))
+        brs.push(ownSnapOf(elseSt))
+        ownDivergence(env, pre, brs)
+    }
+    if elseOut && !thenOut { ownLoad(env, thenSt) }
+    else if !thenOut { ownMergeIn(env, thenSt) }
+}
+
+func ownSnapOf(_ st: OwnSt) using Alloc -> OwnSt {
+    var c = OwnSt(names: Vec.new(), consumed: Vec.new(), isLin: Vec.new())
+    var i: Int = 0
+    while i < st.names.len() {
+        c.names.push(st.names.get(i) ?? own(""))
+        c.consumed.push(st.consumed.get(i) ?? false)
+        c.isLin.push(st.isLin.get(i) ?? false)
+        i = i + 1
+    }
+    return c
+}
+
+// The `if let` binding goes out of scope after the then-branch: still live
+// there (and the branch falls through), it was never consumed.
+func ownEndIfLet(_ env: inout OwnEnv, _ ln: String, _ thenB: Vec[Nd]) using Alloc {
+    let idx = ownFindLast(env, ln)
+    if idx < 0 { return }
+    if !(env.consumed.get(idx) ?? true) && !ownDiverges(env, thenB) {
+        var m: String = "linear value '"
+        m.append(ln)
+        m.append("' is never consumed; `if let` moved it out of its Optional, so the then-branch must move it on")
+        env.bad.push(m)
+    }
+    ownRemoveAt(env, idx)
+}
+
+func ownFindLast(_ env: inout OwnEnv, _ name: String) -> Int {
+    var i: Int = env.names.len() - 1
+    while i >= 0 {
+        if let n = env.names.get(i) {
+            if streq(n, name) { return i }
+        }
+        i = i - 1
+    }
+    return -1
+}
+
+func ownRemoveAt(_ env: inout OwnEnv, _ idx: Int) using Alloc {
+    let st = ownSnap(env)
+    ownClearRows(env)
+    var i: Int = 0
+    while i < st.names.len() {
+        if i != idx { ownPush(env, st.names.get(i) ?? own(""), st.consumed.get(i) ?? false, st.isLin.get(i) ?? false) }
+        i = i + 1
+    }
+}
+
+// `match`: guards first (assume each ran), then every arm from that state,
+// merged at the join; a linear binding is consumed in every arm or none.
+func ownMatch(_ env: inout OwnEnv, _ scr: Vec[Nd], _ arms: Vec[Nd]) using Alloc {
+    ownBoxed(env, scr)
+    var i: Int = 0
+    while i < arms.len() {
+        ownArmGuard(env, arms.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    let pre = ownSnap(env)
+    var merged = ownSnapOf(pre)
+    var states: Vec[OwnSt] = Vec.new()
+    var a: Int = 0
+    while a < arms.len() {
+        let body = ownArmBody(arms.get(a) ?? Nd.wildcard)
+        if body.len() > 0 {
+            ownLoad(env, pre)
+            ownBoxed(env, body)
+            let st = ownSnap(env)
+            ownMergeSt(merged, st)
+            states.push(st)
+        }
+        a = a + 1
+    }
+    if states.len() > 0 { ownDivergence(env, pre, states) }
+    ownLoad(env, merged)
+}
+
+func ownArmGuard(_ env: inout OwnEnv, _ arm: Nd) using Alloc {
+    match arm {
+        case .matchArm(let d, let pat, let g, let body): ownBoxed(env, g)
+        default: noop()
+    }
+}
+
+func ownArmBody(_ arm: Nd) using Alloc -> Vec[Nd] {
+    return match arm {
+        case .matchArm(let d, let pat, let g, let body): body
+        default: Vec.new()
+    }
+}
+
+func ownMergeSt(_ dst: inout OwnSt, _ br: OwnSt) using Alloc {
+    var i: Int = 0
+    while i < br.names.len() {
+        if br.consumed.get(i) ?? false {
+            let n = br.names.get(i) ?? own("")
+            let j = ownStFind(dst, n)
+            if j >= 0 { dst.consumed.set(j, true) }
+            else {
+                dst.names.push(n)
+                dst.consumed.push(true)
+                dst.isLin.push(br.isLin.get(i) ?? false)
+            }
+        }
+        i = i + 1
+    }
 }
 
 func ownBlock(_ env: inout OwnEnv, _ stmts: Vec[Nd]) using Alloc {
@@ -4825,10 +5254,16 @@ func ownStmt(_ env: inout OwnEnv, _ s: Nd) using Alloc {
 // `let`/`var`: evaluate the value (a use-check on any place it reads), then the
 // value place is moved into the new binding, then register the binding itself.
 func ownLet(_ env: inout OwnEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    let lin = ownInitLinear(env, ty, v)   // before the initializer's move
     ownBoxed(env, v)
     ownConsumeBoxed(env, v)
-    ownRegisterPat(env, pat, ty)
-    ownNoteLinear(env, pat, ty, v)
+    if let pn = pat.get(0) {
+        match pn {
+            case .identP(let n): ownRegisterLet(env, n, ty, lin, ownIsNilBoxed(v))
+            case .bindP(let n): ownRegisterLet(env, n, ty, lin, ownIsNilBoxed(v))
+            default: noop()
+        }
+    }
 }
 
 func ownRet(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc {
@@ -4836,22 +5271,45 @@ func ownRet(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc {
     ownConsumeBoxed(env, v)
 }
 
+// `x = y`: a linear `y` moves; then the target. (The bootstrap's
+// check_place_assign, for locals.)
 func ownAssign(_ env: inout OwnEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     ownBoxed(env, v)
-    ownAssignTarget(env, t)
+    if ownExprLinear(env, v) { ownConsumeBoxed(env, v) }
+    ownAssignTarget(env, t, ownIsNilBoxed(v))
 }
 
-func ownAssignTarget(_ env: inout OwnEnv, _ t: Vec[Nd]) using Alloc {
-    if t.len() > 0 { ownAssignTargetE(env, t.get(0) ?? Nd.wildcard) }
+func ownAssignTarget(_ env: inout OwnEnv, _ t: Vec[Nd], _ isNil: Bool) using Alloc {
+    if t.len() > 0 { ownAssignTargetE(env, t.get(0) ?? Nd.wildcard, isNil) }
 }
 
-// A bare-ident target is a write that revives the binding (§19.2); anything else
+// A bare-ident target is a write that revives the binding (§19.2); over a
+// linear one still holding its value it drops that value. Anything else
 // (member / index) is walked as an ordinary use.
-func ownAssignTargetE(_ env: inout OwnEnv, _ e: Nd) using Alloc {
+func ownAssignTargetE(_ env: inout OwnEnv, _ e: Nd, _ isNil: Bool) using Alloc {
     match e {
-        case .ident(let n): ownRevive(env, n)
+        case .ident(let n): ownAssignLocal(env, n, isNil)
+        case .paren(let x): ownAssignTarget(env, x, isNil)
         default: ownExpr(env, e)
     }
+}
+
+func ownAssignLocal(_ env: inout OwnEnv, _ n: String, _ isNil: Bool) using Alloc {
+    let idx = ownFind(env, n)
+    if idx < 0 { return }
+    if env.isLin.get(idx) ?? false {
+        if !(env.consumed.get(idx) ?? true) { env.bad.push(ownDropMsg(n)) }
+        env.consumed.set(idx, isNil)
+        return
+    }
+    env.consumed.set(idx, false)
+}
+
+func ownDropMsg(_ n: String) using Alloc -> String {
+    var s: String = "assigning to '"
+    s.append(n)
+    s.append("' drops the linear value it still holds; move that value on first")
+    return s
 }
 
 func ownWith(_ env: inout OwnEnv, _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc {
@@ -4864,6 +5322,7 @@ func ownWith(_ env: inout OwnEnv, _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc 
 }
 
 func ownCall(_ env: inout OwnEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    if ownOptMethod(env, callee, args) { return }
     ownBoxed(env, callee)
     let fname = exCalleeNameBoxed(callee)
     let isCtor = ownIsCtor(env, fname)
@@ -4871,6 +5330,53 @@ func ownCall(_ env: inout OwnEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     while i < args.len() {
         ownCallArg(env, fname, isCtor, i, args.get(i) ?? Nd.wildcard)
         i = i + 1
+    }
+}
+
+// `o.take()` empties a linear local Optional; `o.put(v)` fills it (moving a
+// linear `v`). The bootstrap's check_optional_method, for locals.
+func ownOptMethod(_ env: inout OwnEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc -> Bool {
+    if let c = callee.get(0) {
+        return match c {
+            case .member(let base, let m, let ch): ownOptOn(env, base, m, args)
+            default: false
+        }
+    }
+    return false
+}
+
+func ownOptOn(_ env: inout OwnEnv, _ base: Vec[Nd], _ m: String, _ args: Vec[Nd]) using Alloc -> Bool {
+    let isTake = streq(m, "take") && args.len() == 0
+    let isPut = streq(m, "put") && args.len() == 1
+    if !isTake && !isPut { return false }
+    let bn = ownIdentName(base)
+    if streq(bn, "") { return false }
+    let idx = ownFind(env, bn)
+    if idx < 0 || !(env.isLin.get(idx) ?? false) { return false }
+    if isTake { env.consumed.set(idx, true); return true }
+    let a = ownArgValue(args.get(0) ?? Nd.wildcard)
+    ownBoxed(env, a)
+    if ownExprLinear(env, a) { ownConsumeBoxed(env, a) }
+    let j = ownFind(env, bn)
+    if j >= 0 { env.consumed.set(j, false) }
+    return true
+}
+
+func ownIdentName(_ v: Vec[Nd]) using Alloc -> String {
+    if let n = v.get(0) {
+        return match n {
+            case .ident(let x): own(x)
+            case .paren(let x): ownIdentName(x)
+            default: own("")
+        }
+    }
+    return own("")
+}
+
+func ownArgValue(_ a: Nd) using Alloc -> Vec[Nd] {
+    return match a {
+        case .arg(let l, let io, let v): v
+        default: Vec.new()
     }
 }
 
@@ -6945,7 +7451,9 @@ func main() -> Int32 {
                     var oenv = OwnEnv(names: Vec.new(), consumed: Vec.new(),
                                       sigName: Vec.new(), sigIdx: Vec.new(), sigMode: Vec.new(),
                                       ctors: Vec.new(), bad: Vec.new(),
-                                      linears: Vec.new(), linLocals: Vec.new())
+                                      linears: Vec.new(), isLin: Vec.new(), leakRep: Vec.new(),
+                                      fieldOwner: Vec.new(), fieldTy: Vec.new(), neverFns: Vec.new(),
+                                      fnName: Vec.new(), fnRet: Vec.new())
                     ownCheck(&oenv, u)
                     var o: Int = 0
                     while o < oenv.bad.len() {

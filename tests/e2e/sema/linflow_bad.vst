@@ -1,0 +1,42 @@
+// Linear values that leak on some path, or are dropped (§5, §19.6).
+linear struct Tok {
+    let id: Int32
+}
+struct Wrap {
+    let t: Tok
+}
+func close(_ t: sink Tok) { }
+func make() -> Tok { return Tok(id: 1) }
+func maybe() -> Tok? { return nil }
+func oneSided(_ c: Bool) {
+    let t: Tok = make()
+    if c { close(t) }
+}
+func oneArm(_ k: Int32) {
+    let t = make()
+    match k {
+        case 0: close(t)
+        default: { }
+    }
+}
+func earlyLeak(_ c: Bool) {
+    let t = make()
+    if c { return }
+    close(t)
+}
+func ifLetDropped() {
+    if let t = maybe() { let n: Int32 = 1 }
+}
+func overwrite() {
+    var t = make()
+    t = make()
+    close(t)
+}
+func wrapLeak() {
+    let w = Wrap(t: make())
+}
+func useAfter(_ c: Bool) {
+    let t: Tok = make()
+    if c { close(t) } else { close(t) }
+    close(t)
+}
