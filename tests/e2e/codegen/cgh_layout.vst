@@ -1,0 +1,53 @@
+// §4 / §A6 struct layout attributes. `@repr(packed)` follows the closing
+// brace as `__attribute__((packed))`; `@repr(align(N))` and the `@align(N)`
+// shorthand put `alignas(N)` between keyword and name (on a field, before
+// its type); `@repr(union)` emits a C++ `union` whose members take no
+// default initializer; a `@bits(N)` field is a bit-field with none either;
+// `@repr(C)` changes nothing. A generic struct keeps its template head
+// ahead of the keyword.
+@repr(packed)
+struct Header {
+    var tag: UInt8
+    var len: UInt32
+}
+
+@repr(align(32))
+struct Line {
+    var a: UInt64
+}
+
+@align(16)
+struct Short {
+    var b: UInt32
+}
+
+@repr(C)
+struct Plain {
+    var c: Int32
+}
+
+@repr(packed) @align(8)
+struct Both {
+    var d: UInt16
+}
+
+struct Fields {
+    @align(8) var wide: UInt32
+    @bits(3) var mode: UInt8
+    @bits(5) var level: UInt8
+}
+
+@repr(union)
+struct Word {
+    var raw: UInt32
+    var half: UInt16
+}
+
+@align(64)
+struct Slot[T] {
+    var v: T
+}
+
+func size(_ w: Word) -> UInt32 {
+    return w.raw
+}

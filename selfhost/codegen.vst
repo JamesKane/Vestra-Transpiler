@@ -918,7 +918,7 @@ enum Nd {
     // a function parameter
     case param(Bool, String, String, Bool, String, Vec[Nd]) // labelOmitted, label, name, nonesc, mode, type
     // struct / enum members
-    case field(String, String, Vec[Nd])     // kind ("let "/"var "/"embed "), name, type
+    case field(String, String, Vec[Nd], Vec[Nd])  // kind ("let "/"var "/"embed "), name, type, attributes (attrN)
     case enumCase(String, Vec[Nd])           // name, payload (payElem list)
     case payElem(String, Vec[Nd])            // label ("" if positional), type
     // declarations
@@ -1261,7 +1261,9 @@ func parseStruct(_ p: inout Ps, _ vis: String, _ isLinear: Bool) using Alloc -> 
     var methods: Vec[Nd] = Vec.new()
     var deinitB: Vec[Nd] = Vec.new()
     while !isKind(p, TokKind.rbrace) && !atEndP(p) {
-        skipAttributes(&p)  // field / method attributes (e.g. @bits(4)) — printer drops them
+        // Field attributes (`@bits(4)`, `@align(8)`) attach to the field; on a
+        // method they are dropped. The printer drops both.
+        let fattrs = parseAttrs(&p)
         if isKind(p, TokKind.kwFunc) || isKind(p, TokKind.kwAsync)
             || isKind(p, TokKind.kwInout) || isKind(p, TokKind.kwSink) {
             var mods: String = ""
@@ -1281,7 +1283,7 @@ func parseStruct(_ p: inout Ps, _ vis: String, _ isLinear: Bool) using Alloc -> 
             let fname = curText(p)
             advP(&p)
             eat(p, TokKind.colon)
-            fields.push(Nd.field(kind, fname, bT(parseType(&p))))
+            fields.push(Nd.field(kind, fname, bT(parseType(&p)), fattrs))
         }
         skipNL(&p)
     }
@@ -2285,7 +2287,7 @@ func printStruct(_ vis: String, _ name: String, _ fields: Vec[Nd], _ methods: Ve
 
 func printField(_ f: Nd, _ indent: Int) using Alloc, Log {
     match f {
-        case .field(let kind, let name, let ty): printFieldBody(kind, name, ty, indent)
+        case .field(let kind, let name, let ty, let fattrs): printFieldBody(kind, name, ty, indent)
         default: print("")
     }
 }
@@ -3339,7 +3341,7 @@ func tyRecordStruct(_ env: inout TyEnv, _ name: String, _ fields: Vec[Nd]) using
 
 func tyRecordField(_ env: inout TyEnv, _ structName: String, _ f: Nd) using Alloc {
     match f {
-        case .field(let kind, let fname, let fty): tyPushField(env, structName, kind, fname, fty)
+        case .field(let kind, let fname, let fty, let fattrs): tyPushField(env, structName, kind, fname, fty)
         default: noop()
     }
 }
@@ -5420,7 +5422,7 @@ func emitHashSpecStruct(_ env: inout TyEnv, _ name: Str, _ fields: Vec[Nd], _ ge
 // specializations, so neither side hashes or renders it.
 func emitHashField(_ f: Nd) using Alloc, Log {
     match f {
-        case .field(let kind, let name, let ty): emitHashFieldParts(kind, name, ty)
+        case .field(let kind, let name, let ty, let fattrs): emitHashFieldParts(kind, name, ty)
         default: noop()
     }
 }
@@ -5651,7 +5653,7 @@ func emitDebugSpecStruct(_ env: inout TyEnv, _ name: Str, _ fields: Vec[Nd], _ g
 
 func printFieldPlaceholder(_ f: Nd) using Alloc, Log {
     match f {
-        case .field(let kind, let name, let ty): printFieldPlaceholderParts(kind, name)
+        case .field(let kind, let name, let ty, let fattrs): printFieldPlaceholderParts(kind, name)
         default: noop()
     }
 }
@@ -5664,7 +5666,7 @@ func printFieldPlaceholderParts(_ kind: Str, _ name: Str) using Alloc, Log {
 
 func printFieldArg(_ f: Nd) using Alloc, Log {
     match f {
-        case .field(let kind, let name, let ty): printFieldArgParts(kind, name)
+        case .field(let kind, let name, let ty, let fattrs): printFieldArgParts(kind, name)
         default: noop()
     }
 }
@@ -6122,13 +6124,24 @@ func emitGenTypeParam(_ g: Nd) using Alloc, Log {
     print(genName(g))
 }
 
+// §4 the struct's own layout attributes (env.curAttrs, set per top-level
+// declaration): `@repr(union)` swaps the keyword for `union`, an alignment
+// sits between keyword and name, `@repr(packed)` follows the closing brace.
 func emitStructDef(_ env: inout TyEnv, _ name: Str, _ fields: Vec[Nd], _ methods: Vec[Nd]) using Alloc, Log {
-    print("struct ")
+    let attrs = ndsCopy(env.curAttrs)
+    let isUnion = layoutRepr(attrs, "union")
+    if isUnion { print("union ") } else { print("struct ") }
+    let al = layoutAlign(attrs)
+    if !streq(al, "") {
+        print("alignas(")
+        print(al)
+        print(") ")
+    }
     print(name)
     print(" {\n")
     var i: Int = 0
     while i < fields.len() {
-        emitField(fields.get(i) ?? Nd.wildcard)
+        emitField(fields.get(i) ?? Nd.wildcard, isUnion)
         i = i + 1
     }
     emitDerivedMembers(env, name)
@@ -6137,7 +6150,9 @@ func emitStructDef(_ env: inout TyEnv, _ name: Str, _ fields: Vec[Nd], _ methods
         emitMethod(env, name, methods.get(m) ?? Nd.wildcard)
         m = m + 1
     }
-    print("};\n\n")
+    print("}")
+    if layoutRepr(attrs, "packed") { print(" __attribute__((packed))") }
+    print(";\n\n")
 }
 
 func emitMethod(_ env: inout TyEnv, _ owner: Str, _ d: Nd) using Alloc, Log {
@@ -6174,19 +6189,149 @@ func emitMethodDef(_ env: inout TyEnv, _ owner: Str, _ mods: Str, _ name: Str, _
     print("    }\n")
 }
 
-func emitField(_ f: Nd) using Alloc, Log {
+func emitField(_ f: Nd, _ isUnion: Bool) using Alloc, Log {
     match f {
-        case .field(let kind, let name, let ty): emitFieldDef(name, ty)
+        case .field(let kind, let name, let ty, let fattrs): emitFieldDef(name, ty, fattrs, isUnion)
         default: noop()
     }
 }
 
-func emitFieldDef(_ name: Str, _ ty: Vec[Nd]) using Alloc, Log {
+// `    [alignas(N) ]<type> <name>` then ` : <bits>` for a §4 `@bits(N)`
+// bit-field (no default brace-init is legal there), nothing inside a
+// `@repr(union)` (a C++ union takes at most one default member
+// initializer, so construction picks the member), else `{}`.
+func emitFieldDef(_ name: Str, _ ty: Vec[Nd], _ fattrs: Vec[Nd], _ isUnion: Bool) using Alloc, Log {
     print("    ")
+    let al = layoutAlign(fattrs)
+    if !streq(al, "") {
+        print("alignas(")
+        print(al)
+        print(") ")
+    }
     emitTypeBoxed(ty)
     print(" ")
     print(name)
-    print("{};\n")
+    let bits = layoutBits(fattrs)
+    if !streq(bits, "") {
+        print(" : ")
+        print(bits)
+    } else if !isUnion {
+        print("{}")
+    }
+    print(";\n")
+}
+
+// ----- §4 layout attributes (cpp_emitter.cpp read_layout_attrs) ------------
+// `@repr(packed)`, `@repr(union)`, `@repr(align(N))` / `@align(N)` (the last
+// alignment wins); `@repr(C)` and unknown modes emit nothing.
+func layoutRepr(_ attrs: Vec[Nd], _ mode: Str) using Alloc -> Bool {
+    var i: Int = 0
+    while i < attrs.len() {
+        let a = attrs.get(i) ?? Nd.wildcard
+        if streq(attrNameOf(a), "repr") && streq(attrArgIdent(a), mode) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func layoutAlign(_ attrs: Vec[Nd]) using Alloc -> String {
+    var out: String = ""
+    var i: Int = 0
+    while i < attrs.len() {
+        let a = attrs.get(i) ?? Nd.wildcard
+        let an = attrNameOf(a)
+        if streq(an, "align") { out = attrArgInt(a) }
+        else if streq(an, "repr") {
+            let ra = attrArgAlignCall(a)
+            if !streq(ra, "") { out = ra }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// The FIRST `@bits(N)` on a field, as read_bits_attr returns.
+func layoutBits(_ attrs: Vec[Nd]) using Alloc -> String {
+    var i: Int = 0
+    while i < attrs.len() {
+        let a = attrs.get(i) ?? Nd.wildcard
+        if streq(attrNameOf(a), "bits") { return attrArgInt(a) }
+        i = i + 1
+    }
+    return own("")
+}
+
+func attrArgIdent(_ a: Nd) using Alloc -> String {
+    return match a {
+        case .attrN(let n, let arg): boxIdentName(arg)
+        default: own("")
+    }
+}
+
+func boxIdentName(_ b: Vec[Nd]) using Alloc -> String {
+    if b.len() == 0 { return own("") }
+    return match b.get(0) ?? Nd.wildcard {
+        case .ident(let n): own(n)
+        default: own("")
+    }
+}
+
+// The integer of an attribute argument, as int_from_attr_arg + std::stoll
+// read it: the literal's leading decimal digits, leading zeros dropped; ""
+// for zero, a non-integer, or none (no attribute is emitted then).
+func attrArgInt(_ a: Nd) using Alloc -> String {
+    return match a {
+        case .attrN(let n, let arg): boxIntLit(arg)
+        default: own("")
+    }
+}
+
+func boxIntLit(_ b: Vec[Nd]) using Alloc -> String {
+    if b.len() == 0 { return own("") }
+    return match b.get(0) ?? Nd.wildcard {
+        case .intLit(let t): stollText(t)
+        default: own("")
+    }
+}
+
+func stollText(_ t: Str) using Alloc -> String {
+    var out: String = ""
+    var i: Int = 0
+    var go: Bool = true
+    while go && i < t.len() {
+        let c = t.byteAt(i) ?? 0
+        if c >= 48 && c <= 57 {
+            if !(c == 48 && out.len() == 0) { out.append(t.slice(i, i + 1)) }
+            i = i + 1
+        } else {
+            go = false
+        }
+    }
+    return out
+}
+
+// `@repr(align(N))`: the argument is a call whose callee is `align`.
+func attrArgAlignCall(_ a: Nd) using Alloc -> String {
+    return match a {
+        case .attrN(let n, let arg): boxAlignCall(arg)
+        default: own("")
+    }
+}
+
+func boxAlignCall(_ b: Vec[Nd]) using Alloc -> String {
+    if b.len() == 0 { return own("") }
+    return match b.get(0) ?? Nd.wildcard {
+        case .call(let callee, let args): alignCallArg(callee, args)
+        default: own("")
+    }
+}
+
+func alignCallArg(_ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc -> String {
+    if !streq(identBaseName(callee), "align") || args.len() != 1 { return own("") }
+    return match args.get(0) ?? Nd.wildcard {
+        case .arg(let label, let isInout, let val): boxIntLit(val)
+        default: own("")
+    }
 }
 
 // A non-generic function gets a forward declaration; a generic one is a full
