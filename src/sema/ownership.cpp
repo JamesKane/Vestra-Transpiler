@@ -104,6 +104,11 @@ void OwnershipChecker::check_stmt(const ast::Stmt& s) {
     switch (s.kind) {
     case ast::NodeKind::LetStmt: {
         const auto& l = static_cast<const ast::LetStmt&>(s);
+        if (l.value && l.pattern != nullptr && l.pattern->kind == ast::NodeKind::WildcardPat) {
+            check_expr(*l.value);
+            reject_dropped_linear(*l.value);  // `let _ = mk()` discards it too
+            break;
+        }
         if (l.value) {
             check_expr(*l.value);
             // §5 — `let c = b` moves a non-trivial place: ownership transfers
@@ -127,6 +132,7 @@ void OwnershipChecker::check_stmt(const ast::Stmt& s) {
     }
     case ast::NodeKind::ExprStmt:
         check_expr(*static_cast<const ast::ExprStmt&>(s).expr);
+        reject_dropped_linear(*static_cast<const ast::ExprStmt&>(s).expr);
         break;
     case ast::NodeKind::ReturnStmt: {
         const auto& r = static_cast<const ast::ReturnStmt&>(s);
@@ -270,12 +276,19 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
     case ast::NodeKind::ThrowExpr:
         check_expr(*static_cast<const ast::ThrowExpr&>(e).inner);
         break;
-    case ast::NodeKind::TryExpr:
-        check_expr(*static_cast<const ast::TryExpr&>(e).inner);
+    case ast::NodeKind::TryExpr: {
+        const auto& t = static_cast<const ast::TryExpr&>(e);
+        check_expr(*t.inner);
+        if (t.form == ast::TryExpr::Form::Propagating) {
+            report_try_leaks(e.range);
+        }
         break;
+    }
     case ast::NodeKind::DoCatchExpr: {
         const auto& dc = static_cast<const ast::DoCatchExpr&>(e);
+        do_bodies_.push_back(dc.do_body->range);
         check_expr(*dc.do_body);
+        do_bodies_.pop_back();
         check_expr(*dc.catch_body);
         break;
     }
@@ -1534,6 +1547,51 @@ std::string OwnershipChecker::non_copyable_reason(TypePtr t, int depth) const {
     default:
         return {};
     }
+}
+
+void OwnershipChecker::report_try_leaks(diag::SourceRange site) {
+    const bool in_do = !do_bodies_.empty();
+    for (const auto& [sym, info] : bindings_) {
+        if (info.state != State::Live || sym == nullptr || sym->kind == SymbolKind::Parameter
+            || !is_linear_type(sym->type) || borrows_.contains(sym) || leak_reported_.contains(sym)) {
+            continue;
+        }
+        // Thrown to a catch, only what the `do` body declared is left behind.
+        if (in_do && !inside(sym->definition_range, do_bodies_.back())) {
+            continue;
+        }
+        leak_reported_.insert(sym);
+        reporter_->report(
+            diag::Diagnostic::error(std::format("linear value '{}' leaks if the `try` throws, which "
+                                                "leaves the {} without consuming it",
+                                                sym->name,
+                                                in_do ? "`do` body" : "function"))
+                .at(site));
+    }
+}
+
+void OwnershipChecker::reject_dropped_linear(const ast::Expr& e) {
+    const ast::Expr* x = &e;
+    while (x->kind == ast::NodeKind::ParenExpr) {
+        x = static_cast<const ast::ParenExpr&>(*x).inner.get();
+    }
+    if (x->kind == ast::NodeKind::TryExpr) {
+        x = static_cast<const ast::TryExpr&>(*x).inner.get();
+    }
+    if (x->kind != ast::NodeKind::CallExpr) {
+        return;
+    }
+    auto t = resolution_->type_of(&e);
+    if (t != nullptr && t->kind() == TypeKind::Result) {
+        t = t->inner();
+    }
+    if (!is_linear_type(t)) {
+        return;
+    }
+    reporter_->report(diag::Diagnostic::error(std::format("the linear value this call returns ({}) "
+                                                          "is dropped; bind it and consume it",
+                                                          t->describe()))
+                          .at(e.range));
 }
 
 void OwnershipChecker::report_loop_moves(const BindingMap& pre, const ast::Expr* body) {

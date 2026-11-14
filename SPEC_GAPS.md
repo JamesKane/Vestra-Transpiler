@@ -319,8 +319,6 @@ fails in clang.
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §19.6 | Linear leak on a `try` error path | unsound | `let h = H(...); let x = try mayfail(); close(h)` is accepted. A plain early `return` is caught. |
-| §19.6 | A discarded linear result | unsound | A bare statement `mk()` that returns a linear value is accepted. |
 | §19.6 | Consumed only by the type's consumer or a destructure | divergent | Any `sink` param counts, so an empty `func dropit(_ h: sink H)` drops anything. No destructure form exists. |
 | §19.6 | Panic paths need not consume linear values | divergent (over-strict) | `let h = H(...); panic("x")` reports "never consumed". |
 | §19.9 | Left-to-right evaluation of arguments and operands | unsound | Emitted as direct C++ calls and operators, so order is whatever the C++ compiler chooses. |

@@ -4521,6 +4521,7 @@ struct OwnEnv {
     var locTy: Vec[Nd]          // ... and its declared (or constructed) type
     var selfTy: String          // per method: the owning type ("" outside one)
     var borrows: Vec[String]    // per function: `if let` bindings borrowed from a place
+    var doMarks: Vec[Int]       // per `do` body (innermost last): bindings before it
     var capMark: Vec[Int]       // per closure (innermost last): bindings before its body
     var capStart: Vec[Int]      // ... where its captures begin in capNames
     var capNames: Vec[String]   // captured binding names, by closure
@@ -5125,7 +5126,7 @@ func ownExpr(_ env: inout OwnEnv, _ e: Nd) using Alloc {
         case .asE(let v, let t, let o): ownBoxed(env, v)
         case .addrOf(let x): ownBoxed(env, x)
         case .arg(let l, let io, let v): ownBoxed(env, v)
-        case .doCatchE(let db, let en, let et, let cb): ownPair(env, db, cb)
+        case .doCatchE(let db, let en, let et, let cb): ownDoCatch(env, db, cb)
         default: noop()
     }
 }
@@ -5133,6 +5134,81 @@ func ownExpr(_ env: inout OwnEnv, _ e: Nd) using Alloc {
 func ownPrefix(_ env: inout OwnEnv, _ kw: String, _ inner: Vec[Nd]) using Alloc {
     ownBoxed(env, inner)
     if streq(kw, "copy ") { ownCopyCheck(env, inner) }
+    if streq(kw, "try ") { ownTryLeaks(env) }
+}
+
+func ownDoCatch(_ env: inout OwnEnv, _ db: Vec[Nd], _ cb: Vec[Nd]) using Alloc {
+    env.doMarks.push(env.names.len())
+    ownBoxed(env, db)
+    let _m = env.doMarks.pop()
+    ownBoxed(env, cb)
+}
+
+// §19.6 a propagating `try` leaves the function (or, in a `do` body, that
+// body) with every live linear binding it holds.
+func ownTryLeaks(_ env: inout OwnEnv) using Alloc {
+    var from: Int = 0
+    let inDo = env.doMarks.len() > 0
+    if inDo { from = env.doMarks.get(env.doMarks.len() - 1) ?? 0 }
+    var i: Int = from
+    while i < env.names.len() {
+        let n = env.names.get(i) ?? own("")
+        if (env.isLin.get(i) ?? false) && !(env.consumed.get(i) ?? true) && !ownLeakSeen(env, n)
+            && !ownIsBorrowed(env, n) {
+            env.leakRep.push(own(n))
+            var m: String = "linear value '"
+            m.append(n)
+            m.append("' leaks if the `try` throws, which leaves the ")
+            if inDo { m.append("`do` body") } else { m.append("function") }
+            m.append(" without consuming it")
+            env.bad.push(m)
+        }
+        i = i + 1
+    }
+}
+
+// §19.6 a call statement (or `let _ =`) whose linear result nothing consumes.
+func ownDropped(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc {
+    let sp = ownDroppedTy(env, v)
+    if streq(sp, "") { return }
+    var m: String = "the linear value this call returns ("
+    m.append(sp)
+    m.append(") is dropped; bind it and consume it")
+    env.bad.push(m)
+}
+
+func ownDroppedTy(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc -> String {
+    if let n = v.get(0) {
+        return match n {
+            case .paren(let x): ownDroppedTy(env, x)
+            case .prefixE(let kw, let x): ownDroppedTry(env, kw, x)
+            case .call(let callee, let args): ownCallLinTy(env, callee)
+            default: own("")
+        }
+    }
+    return own("")
+}
+
+func ownDroppedTry(_ env: inout OwnEnv, _ kw: String, _ x: Vec[Nd]) using Alloc -> String {
+    if !streq(kw, "try ") { return own("") }
+    return ownDroppedTy(env, x)
+}
+
+// The spelling of a call's linear result type ("" when not linear).
+func ownCallLinTy(_ env: inout OwnEnv, _ callee: Vec[Nd]) using Alloc -> String {
+    let n = ownIdentName(callee)
+    if streq(n, "") { return own("") }
+    if ownIsLinearName(env, n) { return own(n) }
+    var i: Int = 0
+    while i < env.fnName.len() {
+        if streq(env.fnName.get(i) ?? own(""), n) {
+            let t = env.fnRet.get(i) ?? Nd.wildcard
+            if ownIsLinTy(env, t) { return typeSpelling(t) }
+            return own("")
+        }
+        i = i + 1
+    }
+    return own("")
 }
 
 // ----- §7 closures capture by value (the bootstrap's check_closure) ---------
@@ -6038,7 +6114,7 @@ func ownStmt(_ env: inout OwnEnv, _ s: Nd) using Alloc {
     match s {
         case .letS(let p, let ty, let v): ownLet(env, p, ty, v)
         case .varS(let p, let ty, let v): ownLet(env, p, ty, v)
-        case .exprS(let e): ownBoxed(env, e)
+        case .exprS(let e): ownExprStmt(env, e)
         case .retS(let v): ownRet(env, v)
         case .assignS(let op, let t, let v): ownAssign(env, t, v)
         case .whileS(let c, let b): ownLoop(env, c, b, false)
@@ -6050,7 +6126,27 @@ func ownStmt(_ env: inout OwnEnv, _ s: Nd) using Alloc {
 
 // `let`/`var`: evaluate the value (a use-check on any place it reads), then the
 // value place is moved into the new binding, then register the binding itself.
+func patIsWildcard(_ pat: Vec[Nd]) -> Bool {
+    if let p = pat.get(0) {
+        return match p {
+            case .wildcard: true
+            default: false
+        }
+    }
+    return false
+}
+
+func ownExprStmt(_ env: inout OwnEnv, _ e: Vec[Nd]) using Alloc {
+    ownBoxed(env, e)
+    ownDropped(env, e)
+}
+
 func ownLet(_ env: inout OwnEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    if patIsWildcard(pat) && v.len() > 0 {
+        ownBoxed(env, v)
+        ownDropped(env, v)
+        return
+    }
     let lin = ownInitLinear(env, ty, v) || ownPlaceLinear(env, v)   // before the initializer's move
     ownBoxed(env, v)
     ownRejectMoveOut(env, v)
@@ -9031,7 +9127,7 @@ func main() -> Int32 {
                                       fieldName: Vec.new(), staticName: Vec.new(), staticTy: Vec.new(),
                                       pName: Vec.new(), pMode: Vec.new(), pTy: Vec.new(),
                                       locName: Vec.new(), locTy: Vec.new(), selfTy: "", borrows: Vec.new(),
-                                      capMark: Vec.new(), capStart: Vec.new(), capNames: Vec.new(),
+                                      doMarks: Vec.new(), capMark: Vec.new(), capStart: Vec.new(), capNames: Vec.new(),
                                       deinitTys: Vec.new(), payOwner: Vec.new(), payTy: Vec.new(),
                                       fKeys: Vec.new(), fIds: Vec.new(), fStatic: Vec.new())
                     ownCheck(&oenv, u)

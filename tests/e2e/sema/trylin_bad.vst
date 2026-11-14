@@ -1,0 +1,37 @@
+// §19.6 a linear value live at a throwing `try` leaks on that path (to the
+// catch, only what the `do` body declared); a dropped linear call result leaks.
+linear struct H {
+    let id: Int32
+}
+enum No {
+    case bad
+}
+func close(_ h: sink H) { }
+func mk() -> H { return H(id: 1) }
+func mayfail() throws(No) -> Int32 { return 1 }
+func mkOr() throws(No) -> H { return H(id: 2) }
+func leaky() throws(No) {
+    let h = H(id: 1)
+    let x = try mayfail()
+    close(h)
+}
+func viaDo() -> Int32 {
+    let outer = H(id: 0)
+    let r = do {
+        let inner = H(id: 1)
+        let x = try mayfail()
+        close(inner)
+        x
+    } catch (e: No) {
+        0
+    }
+    close(outer)
+    return r
+}
+func dropped() {
+    mk()
+    let _ = mk()
+}
+func droppedTry() throws(No) {
+    try mkOr()
+}

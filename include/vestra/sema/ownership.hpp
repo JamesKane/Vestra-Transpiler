@@ -183,6 +183,12 @@ private:
         std::vector<std::pair<const Symbol*, diag::SourceRange>> captures;
     };
     std::vector<CaptureScope> captures_;
+    // §19.6 the `do` bodies around the current point (innermost last): a
+    // propagating `try` inside one leaves it for the catch, not the function.
+    std::vector<diag::SourceRange> do_bodies_;
+    void report_try_leaks(diag::SourceRange site);
+    // §19.6 a call statement whose linear result nothing consumes drops it.
+    void reject_dropped_linear(const ast::Expr& e);
     void note_capture(const Symbol* sym, diag::SourceRange site);
     void check_closure(const ast::ClosureExpr& cx);
     [[nodiscard]] static bool inside(diag::SourceRange inner, diag::SourceRange outer);
