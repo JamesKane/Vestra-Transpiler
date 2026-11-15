@@ -118,8 +118,8 @@ accepts. Ordered by how likely each is to let a wrong program through:
 
 The Annex A list (MMIO payloads, fences, `using InterruptsOff`,
 `@kernel_init` addresses, `@noinit` values, `self` typing, variable
-orderings, `Atomic[T]`, `swapContext`) is closed, and so are items 1
-to 5 below. What's left is the sema-side `unsound` rows in the Gaps tables:
+orderings, `Atomic[T]`, `swapContext`) is closed, and so is the list of
+sema-side `unsound` rows from the Gaps tables below:
 
 1. ~~Integer literals range-checked against the target type (`return 300` as
    `Int8`; Gaps §4).~~ Done.
