@@ -576,6 +576,11 @@ ComptimeValue build_fields_value(const ast::StructDecl& sd, const Scope* globals
         type_ref.kind = ComptimeValue::Kind::TypeRef;
         type_ref.type = TypeKind::Struct;
         type_ref.s = f.type ? type_display_name(*f.type) : "?";
+        // The type itself, so `$(f.type)` splices `[4]Int32` or `Int32?`
+        // whole rather than rebuilding it from the display name.
+        if (f.type) {
+            type_ref.code = std::shared_ptr<const ast::Node>(ast::clone(*f.type).release());
+        }
         field.elements.push_back(std::move(type_ref));
         FieldLayout lay{};
         if (has_layout && lay_idx < layouts.size()) {
@@ -622,6 +627,9 @@ std::optional<std::size_t> field_member_index(std::string_view member) {
 ast::TypePtr materialize_type(const ComptimeValue& v) {
     if (v.kind != ComptimeValue::Kind::String && v.kind != ComptimeValue::Kind::TypeRef) {
         return nullptr;
+    }
+    if (v.kind == ComptimeValue::Kind::TypeRef && v.code != nullptr) {
+        return ast::clone(static_cast<const ast::Type&>(*v.code));
     }
     const std::string& name = v.s;
     if (name.empty()) {
@@ -2144,6 +2152,51 @@ void ComptimeFolder::subst_splices(ast::ExprPtr& e, const Env& env, Frame& frame
         subst_splices(i.else_branch, env, frame, depth);
         break;
     }
+    case ast::NodeKind::CopyExpr:
+        subst_splices(static_cast<ast::CopyExpr&>(*e).inner, env, frame, depth);
+        break;
+    case ast::NodeKind::AwaitExpr:
+        subst_splices(static_cast<ast::AwaitExpr&>(*e).inner, env, frame, depth);
+        break;
+    case ast::NodeKind::SpawnExpr:
+        subst_splices(static_cast<ast::SpawnExpr&>(*e).inner, env, frame, depth);
+        break;
+    case ast::NodeKind::ThrowExpr:
+        subst_splices(static_cast<ast::ThrowExpr&>(*e).inner, env, frame, depth);
+        break;
+    case ast::NodeKind::AddressOfExpr:
+        subst_splices(static_cast<ast::AddressOfExpr&>(*e).inner, env, frame, depth);
+        break;
+    case ast::NodeKind::TryExpr:
+        subst_splices(static_cast<ast::TryExpr&>(*e).inner, env, frame, depth);
+        break;
+    case ast::NodeKind::AsExpr:
+        subst_splices(static_cast<ast::AsExpr&>(*e).value, env, frame, depth);
+        break;
+    case ast::NodeKind::VectorLitExpr:
+        for (auto& el : static_cast<ast::VectorLitExpr&>(*e).elements) {
+            subst_splices(el, env, frame, depth);
+        }
+        break;
+    case ast::NodeKind::InterpStringExpr:
+        for (auto& seg : static_cast<ast::InterpStringExpr&>(*e).segments) {
+            subst_splices(seg.expr, env, frame, depth);
+        }
+        break;
+    case ast::NodeKind::MatchExpr: {
+        auto& m = static_cast<ast::MatchExpr&>(*e);
+        subst_splices(m.scrutinee, env, frame, depth);
+        for (auto& arm : m.arms) {
+            subst_splices(arm.guard, env, frame, depth);
+            subst_splices(arm.body, env, frame, depth);
+        }
+        break;
+    }
+    case ast::NodeKind::ClosureExpr:
+        for (auto& st : static_cast<ast::ClosureExpr&>(*e).body) {
+            subst_splices_in_stmt(*st, env, frame, depth);
+        }
+        break;
     default:
         break;
     }
@@ -2195,10 +2248,22 @@ bool ComptimeFolder::resolve_type_splice(ast::TypePtr& ty,
     }
     auto tv = inner ? fold_with(*inner, env, frame, TypeKind::Unit, depth) : std::nullopt;
     if (!tv) {
+        macro_errors_.push_back(
+            {ty->range, "a `$(…)` splice in type position must fold to a type at expansion time"});
         return false;
     }
     auto mat = materialize_type(*tv);
     if (!mat) {
+        const char* what = tv->kind == ComptimeValue::Kind::String ? "a String that isn't a name"
+                           : (tv->kind == ComptimeValue::Kind::Int
+                              || tv->kind == ComptimeValue::Kind::UInt)
+                               ? "an integer"
+                           : tv->kind == ComptimeValue::Kind::Bool ? "a Bool"
+                                                                   : "a value";
+        macro_errors_.push_back({ty->range,
+                                 std::format("a `$(…)` splice in type position must be a type or "
+                                             "a type name; this one folds to {}",
+                                             what)});
         return false;
     }
     mat->range = ty->range;
@@ -2221,6 +2286,9 @@ bool ComptimeFolder::resolve_decl_splices(ast::Decl& d,
             }
             auto nv = inner ? fold_with(*inner, env, frame, TypeKind::Unit, depth) : std::nullopt;
             if (!nv || nv->kind != ComptimeValue::Kind::String) {
+                macro_errors_.push_back(
+                    {fd.name_splice->range,
+                     "a function-name splice `func $(…)` must fold to a String at expansion time"});
                 return false;
             }
             fd.name = nv->s;

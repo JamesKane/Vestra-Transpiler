@@ -1,0 +1,20 @@
+// A parse error inside a macro quote is reported; expanding over it crashed.
+
+comptime func getters(_ d: Decl) -> [Decl] {
+    var out: [Decl] = quote { $d }
+    for f in d.fields {
+        out += quote {
+            func $(f.name)Of(_ v: $(f.type)) -> $(f.type) { return v }
+        }
+    }
+    return out
+}
+
+@getters
+struct S {
+    var a: Int32
+    var b: [4]Int32
+    var c: Int32?
+}
+
+func main() -> Int32 { return 0 }

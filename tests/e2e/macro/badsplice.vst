@@ -1,0 +1,21 @@
+// §12.4 a splice that cannot materialize fails the expansion with an error;
+// it used to drop the generated declaration silently.
+
+comptime func getters(_ d: Decl) -> [Decl] {
+    var out: [Decl] = quote { $d }
+    for f in d.fields {
+        out += quote {
+            func $(f.name + "_of")(_ v: $(d.name)) -> $(f.offset) { return v.$(f.name) }
+        }
+    }
+    return out
+}
+
+@getters
+struct S {
+    var a: Int32
+    var b: [4]Int32
+    var c: Int32?
+}
+
+func main() -> Int32 { return 0 }

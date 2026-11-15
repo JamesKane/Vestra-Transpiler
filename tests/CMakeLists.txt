@@ -2869,6 +2869,25 @@ add_test(
 set_tests_properties(e2e_asm_bad_register PROPERTIES
     PASS_REGULAR_EXPRESSION "'rax' is not a register on aarch64.*'x31' is not a register on aarch64")
 
+# §12.4 a field type splices whole, a splice that can't materialize is an
+# error (not a silently missing declaration), and a parse error inside a
+# macro quote is reported rather than crashing the expander.
+add_test(
+    NAME    e2e_macro_compound_field_types
+    COMMAND sh -c "$<TARGET_FILE:vestra> check ${CMAKE_SOURCE_DIR}/tests/e2e/macro/fieldtypes_ok.vst && $<TARGET_FILE:vestra> expand ${CMAKE_SOURCE_DIR}/tests/e2e/macro/fieldtypes_ok.vst")
+set_tests_properties(e2e_macro_compound_field_types PROPERTIES
+    PASS_REGULAR_EXPRESSION "func a_of[(]_ v: S[)] -> Int32.*func b_of[(]_ v: S[)] -> [[]4[]]Int32.*func c_of[(]_ v: S[)] -> Int32[?]")
+add_test(
+    NAME    e2e_macro_bad_type_splice
+    COMMAND sh -c "$<TARGET_FILE:vestra> check ${CMAKE_SOURCE_DIR}/tests/e2e/macro/badsplice.vst 2>&1; true")
+set_tests_properties(e2e_macro_bad_type_splice PROPERTIES
+    PASS_REGULAR_EXPRESSION "declaration macro '@getters': a .[$][(]…[)]. splice in type position must be a type or a type name; this one folds to an integer")
+add_test(
+    NAME    e2e_macro_parse_error_no_crash
+    COMMAND sh -c "$<TARGET_FILE:vestra> check ${CMAKE_SOURCE_DIR}/tests/e2e/macro/parseerr.vst 2>&1; echo rc=$?")
+set_tests_properties(e2e_macro_parse_error_no_crash PROPERTIES
+    PASS_REGULAR_EXPRESSION "error: .*rc=1")
+
 # Annex §14.4 rule 1 an implicit clobber is an error: a written register, the
 # flags or a sysreg the operand list doesn't name. (vsema has no asm model, so
 # this is not a differential fixture.)

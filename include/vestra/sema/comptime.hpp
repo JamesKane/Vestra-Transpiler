@@ -15,6 +15,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <variant>
+#include <utility>
 #include <vector>
 
 namespace vestra::sema {
@@ -205,7 +206,20 @@ public:
     [[nodiscard]] std::optional<std::vector<ast::DeclPtr>>
     expand_decl_macro(const ast::FuncDecl& macro, const ast::Decl& annotated) const;
 
+    // §12.4 why a quote in the last expansion couldn't be built: a splice
+    // that didn't fold to what its position needs. Each one fails the
+    // expansion, so a generated declaration never vanishes silently.
+    struct MacroError {
+        diag::SourceRange range;
+        std::string message;
+    };
+    [[nodiscard]] std::vector<MacroError> take_macro_errors() const {
+        return std::exchange(macro_errors_, {});
+    }
+
 private:
+    mutable std::vector<MacroError> macro_errors_;
+
     // Per-call mutable state. A new Frame is built at the entry of every
     // comptime function call (so callees can't see the caller's locals)
     // and at the entry of every top-level fold (so unit tests that pass

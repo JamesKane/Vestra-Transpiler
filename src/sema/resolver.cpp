@@ -1199,6 +1199,11 @@ std::vector<ast::Attribute>* decl_attributes(ast::Decl& d) {
 }  // namespace
 
 void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticReporter& rep) {
+    // A parse error can leave a quote body half-built; running a macro over
+    // it would fold a malformed tree. The errors already stop the build.
+    if (rep.has_errors()) {
+        return;
+    }
     // Collect declaration macros by name: a `comptime func` whose body is a
     // declaration-context quote.
     std::unordered_map<std::string, ast::FuncDecl*> macros;
@@ -1259,6 +1264,23 @@ void expand_declaration_macros(ast::CompilationUnit& unit, diag::DiagnosticRepor
         // it; the folder strips it from the `$d` clone. The annotated decl is
         // dropped — `$d` reproduces it as a freshly cloned subtree.
         auto expanded = folder.expand_decl_macro(*macro, *d);
+        if (auto errs = folder.take_macro_errors(); !errs.empty()) {
+            // A splice inside a loop fails once per iteration; say it once.
+            std::vector<std::pair<std::size_t, std::string>> said;
+            for (const auto& me : errs) {
+                std::pair<std::size_t, std::string> key{me.range.begin.offset, me.message};
+                if (std::ranges::find(said, key) != said.end()) {
+                    continue;
+                }
+                said.push_back(std::move(key));
+                rep.report(diag::Diagnostic::error(std::format("declaration macro '@{}': {}",
+                                                               macro->name,
+                                                               me.message))
+                               .at(me.range));
+            }
+            out.push_back(std::move(d));
+            continue;
+        }
         if (!expanded) {
             rep.report(
                 diag::Diagnostic::error(std::format("declaration macro '@{}' did not expand to a "

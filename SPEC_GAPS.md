@@ -194,7 +194,6 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 | §12.3 | `derive` over arrays, tuples and `Vec` | weaker | Each field and payload is checked against the derived protocol, but the check follows what the C++ lowering supports: `[N]T` and tuples have no `Hash` (no `std::hash` for `std::array` / `std::tuple`), and a `Vec` field conforms only to `Eq` and `Clone`. A field typed by the target's generic parameter is checked only by clang at instantiation. |
 | §12.3, §18.1 | `derive(Ord)` and `compare()` | missing | "derive(Ord) is not supported yet"; "no field or method 'compare'". So no opaque type or struct can be ordered: `<` on either is "needs an ordering, which no derive provides yet". |
 | §12.4 | Hygiene (template names resolve at the definition site) | unsound | A quote that references a global `k` captures a local `k` at the use site. `gensym()` is opt-in only. |
-| §12.4 | Compound field types in generated declarations | unsound | A field typed `[4]Int32` or `Int32?` makes the per-field `quote` silently vanish from `expand` and `build`. |
 | §12.4 | `.asType()`, splices in struct-name position | missing | "expected struct name". |
 | §12.4 | Builder API (`Decl.struct(...)`, `Expr.call(...)`) | missing | Parse error. |
 | §12.4 | `error(at:, msg)` from a macro | missing | The macro fails with "did not expand to a declaration list". |
