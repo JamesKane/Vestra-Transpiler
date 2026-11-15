@@ -1254,7 +1254,8 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
-    if (c.callee->kind == ast::NodeKind::MemberExpr) {
+    if (c.callee->kind == ast::NodeKind::MemberExpr
+        || c.callee->kind == ast::NodeKind::IdentExpr) {
         check_atomic_call(c);
     }
     if (comptime_depth_ > 0 && quote_depth_ == 0) {
@@ -1583,6 +1584,17 @@ const ast::Expr* arg_at(const ast::CallExpr& c, std::size_t i) {
 // be neither .release nor .acqRel, nor stronger than its success ordering.
 // The CAS arguments, when labeled, carry the spec's labels in order.
 void Resolver::check_atomic_call(const ast::CallExpr& c) {
+    // Annex §14.10.1 a compiler fence orders the optimizer around it, and a
+    // `.relaxed` one orders nothing.
+    if (c.callee->kind == ast::NodeKind::IdentExpr) {
+        const auto& id = static_cast<const ast::IdentExpr&>(*c.callee);
+        const Symbol* sym = id.name == "compilerFence" ? scopes_.current().lookup(id.name) : nullptr;
+        if (sym != nullptr && sym->decl == nullptr && literal_ordering(arg_at(c, 0)) == "relaxed") {
+            error_at(arg_at(c, 0)->range,
+                     "a compiler fence can't carry the ordering '.relaxed' (Annex §14.10.1)");
+        }
+        return;
+    }
     const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
     auto base_t = resolution_.type_of(mem.base.get());
     if (base_t == nullptr) {

@@ -1,0 +1,9 @@
+// Annex §14.10.1 a compiler fence is an optimizer sequence point with the
+// requested ordering: acquire, release, acqRel or seqCst.
+
+func publish() using Asm {
+    compilerFence(.acquire)
+    compilerFence(.release)
+    compilerFence(.acqRel)
+    compilerFence(.seqCst)
+}

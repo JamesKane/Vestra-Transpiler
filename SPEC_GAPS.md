@@ -348,7 +348,6 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | §14.9.3 | `@retry_loop` predicate, `@allow_weak_cas` | missing | `@retry_loop` is "not supported yet". `@allow_weak_cas` on a statement is a parse error. |
 | §14.9.4 | Wide-atomic gate on `aarch64 +lse` / `x86_64 +cx16` | divergent | It requires `lse2` and rejects plain `+lse`. A host or unset target bypasses the gate (`resolver.cpp:203`), so a lock-based libatomic fallback is possible. It is checked at compile time, not at link time. |
 | §14.10 | `Cpu.` / `Cache.` / `Tlb.` namespaces, labeled `range:` / `scope:` | divergent | Free functions only. "undefined name 'Cpu'". |
-| §14.10.1 | `compilerFence(.relaxed)` is rejected | unsound | Accepted. |
 | §14.10.3 | `cleanDataRounding` / `invalidateDataRounding` | missing | |
 | §14.10.3 | Strict cache-range alignment | weaker | A runtime `panic` using the `CTR_EL0` line size, not a compile error against `cfg.option`. Hosted builds make every cache op a no-op. |
 | §14.10.6 | `prefetch` | missing | |

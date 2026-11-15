@@ -1,0 +1,10 @@
+// Annex §14.10 every sync intrinsic is an instruction sequence, so calling one
+// needs `using Asm`; `nop()` alone is ungated.
+
+func unguarded() {
+    compilerFence(.release)
+    memoryBarrier(.inner, .full)
+    instructionBarrier()
+    relax()
+    nop()
+}

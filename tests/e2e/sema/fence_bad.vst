@@ -1,0 +1,7 @@
+// Annex §14.10.1 a `.relaxed` compiler fence orders nothing, so it is
+// rejected rather than silently emitted as a no-op.
+
+func publish() using Asm {
+    compilerFence(.seqCst)
+    compilerFence(.relaxed)
+}

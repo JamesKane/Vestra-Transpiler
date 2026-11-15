@@ -2961,6 +2961,13 @@ func addBuiltins(_ env: inout Env) using Alloc {
     addName(env, "print")
     addName(env, "waitForInterrupt")   // Annex §14.12 intrinsics
     addName(env, "waitForEvent")
+    addName(env, "compilerFence")      // Annex §14.10 sync intrinsics
+    addName(env, "memoryBarrier")
+    addName(env, "syncBarrier")
+    addName(env, "instructionBarrier")
+    addName(env, "signalEvent")
+    addName(env, "relax")
+    addName(env, "nop")
     addName(env, "println")
     addName(env, "eprint")
     addName(env, "eprintln")
@@ -4418,7 +4425,17 @@ func requireBuiltinCap(_ env: inout CapEnv, _ name: String) using Alloc {
         require(env, "Fs")
     } else if streq(name, "args") {
         require(env, "Alloc")
+    } else if capIsSyncIntrinsic(name) {
+        require(env, "Asm")
     }
+}
+
+// Annex §14.10 every sync intrinsic is an instruction sequence (`using Asm`);
+// `nop()` alone is ungated.
+func capIsSyncIntrinsic(_ n: Str) -> Bool {
+    return streq(n, "compilerFence") || streq(n, "memoryBarrier") || streq(n, "syncBarrier")
+        || streq(n, "instructionBarrier") || streq(n, "waitForInterrupt") || streq(n, "waitForEvent")
+        || streq(n, "signalEvent") || streq(n, "relax")
 }
 
 func checkMemberCallee(_ env: inout CapEnv, _ base: Vec[Nd], _ member: String) using Alloc {
@@ -9225,7 +9242,17 @@ func tyExprCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Al
 func tyAtomicCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
     match callee.get(0) ?? Nd.wildcard {
         case .member(let base, let name, let chain): tyAtomicMember(env, base, name, args)
+        case .ident(let n): tyFenceCall(env, n, args)
         default: noop()
+    }
+}
+
+// Annex §14.10.1 a compiler fence orders the optimizer around it, and a
+// `.relaxed` one orders nothing.
+func tyFenceCall(_ env: inout TyEnv, _ n: String, _ args: Vec[Nd]) using Alloc {
+    if !streq(n, "compilerFence") || tyArity(env, n) >= 0 { return }
+    if streq(tyOrdAt(args, 0), "relaxed") {
+        env.bad.push(own("a compiler fence can't carry the ordering '.relaxed' (Annex §14.10.1)"))
     }
 }
 
