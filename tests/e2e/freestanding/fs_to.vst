@@ -1,0 +1,14 @@
+// §4 `x.to[T]()` under --no-libc: the prelude's num_to needs no <limits> or
+// <type_traits>, and its float bounds are built by doubling.
+
+func narrow(_ x: Int64) -> Int8 {
+    return x.to[Int8]()
+}
+
+func whole(_ f: Float32) -> UInt32 {
+    return f.to[UInt32]()
+}
+
+func low(_ x: UInt64) -> UInt16 {
+    return x.toWrapping[UInt16]()
+}

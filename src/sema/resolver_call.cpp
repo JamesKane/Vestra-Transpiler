@@ -69,6 +69,19 @@ TypePtr Resolver::type_from_index_expr(const ast::Expr* e) {
     }
 }
 
+const ast::Expr* Resolver::numeric_conversion_call(const ast::CallExpr& c) {
+    if (c.callee == nullptr || c.callee->kind != ast::NodeKind::IndexExpr) {
+        return nullptr;
+    }
+    const auto& ix = static_cast<const ast::IndexExpr&>(*c.callee);
+    if (ix.base == nullptr || ix.base->kind != ast::NodeKind::MemberExpr
+        || ix.indices.size() != 1) {
+        return nullptr;
+    }
+    const auto& m = static_cast<const ast::MemberExpr&>(*ix.base);
+    return m.member == "to" || m.member == "toWrapping" ? ix.base.get() : nullptr;
+}
+
 TypePtr Resolver::check_call(const ast::CallExpr& c, TypePtr expected) {
     auto t = check_call_inner(c, expected);
     check_call_writes(c);
@@ -147,6 +160,43 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
                 check_interrupt_static_write(*arg.value, arg.value->range);
             }
         }
+    }
+    // §4 `x.to[T]()` converts one number to another, trapping when the value
+    // doesn't fit; `x.toWrapping[T]()` truncates an integer without checking.
+    // It parses as a call of the subscript `x.to[T]`, so it is caught here
+    // before the subscript would be read as indexing a method.
+    if (const auto* conv = numeric_conversion_call(c)) {
+        const auto& ix = static_cast<const ast::IndexExpr&>(*c.callee);
+        const auto& mem = static_cast<const ast::MemberExpr&>(*conv);
+        const bool wrapping = mem.member == "toWrapping";
+        auto from = check_expr(*mem.base);
+        auto to = type_from_index_expr(ix.indices.front().get());
+        for (const auto& a : c.args) {
+            (void)check_expr(*a.value);
+        }
+        if (to == nullptr) {
+            error_at(ix.indices.front()->range,
+                     std::format("`{}[T]()` needs a type in the brackets", mem.member));
+            return types_->error();
+        }
+        if (!c.args.empty()) {
+            error_at(c.range, std::format("`{}[T]()` takes no arguments", mem.member));
+        }
+        if (from == nullptr || from->is_error()) {
+            return to;
+        }
+        const bool ok = wrapping ? from->is_integer() && to->is_integer()
+                                 : from->is_numeric() && to->is_numeric();
+        if (!ok) {
+            error_at(c.range,
+                     std::format("`{}[T]()` {}, not {} to {}",
+                                 mem.member,
+                                 wrapping ? "truncates an integer to an integer"
+                                          : "converts a number to a number",
+                                 from->describe(),
+                                 to->describe()));
+        }
+        return to;
     }
     // §17.x conversion-call syntax: `Float64(i)` / `Int32(x)` — a bare
     // primitive numeric type name in callee position is an explicit

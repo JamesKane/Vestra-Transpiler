@@ -1,0 +1,12 @@
+// §4 `to` converts a number to a number and `toWrapping` truncates an integer
+// to an integer. Neither existed, so each of these was "no field or method".
+
+func f(x: Int32, y: Float64, b: Bool) -> Int32 {
+    let e = y.toWrapping[Int32]()
+    let g = b.to[Int32]()
+    let h = x.to[Bool]()
+    let k = x.to[Int32](1)
+    return 0
+}
+
+func main() -> Int32 { return 0 }

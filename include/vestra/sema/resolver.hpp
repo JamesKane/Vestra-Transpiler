@@ -158,6 +158,10 @@ public:
 
     [[nodiscard]] const Resolution& resolution() const noexcept { return resolution_; }
 
+    // §4 `x.to[T]()` / `x.toWrapping[T]()`: the callee's `x.to` member
+    // expression, or nullptr when `c` is not one.
+    [[nodiscard]] static const ast::Expr* numeric_conversion_call(const ast::CallExpr& c);
+
 private:
     // ---- pass 1: collect top-level decls ---------------------------------
     void register_builtin_capabilities();

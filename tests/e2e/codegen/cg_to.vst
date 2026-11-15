@@ -1,0 +1,36 @@
+// §4 `x.to[T]()` converts one number to another and traps when the value
+// doesn't fit; `x.toWrapping[T]()` truncates an integer without checking.
+// `to` lowers to the prelude's `num_to<T>`, `toWrapping` to a static_cast
+// (a C++ integer conversion is already modulo 2^N).
+
+func widen(_ x: Int32) -> Int64 {
+    return x.to[Int64]()
+}
+
+func narrow(_ x: Int64) -> Int8 {
+    return x.to[Int8]()
+}
+
+func low(_ x: Int32) -> UInt8 {
+    return x.toWrapping[UInt8]()
+}
+
+func whole(_ f: Float64) -> Int32 {
+    return f.to[Int32]()
+}
+
+func real(_ x: Int32) -> Float64 {
+    return x.to[Float64]()
+}
+
+func main() using Log, Alloc -> Int32 {
+    let a = widen(-7)
+    let b = narrow(100)
+    let c = low(300)
+    let d = whole(-2.75)
+    let e = real(3)
+    print("a=\(a) b=\(b) c=\(c) d=\(d) e=\(e)")
+    let f = narrow(200)
+    print(" unreachable=\(f)")
+    return 0
+}

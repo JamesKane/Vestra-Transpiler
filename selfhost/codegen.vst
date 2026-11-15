@@ -11428,6 +11428,7 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     if tryEmitImportCall(env, callee, args) { return }
     if tryEmitMapError(env, callee, args) { return }
     if tryEmitScalarCast(env, callee, args) { return }
+    if tryEmitConv(env, callee) { return }
     if tryEmitOpaqueCtor(env, callee, args) { return }
     let fname = identBaseName(callee)
     // §7 a call to a declared function carries labels too, so a leading
@@ -11732,6 +11733,38 @@ func tryEmitScalarCast(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) u
     print(cppNamed(nm))
     print(">(")
     emitArgList(env, args)
+    print(")")
+    return true
+}
+
+// §4 `x.to[T]()` -> `__vstr::num_to<T>(x)`, which traps when the value doesn't
+// fit; `x.toWrapping[T]()` -> `static_cast<T>(x)`, a modulo-2^N truncation.
+func tryEmitConv(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc, Log -> Bool {
+    return match callee.get(0) ?? Nd.wildcard {
+        case .index(let b, let ix): tryEmitConvOf(env, b, ix)
+        default: false
+    }
+}
+
+func tryEmitConvOf(_ env: inout TyEnv, _ b: Vec[Nd], _ ix: Vec[Nd]) using Alloc, Log -> Bool {
+    if ix.len() != 1 { return false }
+    return match b.get(0) ?? Nd.wildcard {
+        case .member(let r, let nm, let c): tryEmitConvParts(env, r, nm, ix.get(0) ?? Nd.wildcard)
+        default: false
+    }
+}
+
+func tryEmitConvParts(_ env: inout TyEnv, _ recv: Vec[Nd], _ nm: Str, _ t: Nd) using Alloc, Log -> Bool {
+    if !streq(nm, "to") && !streq(nm, "toWrapping") { return false }
+    let tn = match t {
+        case .ident(let n): own(n)
+        default: own("")
+    }
+    if streq(tn, "") { return false }
+    if streq(nm, "to") { print("__vstr::num_to<") } else { print("static_cast<") }
+    print(cppNamed(tn))
+    print(">(")
+    emitBoxed(env, recv)
     print(")")
     return true
 }

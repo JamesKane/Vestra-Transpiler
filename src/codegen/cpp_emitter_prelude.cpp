@@ -223,6 +223,33 @@ inline std::memory_order cas_failure_order(std::memory_order success, std::memor
 }
 
 )__ord";
+    // §4 `x.to[T]()`: a checked numeric conversion. An integer target
+    // traps when the value doesn't fit (`__builtin_add_overflow` against 0
+    // tests exactly that, for any pair of integer types); a float source
+    // traps when its truncation toward zero falls outside T, NaN included.
+    // A float target takes the value as C++ converts it. No <type_traits>
+    // or <limits>: the freestanding profile has neither.
+    hdr << R"__to(template <class T> constexpr bool num_float = __is_same(T, float) || __is_same(T, double) || __is_same(T, long double);
+template <class T, class F>
+constexpr T num_to(F v) {
+    if constexpr (num_float<T>) {
+        return static_cast<T>(v);
+    } else if constexpr (num_float<F>) {
+        constexpr bool sgn = T(-1) < T(0);
+        constexpr int bits = static_cast<int>(sizeof(T)) * 8 - (sgn ? 1 : 0);
+        F hi = F(1);
+        for (int i = 0; i < bits; ++i) { hi = hi * F(2); }
+        const F lo = sgn ? -hi : F(0);
+        if (!(v < hi && (v >= lo || lo - v < F(1)))) { panic("a checked conversion's value doesn't fit the target type"); }
+        return static_cast<T>(v);
+    } else {
+        T out{};
+        if (__builtin_add_overflow(v, 0, &out)) { panic("a checked conversion's value doesn't fit the target type"); }
+        return out;
+    }
+}
+
+)__to";
     // §4 integer division or remainder by zero traps. `MIN / -1` overflows,
     // which is undefined in C++; it wraps here as `&-` would (0 &- MIN is
     // MIN), and `MIN % -1` is 0. A non-integer operand (a float) divides

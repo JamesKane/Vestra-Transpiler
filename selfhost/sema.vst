@@ -10315,6 +10315,10 @@ func tyGuardMsg(_ got: String) using Alloc -> String {
 }
 
 func tyExprCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    if !streq(convMember(callee), "") {
+        tyConvCall(env, callee, args)
+        return
+    }
     // §7 calling a `nonescaping` parameter, or handing it on to another one,
     // doesn't let it escape.
     let cn = tyNeIdent(callee)
@@ -10332,6 +10336,87 @@ func tyExprCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Al
     }
     tyCheckCallArgs(env, callee, args)
     muCall(env, callee, args)
+}
+
+// §4 `x.to[T]()` / `x.toWrapping[T]()`: the callee is the subscript
+// `x.to[T]`. "to" / "toWrapping", or "" for any other callee.
+func convMember(_ callee: Vec[Nd]) using Alloc -> String {
+    return match callee.get(0) ?? Nd.wildcard {
+        case .index(let b, let ix): convMemberOf(b, ix)
+        default: own("")
+    }
+}
+
+func convMemberOf(_ b: Vec[Nd], _ ix: Vec[Nd]) using Alloc -> String {
+    if ix.len() != 1 { return own("") }
+    return match b.get(0) ?? Nd.wildcard {
+        case .member(let r, let nm, let c):
+            if streq(nm, "to") || streq(nm, "toWrapping") { own(nm) } else { own("") }
+        default: own("")
+    }
+}
+
+// The bracketed type name, or "" when it isn't a bare name.
+func convTarget(_ callee: Vec[Nd]) using Alloc -> String {
+    return match callee.get(0) ?? Nd.wildcard {
+        case .index(let b, let ix): convIdent(ix.get(0) ?? Nd.wildcard)
+        default: own("")
+    }
+}
+
+func convIdent(_ e: Nd) using Alloc -> String {
+    return match e {
+        case .ident(let n): own(n)
+        default: own("")
+    }
+}
+
+func convReceiver(_ callee: Vec[Nd]) using Alloc -> Vec[Nd] {
+    return match callee.get(0) ?? Nd.wildcard {
+        case .index(let b, let ix): convReceiverOf(b)
+        default: Vec.new()
+    }
+}
+
+func convReceiverOf(_ b: Vec[Nd]) using Alloc -> Vec[Nd] {
+    return match b.get(0) ?? Nd.wildcard {
+        case .member(let r, let nm, let c): ndsCopyO(r)
+        default: Vec.new()
+    }
+}
+
+// `to` converts a number to a number (trapping when it doesn't fit);
+// `toWrapping` truncates an integer to an integer.
+func tyConvCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    let m = convMember(callee)
+    let recv = convReceiver(callee)
+    tyBoxed(env, recv)
+    var i: Int = 0
+    while i < args.len() {
+        tyExpr(env, args.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    let to = convTarget(callee)
+    if streq(to, "") {
+        env.bad.push("`\(m)[T]()` needs a type in the brackets")
+        return
+    }
+    if args.len() > 0 { env.bad.push("`\(m)[T]()` takes no arguments") }
+    let from = tyInferBoxed(env, recv)
+    if streq(from, "") { return }
+    let wrapping = streq(m, "toWrapping")
+    var ok: Bool = tyIsNumeric(from) && tyIsNumeric(to)
+    if wrapping { ok = tyIsInt(from) && tyIsInt(to) }
+    if !ok {
+        var msg: String = "`"
+        msg.append(m)
+        if wrapping { msg.append("[T]()` truncates an integer to an integer, not ") }
+        else { msg.append("[T]()` converts a number to a number, not ") }
+        msg.append(from)
+        msg.append(" to ")
+        msg.append(to)
+        env.bad.push(msg)
+    }
 }
 
 // §10 a closure literal passed straight to a `nonescaping` parameter, or to a
@@ -12808,6 +12893,7 @@ func tyCtorLabelMsg(_ n: Int) using Alloc -> String {
 }
 
 func tyInferCall(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
+    if !streq(convMember(callee), "") { return convTarget(callee) }
     return match (callee.get(0) ?? Nd.wildcard) {
         case .member(let base, let name, let chain): tyInferMethodCall(env, base, name, chain)
         default: tyInferPlainCall(env, callee)

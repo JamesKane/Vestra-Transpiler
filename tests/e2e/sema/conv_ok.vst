@@ -1,0 +1,13 @@
+// §4 the explicit numeric conversions: `to` between any two numbers,
+// `toWrapping` between integers.
+
+func f(x: Int32, y: Float64, u: UInt64) -> Int64 {
+    let a: Int64 = x.to[Int64]()
+    let b: UInt8 = u.toWrapping[UInt8]()
+    let c: Int32 = y.to[Int32]()
+    let d: Float32 = x.to[Float32]()
+    let e: Float32 = y.to[Float32]()
+    return a
+}
+
+func main() -> Int32 { return 0 }
