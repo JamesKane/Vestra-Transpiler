@@ -341,7 +341,6 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | §14.10.3 | Strict cache-range alignment | weaker | A runtime `panic` using the `CTR_EL0` line size, not a compile error against `cfg.option`. Hosted builds make every cache op a no-op. |
 | §14.10.6 | `prefetch` | missing | |
 | §14.11.1 | Debug-build alignment check | missing | The prelude `MmioView` is a bare volatile pointer. |
-| §14.12.3 | RISC-V auto-barriers (`SFENCE.VMA` after `satp`) | unsound | `satp` has `sync_after_write = false` (`sysregs.hpp`). On non-aarch64 targets the post-write barrier is a plain thread fence. |
 | §14.12.2 | Register spellings and typed handles | divergent (minor) | `currentEL` is unknown (the table spells it `currentel`). Every handle is `UInt64`. |
 | §14.12.4 | Link-time privilege check | missing | The register table has no privilege data. |
 | §14.13 rules 1, 6 | `with InterruptsOff` masks on entry and restores on every exit | weaker (no-op) | Lowers to a bare `{ }` block even with `--no-libc --target=aarch64`. Nothing in `src/codegen/` mentions `InterruptsOff`. |

@@ -132,7 +132,7 @@ inline constexpr std::array kSysregTable = std::to_array<SysregInfo>({
     {"sepc", "riscv64", ReadWrite, false, ""},
     {"scause", "riscv64", ReadWrite, false, ""},
     {"stval", "riscv64", ReadWrite, false, ""},
-    {"satp", "riscv64", ReadWrite, false, ""},
+    {"satp", "riscv64", ReadWrite, true, ""},  // §14.12.3 then SFENCE.VMA
     {"time", "riscv64", ReadOnly, false, ""},
     {"cycle", "riscv64", ReadOnly, false, ""},
     {"instret", "riscv64", ReadOnly, false, ""},

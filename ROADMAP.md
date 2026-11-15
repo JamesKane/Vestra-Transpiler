@@ -267,7 +267,7 @@ Most of this is cheaper to do once, in the LLVM backend, than twice:
   `Atomic[Bool]`, the `+lse` / `+cx16` gates checked at link time.
 - **Cache and barriers:** `cleanDataRounding` / `invalidateDataRounding`,
   `prefetch`, compile-time cache-range alignment, the `Cpu.` / `Cache.` /
-  `Tlb.` namespaces, RISC-V `SFENCE.VMA` after `satp`.
+  `Tlb.` namespaces. (~~RISC-V `SFENCE.VMA` after `satp`~~ done.)
 - **Registers:** a privilege column in the table and a link-time privilege
   check; `currentEL` spelling.
 - **`vestra audit`:**

@@ -1062,7 +1062,7 @@ TEST_CASE("extended aarch64 EL1 MMU sysregs gate barriers on write") {
     CHECK(f.out.source.find("__vstr::sysreg::write_ttbr1_el1(v)") != std::string::npos);
 }
 
-TEST_CASE("x86_64 MSRs and RISC-V CSRs emit Handle instances + raw .write paths") {
+TEST_CASE("x86_64 MSRs and RISC-V CSRs emit Handle instances, and satp is gated") {
     SemaEmitFixture f("func wire(_ v: UInt64) using Asm {\n"
                       "    Sysreg.ia32_efer.write(v)\n"
                       "    Sysreg.satp.write(v)\n"
@@ -1070,9 +1070,10 @@ TEST_CASE("x86_64 MSRs and RISC-V CSRs emit Handle instances + raw .write paths"
     // Each canonical name has a static Handle backing it.
     CHECK(f.out.header.find("inline Handle<std::uint64_t> ia32_efer;") != std::string::npos);
     CHECK(f.out.header.find("inline Handle<std::uint64_t> satp;") != std::string::npos);
-    // Neither is in the v0.5 gated set, so the .write stays raw.
+    // ia32_efer isn't in the gated set, so its .write stays raw; satp's
+    // goes through the wrapper that adds the barrier (§14.12.3).
     CHECK(f.out.source.find("__vstr::sysreg::ia32_efer.write(v)") != std::string::npos);
-    CHECK(f.out.source.find("__vstr::sysreg::satp.write(v)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::sysreg::write_satp(v)") != std::string::npos);
     CHECK(f.out.source.find("write_ia32_efer") == std::string::npos);
 }
 

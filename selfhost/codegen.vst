@@ -11509,6 +11509,7 @@ func isGatedSysreg(_ r: Str) -> Bool {
         || streq(r, "tcr_el1") || streq(r, "mair_el1") || streq(r, "amair_el1")
         || streq(r, "contextidr_el1") || streq(r, "mdscr_el1") || streq(r, "icc_sre_el1")
         || streq(r, "icc_ctlr_el1") || streq(r, "icc_igrpen0_el1") || streq(r, "icc_igrpen1_el1")
+        || streq(r, "satp")
 }
 
 // Static calls on two runtime namespaces, mirroring cpp_emitter.cpp:

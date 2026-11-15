@@ -2241,9 +2241,13 @@ void emit_freestanding_sysregs(std::ostream& hdr) {
     }
     // §14.12.3 auto-emitted post-write barriers (the gated set codegen routes
     // `Sysreg.X.write(v)` through unless the function is @no_auto_barrier).
+    // On RISC-V the one gated register is satp: a new translation root takes
+    // effect for later accesses only after an SFENCE.VMA.
     hdr << R"__fs(inline void post_write_barrier() noexcept {
 #if defined(__aarch64__)
     __asm__ volatile("isb" ::: "memory");
+#elif defined(__riscv)
+    __asm__ volatile("sfence.vma zero, zero" ::: "memory");
 #else
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
 #endif
