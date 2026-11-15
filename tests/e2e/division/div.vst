@@ -1,0 +1,26 @@
+// §4 integer division or remainder by zero traps. `MIN / -1` wraps instead
+// of reaching C++'s undefined behaviour, and `MIN % -1` is 0. The divisor
+// comes from argv, so the C++ compiler can't see it: with no arguments,
+// the last division is by zero and panics.
+
+func ratio(_ a: Int32, _ b: Int32) -> Int32 { return a / b }
+
+func main() using Log, Alloc -> Int32 {
+    let zero = args().len() - 1
+    let m: Int32 = -2147483648
+    let neg: Int32 = -1
+    let q = ratio(m, neg)
+    let r = m % neg
+    let s: Int64 = 17
+    var t: Int64 = 100
+    t /= s
+    var u: Int64 = 100
+    u %= s
+    let f = 7.5 / 2.5
+    let h: UInt8 = 200
+    let k = h / 7
+    print("q=\(q) r=\(r) t=\(t) u=\(u) f=\(f) k=\(k)\n")
+    let z = 10 / zero
+    print("unreachable \(z)\n")
+    return 0
+}

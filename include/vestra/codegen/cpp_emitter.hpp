@@ -325,6 +325,7 @@ private:
     bool global_init_ = false;
     [[nodiscard]] static bool coalesce_is_lazy(const ast::Expr& e);
     void emit_wrap_operand(std::ostream& os, const ast::Expr& e);
+    [[nodiscard]] static bool divisor_is_safe(const ast::Expr& e);
 
     // §9 — true while emitting the body of a Unit-returning `throws(E)`
     // function (C++ `std::expected<void, E>`). A bare `return` must then

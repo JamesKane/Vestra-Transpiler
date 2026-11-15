@@ -638,6 +638,27 @@ void CppEmitter::unsupported(std::ostream& os, std::string_view what, diag::Sour
     os << "/* unsupported: " << what << " */";
 }
 
+// A divisor that can't be zero or -1: a nonzero integer literal (a negated
+// one is a UnaryExpr), or any float literal. `/` and `%` by one stay plain.
+bool CppEmitter::divisor_is_safe(const ast::Expr& e) {
+    if (e.kind == ast::NodeKind::FloatLit) {
+        return true;
+    }
+    if (e.kind != ast::NodeKind::IntLit) {
+        return false;
+    }
+    std::string_view t = static_cast<const ast::IntLit&>(e).text;
+    if (t.size() > 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'b' || t[1] == 'o')) {
+        t.remove_prefix(2);
+    }
+    for (char c : t) {
+        if (c != '0' && c != '_') {
+            return true;
+        }
+    }
+    return false;
+}
+
 // An operand of `&+ &- &*`: an integer literal, or a negated one, has no
 // Vestra type of its own (it takes the other side's), so it goes to the
 // prelude helper wrapped as a `wlit`.
@@ -2956,6 +2977,17 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             emit_wrap_operand(os, *b.lhs);
             os << ", ";
             emit_wrap_operand(os, *b.rhs);
+            os << ")";
+            break;
+        }
+        // §4 integer division or remainder by zero traps: unless the
+        // divisor is a nonzero literal, the prelude's idiv / irem check it.
+        if ((b.op == ast::BinaryOp::Div || b.op == ast::BinaryOp::Mod)
+            && !divisor_is_safe(*b.rhs)) {
+            os << (b.op == ast::BinaryOp::Div ? "__vstr::idiv(" : "__vstr::irem(");
+            emit_expr(os, *b.lhs);
+            os << ", ";
+            emit_expr(os, *b.rhs);
             os << ")";
             break;
         }

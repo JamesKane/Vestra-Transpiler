@@ -9112,6 +9112,15 @@ func tyAddSymSpelling(_ env: inout TyEnv, _ name: String, _ sp: String) using Al
 
 func emitAssign(_ env: inout TyEnv, _ indent: Str, _ op: Str, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc, Log {
     print(indent)
+    // §4 `x /= y` and `x %= y` check the divisor as `/` and `%` do.
+    if (streq(op, "/=") || streq(op, "%=")) && !divisorIsSafe(v) {
+        if streq(op, "/=") { print("__vstr::idiv_assign(") } else { print("__vstr::irem_assign(") }
+        emitBoxed(env, t)
+        print(", ")
+        emitBoxed(env, v)
+        print(");\n")
+        return
+    }
     emitBoxed(env, t)
     print(" ")
     print(op)
@@ -12874,6 +12883,16 @@ func emitBinary(_ env: inout TyEnv, _ op: Str, _ l: Vec[Nd], _ r: Vec[Nd]) using
         print(")")
         return
     }
+    // §4 division or remainder by zero traps: unless the divisor is a
+    // nonzero literal, the prelude's idiv / irem check it.
+    if (streq(op, "/") || streq(op, "%")) && !divisorIsSafe(r) {
+        if streq(op, "/") { print("__vstr::idiv(") } else { print("__vstr::irem(") }
+        emitBoxed(env, l)
+        print(", ")
+        emitBoxed(env, r)
+        print(")")
+        return
+    }
     // F7: the tree encodes §17.7 precedence but C++ re-parses with its own
     // table (`&`/`^`/`|` looser than the comparisons). Parenthesize an operand
     // only where the two disagree (mirrors binop_operand_needs_parens).
@@ -12888,6 +12907,31 @@ func emitBinary(_ env: inout TyEnv, _ op: Str, _ l: Vec[Nd], _ r: Vec[Nd]) using
     if rp { print("(") }
     emitBoxed(env, r)
     if rp { print(")") }
+}
+
+// A divisor that can't be zero or -1 (cpp_emitter.cpp's divisor_is_safe):
+// a nonzero integer literal, or any float literal.
+func divisorIsSafe(_ v: Vec[Nd]) -> Bool {
+    if v.len() == 0 { return false }
+    return match v.get(0) ?? Nd.wildcard {
+        case .floatLit(let t): true
+        case .intLit(let t): intLitNonzero(t)
+        case _: false
+    }
+}
+
+func intLitNonzero(_ t: Str) -> Bool {
+    var i = 0
+    if t.len() > 2 && (t.byteAt(0) ?? 0) == 48 {
+        let c = t.byteAt(1) ?? 0
+        if c == 120 || c == 98 || c == 111 { i = 2 }   // 0x 0b 0o
+    }
+    while i < t.len() {
+        let c = t.byteAt(i) ?? 48
+        if c != 48 && c != 95 { return true }
+        i += 1
+    }
+    return false
 }
 
 func emitWrapOperand(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc, Log {

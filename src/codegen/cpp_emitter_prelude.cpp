@@ -223,6 +223,51 @@ inline std::memory_order cas_failure_order(std::memory_order success, std::memor
 }
 
 )__ord";
+    // §4 integer division or remainder by zero traps. `MIN / -1` overflows,
+    // which is undefined in C++; it wraps here as `&-` would (0 &- MIN is
+    // MIN), and `MIN % -1` is 0. A non-integer operand (a float) divides
+    // as before. No <type_traits>: the freestanding profile has none.
+    hdr << R"__div(template <class T> struct div_int { static constexpr bool v = false; };
+template <> struct div_int<signed char> { static constexpr bool v = true; };
+template <> struct div_int<unsigned char> { static constexpr bool v = true; };
+template <> struct div_int<char> { static constexpr bool v = true; };
+template <> struct div_int<short> { static constexpr bool v = true; };
+template <> struct div_int<unsigned short> { static constexpr bool v = true; };
+template <> struct div_int<int> { static constexpr bool v = true; };
+template <> struct div_int<unsigned> { static constexpr bool v = true; };
+template <> struct div_int<long> { static constexpr bool v = true; };
+template <> struct div_int<unsigned long> { static constexpr bool v = true; };
+template <> struct div_int<long long> { static constexpr bool v = true; };
+template <> struct div_int<unsigned long long> { static constexpr bool v = true; };
+template <class A, class B>
+constexpr auto idiv(A a, B b) -> decltype(a / b) {
+    if constexpr (div_int<A>::v && div_int<B>::v) {
+        using R = decltype(a / b);
+        if (b == B(0)) { panic("division by zero"); }
+        if constexpr (R(-1) < R(0) && B(-1) < B(0)) {
+            if (b == B(-1)) {
+                using W = typename wrap_uw<R>::type;
+                return static_cast<R>(W(0) - static_cast<W>(a));
+            }
+        }
+    }
+    return a / b;
+}
+template <class A, class B>
+constexpr auto irem(A a, B b) -> decltype(a % b) {
+    if constexpr (div_int<A>::v && div_int<B>::v) {
+        using R = decltype(a % b);
+        if (b == B(0)) { panic("remainder by zero"); }
+        if constexpr (R(-1) < R(0) && B(-1) < B(0)) {
+            if (b == B(-1)) { return R(0); }
+        }
+    }
+    return a % b;
+}
+template <class A, class B> constexpr void idiv_assign(A& a, B b) { a = static_cast<A>(idiv(a, b)); }
+template <class A, class B> constexpr void irem_assign(A& a, B b) { a = static_cast<A>(irem(a, b)); }
+
+)__div";
 }
 
 void emit_prelude_span_helpers(std::ostream& hdr) {
@@ -752,7 +797,7 @@ struct Duration {
     }
     template <std::integral I>
     constexpr Duration operator/(I k) const {
-        return Duration{nanos_ / static_cast<std::int64_t>(k)};
+        return Duration{idiv(nanos_, static_cast<std::int64_t>(k))};  // §4 traps on 0
     }
     template <std::floating_point F>
     constexpr Duration operator/(F f) const {

@@ -247,6 +247,17 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
         break;
     case ast::NodeKind::AssignStmt: {
         const auto& a = static_cast<const ast::AssignStmt&>(s);
+        // §4 `x /= y` and `x %= y` check the divisor as `/` and `%` do.
+        if ((a.op == ast::AssignOp::DivAssign || a.op == ast::AssignOp::ModAssign)
+            && !divisor_is_safe(*a.value)) {
+            os << (a.op == ast::AssignOp::DivAssign ? "__vstr::idiv_assign("
+                                                    : "__vstr::irem_assign(");
+            emit_expr(os, *a.target);
+            os << ", ";
+            emit_expr(os, *a.value);
+            os << ");\n";
+            break;
+        }
         emit_expr(os, *a.target);
         switch (a.op) {
         case ast::AssignOp::Assign:

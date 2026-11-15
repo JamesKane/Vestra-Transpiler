@@ -2628,9 +2628,10 @@ TEST_CASE("Duration factories lower to __vstr::Duration static constructors") {
     CHECK(f.out.source.find("__vstr::Duration a = __vstr::Duration::seconds(10)")
           != std::string::npos);
     CHECK(f.out.source.find("__vstr::Duration::milliseconds(500)") != std::string::npos);
-    // Duration / Duration is a straight C++ `a / b` (the runtime overload yields
-    // a double), and the runtime shim carries the value type.
-    CHECK(f.out.source.find("return a / b;") != std::string::npos);
+    // Duration / Duration goes through __vstr::idiv, which passes a
+    // non-integer operand to the runtime overload (yielding a double), and
+    // the runtime shim carries the value type.
+    CHECK(f.out.source.find("return __vstr::idiv(a, b);") != std::string::npos);
     CHECK(f.out.header.find("struct Duration {") != std::string::npos);
     CHECK(f.out.header.find("in_milliseconds()") != std::string::npos);
 }
@@ -2644,11 +2645,13 @@ TEST_CASE("Duration scalar scaling lowers to straight operators") {
                       "    return up2 / down\n"
                       "}\n");
     // Scalar ops are emitted as straight C++ — the runtime operator overloads
-    // do the work (Duration*Int, Int*Duration, Duration/Int → Duration).
+    // do the work (Duration*Int, Int*Duration, Duration/Int → Duration). A
+    // divisor that isn't a nonzero literal goes through __vstr::idiv (§4).
     CHECK(f.out.source.find("q * 4") != std::string::npos);
     CHECK(f.out.source.find("2 * up") != std::string::npos);
     CHECK(f.out.source.find("up2 / 8") != std::string::npos);
-    CHECK(f.out.source.find("up2 / down") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::idiv(up2, down)") != std::string::npos);
+    CHECK(f.out.header.find("Duration{idiv(nanos_, ") != std::string::npos);
     // The runtime shim carries the constrained scalar overloads (templated on
     // std::integral / std::floating_point so an integer literal stays
     // unambiguous against the floating overload).

@@ -1,0 +1,8 @@
+// §4 the checked division lowering under --no-libc: idiv / irem panic
+// through the freestanding panic shim.
+
+func per(_ total: UInt64, _ n: UInt64) -> UInt64 {
+    var left = total
+    left %= n
+    return total / n + left
+}

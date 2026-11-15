@@ -93,7 +93,10 @@ lowering to C++. They are fixed by the new backend, not patched in the C++
 emitter, unless a patch is a few lines and closes an unsoundness the spike can
 hit:
 
-- Integer overflow traps in debug; division by zero traps (Gaps §4).
+- Integer overflow traps in debug (Gaps §4).
+- ~~Division by zero traps (Gaps §4).~~ Done in the C++ emitter: `/`, `%`,
+  `/=` and `%=` go through the prelude's `idiv` / `irem` unless the divisor
+  is a nonzero literal.
 - ~~`&+ &- &*` wrap (Gaps §4).~~ Done in the C++ emitter, through prelude
   helpers.
 - Bounds-checked `[N]T` and `Span` indexing (Gaps §19.10).
@@ -143,8 +146,8 @@ sema-side `unsound` rows from the Gaps tables below:
     (Annex §14.4, §14.9.3).~~ Done (asm on aarch64 only).
 11. ~~`Vec.push` takes its value by `sink` (Gaps §18).~~ Done.
 
-The codegen-side `unsound` rows (overflow traps, division by zero, bounds
-checks, evaluation order) belong to the backend work above. A
+The codegen-side `unsound` rows (overflow traps, bounds checks, evaluation
+order) belong to the backend work above. A
 name spelled as a C++ keyword is rejected with a diagnostic until the
 backend renames it.
 

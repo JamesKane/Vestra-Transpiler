@@ -312,7 +312,7 @@ add_test(
             -o ${e2e_workdir}/vgen)
 set_tests_properties(e2e_selfhost_codegen_compile PROPERTIES DEPENDS e2e_selfhost_codegen_transpile)
 
-foreach(prog cg_func cg_copy cg_linplace cg_expr cg_stmt cg_if cg_for cg_struct cg_index cgh_struct cgh_enum cgh_enumpl cg_enumcase cg_unwrap cg_match cg_enumctor cg_paymatch cg_matchdefault cg_matchguard cgh_enummethod cg_breakcont cgh_const cg_with cg_fnptr cg_closure cg_closurearg cg_matchpos cg_namedpl cg_print cg_mclosure cg_ifval cg_gpaymatch cg_builtins cg_lits cg_optchain cg_strco cg_interp cg_bmethods cg_genfunc cg_gentype cg_pmodes cg_throws cg_async cg_import cg_module cghelp cg_qualty cg_maperr cg_condhoist cg_matchhoist cg_docatch cg_gentail cg_amethod cg_channel cg_main cg_iflet cg_forproto cg_tpwild cg_paybindty cg_nestmatch cg_forpair cg_leaddot cg_valmatch cg_elseif cg_derive cg_derivespec cg_argsvec cg_opaque cg_box cg_moveonly cg_barecatch cg_hoistarms cg_tuplety cg_blockexpr cg_forelem cgh_global cg_orpat cg_withty cg_sinkarg cg_addrof cg_optflat cgh_requires cg_ifletval cgh_systypes cg_atomics cg_syncintr cg_sysstatic cg_linkattrs cgh_layout cgh_vectable cg_sysreg cg_rawmem cg_iteradapt cg_vecops cg_maperrclos cg_constgen cg_parallel cg_tupleparam cg_binprec cg_externabi cg_unitthrows cg_coalesce cg_wrap)
+foreach(prog cg_func cg_copy cg_linplace cg_expr cg_stmt cg_if cg_for cg_struct cg_index cgh_struct cgh_enum cgh_enumpl cg_enumcase cg_unwrap cg_match cg_enumctor cg_paymatch cg_matchdefault cg_matchguard cgh_enummethod cg_breakcont cgh_const cg_with cg_fnptr cg_closure cg_closurearg cg_matchpos cg_namedpl cg_print cg_mclosure cg_ifval cg_gpaymatch cg_builtins cg_lits cg_optchain cg_strco cg_interp cg_bmethods cg_genfunc cg_gentype cg_pmodes cg_throws cg_async cg_import cg_module cghelp cg_qualty cg_maperr cg_condhoist cg_matchhoist cg_docatch cg_gentail cg_amethod cg_channel cg_main cg_iflet cg_forproto cg_tpwild cg_paybindty cg_nestmatch cg_forpair cg_leaddot cg_valmatch cg_elseif cg_derive cg_derivespec cg_argsvec cg_opaque cg_box cg_moveonly cg_barecatch cg_hoistarms cg_tuplety cg_blockexpr cg_forelem cgh_global cg_orpat cg_withty cg_sinkarg cg_addrof cg_optflat cgh_requires cg_ifletval cgh_systypes cg_atomics cg_syncintr cg_sysstatic cg_linkattrs cgh_layout cgh_vectable cg_sysreg cg_rawmem cg_iteradapt cg_vecops cg_maperrclos cg_constgen cg_parallel cg_tupleparam cg_binprec cg_externabi cg_unitthrows cg_coalesce cg_wrap cg_div)
     add_test(
         NAME    e2e_selfhost_codegen_diff_${prog}
         COMMAND sh -c "mkdir -p ${cg_workdir}/cpp/${prog} && $<TARGET_FILE:vestra> build ${cg_dir}/${prog}.vst -o ${cg_workdir}/cpp/${prog} >/dev/null 2>&1; ${e2e_workdir}/vgen ${cg_dir}/${prog}.vst > ${cg_workdir}/cpp/${prog}/${prog}_got.cpp; diff ${cg_workdir}/cpp/${prog}/${prog}.cpp ${cg_workdir}/cpp/${prog}/${prog}_got.cpp")
@@ -350,7 +350,7 @@ set_tests_properties(e2e_selfhost_codegen_hpp_vectable PROPERTIES DEPENDS e2e_se
 # `#endif // VESTRA_RUNTIME_PRELUDE` marker stripped (literal-substring awk match).
 # Restricted to declaration sets vgen can already emit (free-function forward
 # declarations); struct / enum definition emission grows this list.
-foreach(prog cg_func cg_linplace cg_expr cg_stmt cg_if cg_for cg_index cgh_struct cgh_enum cgh_enumpl cg_enumcase cg_unwrap cg_match cg_enumctor cg_paymatch cg_matchdefault cg_matchguard cgh_enummethod cg_breakcont cgh_const cg_with cg_fnptr cg_closure cg_closurearg cg_matchpos cg_namedpl cg_print cg_mclosure cg_ifval cg_gpaymatch cg_builtins cg_lits cg_optchain cg_strco cg_interp cg_bmethods cg_genfunc cg_gentype cg_pmodes cg_throws cg_async cg_import cg_module cghelp cg_qualty cg_maperr cg_condhoist cg_matchhoist cg_docatch cg_gentail cg_amethod cg_channel cg_main cg_iflet cg_forproto cg_tpwild cg_paybindty cg_nestmatch cg_forpair cg_leaddot cg_valmatch cg_elseif cg_derive cg_derivespec cg_argsvec cg_opaque cg_box cg_moveonly cg_barecatch cg_hoistarms cg_tuplety cg_blockexpr cg_forelem cgh_global cg_orpat cg_withty cg_sinkarg cg_addrof cg_optflat cgh_requires cg_ifletval cgh_systypes cg_atomics cg_syncintr cg_sysstatic cg_linkattrs cgh_layout cgh_vectable cg_sysreg cg_rawmem cg_iteradapt cg_vecops cg_maperrclos cg_constgen cg_parallel cg_tupleparam cg_binprec cg_externabi cg_unitthrows cg_coalesce cg_wrap)
+foreach(prog cg_func cg_linplace cg_expr cg_stmt cg_if cg_for cg_index cgh_struct cgh_enum cgh_enumpl cg_enumcase cg_unwrap cg_match cg_enumctor cg_paymatch cg_matchdefault cg_matchguard cgh_enummethod cg_breakcont cgh_const cg_with cg_fnptr cg_closure cg_closurearg cg_matchpos cg_namedpl cg_print cg_mclosure cg_ifval cg_gpaymatch cg_builtins cg_lits cg_optchain cg_strco cg_interp cg_bmethods cg_genfunc cg_gentype cg_pmodes cg_throws cg_async cg_import cg_module cghelp cg_qualty cg_maperr cg_condhoist cg_matchhoist cg_docatch cg_gentail cg_amethod cg_channel cg_main cg_iflet cg_forproto cg_tpwild cg_paybindty cg_nestmatch cg_forpair cg_leaddot cg_valmatch cg_elseif cg_derive cg_derivespec cg_argsvec cg_opaque cg_box cg_moveonly cg_barecatch cg_hoistarms cg_tuplety cg_blockexpr cg_forelem cgh_global cg_orpat cg_withty cg_sinkarg cg_addrof cg_optflat cgh_requires cg_ifletval cgh_systypes cg_atomics cg_syncintr cg_sysstatic cg_linkattrs cgh_layout cgh_vectable cg_sysreg cg_rawmem cg_iteradapt cg_vecops cg_maperrclos cg_constgen cg_parallel cg_tupleparam cg_binprec cg_externabi cg_unitthrows cg_coalesce cg_wrap cg_div)
     add_test(
         NAME    e2e_selfhost_codegen_hpp_${prog}
         COMMAND sh -c "mkdir -p ${cg_workdir}/hpp/${prog} && $<TARGET_FILE:vestra> build ${cg_dir}/${prog}.vst -o ${cg_workdir}/hpp/${prog} >/dev/null 2>&1; awk 'f{print} index(\$0, \"#endif  // VESTRA_RUNTIME_PRELUDE\"){f=1}' ${cg_workdir}/hpp/${prog}/${prog}.hpp > ${cg_workdir}/hpp/${prog}/${prog}_href.txt; ${e2e_workdir}/vgen --hpp ${cg_dir}/${prog}.vst > ${cg_workdir}/hpp/${prog}/${prog}_hgot.txt; diff ${cg_workdir}/hpp/${prog}/${prog}_href.txt ${cg_workdir}/hpp/${prog}/${prog}_hgot.txt")
@@ -399,6 +399,22 @@ add_test(
     COMMAND sh -c "rm -rf ${e2e_wrapping_dir} && mkdir -p ${e2e_wrapping_dir} && $<TARGET_FILE:vestra> build ${CMAKE_CURRENT_SOURCE_DIR}/e2e/wrapping/wrap.vst -o ${e2e_wrapping_dir} >/dev/null && ${CMAKE_CXX_COMPILER} -std=c++26 -Wall -Wextra -O0 -fsanitize=signed-integer-overflow -fsanitize-trap=signed-integer-overflow -I${e2e_wrapping_dir} ${e2e_wrapping_dir}/wrap.cpp -o ${e2e_wrapping_dir}/app && ${e2e_wrapping_dir}/app")
 set_tests_properties(e2e_wrapping_wrap PROPERTIES
     PASS_REGULAR_EXPRESSION "^s1=-2147483648 s2=127 s3=4 s4=0 s5=24464 s6=7 s7=12 s8=2147483645 s9=true")
+
+# §4 division or remainder by zero traps, and `MIN / -1` wraps. The build
+# traps on signed overflow; the run ends in the zero divisor's panic.
+set(e2e_division_dir ${e2e_workdir}/_division)
+add_test(
+    NAME    e2e_division_div
+    COMMAND sh -c "rm -rf ${e2e_division_dir} && mkdir -p ${e2e_division_dir} && $<TARGET_FILE:vestra> build ${CMAKE_CURRENT_SOURCE_DIR}/e2e/division/div.vst -o ${e2e_division_dir} >/dev/null && ${CMAKE_CXX_COMPILER} -std=c++26 -Wall -Wextra -O0 -fsanitize=signed-integer-overflow -fsanitize-trap=signed-integer-overflow -I${e2e_division_dir} ${e2e_division_dir}/div.cpp -o ${e2e_division_dir}/app && { ${e2e_division_dir}/app 2>&1; true; }")
+set_tests_properties(e2e_division_div PROPERTIES
+    PASS_REGULAR_EXPRESSION "q=-2147483648 r=0 t=5 u=15 f=3 k=28"
+    FAIL_REGULAR_EXPRESSION "unreachable")
+add_test(
+    NAME    e2e_division_by_zero
+    COMMAND sh -c "${e2e_division_dir}/app 2>&1; true")
+set_tests_properties(e2e_division_by_zero PROPERTIES
+    DEPENDS e2e_division_div
+    PASS_REGULAR_EXPRESSION "vestra panic: division by zero")
 
 # Ownership: a sink parameter takes ownership of a binding; the caller can
 # pre-borrow it (read) before transferring ownership at the end.
@@ -2841,7 +2857,7 @@ foreach(triple aarch64-none-elf x86_64-none-elf riscv64-none-elf)
         set(fs_mode_${triple} "-fsyntax-only")
     endif()
 endforeach()
-foreach(probe "fs_a64|aarch64-none-elf|" "fs_asm|aarch64-none-elf|" "fs_coalesce|aarch64-none-elf|" "fs_wrap|aarch64-none-elf|" "fs_x86|x86_64-none-elf|-minvpcid"
+foreach(probe "fs_a64|aarch64-none-elf|" "fs_asm|aarch64-none-elf|" "fs_coalesce|aarch64-none-elf|" "fs_wrap|aarch64-none-elf|" "fs_div|aarch64-none-elf|" "fs_x86|x86_64-none-elf|-minvpcid"
               "fs_rv|riscv64-none-elf|-march=rv64gc_zicbom_zicboz")
     string(REPLACE "|" ";" parts "${probe}")
     list(GET parts 0 prog)
@@ -2982,7 +2998,7 @@ add_test(
 # The selfhost differential compares the fixtures' C++ as text, which says
 # nothing about whether it compiles: compile each one (hosted, syntax only), so
 # a fixture can't pass while its output is broken C++.
-foreach(prog cg_func cg_expr cg_stmt cg_if cg_for cg_struct cg_index cgh_struct cgh_enum cgh_enumpl cg_enumcase cg_unwrap cg_match cg_enumctor cg_paymatch cg_matchdefault cg_matchguard cgh_enummethod cg_breakcont cgh_const cg_with cg_fnptr cg_closure cg_closurearg cg_matchpos cg_namedpl cg_print cg_mclosure cg_ifval cg_gpaymatch cg_builtins cg_lits cg_optchain cg_strco cg_interp cg_bmethods cg_genfunc cg_gentype cg_pmodes cg_throws cg_async cg_import cg_module cghelp cg_qualty cg_maperr cg_condhoist cg_matchhoist cg_docatch cg_gentail cg_amethod cg_channel cg_main cg_iflet cg_forproto cg_tpwild cg_paybindty cg_nestmatch cg_forpair cg_leaddot cg_valmatch cg_elseif cg_derive cg_derivespec cg_argsvec cg_opaque cg_box cg_moveonly cg_barecatch cg_hoistarms cg_tuplety cg_blockexpr cg_forelem cgh_global cg_orpat cg_withty cg_sinkarg cg_addrof cg_optflat cgh_requires cg_ifletval cgh_systypes cg_atomics cg_syncintr cg_sysstatic cg_linkattrs cgh_layout cgh_vectable cg_sysreg cg_rawmem cg_iteradapt cg_vecops cg_maperrclos cg_constgen cg_parallel cg_tupleparam cg_binprec cg_externabi cg_unitthrows cg_coalesce cg_wrap)
+foreach(prog cg_func cg_expr cg_stmt cg_if cg_for cg_struct cg_index cgh_struct cgh_enum cgh_enumpl cg_enumcase cg_unwrap cg_match cg_enumctor cg_paymatch cg_matchdefault cg_matchguard cgh_enummethod cg_breakcont cgh_const cg_with cg_fnptr cg_closure cg_closurearg cg_matchpos cg_namedpl cg_print cg_mclosure cg_ifval cg_gpaymatch cg_builtins cg_lits cg_optchain cg_strco cg_interp cg_bmethods cg_genfunc cg_gentype cg_pmodes cg_throws cg_async cg_import cg_module cghelp cg_qualty cg_maperr cg_condhoist cg_matchhoist cg_docatch cg_gentail cg_amethod cg_channel cg_main cg_iflet cg_forproto cg_tpwild cg_paybindty cg_nestmatch cg_forpair cg_leaddot cg_valmatch cg_elseif cg_derive cg_derivespec cg_argsvec cg_opaque cg_box cg_moveonly cg_barecatch cg_hoistarms cg_tuplety cg_blockexpr cg_forelem cgh_global cg_orpat cg_withty cg_sinkarg cg_addrof cg_optflat cgh_requires cg_ifletval cgh_systypes cg_atomics cg_syncintr cg_sysstatic cg_linkattrs cgh_layout cgh_vectable cg_sysreg cg_rawmem cg_iteradapt cg_vecops cg_maperrclos cg_constgen cg_parallel cg_tupleparam cg_binprec cg_externabi cg_unitthrows cg_coalesce cg_wrap cg_div)
     add_test(
         NAME    e2e_codegen_compiles_${prog}
         COMMAND sh -c "rm -rf ${cg_workdir}/compiles/${prog} && mkdir -p ${cg_workdir}/compiles/${prog} && $<TARGET_FILE:vestra> build ${cg_dir}/${prog}.vst -o ${cg_workdir}/compiles/${prog} >/dev/null && ${CMAKE_CXX_COMPILER} -std=c++26 -fsyntax-only -I${cg_workdir}/compiles/${prog} ${cg_workdir}/compiles/${prog}/${prog}.cpp")

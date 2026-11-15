@@ -1,0 +1,20 @@
+// §4 `/` and `%` check the divisor through the prelude's idiv / irem, unless
+// it is a nonzero literal; `/=` and `%=` likewise.
+
+func split(_ n: Int32, _ d: Int32) -> Int32 {
+    let a = n / d
+    let b = n % d
+    let c = n / 4
+    let e = n % 0x10
+    let f = n / 0
+    let g = n / -1
+    var h = n
+    h /= d
+    h %= 3
+    h /= 0b0
+    return a + b + c + e + f + g + h + (n + d) / (d - 1) * 2
+}
+
+func scale(_ x: Float64, _ y: Float64) -> Float64 {
+    return x / y + x / 2.0
+}
