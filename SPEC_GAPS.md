@@ -160,7 +160,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §10, §19.4 | Owned containers of views | unsound (partial) | A `Vec` / `HashMap` / array of views carries its elements' sources: a `split` of a local, `push` / `set` / `xs[i] =` of a local's view, an element read back out (index, `get`, `for`), a write of a local's view into a container the caller owns (`self.items`, an `inout` parameter), and a view stored into a field or element (`self.name = v`, `w.name = v`, `ws[0].name = v`) are all checked. Not yet: a container write nested inside a larger expression rather than as its own statement. |
+| §10, §19.4 | Owned containers of views | weaker | A `Vec` / `HashMap` / array of views carries its elements' sources: a `split` of a local, `push` / `set` / `xs[i] =` of a local's view, an element read back out (index, `get`, `for`), a write of a local's view into a container the caller owns (`self.items`, an `inout` parameter), and a view stored into a field or element (`self.name = v`, `w.name = v`, `ws[0].name = v`) are all checked, as a statement or as a whole match arm. Not yet: a write whose result is used inside a larger expression (`let had = m.insert(k, v)`), or one inside a closure body. |
 | §10 | `Buffer[T]`, `Buffer(fixed:)` | missing | "undefined name". `Vec` is the substitute. |
 | §10, §11 | `Arc[T]` | missing | "undefined name". |
 | §10 | `StridedSpan[T]` | missing | "unknown type". |

@@ -10161,7 +10161,9 @@ func tyArmMu(_ env: inout TyEnv, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[N
 }
 
 func tyArmParts(_ env: inout TyEnv, _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc {
-    tyBoxed(env, body)
+    // An arm is one expression, so `case .a: xs.push(v)` is a container
+    // write in statement position (§19.4).
+    tyExprStmt(env, body)
     if guard.len() > 0 {
         let gt = tyInferBoxed(env, guard)
         if !streq(gt, "") && !streq(gt, "Bool") { env.bad.push(tyGuardMsg(gt)) }

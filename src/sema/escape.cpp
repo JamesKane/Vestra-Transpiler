@@ -398,6 +398,11 @@ void EscapeChecker::check_expr(const ast::Expr& e) {
                     scan(*arm.body);
                 }
                 check_expr(*arm.body);
+                // An arm is one expression, so `case .a: xs.push(v)` is a
+                // container write in statement position.
+                if (strip(*arm.body).kind == ast::NodeKind::CallExpr) {
+                    check_container_write(static_cast<const ast::CallExpr&>(strip(*arm.body)));
+                }
             }
         }
         break;

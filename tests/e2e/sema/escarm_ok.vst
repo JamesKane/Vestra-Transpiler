@@ -1,0 +1,26 @@
+// §19.4 a match arm may write a container of views with a view that outlives
+// it: a literal, or a view the caller passed in.
+
+enum K {
+    case a
+    case b
+}
+
+func fill(_ xs: inout Vec[Str], _ k: K, _ w: Str) using Alloc {
+    match k {
+        case .a: xs.push(w)
+        default: xs.push("lit")
+    }
+}
+
+func local(_ k: K) using Alloc -> Int {
+    let s: String = "local"
+    var xs: Vec[Str] = Vec.new()
+    match k {
+        case .a: xs.push(s)
+        default: xs.push("lit")
+    }
+    return xs.len()
+}
+
+func main() -> Int32 { return 0 }

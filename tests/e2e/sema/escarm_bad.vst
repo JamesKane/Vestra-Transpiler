@@ -1,0 +1,30 @@
+// §19.4 a match arm is one expression, so `case .a: xs.push(v)` writes the
+// container as a statement would. The arm form went unchecked, letting a view
+// of a local escape into the caller's container.
+
+enum K {
+    case a
+    case b
+}
+
+struct Bag {
+    var items: Vec[Str]
+
+    inout func add(_ k: K) using Alloc {
+        let s: String = "local"
+        match k {
+            case .a: self.items.push(s)
+            case .b: self.items.push("lit")
+        }
+    }
+}
+
+func fill(_ xs: inout Vec[Str], _ k: K) using Alloc {
+    let s: String = "local"
+    match k {
+        case .a: xs.push(s)
+        default: xs.push("lit")
+    }
+}
+
+func main() -> Int32 { return 0 }
