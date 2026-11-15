@@ -949,6 +949,8 @@ struct Ps {
     var attrs: Vec[String]  // every declaration attribute name, in source order
     var bounds: Vec[String] // every generic bound's spelling, in source order
     var cfgBad: Vec[String] // §12.6 unknown names in `@when` predicates
+    var unions: Vec[String] // Annex §6.8 the `@repr(union)` struct names
+    var pendingUnion: Bool  // the attributes just skipped include `@repr(union)`
 }
 
 struct BP {
@@ -1137,6 +1139,7 @@ func skipAttributes(_ p: inout Ps) using Alloc { let _ = skipAttrsNaked(&p) }
 // the divergence checks don't hold to their rules, as in the bootstrap).
 func skipAttrsNaked(_ p: inout Ps) using Alloc -> Bool {
     var naked: Bool = false
+    p.pendingUnion = false
     while isKind(p, TokKind.at) {
         advP(&p)  // '@'
         p.attrs.push(curText(p))
@@ -1158,6 +1161,7 @@ func skipAttrsNaked(_ p: inout Ps) using Alloc -> Bool {
             }
             if isWhen { cfgScan(p.cfgBad, args) }
             if isRepr { reprScan(p.cfgBad, args) }
+            if isRepr && reprHasUnion(args) { p.pendingUnion = true }
         }
         skipNL(&p)
     }
@@ -1236,6 +1240,8 @@ func parseStruct(_ p: inout Ps, _ vis: String, _ isLinear: Bool) using Alloc -> 
     advP(&p)  // 'struct'
     let name = curText(p)
     advP(&p)  // name
+    if p.pendingUnion { p.unions.push(own(name)) }
+    p.pendingUnion = false
     let g = parseGenerics(&p)
     eat(p, TokKind.lbrace)
     skipNL(&p)
@@ -6941,6 +6947,7 @@ struct TyEnv {
     var mRet: Vec[String]       // ... -> result-type spelling ("Unit" if none, "Self"->owner)
     var eName: Vec[String]      // global: enum names (a bare `E.case` is a type ref)
     var linStructs: Vec[String] // global: the `linear struct` names
+    var unionNames: Vec[String] // global: the `@repr(union)` struct names
     var ecEnum: Vec[String]     // global: per-case rows — owning enum ...
     var ecName: Vec[String]     // ... case name ...
     var ecArity: Vec[Int]       // ... -> payload field count
@@ -7716,6 +7723,48 @@ func tyCheckStructN(_ env: inout TyEnv, _ name: String, _ g: Vec[Nd], _ fl: Vec[
     env.esSelf = own(name)
     tyCheckStructG(env, g, fl, m)
     env.esSelf = own("")
+    if esInList(env.unionNames, name) { tyCheckUnionFields(env, fl) }
+}
+
+func tyCopyUnions(_ env: inout TyEnv, _ names: Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < names.len() {
+        env.unionNames.push(own(names.get(i) ?? own("")))
+        i = i + 1
+    }
+}
+
+// Annex §6.8 a `@repr(union)` overlays its fields in one untagged cell, so
+// each must be Trivial.
+func tyCheckUnionFields(_ env: inout TyEnv, _ fl: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < fl.len() {
+        match fl.get(i) ?? Nd.wildcard {
+            case .field(let k, let n, let t): tyCheckUnionField(env, n, t)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func tyCheckUnionField(_ env: inout TyEnv, _ n: String, _ t: Vec[Nd]) using Alloc {
+    let held = tyAnnSpelling(t)
+    let bl = tyTrivialBlocker(env, held, 0)
+    if streq(bl, "") { return }
+    var m: String = "@repr(union) field '"
+    m.append(n)
+    m.append("' must have a Trivial type (Annex §6.8); ")
+    if streq(held, bl) {
+        m.append(bl)
+        m.append(" ")
+    } else {
+        m.append(held)
+        m.append(" holds ")
+        m.append(bl)
+        m.append(", which ")
+    }
+    m.append(tyTrivialWhy(env, bl))
+    env.bad.push(m)
 }
 
 func tyCheckStructG(_ env: inout TyEnv, _ g: Vec[Nd], _ fl: Vec[Nd], _ m: Vec[Nd]) using Alloc {
@@ -11465,7 +11514,7 @@ func loadImportPath(_ isC: Bool, _ dotted: String, _ dir: Str, _ errs: inout Vec
 // module path. A file with no `module` line exports nothing addressable.
 func harvestModule(_ env: inout Env, _ contents: Str) using Alloc {
     let toks = tokenize(contents)
-    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new())
+    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false)
     let mu = parseUnit(&p)
     if !mu.hasMod { return }
     env.modPaths.push(own(mu.modPath))
@@ -11878,6 +11927,15 @@ func reprScan(_ bad: inout Vec[String], _ ts: Vec[Token]) using Alloc {
     }
 }
 
+func reprHasUnion(_ ts: Vec[Token]) using Alloc -> Bool {
+    var i: Int = 0
+    while i < ts.len() {
+        if streq((ts.get(i) ?? eofTok()).text, "union") { return true }
+        i = i + 1
+    }
+    return false
+}
+
 func reprKind(_ bad: inout Vec[String], _ n: Str) using Alloc {
     if streq(n, "C") || streq(n, "packed") || streq(n, "union") || streq(n, "align") { return }
     if streq(n, "wire") { bad.push(own("@repr(wire) is not supported yet")); return }
@@ -11975,7 +12033,7 @@ func main() -> Int32 {
                 }
                 if let src = readFile(path) {
                     let toks = tokenize(src)
-                    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new())
+                    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false)
                     let u = parseUnit(&p)
                     let protos = unitProtocols(p.toks)
                     let attrBad = attrCheck(u, p.attrs, p.cfgBad, boundCheck(protos, p.bounds), protos)
@@ -12059,7 +12117,7 @@ func main() -> Int32 {
                                      curRet: own(""), bad: Vec.new(),
                                      mInout: Vec.new(), muName: Vec.new(), muFlag: Vec.new(),
                                      muKind: Vec.new(), muMarks: Vec.new(),
-                                     stName: Vec.new(), stAtomic: Vec.new(), stSpell: Vec.new(), linStructs: Vec.new(),
+                                     stName: Vec.new(), stAtomic: Vec.new(), stSpell: Vec.new(), linStructs: Vec.new(), unionNames: Vec.new(),
                                      ecpEnum: Vec.new(), ecpCase: Vec.new(), ecpType: Vec.new(), ecpLabel: Vec.new(),
                                      esBad: Vec.new(), esFn: own(""), esLocals: Vec.new(), esSinks: Vec.new(), esParams: Vec.new(), esSelf: own(""),
                                      esVName: Vec.new(), esVOrig: Vec.new(), esRaw: 0, esMmio: 0,
@@ -12071,6 +12129,7 @@ func main() -> Int32 {
                                      prName: Vec.new(), prRef: Vec.new(), ctDepth: 0, ctFns: Vec.new(),
                                      pLabel: Vec.new(), mlOwner: Vec.new(), mlName: Vec.new(), mlLabel: Vec.new())
                     tyRefines(&tenv, p.toks)
+                    tyCopyUnions(&tenv, p.unions)
                     tyCheck(&tenv, u)
                     var ti: Int = 0
                     while ti < tenv.bad.len() {

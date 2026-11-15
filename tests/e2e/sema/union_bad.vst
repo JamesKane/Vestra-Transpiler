@@ -1,0 +1,13 @@
+// Annex §6.8 a `@repr(union)` overlays its fields in one untagged cell, so
+// each field must be Trivial: no owned resources, no views, nothing linear.
+
+linear struct Slot { var a: UInt64 }
+struct Holder { var s: Slot }
+
+@repr(union)
+struct Overlay {
+    var raw: UInt64
+    var name: String
+    var view: Str
+    var h: Holder
+}

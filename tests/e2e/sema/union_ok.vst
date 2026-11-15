@@ -1,0 +1,10 @@
+// Annex §6.8 a union of Trivial views of one cell.
+
+struct Halves { var lo: UInt32  var hi: UInt32 }
+
+@repr(union)
+struct Word {
+    var raw: UInt64
+    var halves: Halves
+    var bytes: [8]UInt8
+}

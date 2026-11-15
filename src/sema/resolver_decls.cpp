@@ -169,9 +169,8 @@ void Resolver::check_decl(const ast::Decl& d) {
         //       itself can't share storage with the integer view, so
         //       the spec's register-decoding pattern would silently
         //       break.
-        // Spec also requires transitively Trivial + Copyable; we defer
-        // that to the C++ compiler, which refuses unions whose members
-        // have non-trivial special member functions.
+        // The spec also requires transitively Trivial fields, checked
+        // below with the @noinit predicate.
         if (struct_is_repr_union(s)) {
             if (s.fields.empty()) {
                 error_at(s.range,
@@ -187,6 +186,34 @@ void Resolver::check_decl(const ast::Decl& d) {
                                              "and overlay it",
                                              s.name));
                     }
+                }
+            }
+            // Annex §6.8 the fields overlay one untagged cell, so each must
+            // be Trivial (no resources, no views, nothing linear).
+            for (const auto& f : s.fields) {
+                if (f.type == nullptr) {
+                    continue;
+                }
+                auto ft = resolve_type(*f.type);
+                if (auto blocker = trivial_blocker(ft); blocker != nullptr) {
+                    const auto held = ft->describe();
+                    const auto bl = blocker->describe();
+                    const char* why = trivial_blocker_is_linear(blocker) ? "is linear"
+                                      : non_escapable(blocker)           ? "is a view"
+                                      : owns_resources(blocker)          ? "owns resources"
+                                                                         : "isn't Trivial";
+                    error_at(f.type->range,
+                             held == bl ? std::format("@repr(union) field '{}' must have a Trivial "
+                                                      "type (Annex §6.8); {} {}",
+                                                      f.name,
+                                                      bl,
+                                                      why)
+                                        : std::format("@repr(union) field '{}' must have a Trivial "
+                                                      "type (Annex §6.8); {} holds {}, which {}",
+                                                      f.name,
+                                                      held,
+                                                      bl,
+                                                      why));
                 }
             }
         }

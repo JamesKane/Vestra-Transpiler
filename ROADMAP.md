@@ -119,7 +119,6 @@ accepts. Ordered by how likely each is to let a wrong program through:
 1. **Smaller unsound items:**
     - `@noinit` storage reachable only through `&buf` under `RawMemory`
       (the `Trivial` half is done; `buf[0]` still reads it directly);
-    - `@repr(union)` limited to `Trivial` types;
     - `MmioView[T]` requires `T: Primitive`;
     - `compilerFence(.relaxed)` rejected;
     - `using InterruptsOff` rejected;

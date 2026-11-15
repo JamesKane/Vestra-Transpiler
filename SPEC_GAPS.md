@@ -326,7 +326,6 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | §4.5, §12.2 | `T.size` over optionals and enums | missing | "can't compute K.size at fold time": the folder lays out only primitives, arrays of them and structs of those, so `@noinit` byte storage for such a type is sized by hand (the spike's `KERNEL_BYTES`, held to `sizeof` by its build). |
 | §6.7 | `@alias` | weaker | Emits `[[gnu::alias("other")]]` with the unmangled name inside a namespace, and clang rejects it: "alias must point to a defined variable or function". |
 | §6.8 | `@padding`, anonymous `embed _:`, flexible array members | missing | Parse errors. |
-| §6.8 | A `@repr(union)` must be `Trivial` | unsound | A union with a `String` field passes. |
 | §6.8 | `Type.of(T)`, top-level `comptime { assert(...) }` | missing | `T.size` and `T.fields[i].offset` do work. |
 | §7.8 | `@inline(.always)` failure is a correctness error | weaker | Left to `[[gnu::always_inline]]`. A recursive `.always` passes sema. |
 | §14.6.3 | `&table[i]` slot address | missing | "&decl operand must be a static or func identifier". |
