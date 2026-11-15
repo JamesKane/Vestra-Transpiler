@@ -470,6 +470,7 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
         }
     };
 
+    module_path_ = unit.module ? unit.module->path : std::vector<std::string>{};
     if (unit.module) {
         // Vestra module path → C++ nested namespace.
         hdr << "namespace ";
@@ -2609,9 +2610,24 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // narrows it via the implicit converting ctor.
         os << "std::nullopt";
         break;
-    case ast::NodeKind::IdentExpr:
-        os << static_cast<const ast::IdentExpr&>(e).name;
+    case ast::NodeKind::IdentExpr: {
+        const auto& id = static_cast<const ast::IdentExpr&>(e);
+        // §12.4 a macro-template name is the unit's own declaration even where
+        // a local of the same name is in scope: qualify it past the local.
+        if (id.definition_site && resolution_ != nullptr) {
+            const auto* sym = resolution_->symbol_of(&e);
+            if (sym != nullptr && sym->decl != nullptr
+                && (sym->kind == sema::SymbolKind::Func || sym->kind == sema::SymbolKind::Const
+                    || sym->kind == sema::SymbolKind::Static)) {
+                os << "::";
+                for (const auto& seg : module_path_) {
+                    os << seg << "::";
+                }
+            }
+        }
+        os << id.name;
         break;
+    }
     case ast::NodeKind::SelfExpr:
         os << "(*this)";
         break;

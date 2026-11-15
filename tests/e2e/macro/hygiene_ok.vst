@@ -1,0 +1,28 @@
+// §12.4 hygiene: a name written in a macro template resolves where the macro
+// is defined. `k` and `scale` here are the module's, not the locals at the
+// use site that share their names.
+
+module hyg
+
+const k: Int32 = 10
+
+func scale(_ v: Int32) -> Int32 { return v * 2 }
+
+comptime func addK(_ x: Expr) -> Expr {
+    return quote { $x + k }
+}
+
+comptime func scaled(_ x: Expr) -> Expr {
+    return quote { scale($x) }
+}
+
+func use(_ n: Int32) -> Int32 {
+    let k: Int32 = 1000
+    let scale: Int32 = 7
+    return @addK(n) + @scaled(k) + scale
+}
+
+func main() -> Int32 {
+    if use(1) == 11 + 2000 + 7 { return 0 }
+    return 1
+}

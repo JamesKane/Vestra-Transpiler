@@ -1,0 +1,14 @@
+// §12.4 hygiene: a template can't reach a use-site local. `t` exists only at
+// the call, so the template's `t` is undefined; the use-site value has to come
+// in as an argument and be spliced with `$`.
+
+comptime func plusT(_ x: Expr) -> Expr {
+    return quote { $x + t }
+}
+
+func use(_ n: Int32) -> Int32 {
+    let t: Int32 = 5
+    return @plusT(n)
+}
+
+func main() -> Int32 { return 0 }

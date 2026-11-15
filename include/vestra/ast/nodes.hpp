@@ -368,6 +368,10 @@ struct SelfExpr : Expr {
 };
 struct IdentExpr : Expr {
     std::string name;
+    // §12.4 hygiene: a name written in an expression macro's template (not
+    // spliced in from the call). It resolves where the macro is defined, at
+    // module scope, so a use-site local of the same name can't capture it.
+    bool definition_site = false;
     IdentExpr() : Expr(NodeKind::IdentExpr) {}
 };
 struct LeadingDotExpr : Expr {

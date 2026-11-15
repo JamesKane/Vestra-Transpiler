@@ -37,7 +37,7 @@ using SpliceSubs = std::unordered_map<std::string, const ast::Expr*>;
 // kinds a v0.5 macro template uses; an unsupported kind returns nullptr so the
 // caller can report it. Arguments are cloned with no further substitution (they
 // are final use-site expressions, never containing splices).
-ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs) {
+ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs, bool tmpl = true) {
     using namespace ast;
     switch (src.kind) {
     case NodeKind::SpliceExpr: {
@@ -45,7 +45,7 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs) 
         if (sp.inner != nullptr && sp.inner->kind == NodeKind::IdentExpr) {
             auto it = subs.find(static_cast<const IdentExpr&>(*sp.inner).name);
             if (it != subs.end()) {
-                auto arg = clone_macro_template(*it->second, {});  // splice in the arg
+                auto arg = clone_macro_template(*it->second, {}, false);  // splice in the arg
                 if (!arg) {
                     return nullptr;
                 }
@@ -98,6 +98,7 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs) 
     case NodeKind::IdentExpr: {
         auto n = std::make_unique<IdentExpr>();
         n->name = static_cast<const IdentExpr&>(src).name;
+        n->definition_site = tmpl;
         n->range = src.range;
         return n;
     }
@@ -106,7 +107,7 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs) 
         if (!p.inner) {
             return nullptr;
         }
-        auto inner = clone_macro_template(*p.inner, subs);
+        auto inner = clone_macro_template(*p.inner, subs, tmpl);
         if (!inner) {
             return nullptr;
         }
@@ -120,7 +121,7 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs) 
         if (!u.operand) {
             return nullptr;
         }
-        auto operand = clone_macro_template(*u.operand, subs);
+        auto operand = clone_macro_template(*u.operand, subs, tmpl);
         if (!operand) {
             return nullptr;
         }
@@ -135,8 +136,8 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs) 
         if (!b.lhs || !b.rhs) {
             return nullptr;
         }
-        auto lhs = clone_macro_template(*b.lhs, subs);
-        auto rhs = clone_macro_template(*b.rhs, subs);
+        auto lhs = clone_macro_template(*b.lhs, subs, tmpl);
+        auto rhs = clone_macro_template(*b.rhs, subs, tmpl);
         if (!lhs || !rhs) {
             return nullptr;
         }
@@ -152,7 +153,7 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs) 
         if (!m.base) {
             return nullptr;
         }
-        auto base = clone_macro_template(*m.base, subs);
+        auto base = clone_macro_template(*m.base, subs, tmpl);
         if (!base) {
             return nullptr;
         }
@@ -168,7 +169,7 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs) 
         if (!c.callee || !c.type_args.empty()) {
             return nullptr;  // explicit call type-args unsupported in a v0.5 template
         }
-        auto callee = clone_macro_template(*c.callee, subs);
+        auto callee = clone_macro_template(*c.callee, subs, tmpl);
         if (!callee) {
             return nullptr;
         }
@@ -178,7 +179,7 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs) 
             if (!a.value) {
                 return nullptr;
             }
-            auto v = clone_macro_template(*a.value, subs);
+            auto v = clone_macro_template(*a.value, subs, tmpl);
             if (!v) {
                 return nullptr;
             }
@@ -278,8 +279,16 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
 
     case ast::NodeKind::IdentExpr: {
         const auto& ident = static_cast<const ast::IdentExpr&>(e);
-        const auto* sym = scopes_.current().lookup(ident.name);
-        if (sym == nullptr) {
+        const auto* sym = ident.definition_site ? scopes_.global().lookup(ident.name)
+                                                : scopes_.current().lookup(ident.name);
+        if (sym == nullptr && ident.definition_site) {
+            error_at(e.range,
+                     std::format("undefined name '{}' in a macro template: a template name "
+                                 "resolves where the macro is defined; pass a use-site value as "
+                                 "an argument and splice it with `$`",
+                                 ident.name));
+            t = types_->error();
+        } else if (sym == nullptr) {
             error_at(e.range, std::format("undefined name '{}'", ident.name));
             t = types_->error();
         } else {

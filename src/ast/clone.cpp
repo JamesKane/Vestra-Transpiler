@@ -169,6 +169,7 @@ ExprPtr clone(const Expr& e) {
     case NodeKind::IdentExpr: {
         auto n = std::make_unique<IdentExpr>();
         n->name = static_cast<const IdentExpr&>(e).name;
+        n->definition_site = static_cast<const IdentExpr&>(e).definition_site;
         return with_range(std::move(n), e);
     }
     case NodeKind::LeadingDotExpr: {

@@ -308,6 +308,8 @@ private:
 
     diag::DiagnosticReporter* reporter_;
     const sema::Resolution* resolution_ = nullptr;
+    // The unit's module path, for qualifying §12.4 macro-template names.
+    std::vector<std::string> module_path_;
     bool no_libc_ = false;
     // §14.12.3 — true while emitting a function attributed
     // `@no_auto_barrier`. Per-call-site lowering of

@@ -2888,6 +2888,19 @@ add_test(
 set_tests_properties(e2e_macro_parse_error_no_crash PROPERTIES
     PASS_REGULAR_EXPRESSION "error: .*rc=1")
 
+# §12.4 macro hygiene: template names resolve at module scope, past any
+# use-site local of the same name, in sema and in the emitted C++.
+add_test(
+    NAME    e2e_macro_hygiene_build
+    COMMAND sh -c "rm -rf ${e2e_workdir}/_hyg && $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/tests/e2e/macro/hygiene_ok.vst -o ${e2e_workdir}/_hyg >/dev/null && cat ${e2e_workdir}/_hyg/hygiene_ok.cpp")
+set_tests_properties(e2e_macro_hygiene_build PROPERTIES
+    PASS_REGULAR_EXPRESSION "[(]n[)] [+] ::hyg::k[)] [+] [(]::hyg::scale[(][(]k[)][)][)]")
+add_test(
+    NAME    e2e_macro_hygiene_local
+    COMMAND sh -c "$<TARGET_FILE:vestra> check ${CMAKE_SOURCE_DIR}/tests/e2e/macro/hygiene_bad.vst 2>&1; true")
+set_tests_properties(e2e_macro_hygiene_local PROPERTIES
+    PASS_REGULAR_EXPRESSION "undefined name 't' in a macro template: a template name resolves where the macro is defined")
+
 # Annex §14.4 rule 1 an implicit clobber is an error: a written register, the
 # flags or a sysreg the operand list doesn't name. (vsema has no asm model, so
 # this is not a differential fixture.)
