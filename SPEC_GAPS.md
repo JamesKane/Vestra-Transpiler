@@ -82,7 +82,7 @@ Each gap has one of four kinds:
 | §4 | Integer overflow does not trap in debug | unsound | `a + b` lowers to plain C++ `+` on `int32_t`. No checked arithmetic exists anywhere in `src/`. |
 | §4 | `&+ &- &*` always wrap | unsound | They lower to plain `+`, which is UB on signed types (`cpp_emitter.cpp:679`, "signed UB, TODO"). |
 | §4 | Division by zero traps | unsound | Lowers to a raw `a / b`. |
-| §4 | `as` byte reinterpretation (size, alignment, `Trivial`) | unsound | Sema returns the target type unchecked (`resolver_exprs.cpp:909`). `UInt64 as Float32` is accepted, and codegen emits `/* unsupported */`. `as?` behaves the same. |
+| §4 | `as` byte reinterpretation | missing | Checked (both sides `Trivial`, one size and alignment, never into an enum) but not emitted: codegen writes `/* unsupported */`. Sizes come from the `T.size` folder, so only primitives, vectors of them and structs of those can be reinterpreted. `as?` has no checks and no lowering. |
 | §4 | `x.to[T]()` / `x.toWrapping[T]()` conversions | divergent | Neither exists. `Int32(c)` is the substitute and is an unchecked `static_cast`. |
 | §4 | `addingChecked` and friends | missing | "no field or method 'addingChecked'". |
 | §4 | `Enum.from(raw)` | missing | "enum 'C' has no case 'from'". |

@@ -2292,4 +2292,14 @@ ComptimeFolder::expand_decl_macro(const ast::FuncDecl& macro, const ast::Decl& a
     return out;
 }
 
+ByteLayout primitive_byte_layout(TypeKind k) {
+    const auto l = primitive_layout(k);
+    return {l.size, l.align};
+}
+
+ByteLayout struct_byte_layout(const ast::StructDecl& sd, const Scope& globals) {
+    const auto l = struct_layout(sd, globals);
+    return {l.size, l.align};
+}
+
 }  // namespace vestra::sema

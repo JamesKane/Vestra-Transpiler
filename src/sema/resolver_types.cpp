@@ -728,6 +728,94 @@ bool Resolver::is_atomic_payload(TypePtr t) {
     return is_mmio_payload(t);
 }
 
+std::string Resolver::trivial_clause(TypePtr held, TypePtr blocker) {
+    const char* why = trivial_blocker_is_linear(blocker) ? "is linear"
+                      : non_escapable(blocker)           ? "is a view"
+                      : owns_resources(blocker)          ? "owns resources"
+                                                         : "isn't Trivial";
+    const auto h = held->describe();
+    const auto b = blocker->describe();
+    return h == b ? std::format("{} {}", b, why) : std::format("{} holds {}, which {}", h, b, why);
+}
+
+ByteLayout Resolver::byte_layout(TypePtr t) {
+    if (t == nullptr) {
+        return {};
+    }
+    switch (t->kind()) {
+    case TypeKind::Vector: {
+        const auto e = byte_layout(t->inner());
+        if (e.size == 0 || t->vector_length() <= 0) {
+            return {};
+        }
+        return {t->vector_length() * e.size, e.align};
+    }
+    case TypeKind::Struct:
+        if (t->nominal_decl() != nullptr && t->nominal_decl()->kind == ast::NodeKind::Struct) {
+            return struct_byte_layout(static_cast<const ast::StructDecl&>(*t->nominal_decl()),
+                                      scopes_.global());
+        }
+        return {};
+    case TypeKind::OpaqueType:
+        if (t->nominal_decl() != nullptr && t->nominal_decl()->kind == ast::NodeKind::Opaque) {
+            const auto& od = static_cast<const ast::OpaqueDecl&>(*t->nominal_decl());
+            if (od.underlying != nullptr) {
+                return byte_layout(resolve_type(*od.underlying));
+            }
+        }
+        return {};
+    case TypeKind::Str:
+    case TypeKind::StrConst:
+        return {};  // views of text, not bytes to reinterpret
+    default:
+        return primitive_byte_layout(t->kind());
+    }
+}
+
+void Resolver::check_reinterpret(const ast::AsExpr& a, TypePtr from, TypePtr to) {
+    if (from == nullptr || to == nullptr || from->is_error() || to->is_error()) {
+        return;
+    }
+    if (to->kind() == TypeKind::Enum) {
+        error_at(a.range,
+                 std::format("`as` can't reinterpret bytes as the enum {}: use `{}.from(raw)`, "
+                             "which checks the discriminant",
+                             to->describe(),
+                             to->describe()));
+        return;
+    }
+    for (auto side : {from, to}) {
+        if (auto blocker = trivial_blocker(side); blocker != nullptr) {
+            error_at(a.range,
+                     std::format("`as` reinterprets bytes, so both types must be Trivial; {}",
+                                 trivial_clause(side, blocker)));
+            return;
+        }
+    }
+    const auto fl = byte_layout(from);
+    const auto tl = byte_layout(to);
+    for (auto [side, l] : {std::pair{from, fl}, std::pair{to, tl}}) {
+        if (l.size == 0) {
+            error_at(a.range,
+                     std::format("`as` can't size {} yet: only primitives, vectors of them and "
+                                 "structs of those have a layout",
+                                 side->describe()));
+            return;
+        }
+    }
+    if (fl.size != tl.size || fl.align != tl.align) {
+        error_at(a.range,
+                 std::format("`as` needs types of one size and alignment: {} is {} bytes "
+                             "(align {}), {} is {} bytes (align {})",
+                             from->describe(),
+                             fl.size,
+                             fl.align,
+                             to->describe(),
+                             tl.size,
+                             tl.align));
+    }
+}
+
 TypePtr Resolver::trivial_blocker(TypePtr t, int depth) {
     if (t == nullptr || t->is_error() || depth > 32) {
         return nullptr;
@@ -770,6 +858,16 @@ TypePtr Resolver::trivial_blocker(TypePtr t, int depth) {
             }
         }
         return nullptr;
+    case TypeKind::OpaqueType: {
+        // §6 a newtype is its representation at run time.
+        const auto* d = t->nominal_decl();
+        if (d == nullptr || d->kind != ast::NodeKind::Opaque) {
+            return nullptr;
+        }
+        const auto& od = static_cast<const ast::OpaqueDecl&>(*d);
+        return od.underlying != nullptr ? trivial_blocker(resolve_type(*od.underlying), depth + 1)
+                                        : nullptr;
+    }
     case TypeKind::Struct: {
         const auto* d = t->nominal_decl();
         if (d == nullptr || d->kind != ast::NodeKind::Struct) {

@@ -1,0 +1,31 @@
+// §4 `as` reinterprets the bytes of two Trivial types of one size and
+// alignment, and never into an enum. The bootstrap returned the target type
+// unchecked, so each of these passed.
+
+enum Cmd {
+    case go
+    case stop
+}
+
+struct P {
+    let a: UInt32
+    let b: UInt32
+}
+
+linear struct L {
+    let x: UInt64
+}
+
+func f(bits: UInt64, w: UInt32, s: String, p: P, v: [4]UInt8, d: Duration, m: P?) -> Int32 {
+    let a = bits as Float32
+    let b = w as Cmd
+    let c = s as UInt64
+    let e = p as UInt64
+    let g = v as UInt32
+    let h = d as Int64
+    let i = m as UInt64
+    let j = bits as L
+    return 0
+}
+
+func main() -> Int32 { return 0 }

@@ -7574,6 +7574,146 @@ func tyIsEqDerive(_ p: Nd) -> Bool {
     }
 }
 
+// ----- §4 `v as T` reinterprets bytes ---------------------------------------
+// Both sides Trivial, of one size and alignment, and never into an enum.
+
+struct TyLay {
+    let size: Int
+    let align: Int
+}
+
+func tyAs(_ env: inout TyEnv, _ v: Vec[Nd], _ t: Vec[Nd], _ isOpt: Bool) using Alloc {
+    tyBoxed(env, v)
+    if isOpt { return }
+    let from = tyInferBoxed(env, v)
+    let to = tyAnnSpelling(t)
+    if streq(from, "") || streq(to, "") { return }
+    if esInList(env.eName, to) {
+        var m: String = "`as` can't reinterpret bytes as the enum "
+        m.append(to)
+        m.append(": use `")
+        m.append(to)
+        m.append(".from(raw)`, which checks the discriminant")
+        env.bad.push(m)
+        return
+    }
+    if tyAsTrivialBad(env, from) || tyAsTrivialBad(env, to) { return }
+    let fl = tyLay(env, from, true, 0)
+    let tl = tyLay(env, to, true, 0)
+    if fl.size == 0 { env.bad.push(tyAsSizeMsg(from)); return }
+    if tl.size == 0 { env.bad.push(tyAsSizeMsg(to)); return }
+    if fl.size != tl.size || fl.align != tl.align {
+        var m: String = "`as` needs types of one size and alignment: "
+        m.append(tyAsLayText(from, fl))
+        m.append(", ")
+        m.append(tyAsLayText(to, tl))
+        env.bad.push(m)
+    }
+}
+
+func tyAsTrivialBad(_ env: inout TyEnv, _ sp: String) using Alloc -> Bool {
+    let bl = tyTrivialBlocker(env, sp, 0)
+    if streq(bl, "") { return false }
+    var m: String = "`as` reinterprets bytes, so both types must be Trivial; "
+    if streq(sp, bl) {
+        m.append(bl)
+        m.append(" ")
+    } else {
+        m.append(sp)
+        m.append(" holds ")
+        m.append(bl)
+        m.append(", which ")
+    }
+    m.append(tyTrivialWhy(env, bl))
+    env.bad.push(m)
+    return true
+}
+
+func tyAsSizeMsg(_ sp: String) using Alloc -> String {
+    var m: String = "`as` can't size "
+    m.append(sp)
+    m.append(" yet: only primitives, vectors of them and structs of those have a layout")
+    return m
+}
+
+func tyAsLayText(_ sp: String, _ l: TyLay) using Alloc -> String {
+    var m: String = own(sp)
+    m.append(" is ")
+    m.append(intToStr(l.size))
+    m.append(" bytes (align ")
+    m.append(intToStr(l.align))
+    m.append(")")
+    return m
+}
+
+// The folder's layout (§6.8 `T.size`): primitives, `[N]T` of a sized T, and
+// structs of those in C field order. An opaque type is its representation,
+// but only at the top: the folder doesn't size an opaque-typed struct field.
+func tyLay(_ env: inout TyEnv, _ sp: String, _ top: Bool, _ depth: Int) using Alloc -> TyLay {
+    let none = TyLay(size: 0, align: 0)
+    if depth > 32 { return none }
+    let p = tyPrimLay(sp)
+    if p.size > 0 { return p }
+    if (sp.byteAt(0) ?? 0) == 91 {   // '['
+        let n = tyArrLen(sp)
+        let e = tyLay(env, tyArrayElem(sp), false, depth + 1)
+        if n <= 0 || e.size == 0 { return none }
+        return TyLay(size: n * e.size, align: e.align)
+    }
+    let oi = tyStrIndex(env.opName, sp)
+    if oi >= 0 {
+        if !top { return none }
+        return tyLay(env, env.opUnder.get(oi) ?? own(""), true, depth + 1)
+    }
+    if esInList(env.structs, sp) { return tyStructLay(env, sp, depth) }
+    return none
+}
+
+func tyStructLay(_ env: inout TyEnv, _ sp: String, _ depth: Int) using Alloc -> TyLay {
+    var size: Int = 0
+    var align: Int = 0
+    var i: Int = 0
+    while i < env.sFldStruct.len() {
+        if streq(env.sFldStruct.get(i) ?? own(""), sp) {
+            let fl = tyLay(env, env.sFldType.get(i) ?? own(""), false, depth + 1)
+            if fl.size == 0 { return TyLay(size: 0, align: 0) }
+            size = tyAlignUp(size, fl.align) + fl.size
+            if fl.align > align { align = fl.align }
+        }
+        i = i + 1
+    }
+    if align > 0 { size = tyAlignUp(size, align) }
+    return TyLay(size: size, align: align)
+}
+
+func tyAlignUp(_ n: Int, _ a: Int) -> Int {
+    if a <= 0 { return n }
+    return (n + a - 1) / a * a
+}
+
+func tyPrimLay(_ sp: String) -> TyLay {
+    if streq(sp, "Bool") || streq(sp, "Int8") || streq(sp, "UInt8") { return TyLay(size: 1, align: 1) }
+    if streq(sp, "Int16") || streq(sp, "UInt16") { return TyLay(size: 2, align: 2) }
+    if streq(sp, "Int32") || streq(sp, "UInt32") || streq(sp, "Float32") || streq(sp, "Char") { return TyLay(size: 4, align: 4) }
+    if streq(sp, "Int64") || streq(sp, "UInt64") || streq(sp, "Int") || streq(sp, "UInt") || streq(sp, "Float64") { return TyLay(size: 8, align: 8) }
+    if streq(sp, "Int128") || streq(sp, "UInt128") { return TyLay(size: 16, align: 16) }
+    return TyLay(size: 0, align: 0)
+}
+
+// `[16]UInt8` -> 16; a named length gives 0.
+func tyArrLen(_ sp: String) -> Int {
+    var n: Int = 0
+    var i: Int = 1
+    while i < sp.len() {
+        let c = sp.byteAt(i) ?? 0
+        if c == 93 { return n }   // ']'
+        if c < 48 || c > 57 { return 0 }
+        n = n * 10 + Int(c - 48)
+        i = i + 1
+    }
+    return 0
+}
+
 // ----- Annex §4.5 a `@noinit static` (the value-less form) is Trivial -------
 
 func tyCheckNoinit(_ env: inout TyEnv, _ name: String, _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
@@ -9141,7 +9281,7 @@ func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
         case .index(let base, let idxs): tyIndex(env, base, idxs)
         case .ifE(let ln, let li, let cond, let thenB, let els): tyIfMu(env, ln, li, cond, thenB, els)
         case .block(let stmts): tyBlock(env, stmts)
-        case .asE(let v, let t, let o): tyBoxed(env, v)
+        case .asE(let v, let t, let o): tyAs(env, v, t, o)
         case .addrOf(let x): tyAddrOf(env, x)
         case .arg(let l, let io, let v): tyBoxed(env, v)
         case .throwE(let inner): tyBoxed(env, inner)

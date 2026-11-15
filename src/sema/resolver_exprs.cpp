@@ -941,8 +941,11 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
     }
     case ast::NodeKind::AsExpr: {
         const auto& a = static_cast<const ast::AsExpr&>(e);
-        (void)check_expr(*a.value);
+        const auto from = check_expr(*a.value);
         t = a.target ? resolve_type(*a.target) : types_->error();
+        if (!a.is_optional) {
+            check_reinterpret(a, from, t);
+        }
         if (a.is_optional && t != nullptr && !t->is_error()) {
             t = types_->make_optional(t);
         }

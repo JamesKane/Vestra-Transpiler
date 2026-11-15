@@ -402,6 +402,12 @@ private:
     // Annex §4.5 the innermost type keeping `t` from being Trivial, or null.
     [[nodiscard]] TypePtr trivial_blocker(TypePtr t, int depth = 0);
     [[nodiscard]] static bool trivial_blocker_is_linear(TypePtr t);
+    // "B why" or "H holds B, which why": the tail of a Trivial-type error.
+    [[nodiscard]] std::string trivial_clause(TypePtr held, TypePtr blocker);
+    // §4 `v as T` reinterprets bytes: both sides Trivial, of one size and
+    // alignment, and never into an enum.
+    void check_reinterpret(const ast::AsExpr& a, TypePtr from, TypePtr to);
+    [[nodiscard]] ByteLayout byte_layout(TypePtr t);
     // Annex §14.11: an MMIO view's T is a silicon-bus width (a fixed-width
     // integer up to 64 bits, a float, Bool or Char).
     [[nodiscard]] static bool is_mmio_payload(TypePtr t);

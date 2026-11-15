@@ -92,25 +92,11 @@ void Resolver::check_decl(const ast::Decl& d) {
             if (s.type != nullptr) {
                 if (const auto* nsym = scopes_.current().lookup(s.name)) {
                     if (auto blocker = trivial_blocker(nsym->type); blocker != nullptr) {
-                        const char* why = trivial_blocker_is_linear(blocker) ? "is linear"
-                                          : non_escapable(blocker)           ? "is a view"
-                                          : owns_resources(blocker)          ? "owns resources"
-                                                                             : "isn't Trivial";
-                        const auto held = nsym->type->describe();
-                        const auto bl = blocker->describe();
                         error_at(s.type->range,
-                                 held == bl
-                                     ? std::format("@noinit static '{}' must have a Trivial "
-                                                   "type (Annex §4.5); {} {}",
-                                                   s.name,
-                                                   bl,
-                                                   why)
-                                     : std::format("@noinit static '{}' must have a Trivial "
-                                                   "type (Annex §4.5); {} holds {}, which {}",
-                                                   s.name,
-                                                   held,
-                                                   bl,
-                                                   why));
+                                 std::format("@noinit static '{}' must have a Trivial type "
+                                             "(Annex §4.5); {}",
+                                             s.name,
+                                             trivial_clause(nsym->type, blocker)));
                     }
                 }
             }
@@ -201,24 +187,11 @@ void Resolver::check_decl(const ast::Decl& d) {
                 }
                 auto ft = resolve_type(*f.type);
                 if (auto blocker = trivial_blocker(ft); blocker != nullptr) {
-                    const auto held = ft->describe();
-                    const auto bl = blocker->describe();
-                    const char* why = trivial_blocker_is_linear(blocker) ? "is linear"
-                                      : non_escapable(blocker)           ? "is a view"
-                                      : owns_resources(blocker)          ? "owns resources"
-                                                                         : "isn't Trivial";
                     error_at(f.type->range,
-                             held == bl ? std::format("@repr(union) field '{}' must have a Trivial "
-                                                      "type (Annex §6.8); {} {}",
-                                                      f.name,
-                                                      bl,
-                                                      why)
-                                        : std::format("@repr(union) field '{}' must have a Trivial "
-                                                      "type (Annex §6.8); {} holds {}, which {}",
-                                                      f.name,
-                                                      held,
-                                                      bl,
-                                                      why));
+                             std::format("@repr(union) field '{}' must have a Trivial type "
+                                         "(Annex §6.8); {}",
+                                         f.name,
+                                         trivial_clause(ft, blocker)));
                 }
             }
         }

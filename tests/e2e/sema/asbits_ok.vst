@@ -1,0 +1,34 @@
+// §4 `as` between Trivial types of one size and alignment: floats and
+// integers, signedness, an opaque type's representation, and structs and
+// vectors laid out the same.
+
+opaque type Id = UInt32
+
+struct In {
+    let a: UInt16
+    let b: UInt16
+}
+
+struct Pair {
+    let lo: UInt32
+    let hi: UInt32
+}
+
+struct Wide {
+    let x: UInt64
+}
+
+func f(bits: UInt64, w: UInt32, n: Int32, id: Id, i: In, v: [2]UInt16, p: Pair, q: [2]UInt32) -> Int32 {
+    let a = bits as Float64
+    let b = w as Float32
+    let c = n as UInt32
+    let e = id as Float32
+    let g = i as [2]UInt16
+    let h = v as In
+    let k = p as [2]UInt32
+    let l = q as Pair
+    let o = bits as Wide
+    return 0
+}
+
+func main() -> Int32 { return 0 }

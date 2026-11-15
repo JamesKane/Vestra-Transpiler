@@ -94,6 +94,16 @@ struct ComptimeValue {
 
 class Resolution;  // forward — defined in resolver.hpp
 
+// §6.8 the layout the folder gives `T.size` / `T.alignment`: primitives,
+// vectors of them and structs of those (C field order and padding). A
+// {0, 0} result means the type has no layout the compiler can size.
+struct ByteLayout {
+    std::int64_t size = 0;
+    std::int64_t align = 0;
+};
+[[nodiscard]] ByteLayout primitive_byte_layout(TypeKind k);
+[[nodiscard]] ByteLayout struct_byte_layout(const ast::StructDecl& sd, const Scope& globals);
+
 // Pure-expression folder for §12.1 comptime evaluation. Walks an
 // expression tree and returns the resulting value, or std::nullopt if the
 // expression is not foldable in phase 1 (it called a function, read a
