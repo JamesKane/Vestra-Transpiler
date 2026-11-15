@@ -1,0 +1,10 @@
+// §14.9.2 an atomic cell holds a §4 primitive: an integer, a float, Bool or
+// Char.
+
+static hits: Atomic[UInt32] = 0
+static wide: Atomic[Int64] = 0
+static ready: Atomic[Bool] = false
+static last: Atomic[Char] = 'a'
+static level: Atomic[Float64] = 0.0
+
+func main() -> Int32 { return 0 }

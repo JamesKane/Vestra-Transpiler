@@ -205,7 +205,7 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
             // about a non-trivially-atomic T at the C++ layer.
             if (n.path[0] == "Atomic" && n.type_args.size() == 1) {
                 TypePtr inner = n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error();
-                if (inner != nullptr && !inner->is_error() && !inner->is_primitive()) {
+                if (inner != nullptr && !inner->is_error() && !is_atomic_payload(inner)) {
                     error_at(t.range,
                              std::format("Atomic[T] requires T to be a primitive type, got {}",
                                          inner->describe()));
@@ -713,6 +713,19 @@ bool Resolver::is_mmio_payload(TypePtr t) {
     default:
         return t->is_integer() || t->is_float();
     }
+}
+
+// §14.9.2 an atomic cell holds a §4 primitive: an integer (the 128-bit ones
+// gated on the target's wide CAS), a float, Bool or Char. String, Str and
+// Unit are not cells (is_primitive admits them for other rules).
+bool Resolver::is_atomic_payload(TypePtr t) {
+    if (t == nullptr) {
+        return false;
+    }
+    if (t->kind() == TypeKind::Int128 || t->kind() == TypeKind::UInt128) {
+        return true;
+    }
+    return is_mmio_payload(t);
 }
 
 TypePtr Resolver::trivial_blocker(TypePtr t, int depth) {

@@ -385,6 +385,8 @@ private:
     // Annex §14.11: an MMIO view's T is a silicon-bus width (a fixed-width
     // integer up to 64 bits, a float, Bool or Char).
     [[nodiscard]] static bool is_mmio_payload(TypePtr t);
+    // §14.9.2 Atomic[T]'s T: a §4 primitive (integers, floats, Bool, Char).
+    [[nodiscard]] static bool is_atomic_payload(TypePtr t);
     // Annex §4.5 a `@noinit static` is not in scope as a value: only `&buf`
     // names it. Cells reached only through compiler-known methods (Atomic,
     // AtomicTaggedPointer, PerCpu, Context, Padded of those) are excepted.

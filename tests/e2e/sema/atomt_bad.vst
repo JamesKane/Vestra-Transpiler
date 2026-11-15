@@ -1,0 +1,11 @@
+// §14.9.2 Atomic[T] used to take any `is_primitive` T, which admitted String,
+// Str and Unit; a struct was always rejected.
+
+struct Pair { var a: Int32 }
+
+static name: Atomic[Str] = 0
+static owned: Atomic[String] = 0
+static nothing: Atomic[Unit] = 0
+static pair: Atomic[Pair] = 0
+
+func main() -> Int32 { return 0 }

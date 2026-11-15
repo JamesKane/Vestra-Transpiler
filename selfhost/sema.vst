@@ -3671,6 +3671,22 @@ func tnNamed(_ env: inout TnEnv, _ path: String, _ args: Vec[Nd]) using Alloc {
         let sp = typeSpelling(args.get(0) ?? Nd.wildcard)
         if !tyIsMmioPayload(sp) { env.bad.push(tyMmioPayloadMsg(path, sp)) }
     }
+    if env.bad.len() == nb && args.len() == 1 && streq(path, "Atomic") {
+        let sp = typeSpelling(args.get(0) ?? Nd.wildcard)
+        if !tyIsAtomicPayload(sp) { env.bad.push(tyAtomicPayloadMsg(sp)) }
+    }
+}
+
+// §14.9.2 an atomic cell holds a §4 primitive: the MMIO widths, or a 128-bit
+// integer.
+func tyIsAtomicPayload(_ sp: Str) -> Bool {
+    return tyIsMmioPayload(sp) || streq(sp, "Int128") || streq(sp, "UInt128")
+}
+
+func tyAtomicPayloadMsg(_ sp: Str) using Alloc -> String {
+    var s: String = "Atomic[T] requires T to be a primitive type, got "
+    s.append(sp)
+    return s
 }
 
 // Annex §14.11 the MMIO view types, whose T is a silicon-bus width.
