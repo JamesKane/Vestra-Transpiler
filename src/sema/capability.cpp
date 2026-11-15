@@ -747,6 +747,32 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
             }
         }
         break;
+    case ast::NodeKind::AddressOfExpr: {
+        // §14.7.1 rule 5 the init regime is one-way through `&f` too: only
+        // init code, or the @boot code that jumps into it, may name it.
+        const auto& a = static_cast<const ast::AddressOfExpr&>(e);
+        if (a.inner != nullptr && resolution_ != nullptr && current_func_ != nullptr) {
+            const auto* sym = resolution_->symbol_of(a.inner.get());
+            auto has = [](const ast::FuncDecl& fd, std::string_view n) {
+                return std::ranges::any_of(fd.attributes,
+                                           [&](const ast::Attribute& at) { return at.name == n; });
+            };
+            if (sym != nullptr && sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Func) {
+                const auto& fd = static_cast<const ast::FuncDecl&>(*sym->decl);
+                if (has(fd, "kernel_init") && !has(*current_func_, "kernel_init")
+                    && !has(*current_func_, "boot")) {
+                    reporter_->report(
+                        diag::Diagnostic::error(
+                            std::format("'{}' is @kernel_init, and the init regime is one-way: "
+                                        "only @kernel_init or @boot code may take its address "
+                                        "(§14.7.1)",
+                                        fd.name))
+                            .at(e.range));
+                }
+            }
+        }
+        break;
+    }
     default:
         break;  // literals / SelfExpr / LeadingDotExpr — no embedded calls
     }

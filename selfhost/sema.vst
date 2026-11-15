@@ -951,6 +951,8 @@ struct Ps {
     var cfgBad: Vec[String] // §12.6 unknown names in `@when` predicates
     var unions: Vec[String] // Annex §6.8 the `@repr(union)` struct names
     var pendingUnion: Bool  // the attributes just skipped include `@repr(union)`
+    var kinit: Vec[String]  // Annex §14.7.1 the `@kernel_init` function names
+    var pendingKinit: Bool  // the attributes just skipped include `@kernel_init`
 }
 
 struct BP {
@@ -1140,9 +1142,11 @@ func skipAttributes(_ p: inout Ps) using Alloc { let _ = skipAttrsNaked(&p) }
 func skipAttrsNaked(_ p: inout Ps) using Alloc -> Bool {
     var naked: Bool = false
     p.pendingUnion = false
+    p.pendingKinit = false
     while isKind(p, TokKind.at) {
         advP(&p)  // '@'
         p.attrs.push(curText(p))
+        if streq(curRaw(p), "kernel_init") { p.pendingKinit = true }
         if streq(curRaw(p), "naked") || streq(curRaw(p), "boot") { naked = true }
         let isWhen = streq(curRaw(p), "when")
         let isRepr = streq(curRaw(p), "repr")
@@ -1190,7 +1194,17 @@ func parseDecl(_ p: inout Ps) using Alloc -> Nd {
     if eat(p, TokKind.kwAsync) { mods.append("async ") }
     if eat(p, TokKind.kwInout) { mods.append("inout ") }
     else if eat(p, TokKind.kwSink) { mods.append("sink ") }
-    return parseFunc(&p, vis, mods)
+    let kinit = p.pendingKinit
+    let d = parseFunc(&p, vis, mods)
+    if kinit { recordKinit(&p, d) }
+    return d
+}
+
+func recordKinit(_ p: inout Ps, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let pp, let caps, let t, let r, let b): p.kinit.push(own(name))
+        default: noop()
+    }
 }
 
 func parseConst(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
@@ -3925,6 +3939,7 @@ struct CapEnv {
     var lvTypes: Vec[String]    // ... and the head of that type (`S`, `Ptr`, `MutPtr`)
     var curFn: String           // the function being checked (`Type.method` for a method)
     var waits: Vec[String]      // §14.13 rule 5 functions that wait for an interrupt
+    var kinit: Vec[String]      // Annex §14.7.1 the `@kernel_init` functions
 }
 
 func containsSub(_ s: String, _ sub: Str) -> Bool {
@@ -4023,6 +4038,36 @@ func checkCapabilities(_ env: inout CapEnv, _ u: NUnit) using Alloc {
         checkDeclCaps(env, u.decls.get(j) ?? Nd.wildcard)
         j = j + 1
     }
+}
+
+// Annex §14.7.1 rule 5 the init regime is one-way: ordinary code may not reach
+// a `@kernel_init` function, by a call or through `&f`.
+func capCopyKinit(_ env: inout CapEnv, _ names: Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < names.len() {
+        env.kinit.push(own(names.get(i) ?? own("")))
+        i = i + 1
+    }
+}
+
+func capIntoKinit(_ env: inout CapEnv, _ name: String) using Alloc -> Bool {
+    return esInList(env.kinit, name) && !esInList(env.kinit, env.curFn)
+}
+
+func capAddrOf(_ env: inout CapEnv, _ x: Vec[Nd]) using Alloc {
+    match x.get(0) ?? Nd.wildcard {
+        case .ident(let n): capAddrOfName(env, n)
+        default: noop()
+    }
+    checkCapBoxed(env, x)
+}
+
+func capAddrOfName(_ env: inout CapEnv, _ n: String) using Alloc {
+    if !capIntoKinit(env, n) || capCallLocal(env, n) { return }
+    var m: String = "'"
+    m.append(n)
+    m.append("' is @kernel_init, and the init regime is one-way: only @kernel_init or @boot code may take its address (§14.7.1)")
+    env.bad.push(m)
 }
 
 func capSetFn(_ env: inout CapEnv, _ name: String) using Alloc {
@@ -4312,7 +4357,7 @@ func checkCapExpr(_ env: inout CapEnv, _ e: Nd) using Alloc {
         case .ifE(let ln, let li, let cond, let thenB, let els): checkCapIf(env, li, cond, thenB, els)
         case .block(let stmts): checkCapBlock(env, stmts)
         case .asE(let v, let t, let o): checkCapBoxed(env, v)
-        case .addrOf(let x): checkCapBoxed(env, x)
+        case .addrOf(let x): capAddrOf(env, x)
         case .arg(let l, let io, let v): checkCapBoxed(env, v)
         case .doCatchE(let db, let en, let et, let cb): checkCapPair(env, db, cb)
         // §8 a closure runs with the authority of the place it is written.
@@ -4414,6 +4459,12 @@ func checkIdentCallee(_ env: inout CapEnv, _ name: String) using Alloc {
     if capCallLocal(env, name) { return }
     if userFuncContains(env, name) { requireFuncCaps(env, name); capNoteWaitCall(env, name) }
     else { requireBuiltinCap(env, name) }
+    if capIntoKinit(env, name) {
+        var m: String = "'"
+        m.append(name)
+        m.append("' is @kernel_init, and calls into the init regime are one-way: only another @kernel_init function may call it (§14.7.1)")
+        env.bad.push(m)
+    }
 }
 
 func capDirectWait(_ env: inout CapEnv, _ name: String) using Alloc {
@@ -11607,7 +11658,7 @@ func loadImportPath(_ isC: Bool, _ dotted: String, _ dir: Str, _ errs: inout Vec
 // module path. A file with no `module` line exports nothing addressable.
 func harvestModule(_ env: inout Env, _ contents: Str) using Alloc {
     let toks = tokenize(contents)
-    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false)
+    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false, kinit: Vec.new(), pendingKinit: false)
     let mu = parseUnit(&p)
     if !mu.hasMod { return }
     env.modPaths.push(own(mu.modPath))
@@ -12126,7 +12177,7 @@ func main() -> Int32 {
                 }
                 if let src = readFile(path) {
                     let toks = tokenize(src)
-                    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false)
+                    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false, kinit: Vec.new(), pendingKinit: false)
                     let u = parseUnit(&p)
                     let protos = unitProtocols(p.toks)
                     let attrBad = attrCheck(u, p.attrs, p.cfgBad, boundCheck(protos, p.bounds), protos)
@@ -12259,7 +12310,8 @@ func main() -> Int32 {
                     var cenv = CapEnv(active: Vec.new(), fcNames: Vec.new(), fcCaps: Vec.new(),
                                       userFuncs: Vec.new(), bad: Vec.new(),
                                       selfTy: own(""), lvNames: Vec.new(), lvTypes: Vec.new(),
-                                      curFn: own(""), waits: Vec.new())
+                                      curFn: own(""), waits: Vec.new(), kinit: Vec.new())
+                    capCopyKinit(&cenv, p.kinit)
                     checkCapabilities(&cenv, u)
                     var k: Int = 0
                     while k < cenv.bad.len() {

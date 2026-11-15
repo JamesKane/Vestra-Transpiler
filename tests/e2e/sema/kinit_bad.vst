@@ -1,0 +1,12 @@
+// Annex §14.7.1 rule 5 the init regime is one-way: once stage-1 init returns,
+// ordinary code can't reach a `@kernel_init` function again, neither by a
+// call nor by taking its address to call later.
+
+@kernel_init
+func stage1() {}
+
+func later() {
+    stage1()
+    let p = &stage1
+    let _ = p
+}

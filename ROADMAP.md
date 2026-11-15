@@ -119,7 +119,6 @@ accepts. Ordered by how likely each is to let a wrong program through:
 1. **Smaller unsound items:**
     - `@noinit` storage reachable only through `&buf` under `RawMemory`
       (the `Trivial` half is done; `buf[0]` still reads it directly);
-    - `@kernel_init` reachable only from init code, including through `&f`;
     - `self` typed inside every method (the resolver has no case for it, so
       `self.field` has no type in any struct's methods and nothing about it
       is checked: `return self.n` passes where the result is `Bool`, and a

@@ -1,0 +1,15 @@
+// Annex §14.7.1 init code may call ordinary code and other init code, and may
+// take an init function's address.
+
+func ordinary() -> Int { return 1 }
+
+@kernel_init
+func stage2() {}
+
+@kernel_init
+func stage1() {
+    stage2()
+    let p = &stage2
+    let _ = p
+    let _ = ordinary()
+}
