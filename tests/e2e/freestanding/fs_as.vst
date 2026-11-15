@@ -1,0 +1,14 @@
+// §4 `as` under --no-libc: `__builtin_bit_cast` needs no <bit>.
+
+struct Halves {
+    var lo: UInt16
+    var hi: UInt16
+}
+
+func bits(_ f: Float32) -> UInt32 {
+    return f as UInt32
+}
+
+func halves(_ w: [2]UInt16) -> Halves {
+    return w as Halves
+}

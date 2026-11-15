@@ -1,6 +1,7 @@
 // §4 `as` reinterprets the bytes of two Trivial types of one size and
 // alignment, and never into an enum. The bootstrap returned the target type
-// unchecked, so each of these passed.
+// unchecked, so each of these passed. `as?` has no meaning in the draft yet,
+// so it is rejected rather than guessed at.
 
 enum Cmd {
     case go
@@ -25,6 +26,7 @@ func f(bits: UInt64, w: UInt32, s: String, p: P, v: [4]UInt8, d: Duration, m: P?
     let h = d as Int64
     let i = m as UInt64
     let j = bits as L
+    let k = bits as? Int64
     return 0
 }
 

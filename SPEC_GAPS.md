@@ -79,7 +79,7 @@ Each gap has one of four kinds:
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
 | §4 | Integer overflow does not trap in debug | unsound | `a + b` lowers to plain C++ `+` on `int32_t`. No checked arithmetic exists anywhere in `src/`. `MIN / -1` wraps (the prelude's `idiv`) rather than trapping. |
-| §4 | `as` byte reinterpretation | missing | Checked (both sides `Trivial`, one size and alignment, never into an enum) but not emitted: codegen writes `/* unsupported */`. Sizes come from the `T.size` folder, so only primitives, vectors of them and structs of those can be reinterpreted. `as?` has no checks and no lowering. |
+| §4 | `as` byte reinterpretation | missing (partial) | `as` is checked (both sides `Trivial`, one size and alignment, never into an enum) and lowers to `__builtin_bit_cast`. Sizes come from the `T.size` folder, so only primitives, vectors of them and structs of those can be reinterpreted. Nothing checks that the bytes are a valid value of the target, so `b as Bool` from a `UInt8` of 2 is accepted. `as?` is rejected, since the draft gives it no meaning (see [spec holes](#spec-holes-found-along-the-way)). |
 | §4 | `x.to[T]()` / `x.toWrapping[T]()` conversions | divergent | Neither exists. `Int32(c)` is the substitute and is an unchecked `static_cast`. |
 | §4 | `addingChecked` and friends | missing | "no field or method 'addingChecked'". |
 | §4 | `Enum.from(raw)` | missing | "enum 'C' has no case 'from'". |
@@ -372,6 +372,9 @@ These are problems in the spec itself, not in the compiler:
   match on a signed integer can't spell `case -1:`. The bootstrap follows
   the grammar and gives "expected pattern" at the `-`. Every
   integer literal is still range-checked against the scrutinee's type (§4).
+- §17's grammar has `expr as? type` and lists `as?` among the operators, but
+  no section says what it does: whether it checks a discriminant, a value's
+  validity, or a dynamic type. The bootstrap rejects it.
 
 ## Not determined
 

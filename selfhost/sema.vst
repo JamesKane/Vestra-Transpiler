@@ -7755,7 +7755,10 @@ struct TyLay {
 
 func tyAs(_ env: inout TyEnv, _ v: Vec[Nd], _ t: Vec[Nd], _ isOpt: Bool) using Alloc {
     tyBoxed(env, v)
-    if isOpt { return }
+    if isOpt {
+        env.bad.push(own("`as?` is not supported: the draft gives it no semantics yet; use `as` for a byte reinterpretation"))
+        return
+    }
     let from = tyInferBoxed(env, v)
     let to = tyAnnSpelling(t)
     if streq(from, "") || streq(to, "") { return }

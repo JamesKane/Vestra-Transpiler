@@ -1,0 +1,29 @@
+// §4 `as` reinterprets the bytes of two Trivial types of one size and
+// alignment: a float's bit pattern and back, a signed view of unsigned
+// bits, and one struct's bytes read as another of the same layout.
+
+struct Halves {
+    var lo: UInt16
+    var hi: UInt16
+}
+
+struct Signed {
+    var a: Int16
+    var b: Int16
+}
+
+func bitsOf(_ f: Float32) -> UInt32 {
+    return f as UInt32
+}
+
+func main() using Log, Alloc -> Int32 {
+    let one: Float32 = 1.0
+    let b = bitsOf(one)
+    let back = b as Float32
+    let u: UInt8 = 255
+    let s = u as Int8
+    let h = Halves(lo: 65535, hi: 2)
+    let g = h as Signed
+    print("b=\(b) back=\(back) s=\(s) a=\(g.a) b=\(g.b)\n")
+    return 0
+}

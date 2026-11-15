@@ -112,8 +112,8 @@ hit:
   (Annex §14.6.1).
 - Explicit SIMD lowering of `[N]T` rather than reliance on the
   auto-vectorizer (Gaps §13).
-- `as` byte reinterpretation, which needs layout knowledge the C++ path
-  never had (Gaps §4).
+- ~~`as` byte reinterpretation, which needs layout knowledge the C++ path
+  never had (Gaps §4).~~ Lowered to `__builtin_bit_cast` on the C++ path.
 
 ## Before and alongside the backend: front-end soundness
 
@@ -141,7 +141,7 @@ sema-side `unsound` rows from the Gaps tables below:
    §6).~~ Done, with struct comparisons and compound assignment.
 7. ~~String interpolation needs `using Alloc` (Gaps §4).~~ Done.
 8. ~~`as` byte reinterpretation checks size, alignment and `Trivial` (Gaps
-   §4).~~ Done; the `std::bit_cast` lowering is still missing.
+   §4).~~ Done, and lowered to `__builtin_bit_cast`.
 9. ~~`derive` validation beyond `Default` (Gaps §12.3).~~ Done.
 10. ~~An implicit `asm` clobber is an error, and the weak-CAS loop shapes
     (Annex §14.4, §14.9.3).~~ Done (asm on aarch64 only).

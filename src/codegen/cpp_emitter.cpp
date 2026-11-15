@@ -4817,6 +4817,23 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         os << ")";
         break;
     }
+    case ast::NodeKind::AsExpr: {
+        // §4 `v as T` reinterprets the bytes of two Trivial types of one
+        // size and alignment (sema checks both). The compiler builtin
+        // behind std::bit_cast needs no <bit>, so the freestanding
+        // profile takes the same lowering.
+        const auto& a = static_cast<const ast::AsExpr&>(e);
+        if (a.is_optional || !a.target) {
+            unsupported(os, "`as?`", e.range);
+            break;
+        }
+        os << "__builtin_bit_cast(";
+        emit_type(os, *a.target);
+        os << ", ";
+        emit_expr(os, *a.value);
+        os << ")";
+        break;
+    }
     default:
         unsupported(os, "expression", e.range);
         break;

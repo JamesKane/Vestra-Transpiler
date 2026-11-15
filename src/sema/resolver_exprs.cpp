@@ -958,6 +958,12 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         t = a.target ? resolve_type(*a.target) : types_->error();
         if (!a.is_optional) {
             check_reinterpret(a, from, t);
+        } else {
+            // The draft has `as?` in its grammar (§17) but gives it no
+            // meaning, so it is rejected rather than lowered to a guess.
+            error_at(a.range,
+                     "`as?` is not supported: the draft gives it no semantics yet; use `as` "
+                     "for a byte reinterpretation");
         }
         if (a.is_optional && t != nullptr && !t->is_error()) {
             t = types_->make_optional(t);
