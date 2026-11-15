@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // Copyright (c) 2026 James Kane
 
+#include <functional>
 #include "vestra/sema/ownership.hpp"
 
 #include <algorithm>
@@ -674,6 +675,49 @@ bool OwnershipChecker::consume_field(const ast::Expr& e, diag::SourceRange site)
                                           root->name))
                               .at(site));
         return true;
+    }
+    // §6 a type with a `deinit` moves and is destroyed only as a whole: its
+    // `deinit` needs every field. The outermost such container on the path
+    // is the one named.
+    {
+        auto peel = [](const ast::Expr* x) {
+            while (x->kind == ast::NodeKind::ParenExpr) {
+                x = static_cast<const ast::ParenExpr&>(*x).inner.get();
+            }
+            return x;
+        };
+        std::vector<const ast::Expr*> bases;  // innermost container first
+        const ast::Expr* cur = peel(&e);
+        while (cur->kind == ast::NodeKind::MemberExpr) {
+            cur = peel(static_cast<const ast::MemberExpr&>(*cur).base.get());
+            bases.push_back(cur);
+        }
+        std::function<std::string(const ast::Expr*)> spell = [&](const ast::Expr* x) {
+            x = peel(x);
+            if (x->kind == ast::NodeKind::MemberExpr) {
+                const auto& m = static_cast<const ast::MemberExpr&>(*x);
+                return spell(m.base.get()) + "." + m.member;
+            }
+            return root->name;
+        };
+        for (auto it = bases.rbegin(); it != bases.rend(); ++it) {
+            auto bt = resolution_->type_of(*it);
+            const auto* d = bt != nullptr ? bt->nominal_decl() : nullptr;
+            if (d == nullptr || d->kind != ast::NodeKind::Struct
+                || static_cast<const ast::StructDecl*>(d)->deinit_body == nullptr) {
+                continue;
+            }
+            reporter_->report(
+                diag::Diagnostic::error(
+                    std::format("can't move '{}.{}' out of '{}': type {} has a `deinit`, so it "
+                                "moves only as a whole; use `copy`",
+                                root->name,
+                                *path,
+                                spell(*it),
+                                static_cast<const ast::StructDecl*>(d)->name))
+                    .at(site));
+            return true;
+        }
     }
     // Moving out of a borrow: the caller still owns the value.
     if (root->kind == SymbolKind::Parameter && current_func_ != nullptr) {

@@ -1,0 +1,23 @@
+// §6 the bootstrap let a field move out of a value whose type has a
+// `deinit`, which then ran on a value missing that field.
+
+struct B { var s: String }
+struct R {
+    var a: Int32
+    var b: B
+    deinit { }
+}
+struct W { var r: R }
+
+func take(_ b: sink B) -> Int32 { return 0 }
+
+func arg(_ r: sink R) -> Int32 { return take(r.b) }
+func bound(_ r: sink R) -> Int32 { let x: B = r.b; return 0 }
+func nested(_ w: sink W) -> Int32 { return take(w.r.b) }
+
+func local() -> Int32 {
+    let r: R = R(a: 1, b: B(s: "x"))
+    return take(r.b)
+}
+
+func main() -> Int32 { return 0 }

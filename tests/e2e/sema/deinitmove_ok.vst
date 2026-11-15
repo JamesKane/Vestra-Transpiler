@@ -1,0 +1,21 @@
+// §6 a type with a `deinit` moves as a whole: the whole value can move, a
+// field can be copied out, a trivial field read, and a deinit type held in a
+// plain struct can itself be moved out of that struct.
+
+struct B { var s: String }
+struct R {
+    var a: Int32
+    var b: B
+    deinit { }
+}
+struct W { var r: R }
+
+func take(_ b: sink B) -> Int32 { return 0 }
+func takeR(_ r: sink R) -> Int32 { return 0 }
+
+func whole(_ r: sink R) -> Int32 { return takeR(r) }
+func copied(_ r: sink R) -> Int32 { return take(copy r.b) }
+func scalar(_ r: sink R) -> Int32 { let n: Int32 = r.a; return takeR(r) + n }
+func outer(_ w: sink W) -> Int32 { return takeR(w.r) }
+
+func main() -> Int32 { return 0 }

@@ -107,7 +107,6 @@ Each gap has one of four kinds:
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
 | §6 | `deinit` | missing | Parsed (`parser_decls.cpp:57`) but never checked or emitted, so no C++ destructor is generated. Its no-capability rule goes unchecked (`print` in `deinit` passes). |
-| §6 | No moving a field out of a `deinit` type | unsound | `take(r.b)` is accepted. |
 | §6 | `embed` fields | missing (partial) | Memberwise init rejects the embed label ("not constructible (yet)", `resolver_call.cpp:1223`). The explicit `e.t.p` path fails. Ambiguous promoted names are not diagnosed. |
 | §6 | Opaque types inherit no operations | unsound | `==` between two values of an opaque `EntityId` is accepted. |
 | §6 | `@repr(wire)` byte order | missing | "@repr(wire) is not supported yet". |

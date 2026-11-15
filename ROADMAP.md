@@ -119,7 +119,7 @@ accepts. Ordered by how likely each is to let a wrong program through:
 The Annex A list (MMIO payloads, fences, `using InterruptsOff`,
 `@kernel_init` addresses, `@noinit` values, `self` typing, variable
 orderings, `Atomic[T]`, `swapContext`) is closed, and so are items 1
-to 3 below. What's left is the sema-side `unsound` rows in the Gaps tables:
+to 4 below. What's left is the sema-side `unsound` rows in the Gaps tables:
 
 1. ~~Integer literals range-checked against the target type (`return 300` as
    `Int8`; Gaps §4).~~ Done.
@@ -127,7 +127,8 @@ to 3 below. What's left is the sema-side `unsound` rows in the Gaps tables:
    §19.3).~~ Done.
 3. ~~`send` takes its argument by `sink` (`ch.send(b); return b.n`; Gaps
    §11.1).~~ Done, with `Box.new`.
-4. No moving a field out of a `deinit` type (`take(r.b)`; Gaps §6).
+4. ~~No moving a field out of a `deinit` type (`take(r.b)`; Gaps §6).~~
+   Done.
 5. `nonescaping` closure parameters, and a closure's capability row (Gaps
    §7, §8).
 6. Opaque types inherit no operations (`==` on an opaque `EntityId`; Gaps

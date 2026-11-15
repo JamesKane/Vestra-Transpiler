@@ -7138,6 +7138,20 @@ func ownConsumeField(_ env: inout OwnEnv, _ e: Nd) using Alloc {
         env.bad.push(m)
         return
     }
+    // §6 a type with a `deinit` moves only as a whole; name the outermost one.
+    var dty: String = own("")
+    let holder = ownDeinitHolder(env, e, &dty)
+    if !streq(holder, "") {
+        var m: String = "can't move '"
+        m.append(full)
+        m.append("' out of '")
+        m.append(holder)
+        m.append("': type ")
+        m.append(dty)
+        m.append(" has a `deinit`, so it moves only as a whole; use `copy`")
+        env.bad.push(m)
+        return
+    }
     let pi = ownFindIn(env.pName, fp.root)
     if pi >= 0 && ownFindIn(env.locName, fp.root) < 0 && !streq(env.pMode.get(pi) ?? own(""), "sink ") {
         var m: String = "can't move '"
@@ -7162,6 +7176,53 @@ func ownConsumeField(_ env: inout OwnEnv, _ e: Nd) using Alloc {
     }
     let j = ownFind(env, full)
     if j >= 0 { env.consumed.set(j, true) } else { ownPush(env, full, true, false) }
+}
+
+func ownDeinitHolder(_ env: inout OwnEnv, _ e: Nd, _ dty: inout String) using Alloc -> String {
+    return match e {
+        case .member(let base, let m, let ch): ownDeinitHolderBase(env, base, dty)
+        case .paren(let x): ownDeinitHolder(env, x.get(0) ?? Nd.wildcard, dty)
+        default: own("")
+    }
+}
+
+func ownDeinitHolderBase(_ env: inout OwnEnv, _ base: Vec[Nd], _ dty: inout String) using Alloc -> String {
+    let b = base.get(0) ?? Nd.wildcard
+    let inner = ownDeinitHolder(env, b, dty)
+    if !streq(inner, "") { return inner }
+    var head: String = own("")
+    if streq(ownIdentName(base), "") {
+        let fp = ownFieldPath(env, b)
+        if fp.ok { head = ownTyHead(fp.ty) }
+    } else {
+        let rn = ownIdentName(base)
+        var ty: Vec[Nd] = Vec.new()
+        let li = ownFindIn(env.locName, rn)
+        let pi = ownFindIn(env.pName, rn)
+        if li >= 0 { ty.push(env.locTy.get(li) ?? Nd.wildcard) }
+        else if pi >= 0 { ty.push(env.pTy.get(pi) ?? Nd.wildcard) }
+        if ty.len() > 0 { head = ownTyHead(ty) }
+    }
+    if streq(head, "") || ownFindIn(env.deinitTys, head) < 0 { return own("") }
+    dty = own(head)
+    return ownSpellPlace(b)
+}
+
+func ownSpellPlace(_ e: Nd) using Alloc -> String {
+    return match e {
+        case .ident(let x): own(x)
+        case .selfE: own("self")
+        case .paren(let x): ownSpellPlace(x.get(0) ?? Nd.wildcard)
+        case .member(let base, let m, let ch): ownSpellMember(base, m)
+        default: own("")
+    }
+}
+
+func ownSpellMember(_ base: Vec[Nd], _ m: String) using Alloc -> String {
+    var s: String = ownSpellPlace(base.get(0) ?? Nd.wildcard)
+    s.append(".")
+    s.append(m)
+    return s
 }
 
 // Assigning a field (or the whole binding) gives the moved paths under it a
