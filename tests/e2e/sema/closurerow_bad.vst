@@ -1,0 +1,22 @@
+// §7, §8 the bootstrap checked a closure's body against the `with` block it
+// was written in, and its type dropped the row, so a closure that used
+// `Alloc` could be typed `() -> Int32` and called after the block ended.
+
+func mk() using Alloc -> Int32 { return 1 }
+func plain(_ f: () -> Int32) -> Int32 { return f() }
+
+func escapes() using Alloc -> () -> Int32 {
+    return { => mk() }
+}
+
+func leak() -> Int32 {
+    var n: Int32 = 0
+    with Alloc {
+        let h: () -> Int32 = { => mk() }
+        n = plain(h)
+        n = plain({ => mk() })
+    }
+    return n
+}
+
+func main() -> Int32 { return leak() }

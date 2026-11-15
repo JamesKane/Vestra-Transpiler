@@ -451,7 +451,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
                                  body_type->describe(),
                                  expected->result()->describe()));
         }
-        t = types_->make_function(expected->parts(), body_type);
+        t = types_->make_function(expected->parts(), body_type, expected->caps());
         break;
     }
     case ast::NodeKind::CopyExpr:

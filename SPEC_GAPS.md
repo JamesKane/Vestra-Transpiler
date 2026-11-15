@@ -138,7 +138,7 @@ Each gap has one of four kinds:
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §8 | A closure's row | unsound (partial) | A closure body is checked against the capabilities where it is written, and its type carries no row, so a closure made inside a `with` block and called after the block has ended still uses that block's authority. |
+| §8 | A closure's row | weaker | A closure's type carries the row of the function type it is given, and its body is checked against that row. A closure handed straight to a builtin (`map`, `filter`, `parallel`, `mapError`) keeps the authority of the place it is written, since the spec's combinators are row-polymorphic and the builtins have no row parameter to bind. |
 | §8 | Row polymorphism, `(T) using C -> U ... using C` | missing | "cannot infer generic parameter 'C'". |
 | §8, §19.7 | `with Cap = value` binds and passes a real value | divergent (v0.5) | Capabilities are a set of names. The bound value is not type-checked (`with Alloc = 42` passes), and codegen discards it as `(void)(...)`. No hidden parameter is passed. |
 | §8 | A capability name is a value in scope (`Log.info(...)`) | missing | "no field or method 'info'". |

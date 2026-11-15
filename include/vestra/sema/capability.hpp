@@ -83,6 +83,10 @@ private:
     // Stack of capability scopes. Each layer is the set of names added by
     // the enclosing function entry or a `with` block.
     std::vector<std::unordered_set<std::string>> scopes_;
+    // §8 closures handed straight to a builtin (`map`, `filter`, `parallel`,
+    // `mapError`, ...): the builtin is row-polymorphic, so they keep the
+    // authority of the place they are written.
+    std::unordered_set<const ast::Expr*> inherit_row_;
     // The function whose body is being checked.
     const ast::FuncDecl* current_func_ = nullptr;
     // §14.13 rule 5 the functions that wait for an interrupt, directly or

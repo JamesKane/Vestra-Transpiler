@@ -1,0 +1,22 @@
+// §7, §8 a closure's type is `(A) using C -> R`, and its body runs with that
+// row: a closure that declares `Alloc` can be made where no `Alloc` is in
+// scope, and is called only where it is.
+
+func mk() using Alloc -> Int32 { return 1 }
+func runA(_ f: () using Alloc -> Int32) using Alloc -> Int32 { return f() }
+func plain(_ f: () -> Int32) -> Int32 { return f() }
+
+func maker() -> () using Alloc -> Int32 {
+    return { => mk() }
+}
+
+func build() -> Int32 {
+    let g: () using Alloc -> Int32 = { => mk() }
+    var n: Int32 = plain({ => 2 })
+    with Alloc {
+        n = n + runA(g) + runA({ => mk() })
+    }
+    return n
+}
+
+func main() -> Int32 { return build() }

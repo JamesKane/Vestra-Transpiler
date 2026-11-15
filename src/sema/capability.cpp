@@ -543,12 +543,30 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
             }
         }
 
+        // The callee may be a Func we know; if so, enforce its using row.
+        const auto* sym = resolution_->symbol_of(c.callee.get());
+        {
+            const bool user = (sym != nullptr && sym->decl != nullptr
+                               && sym->decl->kind == ast::NodeKind::Func)
+                              || method_callee(c) != nullptr
+                              || (sym != nullptr && sym->type != nullptr
+                                  && sym->type->kind() == TypeKind::Function);
+            if (!user) {
+                for (const auto& a : c.args) {
+                    const ast::Expr* v = a.value.get();
+                    while (v != nullptr && v->kind == ast::NodeKind::ParenExpr) {
+                        v = static_cast<const ast::ParenExpr*>(v)->inner.get();
+                    }
+                    if (v != nullptr && v->kind == ast::NodeKind::ClosureExpr) {
+                        inherit_row_.insert(v);
+                    }
+                }
+            }
+        }
         check_expr(*c.callee);
         for (const auto& a : c.args) {
             check_expr(*a.value);
         }
-        // The callee may be a Func we know; if so, enforce its using row.
-        const auto* sym = resolution_->symbol_of(c.callee.get());
         if (c.callee != nullptr && c.callee->kind == ast::NodeKind::IdentExpr
             && current_func_ != nullptr) {
             const auto& n = static_cast<const ast::IdentExpr&>(*c.callee).name;
@@ -738,15 +756,31 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
             check_expr(*el);
         }
         break;
-    case ast::NodeKind::ClosureExpr:
-        // §8 a closure runs with the authority of the place it is written: its
-        // body is checked against the capabilities in scope there.
+    case ast::NodeKind::ClosureExpr: {
+        // §7, §8 a closure's type is a function type `(A) using C -> R`, and
+        // its body runs with that row's authority, wherever it is later
+        // called. The resolver gives every closure the function type of its
+        // context, so the body is checked against that row, not the
+        // capabilities in scope where it is written.
+        const auto ft = resolution_ != nullptr ? resolution_->type_of(&e) : nullptr;
+        std::vector<std::unordered_set<std::string>> saved;
+        const bool own_row =
+            ft != nullptr && ft->kind() == TypeKind::Function && !inherit_row_.contains(&e);
+        if (own_row) {
+            saved = std::move(scopes_);
+            scopes_.clear();
+            scopes_.emplace_back(ft->caps().begin(), ft->caps().end());
+        }
         for (const auto& st : static_cast<const ast::ClosureExpr&>(e).body) {
             if (st) {
                 check_stmt(*st);
             }
         }
+        if (own_row) {
+            scopes_ = std::move(saved);
+        }
         break;
+    }
     case ast::NodeKind::AddressOfExpr: {
         // §14.7.1 rule 5 the init regime is one-way through `&f` too: only
         // init code, or the @boot code that jumps into it, may name it.

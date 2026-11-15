@@ -3959,6 +3959,9 @@ struct CapEnv {
     var curFn: String           // the function being checked (`Type.method` for a method)
     var waits: Vec[String]      // §14.13 rule 5 functions that wait for an interrupt
     var kinit: Vec[String]      // Annex §14.7.1 the `@kernel_init` functions
+    var pfKey: Vec[String]      // §8 a user function's function-typed parameter, "f#i" ...
+    var pfRow: Vec[String]      // ... and that type's row, "A,B"
+    var curRetRow: String       // per function: its result's row when it is a function type, else "-"
 }
 
 func containsSub(_ s: String, _ sub: Str) -> Bool {
@@ -4126,7 +4129,7 @@ func capBareName(_ q: String) using Alloc -> String {
 func collectFuncCaps(_ env: inout CapEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let pp, let caps, let t, let r, let b):
-            recordFunc(env, name, mods, caps)
+            recordFuncAll(env, name, mods, caps, pp)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): collectMethodCaps(env, name, m)
         case .enumD(let vis, let name, let cs, let m, let generics): collectMethodCaps(env, name, m)
         default: noop()
@@ -4167,6 +4170,117 @@ func recordQualified(_ env: inout CapEnv, _ tyName: String, _ name: String, _ mo
     }
 }
 
+func recordFuncAll(_ env: inout CapEnv, _ name: String, _ mods: String, _ caps: Vec[Nd], _ pp: Vec[Nd]) using Alloc {
+    recordFunc(env, name, mods, caps)
+    recordFnParams(env, name, pp)
+}
+
+// §8 the row of each function-typed parameter, so a closure passed there is
+// checked against it.
+func recordFnParams(_ env: inout CapEnv, _ name: String, _ pp: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < pp.len() {
+        match pp.get(i) ?? Nd.wildcard {
+            case .param(let lo, let lbl, let nm, let ne, let md, let ty): recordFnParam(env, name, i, ty)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func recordFnParam(_ env: inout CapEnv, _ name: String, _ i: Int, _ ty: Vec[Nd]) using Alloc {
+    let row = capFnTypeRow(ty)
+    if streq(row, "-") { return }
+    env.pfKey.push(tyNeKey(name, i))
+    env.pfRow.push(row)
+}
+
+// A spelled function type's row as "A,B" ("" for none), or "-" if `ty` isn't one.
+func capFnTypeRow(_ ty: Vec[Nd]) using Alloc -> String {
+    if let t = ty.get(0) {
+        return match t {
+            case .fnT(let ps, let caps, let thr, let res): capRowSpelling(caps)
+            default: own("-")
+        }
+    }
+    return own("-")
+}
+
+func capRowSpelling(_ caps: Vec[Nd]) using Alloc -> String {
+    var t: String = "fnrow:"
+    var i: Int = 0
+    while i < caps.len() {
+        match caps.get(i) ?? Nd.wildcard {
+            case .named(let path, let g, let a): capAppendRow(t, path)
+            default: noop()
+        }
+        i = i + 1
+    }
+    return own(t.slice(6, t.len()))
+}
+
+// §7, §8 a closure's body runs with its own type's row, not the authority of
+// the place it is written.
+func capClosureRow(_ env: inout CapEnv, _ body: Vec[Nd], _ row: String) using Alloc {
+    var saved: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < env.active.len() {
+        saved.push(own(env.active.get(i) ?? own("")))
+        i = i + 1
+    }
+    while env.active.len() > 0 { let _ = env.active.pop() }
+    var start: Int = 0
+    var j: Int = 0
+    while j <= row.len() {
+        if j == row.len() || (row.byteAt(j) ?? 0) == 44 {
+            if j > start { env.active.push(own(row.slice(start, j))) }
+            start = j + 1
+        }
+        j = j + 1
+    }
+    checkCapBlock(env, body)
+    while env.active.len() > 0 { let _ = env.active.pop() }
+    var k: Int = 0
+    while k < saved.len() {
+        env.active.push(own(saved.get(k) ?? own("")))
+        k = k + 1
+    }
+}
+
+// The body of `v` when it is a (parenthesized) closure literal.
+func capClosureBody(_ v: Vec[Nd], _ out: inout Vec[Nd], _ found: inout Bool) using Alloc {
+    if let n = v.get(0) {
+        match n {
+            case .closureE(let ps, let body): capTakeBody(&out, &found, body)
+            case .paren(let x): capClosureBody(x, &out, &found)
+            default: noop()
+        }
+    }
+}
+
+func capTakeBody(_ out: inout Vec[Nd], _ found: inout Bool, _ body: Vec[Nd]) {
+    out = body
+    found = true
+}
+
+// Walk `v`; a closure literal there takes `row` (unless it is "-").
+func capWithRow(_ env: inout CapEnv, _ v: Vec[Nd], _ row: String) using Alloc {
+    var body: Vec[Nd] = Vec.new()
+    var found: Bool = false
+    if !streq(row, "-") { capClosureBody(v, &body, &found) }
+    if found { capClosureRow(env, body, row) } else { checkCapBoxed(env, v) }
+}
+
+func capParamRow(_ env: inout CapEnv, _ fname: String, _ i: Int) using Alloc -> String {
+    let key = tyNeKey(fname, i)
+    var k: Int = 0
+    while k < env.pfKey.len() {
+        if streq(env.pfKey.get(k) ?? own(""), key) { return own(env.pfRow.get(k) ?? own("")) }
+        k = k + 1
+    }
+    return own("")
+}
+
 func recordFunc(_ env: inout CapEnv, _ name: String, _ mods: String, _ caps: Vec[Nd]) using Alloc {
     env.userFuncs.push(name)
     var i: Int = 0
@@ -4196,7 +4310,7 @@ func addRow(_ env: inout CapEnv, _ name: String, _ path: String) using Alloc {
 func checkDeclCaps(_ env: inout CapEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let pp, let caps, let t, let r, let b):
-            capFuncDecl(env, mods, name, pp, caps, b)
+            capFuncDeclRow(env, mods, name, pp, caps, r, b)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): checkMethodsCaps(env, name, m)
         case .enumD(let vis, let name, let cs, let m, let generics): checkMethodsCaps(env, name, m)
         default: noop()
@@ -4211,6 +4325,12 @@ func checkMethodsCaps(_ env: inout CapEnv, _ tyName: String, _ methods: Vec[Nd])
         i = i + 1
     }
     env.selfTy = own("")
+}
+
+func capFuncDeclRow(_ env: inout CapEnv, _ mods: String, _ name: String, _ pp: Vec[Nd], _ caps: Vec[Nd], _ r: Vec[Nd], _ b: Vec[Nd]) using Alloc {
+    env.curRetRow = capFnTypeRow(r)
+    capFuncDecl(env, mods, name, pp, caps, b)
+    env.curRetRow = own("-")
 }
 
 func capFuncDecl(_ env: inout CapEnv, _ mods: String, _ name: String, _ pp: Vec[Nd], _ caps: Vec[Nd], _ b: Vec[Nd]) using Alloc {
@@ -4423,7 +4543,7 @@ func checkCapStmt(_ env: inout CapEnv, _ s: Nd) using Alloc {
         case .letS(let p, let ty, let v): checkCapLet(env, p, ty, v)
         case .varS(let p, let ty, let v): checkCapLet(env, p, ty, v)
         case .exprS(let e): checkCapBoxed(env, e)
-        case .retS(let v): checkCapBoxed(env, v)
+        case .retS(let v): capRet(env, v)
         case .assignS(let op, let t, let v): checkCapPair(env, t, v)
         case .whileS(let c, let b): checkCapPair(env, c, b)
         case .forS(let pp, let it, let b): checkCapPair(env, it, b)
@@ -4433,8 +4553,13 @@ func checkCapStmt(_ env: inout CapEnv, _ s: Nd) using Alloc {
 }
 
 func checkCapLet(_ env: inout CapEnv, _ p: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
-    checkCapBoxed(env, v)
+    capWithRow(env, v, capFnTypeRow(ty))
     capLetLocal(env, p, ty, v)
+}
+
+func capRet(_ env: inout CapEnv, _ v: Vec[Nd]) using Alloc {
+    let row = own(env.curRetRow)
+    capWithRow(env, v, row)
 }
 
 func checkWith(_ env: inout CapEnv, _ caps: Vec[Nd], _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc {
@@ -4458,9 +4583,14 @@ func checkPrefixCaps(_ env: inout CapEnv, _ kw: String, _ inner: Vec[Nd]) using 
 func checkCall(_ env: inout CapEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
     checkCalleeCaps(env, callee.get(0) ?? Nd.wildcard, args)
     checkCapBoxed(env, callee)
+    // §8 a closure handed to a user function takes the parameter's row; one
+    // handed to a builtin (row-polymorphic) keeps the authority where it is.
+    let fname = exCalleeNameBoxed(callee)
+    let user = !streq(fname, "") && userFuncContains(env, fname) && streq(capLocalType(env, fname), "")
     var i: Int = 0
     while i < args.len() {
-        checkCapExpr(env, args.get(i) ?? Nd.wildcard)
+        if user { capWithRow(env, ownArgValue(args.get(i) ?? Nd.wildcard), capParamRow(env, fname, i)) }
+        else { checkCapExpr(env, args.get(i) ?? Nd.wildcard) }
         i = i + 1
     }
 }
@@ -12938,7 +13068,8 @@ func main() -> Int32 {
                     var cenv = CapEnv(active: Vec.new(), fcNames: Vec.new(), fcCaps: Vec.new(),
                                       userFuncs: Vec.new(), bad: Vec.new(),
                                       selfTy: own(""), lvNames: Vec.new(), lvTypes: Vec.new(),
-                                      curFn: own(""), waits: Vec.new(), kinit: Vec.new())
+                                      curFn: own(""), waits: Vec.new(), kinit: Vec.new(),
+                                      pfKey: Vec.new(), pfRow: Vec.new(), curRetRow: own("-"))
                     capCopyKinit(&cenv, p.kinit)
                     checkCapabilities(&cenv, u)
                     var k: Int = 0
