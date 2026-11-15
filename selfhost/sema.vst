@@ -4594,6 +4594,12 @@ struct ExEnv {
     var sigIdx: Vec[Int]       // ... parameter index ...
     var sigMode: Vec[String]   // ... and that parameter's mode ("", "inout ", "sink ")
     var bad: Vec[String]
+    var mKey: Vec[String]      // §19.3 user methods as "Owner.method" ...
+    var mRecv: Vec[String]     // ... and their receiver mode ("", "inout ", "sink ")
+    var tyNames: Vec[String]   // user struct / enum names, for `let p = P(...)`
+    var lvNames: Vec[String]   // per function: bindings with a known type head ...
+    var lvTypes: Vec[String]   // ... and that head ("" when unknown, shadowing)
+    var selfTy: String         // the owner whose methods are being walked
 }
 
 func exCheck(_ env: inout ExEnv, _ u: NUnit) using Alloc {
@@ -4616,8 +4622,45 @@ func exCollectDecl(_ env: inout ExEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             exRecordSig(env, name, params)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): exCollectMethods(env, name, m)
+        case .enumD(let vis, let name, let cs, let m, let generics): exCollectMethods(env, name, m)
         default: noop()
     }
+}
+
+// Methods are keyed "Owner.method", which no bare-ident callee can spell.
+func exCollectMethods(_ env: inout ExEnv, _ owner: String, _ methods: Vec[Nd]) using Alloc {
+    env.tyNames.push(own(owner))
+    var i: Int = 0
+    while i < methods.len() {
+        match methods.get(i) ?? Nd.wildcard {
+            case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
+                exCollectMethod(env, owner, mods, name, params)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func exCollectMethod(_ env: inout ExEnv, _ owner: String, _ mods: String, _ name: String, _ params: Vec[Nd]) using Alloc {
+    var key: String = own(owner)
+    key.append(".")
+    key.append(name)
+    var md: String = own("")
+    if containsSub(mods, "inout ") { md = own("inout ") }
+    if containsSub(mods, "sink ") { md = own("sink ") }
+    env.mKey.push(own(key))
+    env.mRecv.push(md)
+    exRecordSig(env, key, params)
+}
+
+func exMethodIdx(_ env: inout ExEnv, _ key: String) using Alloc -> Int {
+    var i: Int = 0
+    while i < env.mKey.len() {
+        if streq(env.mKey.get(i) ?? own(""), key) { return i }
+        i = i + 1
+    }
+    return -1
 }
 
 func exRecordSig(_ env: inout ExEnv, _ name: String, _ params: Vec[Nd]) using Alloc {
@@ -4659,13 +4702,19 @@ func exCheckDecl(_ env: inout ExEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             exCheckFunc(env, mods, name, params, b)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): exCheckMethods(env, m)
-        case .enumD(let vis, let name, let cs, let m, let generics): exCheckMethods(env, m)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): exCheckMethods(env, name, m)
+        case .enumD(let vis, let name, let cs, let m, let generics): exCheckMethods(env, name, m)
         default: noop()
     }
 }
 
-func exCheckMethods(_ env: inout ExEnv, _ methods: Vec[Nd]) using Alloc {
+func exCheckMethods(_ env: inout ExEnv, _ owner: String, _ methods: Vec[Nd]) using Alloc {
+    env.selfTy = own(owner)
+    exCheckMethodList(env, methods)
+    env.selfTy = own("")
+}
+
+func exCheckMethodList(_ env: inout ExEnv, _ methods: Vec[Nd]) using Alloc {
     var i: Int = 0
     while i < methods.len() {
         exCheckDecl(env, methods.get(i) ?? Nd.wildcard)
@@ -4675,7 +4724,81 @@ func exCheckMethods(_ env: inout ExEnv, _ methods: Vec[Nd]) using Alloc {
 
 func exCheckFunc(_ env: inout ExEnv, _ mods: String, _ name: String, _ params: Vec[Nd], _ body: Vec[Nd]) using Alloc {
     exAsyncInout(env, mods, name, params)
+    while env.lvNames.len() > 0 { let _ = env.lvNames.pop() }
+    while env.lvTypes.len() > 0 { let _ = env.lvTypes.pop() }
+    var i: Int = 0
+    while i < params.len() {
+        match params.get(i) ?? Nd.wildcard {
+            case .param(let lo, let lbl, let nm, let ne, let md, let ty): exNoteLocal(env, nm, ty)
+            default: noop()
+        }
+        i = i + 1
+    }
     exBoxed(env, body)
+}
+
+// A binding's type head: spelled (`p: P`), or a user type's constructor call.
+func exNoteLocal(_ env: inout ExEnv, _ nm: String, _ ty: Vec[Nd]) using Alloc {
+    var head: String = own("")
+    if let t = ty.get(0) {
+        match t {
+            case .named(let path, let g, let a): exSetStr(&head, path)
+            default: noop()
+        }
+    }
+    env.lvNames.push(own(nm))
+    env.lvTypes.push(head)
+}
+
+func exSetStr(_ dst: inout String, _ v: String) using Alloc {
+    dst = own(v)
+}
+
+func exNoteLet(_ env: inout ExEnv, _ p: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    let nm = capPatName(p)
+    if streq(nm, "") { return }
+    if ty.len() > 0 { exNoteLocal(env, nm, ty); return }
+    var head: String = own("")
+    if let n = v.get(0) {
+        match n {
+            case .call(let callee, let args): exSetStr(&head, exCalleeNameBoxed(callee))
+            default: noop()
+        }
+    }
+    if !exIsTyName(env, head) { head = own("") }
+    env.lvNames.push(own(nm))
+    env.lvTypes.push(head)
+}
+
+func exIsTyName(_ env: inout ExEnv, _ n: String) using Alloc -> Bool {
+    if streq(n, "") { return false }
+    var i: Int = 0
+    while i < env.tyNames.len() {
+        if streq(env.tyNames.get(i) ?? own(""), n) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func exTypeOf(_ env: inout ExEnv, _ base: Vec[Nd]) using Alloc -> String {
+    if let n = base.get(0) {
+        return match n {
+            case .ident(let x): exLocalType(env, x)
+            case .selfE: own(env.selfTy)
+            case .paren(let inner): exTypeOf(env, inner)
+            default: own("")
+        }
+    }
+    return own("")
+}
+
+func exLocalType(_ env: inout ExEnv, _ x: String) using Alloc -> String {
+    var i: Int = env.lvNames.len() - 1
+    while i >= 0 {
+        if streq(env.lvNames.get(i) ?? own(""), x) { return env.lvTypes.get(i) ?? own("") }
+        i = i - 1
+    }
+    return own("")
 }
 
 func exAsyncInout(_ env: inout ExEnv, _ mods: String, _ name: String, _ params: Vec[Nd]) using Alloc {
@@ -4767,8 +4890,8 @@ func exBlock(_ env: inout ExEnv, _ stmts: Vec[Nd]) using Alloc {
 
 func exStmt(_ env: inout ExEnv, _ s: Nd) using Alloc {
     match s {
-        case .letS(let p, let ty, let v): exBoxed(env, v)
-        case .varS(let p, let ty, let v): exBoxed(env, v)
+        case .letS(let p, let ty, let v): exLetStmt(env, p, ty, v)
+        case .varS(let p, let ty, let v): exLetStmt(env, p, ty, v)
         case .exprS(let e): exBoxed(env, e)
         case .retS(let v): exBoxed(env, v)
         case .assignS(let op, let t, let v): exPair(env, t, v)
@@ -4777,6 +4900,11 @@ func exStmt(_ env: inout ExEnv, _ s: Nd) using Alloc {
         case .withS(let caps, let vals, let body): exWith(env, vals, body)
         default: noop()
     }
+}
+
+func exLetStmt(_ env: inout ExEnv, _ p: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    exBoxed(env, v)
+    exNoteLet(env, p, ty, v)
 }
 
 func exWith(_ env: inout ExEnv, _ vals: Vec[Nd], _ body: Vec[Nd]) using Alloc {
@@ -4800,14 +4928,37 @@ func exCall(_ env: inout ExEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc 
     }
     // Recover the callee's name for parameter-mode lookup (bare ident only;
     // member-expr callees default every parameter to read).
-    let fname = exCalleeNameBoxed(callee)
+    var fname: String = exCalleeNameBoxed(callee)
     var bs = Borrows(roots: Vec.new(), paths: Vec.new(), inouts: Vec.new())
+    // §19.3 a user method borrows its receiver for the whole call (`inout
+    // func` exclusively, `func` shared); it leads the scan. `sink` is a move.
+    if let c = callee.get(0) {
+        match c {
+            case .member(let base, let mn, let chain): exRecvBorrow(env, base, mn, &fname, &bs)
+            default: noop()
+        }
+    }
     var i: Int = 0
     while i < args.len() {
         exGatherArg(env, fname, i, args.get(i) ?? Nd.wildcard, &bs)
         i = i + 1
     }
     exConflictScan(env, &bs)
+}
+
+func exRecvBorrow(_ env: inout ExEnv, _ base: Vec[Nd], _ mn: String, _ fname: inout String, _ bs: inout Borrows) using Alloc {
+    let bt = exTypeOf(env, base)
+    if streq(bt, "") { return }
+    var key: String = own(bt)
+    key.append(".")
+    key.append(mn)
+    let k = exMethodIdx(env, key)
+    if k < 0 { return }
+    fname = own(key)
+    let md = env.mRecv.get(k) ?? own("")
+    if streq(md, "sink ") { return }
+    let pl = exAsPlaceBoxed(base)
+    if pl.ok { exPushBorrow(bs, pl.root, pl.path, streq(md, "inout ")) }
 }
 
 func exCalleeNameBoxed(_ callee: Vec[Nd]) using Alloc -> String {
@@ -4920,6 +5071,7 @@ func exAsPlace(_ e: Nd) using Alloc -> Place {
     return match e {
         case .paren(let inner): exAsPlaceBoxed(inner)
         case .ident(let name): Place(ok: true, root: name, path: "")
+        case .selfE: Place(ok: true, root: "self", path: "")
         case .member(let base, let m, let chain): exMemberPlace(base, m)
         default: Place(ok: false, root: "", path: "")
     }
@@ -12625,7 +12777,9 @@ func main() -> Int32 {
                         o = o + 1
                     }
                     var xenv = ExEnv(sigName: Vec.new(), sigIdx: Vec.new(),
-                                     sigMode: Vec.new(), bad: Vec.new())
+                                     sigMode: Vec.new(), bad: Vec.new(),
+                                     mKey: Vec.new(), mRecv: Vec.new(), tyNames: Vec.new(),
+                                     lvNames: Vec.new(), lvTypes: Vec.new(), selfTy: own(""))
                     exCheck(&xenv, u)
                     var x: Int = 0
                     while x < xenv.bad.len() {

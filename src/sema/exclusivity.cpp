@@ -264,7 +264,29 @@ void ExclusivityChecker::check_call(const ast::CallExpr& c) {
     }
 
     std::vector<Borrow> borrows;
-    borrows.reserve(c.args.size());
+    borrows.reserve(c.args.size() + 1);
+
+    // §19.3 a user method borrows its receiver for the whole call: `inout
+    // func` exclusively, a plain `func` shared. It is evaluated first, so it
+    // leads the scan and `p.bump(&p.a)` reports at the argument. A `sink`
+    // receiver is a move, which ownership checks.
+    if (c.callee->kind == ast::NodeKind::MemberExpr) {
+        const auto& m = static_cast<const ast::MemberExpr&>(*c.callee);
+        if (const auto* md = user_method(m)) {
+            if (fn == nullptr) {
+                fn = md;
+            }
+            if (md->recv_mode != ast::FuncDecl::RecvMode::Sink) {
+                if (auto place = as_place(*m.base)) {
+                    borrows.push_back({std::move(*place),
+                                       md->recv_mode == ast::FuncDecl::RecvMode::Inout
+                                           ? Access::Inout
+                                           : Access::Read,
+                                       m.base->range});
+                }
+            }
+        }
+    }
     for (std::size_t i = 0; i < c.args.size(); ++i) {
         const auto& arg = c.args[i];
 
@@ -340,6 +362,33 @@ void ExclusivityChecker::check_call(const ast::CallExpr& c) {
 // Place extraction + overlap
 // ============================================================================
 
+const ast::FuncDecl* ExclusivityChecker::user_method(const ast::MemberExpr& m) const {
+    auto bt = resolution_->type_of(m.base.get());
+    if (bt == nullptr) {
+        return nullptr;
+    }
+    const auto* d = bt->nominal_decl();
+    if (d == nullptr) {
+        return nullptr;
+    }
+    const std::vector<ast::DeclPtr>* methods = nullptr;
+    if (d->kind == ast::NodeKind::Struct) {
+        methods = &static_cast<const ast::StructDecl*>(d)->methods;
+    } else if (d->kind == ast::NodeKind::Enum) {
+        methods = &static_cast<const ast::EnumDecl*>(d)->methods;
+    }
+    if (methods == nullptr) {
+        return nullptr;
+    }
+    for (const auto& md : *methods) {
+        if (md->kind == ast::NodeKind::Func
+            && static_cast<const ast::FuncDecl&>(*md).name == m.member) {
+            return static_cast<const ast::FuncDecl*>(md.get());
+        }
+    }
+    return nullptr;
+}
+
 bool ExclusivityChecker::receiver_borrowed_inout(const ast::MemberExpr& m) const {
     auto base_t = resolution_->type_of(m.base.get());
     if (base_t == nullptr) {
@@ -361,6 +410,8 @@ std::optional<ExclusivityChecker::Place> ExclusivityChecker::as_place(const ast:
     switch (e.kind) {
     case ast::NodeKind::ParenExpr:
         return as_place(*static_cast<const ast::ParenExpr&>(e).inner);
+    case ast::NodeKind::SelfExpr:
+        return Place{&self_symbol_, {}};
     case ast::NodeKind::IdentExpr: {
         const auto& ident = static_cast<const ast::IdentExpr&>(e);
         const auto* sym = resolution_->symbol_of(&e);

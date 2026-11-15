@@ -1,0 +1,25 @@
+// §19.3 a method's receiver is borrowed for the call, but a borrow of some
+// other place, or a shared read alongside a shared receiver, is fine.
+
+struct P {
+    var a: Int32
+    var b: Int32
+    inout func bump(_ x: inout Int32) { self.a = self.a + 1; x = x + 1 }
+    func sum(_ x: Int32) -> Int32 { return self.a + x }
+    sink func done(_ x: Int32) -> Int32 { return x }
+}
+
+func lend(_ p: inout P, _ q: inout P) {
+    p.bump(&q.a)
+}
+
+func main() -> Int32 {
+    var p = P(a: 1, b: 2)
+    var q = P(a: 3, b: 4)
+    var n: Int32 = 0
+    p.bump(&q.a)
+    p.bump(&n)
+    let s = p.sum(p.a)
+    lend(&p, &q)
+    return n + s
+}

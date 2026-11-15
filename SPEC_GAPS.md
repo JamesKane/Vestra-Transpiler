@@ -100,7 +100,6 @@ Each gap has one of four kinds:
 |---|---|---|---|
 | §5 | A declaration named `e`, `pi` or `tau` | divergent | "duplicate definition of 'e'": the builtin math constants sit in the global scope, so a user `static e` or `func e()` can't be declared. |
 | §5 | Small `Trivial` structs copy implicitly | divergent | `is_trivial` covers only primitive scalars (`ownership.cpp:688`). Passing `struct P { var a: Int32 }` to `sink` twice is an error. |
-| §19.3 | Exclusivity across an `inout` method receiver | unsound | `p.bump(&p.a)` is accepted. |
 | §7 | Capturing a `var` in a closure | missing | Rejected outright: function types are plain function pointers, so a capturing closure can't be one. |
 
 ### §6: structs, enums, opaque types, layout
@@ -113,6 +112,7 @@ Each gap has one of four kinds:
 | §6 | Opaque types inherit no operations | unsound | `==` between two values of an opaque `EntityId` is accepted. |
 | §6 | `@repr(wire)` byte order | missing | "@repr(wire) is not supported yet". |
 | §6 | Exhaustiveness beyond enum scrutinees | weaker | Checked only when the scrutinee is an enum (through nested enum, `Bool` and wildcard payload patterns). A match on an integer, `Bool`, tuple or optional with no `default` is not checked, and a tuple sub-pattern counts only when all its elements are wildcards. |
+| §6, §17.2 | `inout func` and `sink func` in an enum body | missing | "expected 'case' or member in enum body". A struct body takes both; an enum body takes only a plain `func`. |
 | §6, §17.6 | Slice patterns and struct patterns | missing | "expected pattern". |
 | §17.6 | A bare identifier pattern matches an existing value | missing | `case k:` (or `.a(k)`) in a match arm is "a bare name in a pattern matches an existing value, which is not supported yet". It used to bind a fresh `k`, which always matched. `let k` binds. |
 | §7, §9, §18 | `.none` as the empty optional | missing | "'.none' has no contextual type". Only `nil` works. |

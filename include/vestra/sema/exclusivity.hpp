@@ -84,6 +84,13 @@ private:
     // model the receiver as an inout borrow in the conflict scan.
     [[nodiscard]] bool receiver_borrowed_inout(const ast::MemberExpr& m) const;
 
+    // §7, §19.3 the user-defined method a call on `m` names, when its receiver
+    // is a struct or enum value; null for builtins and anything unresolved.
+    [[nodiscard]] const ast::FuncDecl* user_method(const ast::MemberExpr& m) const;
+
+    // `self` is a place inside a method; this stands in as its root.
+    Symbol self_symbol_{.name = "self", .kind = SymbolKind::Parameter};
+
     [[nodiscard]] static bool overlap(const Place& a, const Place& b) noexcept;
     [[nodiscard]] static bool conflict(Access a, Access b) noexcept;
 

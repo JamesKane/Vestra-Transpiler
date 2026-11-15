@@ -1,0 +1,22 @@
+// §19.3 the bootstrap left a user method's receiver out of the per-call
+// borrow scan, so `p.bump(&p.a)` handed the method `self` and a part of it
+// both exclusively.
+
+struct P {
+    var a: Int32
+    var b: Int32
+    inout func bump(_ x: inout Int32) { self.a = self.a + 1; x = x + 1 }
+    func peek(_ x: inout Int32) -> Int32 { x = 0; return self.a }
+    inout func twice() { self.bump(&self.b) }
+}
+
+func lend(_ p: inout P) {
+    p.bump(&p.b)
+}
+
+func main() -> Int32 {
+    var p = P(a: 1, b: 2)
+    p.bump(&p.a)
+    let n: Int32 = p.peek(&p.a)
+    return n
+}
