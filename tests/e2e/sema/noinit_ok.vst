@@ -1,0 +1,13 @@
+// Annex §4.5 Trivial `@noinit` storage: numbers, fixed arrays and structs of
+// them, payload enums over Trivial types, atomics, pointers, tuples.
+
+linear struct Slot { var a: UInt64 }
+struct Frame { var x: [31]UInt64  var sp: UInt64  var live: Bool }
+enum Held { case none  case token(UInt64) }
+
+@noinit static frames: [4]Frame
+@noinit static held: [4]Held?
+@noinit static ticks: Atomic[UInt32]
+@noinit static pair: (UInt8, Bool)
+@noinit static slotPtr: MutPtr[Slot]
+@align(16) @noinit static store: [4096]UInt8

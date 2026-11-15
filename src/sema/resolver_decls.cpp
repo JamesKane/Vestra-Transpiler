@@ -87,6 +87,33 @@ void Resolver::check_decl(const ast::Decl& d) {
                 error_at(s.value->range,
                          "@noinit static cannot carry an initializer (its storage lands in .bss)");
             }
+            // Annex §4.5 the storage is uninitialized bytes, so it may only
+            // hold a Trivial (resource-free, non-linear) type.
+            if (s.type != nullptr) {
+                if (const auto* nsym = scopes_.current().lookup(s.name)) {
+                    if (auto blocker = trivial_blocker(nsym->type); blocker != nullptr) {
+                        const char* why = trivial_blocker_is_linear(blocker) ? "is linear"
+                                          : non_escapable(blocker)           ? "is a view"
+                                          : owns_resources(blocker)          ? "owns resources"
+                                                                             : "isn't Trivial";
+                        const auto held = nsym->type->describe();
+                        const auto bl = blocker->describe();
+                        error_at(s.type->range,
+                                 held == bl
+                                     ? std::format("@noinit static '{}' must have a Trivial "
+                                                   "type (Annex §4.5); {} {}",
+                                                   s.name,
+                                                   bl,
+                                                   why)
+                                     : std::format("@noinit static '{}' must have a Trivial "
+                                                   "type (Annex §4.5); {} holds {}, which {}",
+                                                   s.name,
+                                                   held,
+                                                   bl,
+                                                   why));
+                    }
+                }
+            }
         }
         check_link_attributes(s.attributes);
         break;

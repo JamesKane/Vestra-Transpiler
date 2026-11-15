@@ -1,0 +1,13 @@
+// Annex §4.5 a `@noinit static` is uninitialized bytes, so its type must be
+// Trivial: no owned resources, no views, nothing linear, transitively.
+
+linear struct Slot { var a: UInt64 }
+struct Table { var slots: [4]Slot?  var used: UInt32 }
+enum Named { case none  case name(String) }
+
+@noinit static a: String
+@noinit static b: Table
+@noinit static c: [8]Str
+@noinit static d: Vec[UInt8]
+@noinit static g: Named
+@noinit static f: Slot

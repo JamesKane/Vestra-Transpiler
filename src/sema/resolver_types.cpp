@@ -660,3 +660,125 @@ std::vector<std::string> Resolver::row_of(const ast::Effects& e, bool is_async) 
 }
 
 }  // namespace vestra::sema
+
+namespace vestra::sema {
+
+// Annex §4.5 / §19 the innermost type that keeps `t` from being Trivial
+// (register-class bits, no resources, not linear), or null when it is.
+// Resource-free wrappers over Trivial bits (Atomic, PerCpu, Padded, an
+// optional, a fixed array) are Trivial when their contents are.
+TypePtr Resolver::trivial_blocker(TypePtr t, int depth) {
+    if (t == nullptr || t->is_error() || depth > 32) {
+        return nullptr;
+    }
+    switch (t->kind()) {
+    case TypeKind::Int8:
+    case TypeKind::Int16:
+    case TypeKind::Int32:
+    case TypeKind::Int64:
+    case TypeKind::Int:
+    case TypeKind::UInt8:
+    case TypeKind::UInt16:
+    case TypeKind::UInt32:
+    case TypeKind::UInt64:
+    case TypeKind::UInt:
+    case TypeKind::Int128:
+    case TypeKind::UInt128:
+    case TypeKind::Float32:
+    case TypeKind::Float64:
+    case TypeKind::Bool:
+    case TypeKind::Char:
+    case TypeKind::Unit:
+    case TypeKind::StrConst:
+    case TypeKind::Duration:
+    case TypeKind::Never:
+    case TypeKind::Ptr:
+    case TypeKind::MutPtr:
+    case TypeKind::AtomicTaggedPointer:
+        return nullptr;
+    case TypeKind::Optional:
+    case TypeKind::Vector:
+    case TypeKind::Atomic:
+    case TypeKind::PerCpu:
+    case TypeKind::Padded:
+        return trivial_blocker(t->inner(), depth + 1);
+    case TypeKind::Tuple:
+        for (auto p : t->parts()) {
+            if (auto b = trivial_blocker(p, depth + 1)) {
+                return b;
+            }
+        }
+        return nullptr;
+    case TypeKind::Struct: {
+        const auto* d = t->nominal_decl();
+        if (d == nullptr || d->kind != ast::NodeKind::Struct) {
+            return nullptr;
+        }
+        const auto* sd = static_cast<const ast::StructDecl*>(d);
+        if (sd->is_linear) {
+            return t;
+        }
+        for (const auto& f : sd->fields) {
+            if (f.type == nullptr) {
+                continue;
+            }
+            auto ft = resolve_member_type_with_generics(sd->generics, *f.type, t->parts());
+            if (auto b = trivial_blocker(ft, depth + 1)) {
+                return b;
+            }
+        }
+        return nullptr;
+    }
+    case TypeKind::Enum: {
+        const auto* d = t->nominal_decl();
+        if (d == nullptr || d->kind != ast::NodeKind::Enum) {
+            return nullptr;
+        }
+        const auto* ed = static_cast<const ast::EnumDecl*>(d);
+        for (const auto& c : ed->cases) {
+            for (const auto& [n, ty] : c.payload) {
+                if (ty == nullptr) {
+                    continue;
+                }
+                auto pt = resolve_member_type_with_generics(ed->generics, *ty, t->parts());
+                if (auto b = trivial_blocker(pt, depth + 1)) {
+                    return b;
+                }
+            }
+        }
+        return nullptr;
+    }
+    default:
+        return t;
+    }
+}
+
+bool Resolver::trivial_blocker_is_linear(TypePtr t) {
+    if (t == nullptr || t->kind() != TypeKind::Struct) {
+        return false;
+    }
+    const auto* d = t->nominal_decl();
+    return d != nullptr && d->kind == ast::NodeKind::Struct
+           && static_cast<const ast::StructDecl*>(d)->is_linear;
+}
+
+bool Resolver::owns_resources(TypePtr t) {
+    if (t == nullptr) {
+        return false;
+    }
+    switch (t->kind()) {
+    case TypeKind::String:
+    case TypeKind::Vec:
+    case TypeKind::HashMap:
+    case TypeKind::Box:
+    case TypeKind::Channel:
+    case TypeKind::Future:
+    case TypeKind::Soa:
+    case TypeKind::Function:
+        return true;
+    default:
+        return false;
+    }
+}
+
+}  // namespace vestra::sema

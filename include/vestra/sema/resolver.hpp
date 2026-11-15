@@ -361,6 +361,10 @@ private:
     // A heap or channel slot (`Box[T]`, `Channel[T]`) holding a
     // non-escapable or Future value is an error at `r`.
     void check_slot_holds(TypePtr slot, diag::SourceRange r);
+    // Annex §4.5 the innermost type keeping `t` from being Trivial, or null.
+    [[nodiscard]] TypePtr trivial_blocker(TypePtr t, int depth = 0);
+    [[nodiscard]] static bool trivial_blocker_is_linear(TypePtr t);
+    [[nodiscard]] static bool owns_resources(TypePtr t);
     std::unordered_set<std::size_t> slot_reported_;
 
     // §5/§18.4 partition provenance — if `init` is a `split(at:)` /

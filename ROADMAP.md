@@ -117,9 +117,8 @@ identical diagnostics), because the new backend will trust whatever sema
 accepts. Ordered by how likely each is to let a wrong program through:
 
 1. **Smaller unsound items:**
-    - `@noinit` limited to `Trivial` types (the spike's `sys.kernel`, a
-      table of linear capabilities, then moves to `Trivial` byte storage
-      viewed through a `MutPtr`);
+    - `@noinit` storage reachable only through `&buf` under `RawMemory`
+      (the `Trivial` half is done; `buf[0]` still reads it directly);
     - `@repr(union)` limited to `Trivial` types;
     - `MmioView[T]` requires `T: Primitive`;
     - `compilerFence(.relaxed)` rejected;

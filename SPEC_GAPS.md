@@ -99,6 +99,7 @@ Each gap has one of four kinds:
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
+| §5 | A declaration named `e`, `pi` or `tau` | divergent | "duplicate definition of 'e'": the builtin math constants sit in the global scope, so a user `static e` or `func e()` can't be declared. |
 | §5 | Small `Trivial` structs copy implicitly | divergent | `is_trivial` covers only primitive scalars (`ownership.cpp:688`). Passing `struct P { var a: Int32 }` to `sink` twice is an error. |
 | §19.3 | Exclusivity across an `inout` method receiver | unsound | `p.bump(&p.a)` is accepted. |
 | §7 | Capturing a `var` in a closure | missing | Rejected outright: function types are plain function pointers, so a capturing closure can't be one. |
@@ -321,7 +322,8 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | Audit table | Twelve `vestra audit` modes | missing (10 of 12) | Only `--sysreg`, `--no-libc` and `--safety` exist (`driver.cpp:215`). `--bss`, `--atomics`, `--extern`, `--vec-table`, `--raw-pointer`, `--mmio`, `--barriers`, `--cache-rounding`, `--interrupts-off`, `--context-switch` and §14.7.1's `--kernel-init` are absent. |
 | §14.12.3 | `audit --sysreg` coverage | weaker | The walker skips `while`/`for`/`match` bodies and struct methods (`driver.cpp:894`). One probe with four gated writes reported one. There is no privilege column. |
 | §15.5 | `audit --no-libc` lists the symbols the build resolved | weaker | It lists the source `@extern`/`@symbol` declarations only. |
-| §4.5 | `@noinit` rules (`Trivial` only, access under `RawMemory`) | unsound | `@noinit static s: String` passes, and `buf[0]` reads directly. |
+| §4.5 | `@noinit` storage is not in scope as a value | unsound | The `Trivial` rule is enforced, but `buf[0]` still reads the storage directly instead of only through `&buf` under `RawMemory`. |
+| §4.5, §12.2 | `T.size` over optionals and enums | missing | "can't compute K.size at fold time": the folder lays out only primitives, arrays of them and structs of those, so `@noinit` byte storage for such a type is sized by hand (the spike's `KERNEL_BYTES`, held to `sizeof` by its build). |
 | §6.7 | `@alias` | weaker | Emits `[[gnu::alias("other")]]` with the unmangled name inside a namespace, and clang rejects it: "alias must point to a defined variable or function". |
 | §6.8 | `@padding`, anonymous `embed _:`, flexible array members | missing | Parse errors. |
 | §6.8 | A `@repr(union)` must be `Trivial` | unsound | A union with a `String` field passes. |
