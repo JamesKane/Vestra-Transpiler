@@ -44,7 +44,7 @@ func buildReport(_ content: Str) using Alloc -> String {
                 if counts.contains(word) {
                     counts.set(word, (counts.get(word) ?? 0) + 1)
                 } else {
-                    words.push(word)
+                    words.push(copy word)
                     counts.set(word, 1)
                 }
             }

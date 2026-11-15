@@ -1405,6 +1405,9 @@ bool OwnershipChecker::builtin_sink_arg(const ast::CallExpr& c, std::size_t i) c
         if (bt->kind() == TypeKind::Channel) {
             return m.member == "send";
         }
+        if (bt->kind() == TypeKind::Vec) {
+            return m.member == "push";  // §18 `push(_ x: sink T)`
+        }
     }
     // `Box.new(x)`: the base names the type, not a value.
     const auto& base = strip_parens(*m.base);

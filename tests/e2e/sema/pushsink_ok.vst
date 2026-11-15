@@ -1,0 +1,28 @@
+// §18 `Vec.push` takes its value: `copy` keeps the original, a Copyable
+// value is copied anyway, and a value pushed last needs neither.
+
+func twice(_ s: String) using Alloc -> Int {
+    var xs: Vec[String] = Vec.new()
+    xs.push(copy s)
+    xs.push(s)
+    return xs.len()
+}
+
+func ints(_ n: Int32) using Alloc -> Int {
+    var xs: Vec[Int32] = Vec.new()
+    xs.push(n)
+    xs.push(n)
+    return xs.len()
+}
+
+func looped(_ s: String) using Alloc -> Int {
+    var xs: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < 3 {
+        xs.push(copy s)
+        i = i + 1
+    }
+    return xs.len()
+}
+
+func main() -> Int32 { return 0 }

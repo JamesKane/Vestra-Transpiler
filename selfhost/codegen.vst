@@ -3172,8 +3172,8 @@ func emitDerivedMembers(_ env: inout TyEnv, _ name: Str) using Alloc, Log {
 }
 
 func tyRecordEnumDecl(_ env: inout TyEnv, _ name: String, _ cases: Vec[Nd], _ methods: Vec[Nd], _ generics: Vec[Nd]) using Alloc {
-    if generics.len() > 0 { env.genTypes.push(name) }
-    env.eName.push(name)
+    if generics.len() > 0 { env.genTypes.push(copy name) }
+    env.eName.push(copy name)
     var i: Int = 0
     while i < cases.len() {
         tyRecordCase(env, name, cases.get(i) ?? Nd.wildcard)
@@ -3307,7 +3307,7 @@ func tyRecordStructLin(_ env: inout TyEnv, _ name: String, _ fields: Vec[Nd], _ 
 }
 
 func tyRecordStructDecl(_ env: inout TyEnv, _ name: String, _ fields: Vec[Nd], _ methods: Vec[Nd], _ generics: Vec[Nd]) using Alloc {
-    if generics.len() > 0 { env.genTypes.push(name) }
+    if generics.len() > 0 { env.genTypes.push(copy name) }
     tyRecordGenParams(env, name, generics)
     tyRecordStruct(env, name, fields)
     tyRecordMethods(env, name, methods)
@@ -3343,8 +3343,8 @@ func tyRecordMethod(_ env: inout TyEnv, _ owner: String, _ m: Nd) using Alloc {
 
 func tyPushMethod(_ env: inout TyEnv, _ owner: String, _ name: String, _ gens: Vec[Nd], _ params: Vec[Nd], _ result: Vec[Nd]) using Alloc {
     if gens.len() > 0 { return }
-    env.mStruct.push(owner)
-    env.mName.push(name)
+    env.mStruct.push(copy owner)
+    env.mName.push(copy name)
     env.mRet.push(tyRetSpelling(result))
     var i: Int = 0
     while i < params.len() {
@@ -3383,7 +3383,7 @@ func tyMethodParamTypeNode(_ env: inout TyEnv, _ owner: Str, _ mname: Str, _ idx
 }
 
 func tyRecordStruct(_ env: inout TyEnv, _ name: String, _ fields: Vec[Nd]) using Alloc {
-    env.structs.push(name)
+    env.structs.push(copy name)
     var i: Int = 0
     while i < fields.len() {
         tyRecordField(env, name, fields.get(i) ?? Nd.wildcard)
@@ -3524,7 +3524,7 @@ func tyRecordFuncG(_ env: inout TyEnv, _ name: String, _ g: Vec[Nd], _ params: V
 }
 
 func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ thr: Vec[Nd], _ result: Vec[Nd]) using Alloc {
-    env.funcName.push(name)
+    env.funcName.push(copy name)
     env.funcThr.push(thr.get(0) ?? Nd.wildcard)
     if result.len() == 0 { env.funcRet.push("Unit") }
     else { env.funcRet.push(typeSpelling(result.get(0) ?? Nd.wildcard)) }

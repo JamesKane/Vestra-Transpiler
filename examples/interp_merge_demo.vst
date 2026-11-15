@@ -308,7 +308,7 @@ func valuesVal(_ mv: Value) using Alloc -> Value {
 func valuesOf(_ m: HashMap[String, Value]) using Alloc -> Value {
     var xs: Vec[Value] = Vec.new()
     for v in m.values() {
-        xs.push(v)
+        xs.push(copy v)
     }
     return Value.list(xs)
 }
@@ -326,7 +326,7 @@ func entriesOf(_ m: HashMap[String, Value]) using Alloc -> Value {
     for (k, v) in m.entries() {
         var pair: Vec[Value] = Vec.new()
         pair.push(Value.str(strOf(k)))
-        pair.push(v)
+        pair.push(copy v)
         xs.push(Value.list(pair))
     }
     return Value.list(xs)

@@ -1,0 +1,27 @@
+// §18 `Vec.push(_ x: sink T)` takes its value. The bootstrap borrowed it, so
+// a pushed String could be used, or pushed again, after the push.
+
+func twice(_ s: String) using Alloc -> Int {
+    var xs: Vec[String] = Vec.new()
+    xs.push(s)
+    xs.push(s)
+    return xs.len()
+}
+
+func after(_ s: String) using Alloc -> Int {
+    var xs: Vec[String] = Vec.new()
+    xs.push(s)
+    return s.len()
+}
+
+func looped(_ s: String) using Alloc -> Int {
+    var xs: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < 3 {
+        xs.push(s)
+        i = i + 1
+    }
+    return xs.len()
+}
+
+func main() -> Int32 { return 0 }

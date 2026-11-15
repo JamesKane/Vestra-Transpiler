@@ -285,12 +285,6 @@ fails in clang.
   `parallel` signature differs from the spec.
 - **`Box`:** `Box.new(1)` infers `Box[Int]` even where `Box[Int32]` is
   expected.
-- **`Vec.push` copies (unsound):** the spec's `Buffer.append(_ x: sink T)`
-  moves its value, and `Channel.send` and `Box.new` now do, but `Vec.push`
-  is still a read, so `v.push(s); return s` is accepted for a `String s`.
-  Making it a move rejects 25 programs under `examples/` and about 30 sites
-  in `selfhost/`, each of which pushes a value and then uses it again; they
-  need `copy` (or `own(...)`) first.
 
 ### §19: formal semantics (rules not covered above)
 

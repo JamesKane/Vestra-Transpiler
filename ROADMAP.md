@@ -139,10 +139,7 @@ to 5 below. What's left is the sema-side `unsound` rows in the Gaps tables:
 9. ~~`derive` validation beyond `Default` (Gaps §12.3).~~ Done.
 10. ~~An implicit `asm` clobber is an error, and the weak-CAS loop shapes
     (Annex §14.4, §14.9.3).~~ Done (asm on aarch64 only).
-11. `Vec.push` takes its value by `sink`. The rule is one line in each
-    checker; the work is adding `copy` at the roughly 55 sites in
-    `examples/` and `selfhost/` that push a value and keep using it (Gaps
-    §18).
+11. ~~`Vec.push` takes its value by `sink` (Gaps §18).~~ Done.
 
 The codegen-side `unsound` rows (overflow traps, `&+` wrapping, division by
 zero, bounds checks, `??` laziness, evaluation order, C++ keyword names)
