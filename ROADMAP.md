@@ -117,10 +117,6 @@ identical diagnostics), because the new backend will trust whatever sema
 accepts. Ordered by how likely each is to let a wrong program through:
 
 1. **Smaller unsound items:**
-    - `self` typed inside every method (the resolver has no case for it, so
-      `self.field` has no type in any struct's methods and nothing about it
-      is checked: `return self.n` passes where the result is `Bool`, and a
-      read-only method can call `self.xs.push(1)`; Gaps §7);
     - an atomic ordering held in a variable (only a literal `.case` is
       checked, so `load(o)` with `o == .release` reaches C++ as UB);
     - `Atomic[T]` requires a §4 primitive (the bootstrap's `is_primitive`
@@ -130,7 +126,7 @@ accepts. Ordered by how likely each is to let a wrong program through:
       `Ptr[Context]` (it still takes `Context` values, which is why a
       `@noinit` `Context` stays in scope as a value).
 
-    (Annex A table, and Gaps §7 for `self.field`)
+    (Annex A table)
 
 ## Self-hosting
 

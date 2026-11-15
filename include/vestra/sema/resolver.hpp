@@ -183,6 +183,12 @@ private:
     // The function whose body is being checked (a method's receiver mode
     // decides whether it may assign through `self`).
     const ast::FuncDecl* current_func_ = nullptr;
+    // §7 the type of `self` in the methods being checked: the struct or
+    // enum (over its own type parameters when generic); null outside one,
+    // or where the owner can't be named (an extension of a generic type).
+    TypePtr current_self_type_ = nullptr;
+    [[nodiscard]] TypePtr self_type_of(const ast::Decl& owner, const std::string& name,
+                                       const std::vector<ast::GenericParam>& generics);
     // §5 record this unit's struct-field / enum-payload types in the shared
     // arena for importers (TypeArena::record_member_type).
     void record_member_types();

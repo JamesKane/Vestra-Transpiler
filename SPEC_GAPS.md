@@ -89,7 +89,7 @@ Each gap has one of four kinds:
 | §4 | `Enum.from(raw)` | missing | "enum 'C' has no case 'from'". |
 | §4 | String interpolation requires `using Alloc` | unsound | Accepted without it. `resolver_exprs.cpp:930` calls it "a follow-on". |
 | §4 | `StrConst` copies freely | divergent | Passing a `StrConst` to two `sink` params gives "use of 's' after it was moved". |
-| §3 | A block's tail value is its result | missing (partial) | `{ self.n }` in a method, or `{ K }` with an untyped const, gives "can reach the end of its body without returning". |
+| §3 | A block's tail value is its result | missing (partial) | `{ K }` with an untyped const gives "can reach the end of its body without returning". |
 | §3, §17.1 | `'\u{...}'` char escapes | missing | "unterminated character literal". |
 | §3 | Identifiers that are C++ keywords | unsound | A Vestra name such as `mutable` or `class` is emitted verbatim, and the C++ doesn't compile. |
 | §6, §17.1 | Byte-char literal `b'/'` | missing | "undefined name 'b'". |
@@ -116,7 +116,6 @@ Each gap has one of four kinds:
 | §6 | Exhaustiveness beyond enum scrutinees | weaker | Checked only when the scrutinee is an enum (through nested enum, `Bool` and wildcard payload patterns). A match on an integer, `Bool`, tuple or optional with no `default` is not checked, and a tuple sub-pattern counts only when all its elements are wildcards. |
 | §6, §17.6 | Slice patterns and struct patterns | missing | "expected pattern". |
 | §17.6 | A bare identifier pattern matches an existing value | missing | `case k:` (or `.a(k)`) in a match arm is "a bare name in a pattern matches an existing value, which is not supported yet". It used to bind a fresh `k`, which always matched. `let k` binds. |
-| §6 | `match self` inside an enum method | divergent (bug) | "enum pattern '.a' used against non-enum type &lt;error&gt;". |
 | §7, §9, §18 | `.none` as the empty optional | missing | "'.none' has no contextual type". Only `nil` works. |
 
 ### §7: functions, generics, protocols
@@ -129,7 +128,6 @@ Each gap has one of four kinds:
 | §7 | A const generic `N` as a value in the body | missing | "undefined name 'N'". |
 | §17.3 | Const-expression array lengths `[N + 1]T` | missing | Parse error. |
 | §7 | Bounds `Primitive`, `Trivial`, `Copyable`, `Iterator` | missing | "bound 'Primitive' is not supported yet". (`Ord` and `Hashable` are checked as `Comparable` and `Hash`.) |
-| §7 | `self` in a method | unsound | `self` has no type in any method (the resolver has no case for it), so `self.n` where `n: Int32`, returned from a method whose result is `Bool`, is accepted, a method that only reads its receiver can still call `self.xs.push(1)`, and in a generic struct `self.a - self.b` escapes the bound checks. A parameter typed `T` is checked (its `<` needs `T: Comparable`). |
 | §7 | Protocol conformance | missing | An extension missing a required method is accepted. A protocol method on a bounded `T` gives "no field or method". Extensions on primitive types don't attach. |
 | §7 | `some P` | missing | Erased to the protocol type. `-> some Shape` returning `Sq` is a type mismatch. |
 | §7 | `dyn P` existentials | missing | `let d: dyn Shape = Sq(...)` is a mismatch. |

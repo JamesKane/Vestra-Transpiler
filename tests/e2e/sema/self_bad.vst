@@ -1,0 +1,35 @@
+// §7 `self` is typed as its owner inside every method; §5 a plain method
+// only reads its receiver.
+struct Counter {
+    var n: Int32
+    var xs: Vec[Int32]
+    func asBool() -> Bool {
+        return self.n
+    }
+    func whole() -> Int32 {
+        return self
+    }
+    func assigns() {
+        self.n = 2
+    }
+    func pushes() using Alloc {
+        self.xs.push(1)
+    }
+    inout func bump() {
+        self.n = self.n + 1
+    }
+    func callsInout() {
+        self.bump()
+    }
+}
+
+struct Pair[T] {
+    var a: T
+    var b: T
+    func diff() -> T {
+        return self.a - self.b
+    }
+}
+
+func main() {
+}

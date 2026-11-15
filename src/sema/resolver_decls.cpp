@@ -140,10 +140,15 @@ void Resolver::check_decl(const ast::Decl& d) {
             gs.generic = &gp;
             (void)struct_generics_g.scope().insert(std::move(gs));
         }
-        for (const auto& m : s.methods) {
-            if (m->kind == ast::NodeKind::Func) {
-                check_func(static_cast<const ast::FuncDecl&>(*m));
+        {
+            const auto prev_self = current_self_type_;
+            current_self_type_ = self_type_of(s, s.name, s.generics);
+            for (const auto& m : s.methods) {
+                if (m->kind == ast::NodeKind::Func) {
+                    check_func(static_cast<const ast::FuncDecl&>(*m));
+                }
             }
+            current_self_type_ = prev_self;
         }
         // §11.1 a Future can't outlive the scope that spawned it, so no
         // struct stores one.
@@ -237,10 +242,15 @@ void Resolver::check_decl(const ast::Decl& d) {
             gs.generic = &gp;
             (void)enum_generics_g.scope().insert(std::move(gs));
         }
-        for (const auto& m : e.methods) {
-            if (m->kind == ast::NodeKind::Func) {
-                check_func(static_cast<const ast::FuncDecl&>(*m));
+        {
+            const auto prev_self = current_self_type_;
+            current_self_type_ = self_type_of(e, e.name, e.generics);
+            for (const auto& m : e.methods) {
+                if (m->kind == ast::NodeKind::Func) {
+                    check_func(static_cast<const ast::FuncDecl&>(*m));
+                }
             }
+            current_self_type_ = prev_self;
         }
         break;
     }
@@ -1235,6 +1245,32 @@ void Resolver::check_interrupt_static_write(const ast::Expr& target, diag::Sourc
                          sym->type->describe()));
 }
 
+TypePtr Resolver::self_type_of(const ast::Decl& owner, const std::string& name,
+                               const std::vector<ast::GenericParam>& generics) {
+    const auto* sym = scopes_.current().lookup(name);
+    if (sym == nullptr || sym->decl != &owner || sym->type == nullptr
+        || (sym->type->kind() != TypeKind::Struct && sym->type->kind() != TypeKind::Enum)) {
+        return nullptr;
+    }
+    if (generics.empty()) {
+        return sym->type;
+    }
+    std::vector<TypePtr> args;
+    for (const auto& gp : generics) {
+        if (gp.is_const || gp.name.empty()) {
+            return nullptr;  // a value parameter has no type to stand in for it
+        }
+        const auto* g = scopes_.current().lookup(gp.name);
+        if (g == nullptr || g->kind != SymbolKind::GenericParam || g->type == nullptr) {
+            return nullptr;
+        }
+        args.push_back(g->type);
+    }
+    return sym->type->kind() == TypeKind::Struct
+               ? types_->make_struct_instance(sym->type->nominal_decl(), std::move(args))
+               : types_->make_enum_instance(sym->type->nominal_decl(), std::move(args));
+}
+
 void Resolver::check_mutable_place(const ast::Expr& target, diag::SourceRange site) {
     // Walk to the root binding. Writing through a view (an element of a
     // MutSpan, the pointee of a MutPtr) changes the memory it views, not the
@@ -1264,6 +1300,20 @@ void Resolver::check_mutable_place(const ast::Expr& target, diag::SourceRange si
         if (root == nullptr) {
             return;
         }
+    }
+    // §5 a plain method reads its receiver; only an `inout func` (or a
+    // `sink` one, which owns it) may change `self` (codegen makes a plain
+    // method `const`).
+    if (root->kind == ast::NodeKind::SelfExpr) {
+        if (current_func_ != nullptr && current_self_type_ != nullptr
+            && current_func_->recv_mode == ast::FuncDecl::RecvMode::None) {
+            error_at(site,
+                     std::format("'{}' only reads its receiver, so it can't change `self`; "
+                                 "declare it `inout func {}` to mutate it",
+                                 current_func_->name,
+                                 current_func_->name));
+        }
+        return;
     }
     if (root->kind != ast::NodeKind::IdentExpr) {
         return;
@@ -1441,29 +1491,6 @@ void Resolver::check_stmt(const ast::Stmt& s) {
             check_interrupt_static_write(*a.target, a.range);
         }
 
-        // §5 a plain method reads its receiver; only an `inout func` may
-        // assign through `self` (codegen makes a plain method `const`).
-        if (current_func_ != nullptr && current_func_->recv_mode == ast::FuncDecl::RecvMode::None) {
-            const ast::Expr* root = a.target.get();
-            while (root != nullptr
-                   && (root->kind == ast::NodeKind::MemberExpr || root->kind == ast::NodeKind::IndexExpr
-                       || root->kind == ast::NodeKind::ParenExpr)) {
-                if (root->kind == ast::NodeKind::MemberExpr) {
-                    root = static_cast<const ast::MemberExpr&>(*root).base.get();
-                } else if (root->kind == ast::NodeKind::IndexExpr) {
-                    root = static_cast<const ast::IndexExpr&>(*root).base.get();
-                } else {
-                    root = static_cast<const ast::ParenExpr&>(*root).inner.get();
-                }
-            }
-            if (root != nullptr && root->kind == ast::NodeKind::SelfExpr) {
-                error_at(a.range,
-                         std::format("'{}' only reads its receiver, so it can't assign to `self`; "
-                                     "declare it `inout func {}` to mutate it",
-                                     current_func_->name,
-                                     current_func_->name));
-            }
-        }
         auto lhs = check_expr(*a.target);
         check_mutable_place(*a.target, a.range);  // after typing: views are judged by type
         // Pass the target type as the expected type for the rhs so an

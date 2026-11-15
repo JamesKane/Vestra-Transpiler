@@ -289,6 +289,12 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         }
         break;
     }
+    case ast::NodeKind::SelfExpr:
+        // §7 `self` is the method's receiver, typed as its owner. Outside a
+        // method (or where the owner has no nameable type) it stays the
+        // error type, which suppresses checks rather than inventing them.
+        t = current_self_type_ != nullptr ? current_self_type_ : types_->error();
+        break;
     case ast::NodeKind::ParenExpr:
         t = check_expr(*static_cast<const ast::ParenExpr&>(e).inner, expected);
         break;

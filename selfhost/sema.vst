@@ -7086,6 +7086,8 @@ struct TyEnv {
     var esSinks: Vec[String]    // per-function: its `sink` parameters
     var esParams: Vec[String]   // per-function: its other parameters (the caller's storage)
     var esSelf: String          // the struct whose methods are checked ("" outside)
+    var selfSpell: String       // §7 `self`'s type there: the owner, over its own type parameters ("" outside, or with a value parameter)
+    var recvRead: String        // §5 the plain (read-receiver) method being checked ("" otherwise)
     var esVName: Vec[String]    // per-function: view locals ...
     var esVOrig: Vec[String]    // ... and their sources ("L:a,T,R1", see esOrig)
     var esRaw: Int              // `with RawMemory` blocks around the current point
@@ -7747,7 +7749,7 @@ func tyCheckDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             tyCheckFuncG(env, mods, name, g, params, caps, r, b)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyCheckStructN(env, name, generics, fl, m)
-        case .enumD(let vis, let name, let cs, let m, let generics): tyCheckEnumG(env, generics, m)
+        case .enumD(let vis, let name, let cs, let m, let generics): tyCheckEnumN(env, name, generics, m)
         case .constD(let vis, let name, let ty, let v): tyCheckConst(env, ty, v)
         case .staticD(let vis, let name, let ty, let v): tyCheckNoinit(env, name, ty, v)
         default: noop()
@@ -7765,7 +7767,11 @@ func tyCheckFuncG(_ env: inout TyEnv, _ mods: String, _ name: String, _ g: Vec[N
     env.ctDepth = 0
     if isCt { env.ctDepth = 1 }
     tyGenPush(env, g)
+    let prevRecv = own(env.recvRead)
+    env.recvRead = own("")
+    if !streq(env.selfSpell, "") && !containsSub(mods, "inout ") && !containsSub(mods, "sink ") { env.recvRead = own(name) }
     tyCheckFuncAll(env, mods, name, params, result, body)
+    env.recvRead = prevRecv
     tyGenPop(env, mark)
     env.ctDepth = prevCt
 }
@@ -7836,8 +7842,10 @@ func tySymKnown(_ env: inout TyEnv, _ n: String) using Alloc -> Bool {
 
 func tyCheckStructN(_ env: inout TyEnv, _ name: String, _ g: Vec[Nd], _ fl: Vec[Nd], _ m: Vec[Nd]) using Alloc {
     env.esSelf = own(name)
+    env.selfSpell = tySelfSpell(name, g)
     tyCheckStructG(env, g, fl, m)
     env.esSelf = own("")
+    env.selfSpell = own("")
     if esInList(env.unionNames, name) { tyCheckUnionFields(env, fl) }
 }
 
@@ -7887,6 +7895,40 @@ func tyCheckStructG(_ env: inout TyEnv, _ g: Vec[Nd], _ fl: Vec[Nd], _ m: Vec[Nd
     tyGenPush(env, g)
     tyCheckStructD(env, fl, m)
     tyGenPop(env, mark)
+}
+
+func tyCheckEnumN(_ env: inout TyEnv, _ name: String, _ g: Vec[Nd], _ m: Vec[Nd]) using Alloc {
+    env.esSelf = own(name)
+    env.selfSpell = tySelfSpell(name, g)
+    tyCheckEnumG(env, g, m)
+    env.esSelf = own("")
+    env.selfSpell = own("")
+}
+
+// §7 `self`'s type: the owner, spelled over its own type parameters (`P[T]`).
+// A value parameter (`N: Int`) has no type to stand in for it, so `self` stays
+// unknown there, as the bootstrap leaves it the error type.
+func tySelfSpell(_ name: String, _ g: Vec[Nd]) using Alloc -> String {
+    if g.len() == 0 { return own(name) }
+    var s: String = own(name)
+    s.append("[")
+    var i: Int = 0
+    while i < g.len() {
+        if i > 0 { s.append(", ") }
+        let n = tyGenTypeName(g.get(i) ?? Nd.wildcard)
+        if streq(n, "") { return own("") }
+        s.append(n)
+        i = i + 1
+    }
+    s.append("]")
+    return s
+}
+
+func tyGenTypeName(_ g: Nd) using Alloc -> String {
+    return match g {
+        case .genType(let n, let bounds): own(n)
+        default: own("")
+    }
 }
 
 func tyCheckEnumG(_ env: inout TyEnv, _ g: Vec[Nd], _ m: Vec[Nd]) using Alloc {
@@ -8438,9 +8480,22 @@ func muCheck(_ env: inout TyEnv, _ t: Vec[Nd]) using Alloc {
             case .member(let base, let m, let ch): muCheckMember(env, base, m)
             case .index(let base, let idxs): muCheckIndex(env, base)
             case .ident(let x): muCheckRoot(env, x)
+            case .selfE: muCheckSelf(env)
             default: noop()
         }
     }
+}
+
+// §5 a plain method reads its receiver; only an `inout func` (or a `sink` one)
+// may change `self`.
+func muCheckSelf(_ env: inout TyEnv) using Alloc {
+    if streq(env.recvRead, "") { return }
+    var s: String = "'"
+    s.append(env.recvRead)
+    s.append("' only reads its receiver, so it can't change `self`; declare it `inout func ")
+    s.append(env.recvRead)
+    s.append("` to mutate it")
+    env.bad.push(s)
 }
 
 func muCheckMember(_ env: inout TyEnv, _ base: Vec[Nd], _ m: String) using Alloc {
@@ -8556,7 +8611,7 @@ func muArg(_ env: inout TyEnv, _ io: Bool, _ v: Vec[Nd]) using Alloc {
 }
 
 func muRecv(_ env: inout TyEnv, _ base: Vec[Nd], _ m: String) using Alloc {
-    let bt = tyInferBoxed(env, base)
+    let bt = tySelfOwner(env, base, tyInferBoxed(env, base))
     if streq(bt, "") { return }
     var mut: Bool = false
     if tyStartsWith(bt, "Vec[") {
@@ -10938,6 +10993,7 @@ func tyInfer(_ env: inout TyEnv, _ e: Nd) using Alloc -> String {
         case .charLit(let s): own("Char")
         case .strLit(let s): own("StrConst")
         case .ident(let n): tySymType(env, n)
+        case .selfE: own(env.selfSpell)
         case .paren(let inner): tyInferBoxed(env, inner)
         case .call(let callee, let args): tyInferCall(env, callee)
         case .binary(let op, let l, let r): tyInferBinary(env, op, l, r)
@@ -11010,9 +11066,23 @@ func tyBracketInner(_ s: String) using Alloc -> String {
 // else stay unknown. Nested access (`a.b.c`) falls out of the recursion.
 func tyInferMember(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain: Bool) using Alloc -> String {
     if chain { return own("") }
-    let bt = tyInferBoxed(env, base)
+    let bt = tySelfOwner(env, base, tyInferBoxed(env, base))
     if tyHasField(env, bt, name) { return tyFieldType(env, bt, name) }
     return own("")
+}
+
+// `self`'s owner by its bare name (field and method rows are keyed by it, also
+// for a generic owner, whose rows speak its own type parameters); any other
+// base keeps its inferred type `bt`.
+func tySelfOwner(_ env: inout TyEnv, _ base: Vec[Nd], _ bt: String) using Alloc -> String {
+    if streq(env.selfSpell, "") { return own(bt) }
+    if let x = base.get(0) {
+        return match x {
+            case .selfE: own(env.esSelf)
+            default: own(bt)
+        }
+    }
+    return own(bt)
 }
 
 // A binary expression's type, mirroring the resolver's result types (and its
@@ -12293,7 +12363,7 @@ func main() -> Int32 {
                                      muKind: Vec.new(), muMarks: Vec.new(),
                                      stName: Vec.new(), stAtomic: Vec.new(), stSpell: Vec.new(), linStructs: Vec.new(), unionNames: Vec.new(),
                                      ecpEnum: Vec.new(), ecpCase: Vec.new(), ecpType: Vec.new(), ecpLabel: Vec.new(),
-                                     esBad: Vec.new(), esFn: own(""), esLocals: Vec.new(), esSinks: Vec.new(), esParams: Vec.new(), esSelf: own(""),
+                                     esBad: Vec.new(), esFn: own(""), esLocals: Vec.new(), esSinks: Vec.new(), esParams: Vec.new(), esSelf: own(""), selfSpell: own(""), recvRead: own(""),
                                      esVName: Vec.new(), esVOrig: Vec.new(), esRaw: 0, esMmio: 0,
                                      esDepth: 0, esLocDepth: Vec.new(), esVDepth: Vec.new(),
                                      esRawD: Vec.new(), esMmioD: Vec.new(),

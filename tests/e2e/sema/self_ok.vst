@@ -1,0 +1,53 @@
+// §7 `self` is typed as its owner inside every method; §5 only an
+// `inout func` (or a `sink` one) changes it.
+struct Counter {
+    var n: Int32
+    var xs: Vec[Int32]
+    func get() -> Int32 {
+        return self.n
+    }
+    func tail() -> Int32 { self.n }
+    func twice() -> Int32 {
+        return self.get() + self.get()
+    }
+    func same() -> Counter {
+        return self
+    }
+    inout func bump() {
+        self.n = self.n + 1
+        self.xs.push(self.n)
+    }
+    inout func bumpTwice() {
+        self.bump()
+        self.bump()
+    }
+}
+
+struct Pair[T: Comparable] {
+    var a: T
+    var b: T
+    func first() -> T {
+        return self.a
+    }
+    func less() -> Bool {
+        return self.a < self.b
+    }
+}
+
+enum Light {
+    case red
+    case green
+    func isRed() -> Bool {
+        return match self {
+            case .red: true
+            case .green: false
+        }
+    }
+}
+
+func main() using Alloc {
+    var c = Counter(n: 1, xs: Vec.new())
+    c.bumpTwice()
+    let r = Light.red
+    let ok = c.twice() > 0 && r.isRed()
+}

@@ -94,7 +94,7 @@ func badTemp() using Alloc -> Vec[Str] {
 // the function, so a view written into it may not come from a local.
 struct Bag {
     var items: Vec[Str]
-    func addLocal() using Alloc {
+    inout func addLocal() using Alloc {
         let s: String = "x"
         self.items.push(s)
     }
