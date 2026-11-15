@@ -8,6 +8,7 @@
 
 #include "vestra/ast/nodes.hpp"
 #include "vestra/sema/builtins.hpp"
+#include "vestra/sema/asm_writes.hpp"
 #include "vestra/sema/resolver.hpp"
 #include "vestra/sema/scope.hpp"
 #include "vestra/sema/types.hpp"
@@ -1314,7 +1315,7 @@ void Resolver::check_asm(const ast::AsmStmt& a) {
     }
     for (std::size_t i = 0; i < a.clobbers.size(); ++i) {
         const auto& c = a.clobbers[i];
-        if (c == "memory" || c == "cc") {
+        if (c == "memory" || c == "cc" || (arch == "aarch64" && is_a64_sysreg_name(c))) {
             continue;
         }
         check_reg(c, a.clobber_ranges[i]);
@@ -1326,6 +1327,9 @@ void Resolver::check_asm(const ast::AsmStmt& a) {
                 }
             }
         }
+    }
+    if (arch == "aarch64") {
+        check_asm_writes(a);
     }
     if (a.volatile_written && !a.is_volatile && a.outputs.empty() && a.inouts.empty()) {
         error_at(a.range,
@@ -1364,6 +1368,81 @@ void Resolver::check_asm(const ast::AsmStmt& a) {
                     continue;
                 }
                 error_at(a.line_ranges[li], "stray '}' in asm template; write '}}' for a literal brace");
+            }
+        }
+    }
+}
+
+// Annex §14.4 rule 1 an instruction that writes a register, the flags or a
+// sysreg must name it: an output or inout pin, or a clobber. Asm in a
+// `@naked` function is the whole function, so nothing is compiled around it
+// to protect and it is exempt.
+void Resolver::check_asm_writes(const ast::AsmStmt& a) {
+    if (current_func_ != nullptr
+        && std::ranges::any_of(current_func_->attributes,
+                               [](const ast::Attribute& at) { return at.name == "naked"; })) {
+        return;
+    }
+    std::vector<std::string> named;
+    for (const auto* ops : {&a.outputs, &a.inouts}) {
+        for (const auto& op : *ops) {
+            if (!op.reg.empty()) {
+                named.push_back(a64_reg_key(op.reg));
+            }
+        }
+    }
+    bool flags_named = false;
+    std::vector<std::string> sysregs;
+    for (const auto& c : a.clobbers) {
+        if (c == "cc") {
+            flags_named = true;
+        } else if (is_a64_sysreg_name(c)) {
+            sysregs.push_back(a64_sysreg_key(c));
+            flags_named = flags_named || a64_sysreg_key(c) == "nzcv";
+        } else {
+            named.push_back(a64_reg_key(c));
+        }
+    }
+    std::vector<std::string> reported;
+    auto once = [&](const std::string& key) {
+        if (std::ranges::find(reported, key) != reported.end()) {
+            return false;
+        }
+        reported.push_back(key);
+        return true;
+    };
+    for (std::size_t li = 0; li < a.lines.size(); ++li) {
+        const std::string_view line = a.lines[li];
+        for (const auto& w : a64_line_writes(line)) {
+            switch (w.kind) {
+            case AsmWrite::Kind::Register:
+                if (std::ranges::find(named, w.name) == named.end() && once(w.name)) {
+                    error_at(a.line_ranges[li],
+                             std::format("asm writes {} ('{}'), which isn't an output, an inout "
+                                         "or a clobber: add \"{}\" to `clobbers:` (Annex §14.4)",
+                                         w.name,
+                                         line,
+                                         w.name));
+                }
+                break;
+            case AsmWrite::Kind::Flags:
+                if (!flags_named && once("cc")) {
+                    error_at(a.line_ranges[li],
+                             std::format("asm sets the condition flags ('{}'): add \"cc\" to "
+                                         "`clobbers:` (Annex §14.4)",
+                                         line));
+                }
+                break;
+            case AsmWrite::Kind::Sysreg:
+                if (std::ranges::find(sysregs, w.name) == sysregs.end() && once(w.name)) {
+                    error_at(a.line_ranges[li],
+                             std::format("asm writes the sysreg {} ('{}'): add \"{}\" to "
+                                         "`clobbers:` (Annex §14.4)",
+                                         w.name,
+                                         line,
+                                         w.name));
+                }
+                break;
             }
         }
     }

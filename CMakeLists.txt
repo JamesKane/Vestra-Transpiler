@@ -60,6 +60,7 @@ set(vestra_sources
     src/sema/resolver.cpp
     src/sema/resolver_builtins.cpp
     src/sema/resolver_decls.cpp
+    src/sema/asm_writes.cpp
     src/sema/resolver_exprs.cpp
     src/sema/resolver_call.cpp
     src/sema/resolver_types.cpp

@@ -1,0 +1,38 @@
+// Annex §14.4 rule 1: every write named. A register by a clobber or an
+// output pin, the flags by "cc", a sysreg by its name (dropped from the C++
+// clobber list). Asm in a @naked function is the whole function and exempt.
+
+func g(_ x: UInt64) using Asm -> UInt64 {
+    var r: UInt64 = 0
+    asm(in: [x], out: [r], clobbers: ["x11", "cc", "daif", "x12", "x13", "x14", "x3", "x4", "lr", "x6"]) {
+        "mov x11, {x}"
+        "adds {r}, x11, #1"
+        "msr daifclr, #2"
+        "ldr x12, [x13], #8"
+        "stxr w14, x1, [x2]"
+        "ldp x3, x4, [sp, #16]"
+        "bl helper"
+        "str x5, [x6, #8]!"
+        "cmp x1, x2"
+    }
+    return r
+}
+
+@naked
+func h() using Asm -> Never {
+    asm {
+        "mov x0, #1"
+        "msr daifset, #0xf"
+        "1: b 1b"
+    }
+}
+
+func pinned(_ x: UInt64) using Asm -> UInt64 {
+    var r: UInt64 = 0
+    asm(in: ["x9": x], out: ["x10": r], clobbers: ["cc"]) {
+        "adds x10, x9, #7"
+    }
+    return r
+}
+
+func main() -> Int32 { return 0 }

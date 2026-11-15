@@ -2869,6 +2869,18 @@ add_test(
 set_tests_properties(e2e_asm_bad_register PROPERTIES
     PASS_REGULAR_EXPRESSION "'rax' is not a register on aarch64.*'x31' is not a register on aarch64")
 
+# Annex §14.4 rule 1 an implicit clobber is an error: a written register, the
+# flags or a sysreg the operand list doesn't name. (vsema has no asm model, so
+# this is not a differential fixture.)
+add_test(
+    NAME    e2e_asm_implicit_clobber
+    COMMAND sh -c "$<TARGET_FILE:vestra> check --target=aarch64 --no-libc ${CMAKE_SOURCE_DIR}/tests/e2e/asm/asmwrites_bad.vst 2>&1; true")
+set_tests_properties(e2e_asm_implicit_clobber PROPERTIES
+    PASS_REGULAR_EXPRESSION "asm writes x11 [(]'mov x11, [{]x[}]'[)].*asm sets the condition flags.*asm writes the sysreg daif [(]'msr daifset, #2'[)].*asm writes x13.*asm writes x12.*asm writes x14 [(]'stxr w14.*asm writes x3.*asm writes x4.*asm writes x30 [(]'bl helper'[)].*asm writes x6 [(]'str x5, [[]x6, #8[]]!'[)]")
+add_test(
+    NAME    e2e_asm_declared_writes
+    COMMAND $<TARGET_FILE:vestra> check --target=aarch64 --no-libc ${CMAKE_SOURCE_DIR}/tests/e2e/asm/asmwrites_ok.vst)
+
 # §14.12 under a named --target, another architecture's register is a Vestra
 # error, not just a deleted function in the C++ (F4).
 add_test(

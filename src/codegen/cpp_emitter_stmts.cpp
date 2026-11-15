@@ -6,6 +6,7 @@
 // Split out of cpp_emitter.cpp; see cpp_emitter_internal.hpp for the
 // shared free helpers.
 
+#include "vestra/sema/asm_writes.hpp"
 #include "vestra/codegen/cpp_emitter.hpp"
 
 #include "cpp_emitter_internal.hpp"
@@ -649,6 +650,11 @@ void CppEmitter::emit_asm(std::ostream& os, const ast::AsmStmt& a, int indent) {
         }
     }
     for (const auto& c : a.clobbers) {
+        // Annex §14.4 a sysreg clobber records the write for the checker;
+        // the C++ compiler has no such register, and the asm is volatile.
+        if (c != "memory" && c != "cc" && sema::is_a64_sysreg_name(c)) {
+            continue;
+        }
         sep(clob);
         clob << "\"" << c << "\"";
     }

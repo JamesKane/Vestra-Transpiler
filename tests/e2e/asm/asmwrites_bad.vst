@@ -1,0 +1,22 @@
+// Annex §14.4 rule 1: an instruction that writes a register, the flags or a
+// sysreg the operand list doesn't name is an error. Checked under
+// --target=aarch64 (tests/CMakeLists.txt, e2e_asm_implicit_clobber).
+
+func f(_ x: UInt64) using Asm -> UInt64 {
+    var r: UInt64 = 0
+    asm(in: [x], out: [r]) {
+        "mov x11, {x}"
+        "adds {r}, x11, #1"
+        "msr daifset, #2"
+        "ldr x12, [x13], #8"
+        "stxr w14, x1, [x2]"
+        "ldp x3, x4, [sp, #16]"
+        "bl helper"
+        "str x5, [x6, #8]!"
+        "cmp x1, x2; cset {r}, eq"
+        "mov x11, #2"
+    }
+    return r
+}
+
+func main() -> Int32 { return 0 }

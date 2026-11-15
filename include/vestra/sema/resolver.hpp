@@ -223,6 +223,7 @@ private:
     void check_stmt(const ast::Stmt& s);
     // §14.4 inline assembly: operands, template placeholders, register names.
     void check_asm(const ast::AsmStmt& a);
+    void check_asm_writes(const ast::AsmStmt& a);
     // §14.7 a @naked (or @boot) body is operand-free asm only.
     void check_naked_body(const ast::FuncDecl& f);
     // §15.5 a hosted-runtime capability or type under --no-libc.

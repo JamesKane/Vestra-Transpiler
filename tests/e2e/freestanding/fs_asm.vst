@@ -22,7 +22,7 @@ func iccAck() using Asm -> UInt64 {
 }
 
 func cntpArm(_ ticks: UInt64) using Asm {
-    asm(in: [ticks], clobbers: ["x1", "memory"]) {
+    asm(in: [ticks], clobbers: ["x1", "memory", "cntp_tval_el0", "cntp_ctl_el0"]) {
         "msr cntp_tval_el0, {ticks}"
         "mov x1, #1"
         "msr cntp_ctl_el0, x1"
