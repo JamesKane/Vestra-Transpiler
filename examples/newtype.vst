@@ -35,7 +35,7 @@ func sameUser(_ a: UserId, _ b: UserId) -> Bool {
 }
 
 // Display via the derive(Debug) spec — renders `UserId(42)`.
-func label(_ u: UserId) -> String {
+func label(_ u: UserId) using Alloc -> String {
     return "user=\(u)"
 }
 

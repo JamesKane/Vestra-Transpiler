@@ -1,0 +1,15 @@
+// §4 an interpolation builds a fresh String, so the function needs `using
+// Alloc`. The bootstrap accepted it without, and never walked the splices,
+// so a call inside `\(...)` skipped its own capability check.
+
+func stamp() using Clock -> Int32 { return 1 }
+
+func label(_ n: Int32) -> String {
+    return "n=\(n)"
+}
+
+func timed() using Alloc -> String {
+    return "t=\(stamp())"
+}
+
+func main() -> Int32 { return 0 }

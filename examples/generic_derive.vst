@@ -33,7 +33,7 @@ func eqPair(_ a: Pair[Int32], _ b: Pair[Int32]) -> Bool {
 
 // derive(Debug) makes the type Display-conformant, so a generic
 // instantiation can be interpolated.
-func showPair(_ p: Pair[Int32]) -> String {
+func showPair(_ p: Pair[Int32]) using Alloc -> String {
     return "\(p)"
 }
 

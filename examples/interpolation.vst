@@ -10,13 +10,13 @@
 
 module examples.interpolation
 
-func greet(_ name: Str, _ age: Int32) -> String {
+func greet(_ name: Str, _ age: Int32) using Alloc -> String {
     return "hello \(name), age \(age + 1)"
 }
 
 // Splice composition: nested arithmetic + a literal `{`/`}` that
 // the lowering escapes so std::format treats them as text rather
 // than format specifiers.
-func describe(_ kind: Str, _ n: Int32) -> String {
+func describe(_ kind: Str, _ n: Int32) using Alloc -> String {
     return "kind={\(kind)}, n=\(n * 2)"
 }

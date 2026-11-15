@@ -1,5 +1,5 @@
 // Interpolated expressions resolve against the enclosing scope.
-func f(_ a: Int32) -> Int32 {
+func f(_ a: Int32) using Alloc -> Int32 {
   let s = "a=\(a) twice=\(a)"
   return 0
 }

@@ -4501,8 +4501,20 @@ func checkCapExpr(_ env: inout CapEnv, _ e: Nd) using Alloc {
         case .doCatchE(let db, let en, let et, let cb): checkCapPair(env, db, cb)
         // §8 a closure runs with the authority of the place it is written.
         case .closureE(let ps, let body): checkCapBlock(env, body)
+        case .interpE(let parts, let xs): capInterp(env, xs)
         default: noop()
     }
+}
+
+// §4 an interpolation builds a fresh String: an allocation the signature
+// names. Its splices are ordinary expressions.
+func capInterp(_ env: inout CapEnv, _ xs: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < xs.len() {
+        checkCapExpr(env, xs.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    require(env, own("Alloc"))
 }
 
 // §14.1 / Annex §14.6.3 dereferencing a raw pointer needs RawMemory.

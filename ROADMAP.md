@@ -133,7 +133,7 @@ to 5 below. What's left is the sema-side `unsound` rows in the Gaps tables:
    §7, §8).~~ Done.
 6. ~~Opaque types inherit no operations (`==` on an opaque `EntityId`; Gaps
    §6).~~ Done, with struct comparisons and compound assignment.
-7. String interpolation needs `using Alloc` (Gaps §4).
+7. ~~String interpolation needs `using Alloc` (Gaps §4).~~ Done.
 8. `as` byte reinterpretation checks size, alignment and `Trivial` (Gaps
    §4).
 9. `derive` validation beyond `Default` (Gaps §12.3).

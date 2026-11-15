@@ -12,7 +12,7 @@ module examples.optional_display
 
 // Primitives in Optional: the inner T's natural formatter fires when
 // the value is present.
-func renderName(_ name: Str?, _ count: Int32?) -> String {
+func renderName(_ name: Str?, _ count: Int32?) using Alloc -> String {
     return "name=\(name) count=\(count)"
 }
 
@@ -26,6 +26,6 @@ struct Point {
 
 derive(Debug) for Point
 
-func renderPoint(_ p: Point?) -> String {
+func renderPoint(_ p: Point?) using Alloc -> String {
     return "p=\(p)"
 }

@@ -86,7 +86,7 @@ Each gap has one of four kinds:
 | §4 | `x.to[T]()` / `x.toWrapping[T]()` conversions | divergent | Neither exists. `Int32(c)` is the substitute and is an unchecked `static_cast`. |
 | §4 | `addingChecked` and friends | missing | "no field or method 'addingChecked'". |
 | §4 | `Enum.from(raw)` | missing | "enum 'C' has no case 'from'". |
-| §4 | String interpolation requires `using Alloc` | unsound | Accepted without it. `resolver_exprs.cpp:930` calls it "a follow-on". |
+| §4, §12.1 | An interpolation folds to `StrConst` in a comptime context | missing | `const S: StrConst = "n=\(N)"` is "const value of type String does not match annotation StrConst". An interpolation is always a runtime `String`. |
 | §4 | `StrConst` copies freely | divergent | Passing a `StrConst` to two `sink` params gives "use of 's' after it was moved". |
 | §3 | A block's tail value is its result | missing (partial) | `{ K }` with an untyped const gives "can reach the end of its body without returning". |
 | §3, §17.1 | `'\u{...}'` char escapes | missing | "unterminated character literal". |

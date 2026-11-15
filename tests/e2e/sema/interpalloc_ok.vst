@@ -1,0 +1,20 @@
+// §4 an interpolation is an allocation the signature names: `using Alloc` on
+// the function, or a `with Alloc` block around it.
+
+func stamp() using Clock -> Int32 { return 1 }
+
+func label(_ n: Int32) using Alloc -> String {
+    return "n=\(n)"
+}
+
+func timed() using Alloc, Clock -> String {
+    return "t=\(stamp())"
+}
+
+func main() -> Int32 {
+    with Alloc {
+        let s = label(2)
+        let t = "inline \(s)"
+    }
+    return 0
+}

@@ -25,6 +25,6 @@ enum Shape {
 derive(Display) for Shape
 
 // Mixed splices — primitives ride free; Point + Shape via derive(Display).
-func render(_ p: Point, _ s: Shape, _ count: Int32) -> String {
+func render(_ p: Point, _ s: Shape, _ count: Int32) using Alloc -> String {
     return "p = \(p), s = \(s), count = \(count)"
 }

@@ -807,6 +807,18 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
         }
         break;
     }
+    case ast::NodeKind::InterpStringExpr: {
+        // §4 an interpolation builds a fresh String: an allocation the
+        // signature names. Its splices are ordinary expressions.
+        const auto& is_ = static_cast<const ast::InterpStringExpr&>(e);
+        for (const auto& seg : is_.segments) {
+            if (seg.expr != nullptr) {
+                check_expr(*seg.expr);
+            }
+        }
+        require_row({std::string{"Alloc"}}, e.range);
+        break;
+    }
     default:
         break;  // literals / SelfExpr / LeadingDotExpr — no embedded calls
     }

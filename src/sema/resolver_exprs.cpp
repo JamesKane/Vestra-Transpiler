@@ -965,8 +965,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         // Every splice must be Display-conformant — primitive numerics
         // / Bool / Char / string-likes pass implicitly; user types need
         // either `derive(Display)` or `derive(Debug)`. The `using Alloc`
-        // capability requirement (§4) is still a follow-on; the runtime
-        // lowering uses std::format which assumes a default heap.
+        // requirement is the capability pass's (capability.cpp).
         const auto& is_ = static_cast<const ast::InterpStringExpr&>(e);
         for (const auto& seg : is_.segments) {
             if (seg.expr == nullptr) {
