@@ -762,6 +762,16 @@ void Resolver::check_func(const ast::FuncDecl& f) {
             if (nt.path.size() == 1 && scopes_.current().lookup(nt.path[0]) == nullptr) {
                 error_at(cap->range, std::format("unknown capability '{}'", nt.path[0]));
             }
+            // Annex §14.13 rule 7: InterruptsOff is a region, not a capability.
+            if (nt.path.size() == 1 && nt.path[0] == "InterruptsOff") {
+                const auto* sym = scopes_.current().lookup(nt.path[0]);
+                if (sym != nullptr && sym->decl == nullptr) {
+                    error_at(cap->range,
+                             "'InterruptsOff' is a region, not a capability: there is no "
+                             "`using InterruptsOff`; open a `with InterruptsOff` block "
+                             "(Annex §14.13 rule 7)");
+                }
+            }
         }
     }
     if (target_.freestanding) {

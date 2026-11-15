@@ -3581,7 +3581,7 @@ func tnFuncFull(_ env: inout TnEnv, _ gens: Vec[Nd], _ params: Vec[Nd], _ caps: 
     tnEnterGens(env, gens)
     tnParamTypes(env, params)
     tnTypeBoxed(env, res)
-    tnCapNames(env, caps)
+    tnUsingRow(env, caps)
     tnBodyLocals(env, body)
     tnLeaveGens(env)
 }
@@ -3838,6 +3838,26 @@ func tnCapNames(_ env: inout TnEnv, _ caps: Vec[Nd]) using Alloc {
             default: noop()
         }
         i = i + 1
+    }
+}
+
+// A function's `using` row: each name is a capability, and InterruptsOff is a
+// region rather than one (Annex §14.13 rule 7).
+func tnUsingRow(_ env: inout TnEnv, _ caps: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < caps.len() {
+        match caps.get(i) ?? Nd.wildcard {
+            case .named(let path, let g, let a): tnUsingName(env, path)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func tnUsingName(_ env: inout TnEnv, _ path: String) using Alloc {
+    tnCapName(env, path)
+    if streq(path, "InterruptsOff") && !tnContains(env.userTypes, path) {
+        env.bad.push(own("'InterruptsOff' is a region, not a capability: there is no `using InterruptsOff`; open a `with InterruptsOff` block (Annex §14.13 rule 7)"))
     }
 }
 

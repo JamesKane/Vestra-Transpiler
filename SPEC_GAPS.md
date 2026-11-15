@@ -356,7 +356,6 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | §14.12.2 | Register spellings and typed handles | divergent (minor) | `currentEL` is unknown (the table spells it `currentel`). Every handle is `UInt64`. |
 | §14.12.4 | Link-time privilege check | missing | The register table has no privilege data. |
 | §14.13 rules 1, 6 | `with InterruptsOff` masks on entry and restores on every exit | weaker (no-op) | Lowers to a bare `{ }` block even with `--no-libc --target=aarch64`. Nothing in `src/codegen/` mentions `InterruptsOff`. |
-| §14.13 rule 7 | `using InterruptsOff` is not admitted | unsound | Accepted as a function's row. |
 | §14.14 rule 1 | `Context.size` via reflection | missing | "can't compute Context.size at fold time". |
 | §14.14 rule 4 | `FpContext`, `saveFp` / `restoreFp` / `disableFp` / `enableFp` | missing | "unknown type 'FpContext'". |
 | §15.4 | Compiler-emitted intrinsics have Vestra-supplied bodies | weaker | `memcpy` and friends lower to `__builtin_mem*`, with no in-tree bodies required. `@stack_protector(.strong / .all)` emits nothing. There is no `__vestra_overflow_trap`, because there is no overflow checking. |

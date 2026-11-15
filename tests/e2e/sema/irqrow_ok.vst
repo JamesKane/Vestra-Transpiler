@@ -1,0 +1,7 @@
+// Annex §14.13 the masked region is opened with `with InterruptsOff`.
+
+func critical() using Asm {
+    with InterruptsOff {
+        compilerFence(.seqCst)
+    }
+}

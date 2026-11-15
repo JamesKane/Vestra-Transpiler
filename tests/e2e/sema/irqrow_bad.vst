@@ -1,0 +1,7 @@
+// Annex §14.13 rule 7: InterruptsOff is a region, not a `using`-row
+// capability. A function that must run with interrupts masked opens the
+// region itself.
+
+func critical() using InterruptsOff {}
+
+func also() using Asm, InterruptsOff {}
