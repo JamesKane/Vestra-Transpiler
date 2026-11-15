@@ -538,15 +538,14 @@ private:
     // sema to decide whether to emit the runtime delegation block.
     const ast::FuncDecl* panic_handler_decl_ = nullptr;
 
-    // §A4 (§14.9.3) `compareExchangeWeak` is admitted only inside one
-    // of the recognized retry-loop shapes. We model that by bumping
-    // this counter at the top of any while-stmt whose condition
-    // matches an admitted shape (`!X.succeeded` or `true`); a weak-
-    // CAS call site outside that range is rejected with a diagnostic
-    // pointing at compareExchange instead. v0.5 doesn't yet handle
-    // the `@retry_loop` function-level escape; users must spell out
-    // the loop at the call site.
-    int weak_cas_loop_depth_ = 0;
+    // §A4 (§14.9.3) `compareExchangeWeak` is admitted only as the CAS of a
+    // recognized retry loop: the `r = x.compareExchangeWeak(…)` in the body
+    // of `while !r.succeeded`, or the `let r = x.compareExchangeWeak(…)` of a
+    // `while true` body that then has `if r.succeeded { break | return }`.
+    // Each loop admits that one call; any other weak site is rejected.
+    // `@retry_loop` functions and `repeat … while` are not handled yet.
+    std::unordered_set<const ast::Expr*> admitted_weak_cas_;
+    static const ast::Expr* weak_cas_of_loop(const ast::WhileStmt& w);
     // §17.6 set while a match arm's pattern is checked: there a bare
     // identifier matches an existing value (`let x` binds), which v0.5
     // does not lower yet.

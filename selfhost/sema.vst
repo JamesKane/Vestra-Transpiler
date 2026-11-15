@@ -7527,6 +7527,9 @@ struct TyEnv {
     var drvProto: Vec[String]   // ... -> one protocol it derives
     var tgOwner: Vec[String]    // global: each struct / enum's generic parameters — owner ...
     var tgName: Vec[String]     // ... -> parameter name
+    var wcStmt: Int             // §14.9.3 the retry loop's admitted statement (-1 for none) ...
+    var wcDepth: Int            // ... in the block at this depth ...
+    var wcOk: Bool              // ... set while that statement is checked: its weak CAS is admitted
 }
 
 
@@ -10223,6 +10226,9 @@ func tyAtomicMember(_ env: inout TyEnv, _ base: Vec[Nd], _ op: String, _ args: V
         if kind == 1 { tyOrdSingle(env, args, 1, "store") } else { tyOrdSingle(env, args, 2, "store") }
         return
     }
+    if kind == 1 && streq(op, "compareExchangeWeak") {
+        if env.wcOk { env.wcOk = false } else { env.bad.push(own(wcMsg())) }
+    }
     let cas = streq(op, "compareExchange") || (kind == 1 && streq(op, "compareExchangeWeak"))
     if !cas { return }
     if kind == 1 {
@@ -10689,7 +10695,164 @@ func tyCondMsg(_ kind: Str, _ got: String) using Alloc -> String {
 func tyWhile(_ env: inout TyEnv, _ cond: Vec[Nd], _ body: Vec[Nd]) using Alloc {
     tyCheckCond(env, cond, "while")
     tyBoxed(env, cond)
+    // §14.9.3 a retry loop admits its one weak CAS.
+    let prevStmt = env.wcStmt
+    let prevDepth = env.wcDepth
+    env.wcStmt = wcLoopStmt(cond, body)
+    env.wcDepth = env.esDepth + 1
     tyBoxed(env, body)
+    env.wcStmt = prevStmt
+    env.wcDepth = prevDepth
+}
+
+// The index of the statement holding the loop's admitted weak CAS, or -1:
+// `r = x.compareExchangeWeak(…)` in `while !r.succeeded`, or the
+// `let r = x.compareExchangeWeak(…)` of a `while true` body that later has
+// `if r.succeeded { break | return }`.
+func wcLoopStmt(_ cond: Vec[Nd], _ body: Vec[Nd]) using Alloc -> Int {
+    let stmts = wcBodyStmts(body)
+    let r = wcNotSucceeded(cond)
+    if !streq(r, "") { return wcAssignIdx(stmts, r) }
+    if wcIsTrue(cond) { return wcLetIdx(stmts) }
+    return -1
+}
+
+func wcBodyStmts(_ body: Vec[Nd]) using Alloc -> Vec[Nd] {
+    return match body.get(0) ?? Nd.wildcard {
+        case .block(let stmts): stmts
+        default: Vec.new()
+    }
+}
+
+func wcMsg() -> Str {
+    return "compareExchangeWeak is admitted only as the CAS of a recognized retry loop (`while !r.succeeded { r = x.compareExchangeWeak(…) }` or `while true { let r = x.compareExchangeWeak(…); if r.succeeded { break } }`), one per loop. Use compareExchange for a one-shot CAS."
+}
+
+func wcIsTrue(_ cond: Vec[Nd]) -> Bool {
+    return match cond.get(0) ?? Nd.wildcard {
+        case .boolLit(let v): v
+        default: false
+    }
+}
+
+// `!r.succeeded` -> "r".
+func wcNotSucceeded(_ cond: Vec[Nd]) using Alloc -> String {
+    return match cond.get(0) ?? Nd.wildcard {
+        case .unary(let op, let x): wcNotSucc2(op, x)
+        default: own("")
+    }
+}
+
+func wcNotSucc2(_ op: String, _ x: Vec[Nd]) using Alloc -> String {
+    if !streq(op, "!") { return own("") }
+    return wcSucceededOf(x)
+}
+
+// `r.succeeded` -> "r".
+func wcSucceededOf(_ x: Vec[Nd]) using Alloc -> String {
+    return match x.get(0) ?? Nd.wildcard {
+        case .member(let base, let n, let c): wcSucc2(base, n)
+        default: own("")
+    }
+}
+
+func wcSucc2(_ base: Vec[Nd], _ n: String) using Alloc -> String {
+    if !streq(n, "succeeded") { return own("") }
+    return esIdentOf(base)
+}
+
+func wcIsWeakCall(_ v: Vec[Nd]) -> Bool {
+    return match v.get(0) ?? Nd.wildcard {
+        case .call(let callee, let args): wcIsWeakCallee(callee)
+        default: false
+    }
+}
+
+func wcIsWeakCallee(_ callee: Vec[Nd]) -> Bool {
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let n, let c): streq(n, "compareExchangeWeak")
+        default: false
+    }
+}
+
+func wcAssignIdx(_ stmts: Vec[Nd], _ r: String) using Alloc -> Int {
+    var i: Int = 0
+    while i < stmts.len() {
+        if wcIsAssignWeak(stmts.get(i) ?? Nd.wildcard, r) { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+func wcIsAssignWeak(_ s: Nd, _ r: String) using Alloc -> Bool {
+    return match s {
+        case .assignS(let op, let t, let v): streq(op, "=") && streq(esIdentOf(t), r) && wcIsWeakCall(v)
+        default: false
+    }
+}
+
+func wcLetIdx(_ stmts: Vec[Nd]) using Alloc -> Int {
+    var k: Int = 0
+    while k < stmts.len() {
+        let r = wcLetWeakName(stmts.get(k) ?? Nd.wildcard)
+        if !streq(r, "") {
+            var q: Int = k + 1
+            while q < stmts.len() {
+                if wcIsExitOnSuccess(stmts.get(q) ?? Nd.wildcard, r) { return k }
+                q = q + 1
+            }
+        }
+        k = k + 1
+    }
+    return -1
+}
+
+// `let r = x.compareExchangeWeak(…)` -> "r".
+func wcLetWeakName(_ s: Nd) using Alloc -> String {
+    return match s {
+        case .letS(let p, let ty, let v): wcLetWeak2(p, v)
+        default: own("")
+    }
+}
+
+func wcLetWeak2(_ p: Vec[Nd], _ v: Vec[Nd]) using Alloc -> String {
+    if !wcIsWeakCall(v) { return own("") }
+    return match p.get(0) ?? Nd.wildcard {
+        case .identP(let n): own(n)
+        default: own("")
+    }
+}
+
+// `if r.succeeded { … break | return … }` with no else.
+func wcIsExitOnSuccess(_ s: Nd, _ r: String) using Alloc -> Bool {
+    return match s {
+        case .exprS(let e): wcIsExitIf(e, r)
+        default: false
+    }
+}
+
+func wcIsExitIf(_ e: Vec[Nd], _ r: String) using Alloc -> Bool {
+    return match e.get(0) ?? Nd.wildcard {
+        case .ifE(let ln, let li, let cond, let thenB, let els): streq(ln, "") && els.len() == 0 && streq(wcSucceededOf(cond), r) && wcHasExit(wcBodyStmts(thenB))
+        default: false
+    }
+}
+
+func wcHasExit(_ stmts: Vec[Nd]) -> Bool {
+    var i: Int = 0
+    while i < stmts.len() {
+        if wcIsExit(stmts.get(i) ?? Nd.wildcard) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func wcIsExit(_ s: Nd) -> Bool {
+    return match s {
+        case .breakS(let l): true
+        case .retS(let v): true
+        default: false
+    }
 }
 
 func tyBlock(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc {
@@ -10697,7 +10860,9 @@ func tyBlock(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc {
     muEnter(env)
     var i: Int = 0
     while i < stmts.len() {
+        if i == env.wcStmt && env.esDepth == env.wcDepth { env.wcOk = true }
         tyStmt(env, stmts.get(i) ?? Nd.wildcard)
+        env.wcOk = false
         i = i + 1
     }
     muLeave(env)
@@ -13413,7 +13578,7 @@ func main() -> Int32 {
                                      pLabel: Vec.new(), mlOwner: Vec.new(), mlName: Vec.new(), mlLabel: Vec.new(), niName: Vec.new(),
                                      neKey: Vec.new(), neLocal: Vec.new(),
                                      opName: Vec.new(), opUnder: Vec.new(), drvType: Vec.new(), drvProto: Vec.new(),
-                                     tgOwner: Vec.new(), tgName: Vec.new())
+                                     tgOwner: Vec.new(), tgName: Vec.new(), wcStmt: -1, wcDepth: 0, wcOk: false)
                     tyRefines(&tenv, p.toks)
                     tyCopyUnions(&tenv, p.unions)
                     tyCheck(&tenv, u)

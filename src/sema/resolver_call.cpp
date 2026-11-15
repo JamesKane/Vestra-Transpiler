@@ -1262,20 +1262,21 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
 
     // §A4 (§14.9.3) free-standing compareExchangeWeak rejection. The
     // weak form is admitted only inside one of the spec's retry-loop
-    // shapes (tracked via weak_cas_loop_depth_). When we see a weak
+    // shapes (tracked via admitted_weak_cas_). When we see a weak
     // CAS call site outside that range, emit a diagnostic pointing
     // the user at the strong form. Doing the check here — after
     // callee resolution — keeps the test simple: we know the
     // synthesized method type and the call's range.
-    if (c.callee->kind == ast::NodeKind::MemberExpr && weak_cas_loop_depth_ == 0) {
+    if (c.callee->kind == ast::NodeKind::MemberExpr && !admitted_weak_cas_.contains(&c)) {
         const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
         if (mem.member == "compareExchangeWeak") {
             auto base_t = resolution_.type_of(mem.base.get());
             if (base_t != nullptr && base_t->kind() == TypeKind::Atomic) {
                 error_at(c.range,
-                         "compareExchangeWeak is admitted only inside a recognized retry "
-                         "loop (`while !r.succeeded { … }` or `while true { … if r.succeeded "
-                         "{ break } }`). Use compareExchange for a one-shot CAS.");
+                         "compareExchangeWeak is admitted only as the CAS of a recognized "
+                         "retry loop (`while !r.succeeded { r = x.compareExchangeWeak(…) }` or "
+                         "`while true { let r = x.compareExchangeWeak(…); if r.succeeded { "
+                         "break } }`), one per loop. Use compareExchange for a one-shot CAS.");
             }
         }
     }

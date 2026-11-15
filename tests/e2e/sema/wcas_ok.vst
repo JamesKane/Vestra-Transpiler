@@ -1,0 +1,40 @@
+// §14.9.3 the admitted retry-loop shapes: `while !r.succeeded` assigning r
+// from the weak CAS, and `while true` binding r from it and leaving on
+// `r.succeeded`. A strong CAS is admitted anywhere.
+
+static a: Atomic[UInt32] = 0
+
+func good1() -> UInt32 {
+    var r = a.compareExchange(0, 1, .seqCst, .acquire)
+    while !r.succeeded {
+        r = a.compareExchangeWeak(r.actual, 1, .seqCst, .acquire)
+    }
+    return r.actual
+}
+
+func good2() -> UInt32 {
+    while true {
+        let observed = a.load(.acquire)
+        let r = a.compareExchangeWeak(observed, observed + 1, .seqCst, .acquire)
+        if r.succeeded { return observed }
+    }
+    return 0
+}
+
+func strong() -> Bool {
+    let r = a.compareExchange(0, 1, .seqCst, .acquire)
+    return r.succeeded
+}
+
+func labeled() -> UInt32 {
+    while true {
+        let r = a.compareExchangeWeak(0, 1, .seqCst, .acquire)
+        if r.succeeded {
+            let n = r.actual
+            break
+        }
+    }
+    return 0
+}
+
+func main() -> Int32 { return 0 }

@@ -461,6 +461,112 @@ void Resolver::check_derive_fields(const ast::DeriveDecl& dd) {
     }
 }
 
+namespace {
+
+// `X.compareExchangeWeak(…)`, or nullptr.
+const ast::Expr* weak_cas_call(const ast::Expr* e) {
+    if (e == nullptr || e->kind != ast::NodeKind::CallExpr) {
+        return nullptr;
+    }
+    const auto& c = static_cast<const ast::CallExpr&>(*e);
+    if (c.callee == nullptr || c.callee->kind != ast::NodeKind::MemberExpr
+        || static_cast<const ast::MemberExpr&>(*c.callee).member != "compareExchangeWeak") {
+        return nullptr;
+    }
+    return e;
+}
+
+// `NAME.succeeded`?
+bool is_succeeded_of(const ast::Expr* e, std::string_view name) {
+    if (e == nullptr || e->kind != ast::NodeKind::MemberExpr) {
+        return false;
+    }
+    const auto& m = static_cast<const ast::MemberExpr&>(*e);
+    return m.member == "succeeded" && m.base != nullptr && m.base->kind == ast::NodeKind::IdentExpr
+           && static_cast<const ast::IdentExpr&>(*m.base).name == name;
+}
+
+// `if NAME.succeeded { … break | return … }` (no else).
+bool is_exit_on_success(const ast::Stmt& s, std::string_view name) {
+    if (s.kind != ast::NodeKind::ExprStmt) {
+        return false;
+    }
+    const auto* e = static_cast<const ast::ExprStmt&>(s).expr.get();
+    if (e == nullptr || e->kind != ast::NodeKind::IfExpr) {
+        return false;
+    }
+    const auto& i = static_cast<const ast::IfExpr&>(*e);
+    if (!i.let_name.empty() || i.else_branch != nullptr || !is_succeeded_of(i.cond.get(), name)
+        || i.then_branch == nullptr || i.then_branch->kind != ast::NodeKind::BlockExpr) {
+        return false;
+    }
+    return std::ranges::any_of(static_cast<const ast::BlockExpr&>(*i.then_branch).stmts,
+                               [](const ast::StmtPtr& t) {
+                                   return t != nullptr
+                                          && (t->kind == ast::NodeKind::BreakStmt
+                                              || t->kind == ast::NodeKind::ReturnStmt);
+                               });
+}
+
+}  // namespace
+
+const ast::Expr* Resolver::weak_cas_of_loop(const ast::WhileStmt& w) {
+    if (w.cond == nullptr || w.body == nullptr || w.body->kind != ast::NodeKind::BlockExpr) {
+        return nullptr;
+    }
+    const auto& stmts = static_cast<const ast::BlockExpr&>(*w.body).stmts;
+    // `while !r.succeeded { … r = x.compareExchangeWeak(…) … }`
+    if (w.cond->kind == ast::NodeKind::UnaryExpr) {
+        const auto& u = static_cast<const ast::UnaryExpr&>(*w.cond);
+        if (u.op != ast::UnaryOp::Not || u.operand == nullptr
+            || u.operand->kind != ast::NodeKind::MemberExpr) {
+            return nullptr;
+        }
+        const auto& m = static_cast<const ast::MemberExpr&>(*u.operand);
+        if (m.member != "succeeded" || m.base == nullptr
+            || m.base->kind != ast::NodeKind::IdentExpr) {
+            return nullptr;
+        }
+        const auto& name = static_cast<const ast::IdentExpr&>(*m.base).name;
+        for (const auto& s : stmts) {
+            if (s == nullptr || s->kind != ast::NodeKind::AssignStmt) {
+                continue;
+            }
+            const auto& a = static_cast<const ast::AssignStmt&>(*s);
+            if (a.op == ast::AssignOp::Assign && a.target != nullptr
+                && a.target->kind == ast::NodeKind::IdentExpr
+                && static_cast<const ast::IdentExpr&>(*a.target).name == name) {
+                if (const auto* call = weak_cas_call(a.value.get())) {
+                    return call;
+                }
+            }
+        }
+        return nullptr;
+    }
+    // `while true { … let r = x.compareExchangeWeak(…) … if r.succeeded { break } … }`
+    if (w.cond->kind != ast::NodeKind::BoolLit || !static_cast<const ast::BoolLit&>(*w.cond).value) {
+        return nullptr;
+    }
+    for (std::size_t k = 0; k < stmts.size(); ++k) {
+        const auto* s = stmts[k].get();
+        if (s == nullptr || s->kind != ast::NodeKind::LetStmt) {
+            continue;
+        }
+        const auto& l = static_cast<const ast::LetStmt&>(*s);
+        const auto* call = weak_cas_call(l.value.get());
+        if (call == nullptr || l.pattern == nullptr || l.pattern->kind != ast::NodeKind::IdentPat) {
+            continue;
+        }
+        const auto& name = static_cast<const ast::IdentPat&>(*l.pattern).name;
+        for (std::size_t q = k + 1; q < stmts.size(); ++q) {
+            if (stmts[q] != nullptr && is_exit_on_success(*stmts[q], name)) {
+                return call;
+            }
+        }
+    }
+    return nullptr;
+}
+
 void Resolver::check_link_attributes(const std::vector<ast::Attribute>& attrs) {
     // §A1 (§6.7): shape-check the symbol-level attributes. We accept
     // the common case for each — string literal for
@@ -1590,35 +1696,12 @@ void Resolver::check_stmt(const ast::Stmt& s) {
             error_at(w.cond->range,
                      std::format("while condition must be Bool, got {}", cond_type->describe()));
         }
-        // §A4 (§14.9.3) admitted retry-loop detection. The two
-        // while-shaped variants the spec lists are:
-        //   * `while !r.succeeded { … }` — UnaryExpr(Not, MemberExpr("succeeded"))
-        //   * `while true { … }`         — BoolLit(true)
-        // Either shape opens a window where compareExchangeWeak is
-        // admitted; the call-site check below consults this depth.
-        bool admits_weak_cas = false;
-        if (w.cond) {
-            if (w.cond->kind == ast::NodeKind::BoolLit
-                && static_cast<const ast::BoolLit&>(*w.cond).value) {
-                admits_weak_cas = true;
-            } else if (w.cond->kind == ast::NodeKind::UnaryExpr) {
-                const auto& u = static_cast<const ast::UnaryExpr&>(*w.cond);
-                if (u.op == ast::UnaryOp::Not && u.operand != nullptr
-                    && u.operand->kind == ast::NodeKind::MemberExpr) {
-                    if (static_cast<const ast::MemberExpr&>(*u.operand).member == "succeeded") {
-                        admits_weak_cas = true;
-                    }
-                }
-            }
-        }
-        if (admits_weak_cas) {
-            ++weak_cas_loop_depth_;
+        // §A4 (§14.9.3) a retry loop admits its one weak CAS.
+        if (const auto* admitted = weak_cas_of_loop(w)) {
+            admitted_weak_cas_.insert(admitted);
         }
         if (w.body) {
             check_expr(*w.body);
-        }
-        if (admits_weak_cas) {
-            --weak_cas_loop_depth_;
         }
         break;
     }

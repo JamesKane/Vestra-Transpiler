@@ -1980,7 +1980,7 @@ TEST_CASE("free-standing compareExchangeWeak is rejected with a clear hint") {
                           "    return r.actual\n"
                           "}\n");
     CHECK(r.error_count >= 1);
-    CHECK(r.first_message.find("compareExchangeWeak is admitted only inside") != std::string::npos);
+    CHECK(r.first_message.find("compareExchangeWeak is admitted only as the CAS of a recognized") != std::string::npos);
     CHECK(r.first_message.find("compareExchange") != std::string::npos);
 }
 
@@ -1999,7 +1999,7 @@ TEST_CASE("compareExchangeWeak in a `while cond { ... }` with a non-admitted con
                           "    return 0\n"
                           "}\n");
     CHECK(r.error_count >= 1);
-    CHECK(r.first_message.find("compareExchangeWeak is admitted only inside") != std::string::npos);
+    CHECK(r.first_message.find("compareExchangeWeak is admitted only as the CAS of a recognized") != std::string::npos);
 }
 
 TEST_CASE("Atomic[T] initial value adopts the inner T from context") {

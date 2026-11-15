@@ -361,8 +361,8 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
         // share the same shape — (expected, desired, success, failure)
         // → CASResult[T]. The strong form is always admitted; the weak
         // form is admitted only inside one of the §14.9.3 retry-loop
-        // shapes (see check_call below + the weak_cas_loop_depth_
-        // counter incremented in WhileStmt). All four args are
+        // shapes (see check_call below + the admitted_weak_cas_
+        // set filled at each WhileStmt). All four args are
         // positional in v0.5 (default args + labels on synthetic
         // methods wait on a separate infra phase).
         if (name == "compareExchange" || name == "compareExchangeWeak") {

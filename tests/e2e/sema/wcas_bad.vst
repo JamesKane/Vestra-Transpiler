@@ -1,0 +1,44 @@
+// §14.9.3 a retry loop admits exactly one weak CAS: the one that feeds its
+// exit test. The bootstrap admitted any weak site anywhere inside any
+// `while true` or `while !x.succeeded`.
+
+static a: Atomic[UInt32] = 0
+
+func anyTrue() -> UInt32 {
+    while true {
+        let x = a.load(.relaxed)
+        if x == 3 { break }
+        let r = a.compareExchangeWeak(0, 1, .seqCst, .acquire)
+    }
+    return 0
+}
+
+func twoSites() -> UInt32 {
+    while true {
+        let r = a.compareExchangeWeak(0, 1, .seqCst, .acquire)
+        let q = a.compareExchangeWeak(0, 1, .seqCst, .acquire)
+        if r.succeeded { break }
+    }
+    return 0
+}
+
+func wrongName() -> UInt32 {
+    var r = a.compareExchange(0, 1, .seqCst, .acquire)
+    var s = a.compareExchange(0, 1, .seqCst, .acquire)
+    while !r.succeeded {
+        s = a.compareExchangeWeak(0, 1, .seqCst, .acquire)
+    }
+    return 0
+}
+
+func nested() -> UInt32 {
+    var r = a.compareExchange(0, 1, .seqCst, .acquire)
+    while !r.succeeded {
+        if true {
+            r = a.compareExchangeWeak(0, 1, .seqCst, .acquire)
+        }
+    }
+    return 0
+}
+
+func main() -> Int32 { return 0 }

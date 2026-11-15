@@ -343,7 +343,7 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | §14.9.2 | Orderings default to `.seqCst` | divergent | The ordering argument is mandatory. |
 | §14.9.3 | CAS argument labels | divergent | Labels are optional: positional `compareExchange(0, 1, .seqCst, .acquire)` is accepted. A label that is given must be the one for its position, so reordered labels are an error rather than a silent swap. |
 | §14.9.2 | `fetchSet` / `fetchClear` on `Atomic[Bool]` | missing | |
-| §14.9.3 | Admitted weak-CAS loop shapes | unsound (partial) | `repeat { } while` is a parse error. Any `while true` admits any number of weak sites (`resolver_decls.cpp:1300`). |
+| §14.9.3 | `repeat { } while !r.succeeded` | missing | A parse error, so the third admitted weak-CAS loop shape can't be written. The other two shapes admit exactly the one weak CAS that feeds the loop's exit test. |
 | §14.9.3 | `@retry_loop` predicate, `@allow_weak_cas` | missing | `@retry_loop` is "not supported yet". `@allow_weak_cas` on a statement is a parse error. |
 | §14.9.4 | Wide-atomic gate on `aarch64 +lse` / `x86_64 +cx16` | divergent | It requires `lse2` and rejects plain `+lse`. A host or unset target bypasses the gate (`resolver.cpp:203`), so a lock-based libatomic fallback is possible. It is checked at compile time, not at link time. |
 | §14.10 | `Cpu.` / `Cache.` / `Tlb.` namespaces, labeled `range:` / `scope:` | divergent | Free functions only. "undefined name 'Cpu'". |
