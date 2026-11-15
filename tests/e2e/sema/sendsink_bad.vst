@@ -1,0 +1,30 @@
+// §11.1, §18.3 the bootstrap treated `send` and `Box.new` as reads, so the
+// sender kept using a value the receiver now owned, and a linear value sent
+// on a channel was reported as never consumed.
+
+struct B { var n: Int32; var s: String }
+
+func reuse(_ ch: Channel[B], _ b: sink B) -> Int32 {
+    ch.send(b)
+    return b.n
+}
+
+func twice(_ ch: Channel[B], _ b: sink B) {
+    ch.send(b)
+    ch.send(b)
+}
+
+func looped(_ ch: Channel[B], _ b: sink B) {
+    var i: Int32 = 0
+    while i < 3 {
+        ch.send(b)
+        i = i + 1
+    }
+}
+
+func boxed(_ b: sink B) using Alloc -> Int32 {
+    let x: Box[B] = Box.new(b)
+    return b.n
+}
+
+func main() -> Int32 { return 0 }

@@ -119,14 +119,14 @@ accepts. Ordered by how likely each is to let a wrong program through:
 The Annex A list (MMIO payloads, fences, `using InterruptsOff`,
 `@kernel_init` addresses, `@noinit` values, `self` typing, variable
 orderings, `Atomic[T]`, `swapContext`) is closed, and so are items 1
-and 2 below. What's left is the sema-side `unsound` rows in the Gaps tables:
+to 3 below. What's left is the sema-side `unsound` rows in the Gaps tables:
 
 1. ~~Integer literals range-checked against the target type (`return 300` as
    `Int8`; Gaps §4).~~ Done.
 2. ~~Exclusivity across an `inout` method receiver (`p.bump(&p.a)`; Gaps
    §19.3).~~ Done.
-3. `send` takes its argument by `sink` (`ch.send(b); return b.n`; Gaps
-   §11.1).
+3. ~~`send` takes its argument by `sink` (`ch.send(b); return b.n`; Gaps
+   §11.1).~~ Done, with `Box.new`.
 4. No moving a field out of a `deinit` type (`take(r.b)`; Gaps §6).
 5. `nonescaping` closure parameters, and a closure's capability row (Gaps
    §7, §8).
@@ -138,6 +138,10 @@ and 2 below. What's left is the sema-side `unsound` rows in the Gaps tables:
 9. `derive` validation beyond `Default` (Gaps §12.3).
 10. An implicit `asm` clobber is an error, and the weak-CAS loop shapes
     (Annex §14.4, §14.9.3).
+11. `Vec.push` takes its value by `sink`. The rule is one line in each
+    checker; the work is adding `copy` at the roughly 55 sites in
+    `examples/` and `selfhost/` that push a value and keep using it (Gaps
+    §18).
 
 The codegen-side `unsound` rows (overflow traps, `&+` wrapping, division by
 zero, bounds checks, `??` laziness, evaluation order, C++ keyword names)

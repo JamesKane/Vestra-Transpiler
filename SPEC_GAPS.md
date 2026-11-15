@@ -174,7 +174,6 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 |---|---|---|---|
 | §11 | A real concurrent runtime | divergent (v0.5) | Single-threaded cooperative scheduler. `parallel` runs its chunks sequentially (`cpp_emitter_prelude.cpp:144`). |
 | §11.2 | `parallel(over: world.chunks(8)) { slice in ... }` is an ordinary library function | divergent | It is a builtin, `parallel(data, chunks, body)`. The spec's trailing-closure form fails to parse. |
-| §11.1, §19.8 | `send` takes its argument by `sink` | unsound | `ch.send(b); return b.n` is accepted. A linear value sent on a channel still reports "never consumed". The prelude copies. |
 | §11.1 | Bounded channels | weaker | Unbounded. `Channel.new(capacity: 4)` is accepted, and the capacity is silently dropped. |
 | §11.1 | `select` send-when-ready arm | missing | "select event must be a Future[T] or a channel receive". |
 | §11.1 | `timeout` on a mixed channel/future select | missing | Rejected by design (ROADMAP §2, slice 6). *(docs)* |
@@ -288,6 +287,12 @@ fails in clang.
   `parallel` signature differs from the spec.
 - **`Box`:** `Box.new(1)` infers `Box[Int]` even where `Box[Int32]` is
   expected.
+- **`Vec.push` copies (unsound):** the spec's `Buffer.append(_ x: sink T)`
+  moves its value, and `Channel.send` and `Box.new` now do, but `Vec.push`
+  is still a read, so `v.push(s); return s` is accepted for a `String s`.
+  Making it a move rejects 25 programs under `examples/` and about 30 sites
+  in `selfhost/`, each of which pushes a value and then uses it again; they
+  need `copy` (or `own(...)`) first.
 
 ### §19: formal semantics (rules not covered above)
 

@@ -500,7 +500,7 @@ void OwnershipChecker::check_call(const ast::CallExpr& c) {
         check_expr(*arg.value);
 
         ast::ParamMode mode = ast::ParamMode::Read;
-        if (is_constructor) {
+        if (is_constructor || builtin_sink_arg(c, i)) {
             mode = ast::ParamMode::Sink;
         } else if (fn != nullptr && i < fn->params.size()) {
             mode = fn->params[i].mode;
@@ -1346,6 +1346,30 @@ void OwnershipChecker::check_place_assign(const ast::AssignStmt& a) {
         return;
     }
     check_expr(target);
+}
+
+bool OwnershipChecker::builtin_sink_arg(const ast::CallExpr& c, std::size_t i) const {
+    if (i != 0 || c.args.size() != 1 || c.callee == nullptr
+        || c.callee->kind != ast::NodeKind::MemberExpr) {
+        return false;
+    }
+    const auto& m = static_cast<const ast::MemberExpr&>(*c.callee);
+    if (m.base == nullptr) {
+        return false;
+    }
+    if (auto bt = resolution_->type_of(m.base.get())) {
+        if (bt->kind() == TypeKind::Channel) {
+            return m.member == "send";
+        }
+    }
+    // `Box.new(x)`: the base names the type, not a value.
+    const auto& base = strip_parens(*m.base);
+    if (base.kind == ast::NodeKind::IdentExpr && m.member == "new"
+        && static_cast<const ast::IdentExpr&>(base).name == "Box") {
+        const auto* sym = resolution_->symbol_of(&base);
+        return sym == nullptr || sym->kind == SymbolKind::Struct;
+    }
+    return false;
 }
 
 bool OwnershipChecker::check_optional_method(const ast::CallExpr& c) {

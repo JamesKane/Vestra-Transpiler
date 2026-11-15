@@ -163,6 +163,11 @@ private:
     void check_place_assign(const ast::AssignStmt& a);
     // The Optional-method special cases: `.take()` / `.put(v)`.
     bool check_optional_method(const ast::CallExpr& c);
+    // §18.3, §18.9 the builtin entry points that take their value `sink T`:
+    // `Channel.send(x)` and `Box.new(x)`. True when argument `i` of `c` is
+    // one of them. `Vec.push` (the bootstrap's `Buffer.append`) still copies;
+    // see SPEC_GAPS §18.
+    [[nodiscard]] bool builtin_sink_arg(const ast::CallExpr& c, std::size_t i) const;
     // `P == nil` conjuncts in `cond` (then-branch facts), or `P != nil`.
     void collect_nil_facts(const ast::Expr& cond, bool want_nil, std::vector<PlaceKey>& out) const;
     [[nodiscard]] bool block_diverges(const ast::Expr* e) const;

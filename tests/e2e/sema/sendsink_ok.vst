@@ -1,0 +1,30 @@
+// §11.1, §18.3 `send` and `Box.new` take their value `sink T`: a linear value
+// sent on a channel is consumed by it, a copy can be sent and the original
+// kept, and a trivial value is copied anyway.
+
+struct B { var n: Int32; var s: String }
+linear struct L { var v: Int32 }
+
+func sendLinear(_ ch: Channel[L]) -> Int32 {
+    let l = L(v: 1)
+    ch.send(l)
+    return 0
+}
+
+func sendCopy(_ ch: Channel[B], _ b: B) -> Int32 {
+    ch.send(copy b)
+    return b.n
+}
+
+func sendNum(_ ch: Channel[Int32]) -> Int32 {
+    let x: Int32 = 4
+    ch.send(x)
+    return x
+}
+
+func boxed(_ b: sink B) using Alloc -> Int32 {
+    let x: Box[B] = Box.new(b)
+    return x.value.n
+}
+
+func main() -> Int32 { return 0 }

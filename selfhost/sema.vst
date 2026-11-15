@@ -6875,13 +6875,35 @@ func ownCall(_ env: inout OwnEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     if ownOptMethod(env, callee, args) { return }
     ownCallee(env, callee)
     let fname = exCalleeNameBoxed(callee)
-    let isCtor = ownIsCtor(env, fname)
+    var isCtor: Bool = ownIsCtor(env, fname)
+    // §18.3, §18.9 `ch.send(x)` and `Box.new(x)` take their value `sink T`.
+    if args.len() == 1 && ownBuiltinSink(env, callee) { isCtor = true }
     var i: Int = 0
     while i < args.len() {
         ownCallArg(env, fname, isCtor, i, args.get(i) ?? Nd.wildcard)
         i = i + 1
     }
     ownKillStatics(env)   // any call may write a static
+}
+
+func ownBuiltinSink(_ env: inout OwnEnv, _ callee: Vec[Nd]) using Alloc -> Bool {
+    if let c = callee.get(0) {
+        return match c {
+            case .member(let base, let m, let ch): ownBuiltinSinkOn(env, base, m)
+            default: false
+        }
+    }
+    return false
+}
+
+func ownBuiltinSinkOn(_ env: inout OwnEnv, _ base: Vec[Nd], _ m: String) using Alloc -> Bool {
+    if streq(m, "send") {
+        let pl = ownPlace(env, base)
+        return pl.ok && streq(ownTyHead(pl.ty), "Channel")
+    }
+    if !streq(m, "new") { return false }
+    let bn = ownIdentName(base)
+    return streq(bn, "Box") && ownFindIn(env.locName, bn) < 0 && ownFindIn(env.pName, bn) < 0
 }
 
 // `o.take()` empties a linear local Optional; `o.put(v)` fills it (moving a
