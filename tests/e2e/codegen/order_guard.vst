@@ -1,0 +1,19 @@
+// §14.9.1 an ordering held in a variable can't be judged at compile time, so
+// it is checked where it runs: an ordering the operation can carry works, and
+// one it can't panics instead of reaching the C++ atomic as undefined
+// behaviour.
+
+static counter: Atomic[UInt32] = 0
+
+func bump(_ ld: Ordering, _ st: Ordering, _ s: Ordering, _ f: Ordering) -> UInt32 {
+    counter.store(5, st)
+    let r = counter.compareExchange(5, 7, s, f)
+    if !r.succeeded { return 0 }
+    return counter.load(ld)
+}
+
+func main() using Log -> Int32 {
+    if bump(.acquire, .release, .acqRel, .acquire) == 7 { print("good OK") }
+    if bump(.release, .release, .seqCst, .seqCst) == 7 { print("unreachable") }
+    return 0
+}

@@ -2529,6 +2529,19 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             os << ")";
             return;
         }
+        // §14.9.1 a non-literal ordering is checked where it runs.
+        if (in_order_guard_ != &e) {
+            const auto g = resolution_->ordering_guard(&e);
+            if (g != sema::Resolution::OrderingGuard::None) {
+                os << (g == sema::Resolution::OrderingGuard::Load ? "__vstr::load_order("
+                                                                   : "__vstr::store_order(");
+                in_order_guard_ = &e;
+                emit_expr(os, e);
+                in_order_guard_ = nullptr;
+                os << ")";
+                return;
+            }
+        }
     }
     in_string_coerce_ = false;
     switch (e.kind) {
@@ -3258,15 +3271,29 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 emit_sema_type(os, base_t->inner());
                 os << " __vstr_e = ";
                 emit_expr(os, *c.args[0].value);
+                // §14.9.1 an ordering the compiler can't see is checked as a
+                // pair before the exchange runs.
+                const bool guarded = resolution_->cas_guarded(&c);
+                if (guarded) {
+                    os << "; const std::memory_order __vstr_s = ";
+                    emit_expr(os, *c.args[2].value);
+                    os << "; const std::memory_order __vstr_f = __vstr::cas_failure_order(__vstr_s, ";
+                    emit_expr(os, *c.args[3].value);
+                    os << ")";
+                }
                 os << "; bool __vstr_ok = ";
                 emit_expr(os, *mem.base);
                 os << (is_strong ? ".compare_exchange_strong(__vstr_e, "
                                  : ".compare_exchange_weak(__vstr_e, ");
                 emit_expr(os, *c.args[1].value);
-                os << ", ";
-                emit_expr(os, *c.args[2].value);
-                os << ", ";
-                emit_expr(os, *c.args[3].value);
+                if (guarded) {
+                    os << ", __vstr_s, __vstr_f";
+                } else {
+                    os << ", ";
+                    emit_expr(os, *c.args[2].value);
+                    os << ", ";
+                    emit_expr(os, *c.args[3].value);
+                }
                 os << "); return __vstr::CASResult<";
                 emit_sema_type(os, base_t->inner());
                 os << ">{__vstr_ok, __vstr_e}; }())";
@@ -3278,6 +3305,21 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             // direct member-method call rather than an IIFE.
             if (base_t != nullptr && base_t->kind() == sema::TypeKind::AtomicTaggedPointer
                 && is_strong && c.args.size() == 5) {
+                if (resolution_->cas_guarded(&c)) {
+                    os << "([&]{ const std::memory_order __vstr_s = ";
+                    emit_expr(os, *c.args[3].value);
+                    os << "; const std::memory_order __vstr_f = __vstr::cas_failure_order(__vstr_s, ";
+                    emit_expr(os, *c.args[4].value);
+                    os << "); return ";
+                    emit_expr(os, *mem.base);
+                    os << ".compare_exchange_strong(";
+                    for (std::size_t i = 0; i < 3; ++i) {
+                        emit_expr(os, *c.args[i].value);
+                        os << ", ";
+                    }
+                    os << "__vstr_s, __vstr_f); }())";
+                    break;
+                }
                 emit_expr(os, *mem.base);
                 os << ".compare_exchange_strong(";
                 for (std::size_t i = 0; i < c.args.size(); ++i) {

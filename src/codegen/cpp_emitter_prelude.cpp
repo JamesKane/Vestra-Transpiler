@@ -138,6 +138,35 @@ void emit_prelude_unwrap(std::ostream& hdr) {
     hdr << "    if (o.has_value()) { panic(\"put into an Optional that already holds a value\"); }\n";
     hdr << "    o.emplace(std::forward<U>(v));\n";
     hdr << "}\n\n";
+    // §14.9.1 an ordering held in a variable is checked where it's used: one
+    // the operation can't carry panics instead of reaching the C++ atomic
+    // (undefined behaviour there). A literal ordering is checked at compile
+    // time and never comes through here.
+    hdr << R"__ord(inline std::memory_order load_order(std::memory_order o) noexcept {
+    if (o == std::memory_order_release) { panic("an atomic load can't carry the ordering '.release'"); }
+    if (o == std::memory_order_acq_rel) { panic("an atomic load can't carry the ordering '.acqRel'"); }
+    return o;
+}
+
+inline std::memory_order store_order(std::memory_order o) noexcept {
+    if (o == std::memory_order_acquire) { panic("an atomic store can't carry the ordering '.acquire'"); }
+    if (o == std::memory_order_acq_rel) { panic("an atomic store can't carry the ordering '.acqRel'"); }
+    return o;
+}
+
+inline std::memory_order cas_failure_order(std::memory_order success, std::memory_order failure) noexcept {
+    if (failure == std::memory_order_release) { panic("a CAS failure ordering can't be '.release'"); }
+    if (failure == std::memory_order_acq_rel) { panic("a CAS failure ordering can't be '.acqRel'"); }
+    const bool success_acquires = success == std::memory_order_acquire
+        || success == std::memory_order_acq_rel || success == std::memory_order_seq_cst;
+    if ((failure == std::memory_order_seq_cst && success != std::memory_order_seq_cst)
+        || (failure == std::memory_order_acquire && !success_acquires)) {
+        panic("the CAS failure ordering is stronger than its success ordering");
+    }
+    return failure;
+}
+
+)__ord";
 }
 
 void emit_prelude_span_helpers(std::ostream& hdr) {

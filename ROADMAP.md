@@ -117,8 +117,6 @@ identical diagnostics), because the new backend will trust whatever sema
 accepts. Ordered by how likely each is to let a wrong program through:
 
 1. **Smaller unsound items:**
-    - an atomic ordering held in a variable (only a literal `.case` is
-      checked, so `load(o)` with `o == .release` reaches C++ as UB);
     - `Atomic[T]` requires a §4 primitive (the bootstrap's `is_primitive`
       also admits `String`, `Str` and `Unit`, and the self-hosted checker
       has no `T` rule at all);

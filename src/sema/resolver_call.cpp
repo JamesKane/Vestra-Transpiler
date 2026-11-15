@@ -1607,6 +1607,14 @@ void Resolver::check_atomic_call(const ast::CallExpr& c) {
     }
     const std::string& op = mem.member;
     auto check_single = [&](std::size_t idx, std::string_view what, bool is_load) {
+        // A non-literal ordering is checked where it runs (Resolution::
+        // OrderingGuard); a defaulted one is .seqCst, which every op carries.
+        if (const auto* a = arg_at(c, idx); a != nullptr && literal_ordering(a).empty()) {
+            resolution_.set_ordering_guard(a,
+                                           is_load ? Resolution::OrderingGuard::Load
+                                                   : Resolution::OrderingGuard::Store);
+            return;
+        }
         auto o = literal_ordering(arg_at(c, idx));
         const bool bad = is_load ? (o == "release" || o == "acqRel")
                                  : (o == "acquire" || o == "acqRel");
@@ -1653,6 +1661,11 @@ void Resolver::check_atomic_call(const ast::CallExpr& c) {
         return;
     }
     if (success.empty() || failure.empty()) {
+        // Only a CAS spelling both orderings (four arguments, or five for
+        // the tagged pointer) has one the compiler can't see.
+        if (arg_at(c, si) != nullptr && arg_at(c, si + 1) != nullptr) {
+            resolution_.mark_cas_guarded(&c);
+        }
         return;
     }
     const bool success_acquires =

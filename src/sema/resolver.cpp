@@ -76,6 +76,20 @@ const std::string* Resolution::qualified_name_of(const ast::Expr* e) const {
 void Resolution::set_qualified_name(const ast::Expr* e, std::string name) {
     qualified_names_[e] = std::move(name);
 }
+Resolution::OrderingGuard Resolution::ordering_guard(const ast::Expr* e) const {
+    auto it = ordering_guards_.find(e);
+    return it == ordering_guards_.end() ? OrderingGuard::None : it->second;
+}
+void Resolution::set_ordering_guard(const ast::Expr* e, OrderingGuard g) {
+    ordering_guards_[e] = g;
+}
+bool Resolution::cas_guarded(const ast::CallExpr* c) const {
+    return cas_guarded_.contains(c);
+}
+void Resolution::mark_cas_guarded(const ast::CallExpr* c) {
+    cas_guarded_.insert(c);
+}
+
 bool Resolution::needs_string_coercion(const ast::Expr* e) const {
     return string_coercions_.contains(e);
 }

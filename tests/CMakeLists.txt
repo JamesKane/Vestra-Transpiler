@@ -2877,6 +2877,23 @@ add_test(
 set_tests_properties(e2e_sysreg_wrong_target PROPERTIES
     PASS_REGULAR_EXPRESSION "Sysreg.ia32_efer is an x86_64 register; this build targets aarch64")
 
+# §14.9.1 an ordering held in a variable is checked where it runs: a valid
+# one works, one the operation can't carry panics (hosted), and the guards
+# compile freestanding too.
+set(e2e_ordg_out ${e2e_workdir}/_order_guard)
+add_test(
+    NAME    e2e_order_guard_run
+    COMMAND sh -c "rm -rf ${e2e_ordg_out} && $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/tests/e2e/codegen/order_guard.vst -o ${e2e_ordg_out} >/dev/null && ${CMAKE_CXX_COMPILER} -std=c++26 -Wall -Wextra -O0 -I${e2e_ordg_out} ${e2e_ordg_out}/order_guard.cpp -o ${e2e_ordg_out}/app && ${e2e_ordg_out}/app 2>&1; true")
+set_tests_properties(e2e_order_guard_run PROPERTIES
+    PASS_REGULAR_EXPRESSION "vestra panic: an atomic load can't carry the ordering '.release'"
+    FAIL_REGULAR_EXPRESSION "unreachable")
+add_test(NAME e2e_order_guard_valid COMMAND sh -c "${e2e_ordg_out}/app 2>/dev/null; true")
+set_tests_properties(e2e_order_guard_valid PROPERTIES
+    DEPENDS e2e_order_guard_run PASS_REGULAR_EXPRESSION "good OK")
+add_test(
+    NAME    e2e_freestanding_order_guard
+    COMMAND sh -c "rm -rf ${e2e_ordg_out}_fs && $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/tests/e2e/freestanding/fs_order_guard.vst --no-libc --target=aarch64 --target-features=lse2 -o ${e2e_ordg_out}_fs >/dev/null && ${CMAKE_CXX_COMPILER} --target=aarch64-none-elf ${fs_flags_str} -c -I${e2e_ordg_out}_fs ${e2e_ordg_out}_fs/fs_order_guard.cpp -o ${e2e_ordg_out}_fs/fs_order_guard.o")
+
 # §19.6 linear handles in storage (F17): take / put / borrowing if-let, run.
 set(e2e_lin_out ${e2e_workdir}/_linear_demo)
 add_test(

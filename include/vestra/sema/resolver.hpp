@@ -47,6 +47,16 @@ public:
     [[nodiscard]] bool needs_string_coercion(const ast::Expr* e) const;
     void mark_string_coercion(const ast::Expr* e);
 
+    // §14.9.1 an ordering held in a variable can't be judged at compile
+    // time, so codegen checks it where it's used: a load's ordering (which
+    // can't release), a store's (which can't acquire), and a CAS call with a
+    // non-literal success or failure ordering (checked as a pair).
+    enum class OrderingGuard { None, Load, Store };
+    [[nodiscard]] OrderingGuard ordering_guard(const ast::Expr* e) const;
+    void set_ordering_guard(const ast::Expr* e, OrderingGuard g);
+    [[nodiscard]] bool cas_guarded(const ast::CallExpr* c) const;
+    void mark_cas_guarded(const ast::CallExpr* c);
+
     void set_type(const ast::Expr* e, TypePtr t);
     void set_symbol(const ast::Expr* e, const Symbol* s);
     void set_folded_value(const ast::Expr* e, ComptimeValue v);
@@ -78,6 +88,8 @@ private:
     std::unordered_map<const ast::Expr*, const Symbol*> expr_symbols_;
     std::unordered_map<const ast::Expr*, std::string> qualified_names_;
     std::unordered_set<const ast::Expr*> string_coercions_;
+    std::unordered_map<const ast::Expr*, OrderingGuard> ordering_guards_;
+    std::unordered_set<const ast::CallExpr*> cas_guarded_;
     std::unordered_map<const ast::Expr*, ComptimeValue> folded_;
     std::unordered_set<const ast::Decl*> gated_decls_;
     std::unordered_map<const ast::DoCatchExpr*, TypePtr> do_catch_error_;

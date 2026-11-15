@@ -328,6 +328,8 @@ private:
     // §18.5 — re-entry guard for the string-view→String coercion wrap, so the
     // `std::string(...)` wrap is emitted exactly once around the coerced expr.
     bool in_string_coerce_ = false;
+    // §14.9.1 the ordering argument being wrapped in its run-time guard.
+    const ast::Expr* in_order_guard_ = nullptr;
 
     // §12.3 derive layer: a target-type-name → derived-protocol-name
     // index built up front from every `derive(...) for T` top-level
