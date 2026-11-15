@@ -7523,7 +7523,10 @@ struct TyEnv {
     var neLocal: Vec[String]    // per function: its own `nonescaping` parameters
     var opName: Vec[String]     // global: §6 opaque type names ...
     var opUnder: Vec[String]    // ... -> the representation's spelling
-    var eqTypes: Vec[String]    // global: §12.3 the types a `derive(Eq)` names
+    var drvType: Vec[String]    // global: §12.3 per-derive rows — the target type ...
+    var drvProto: Vec[String]   // ... -> one protocol it derives
+    var tgOwner: Vec[String]    // global: each struct / enum's generic parameters — owner ...
+    var tgName: Vec[String]     // ... -> parameter name
 }
 
 
@@ -7545,8 +7548,8 @@ func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             tyRecordFuncV(env, mods, name, g, params, caps, t, r)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyRecordStructDeclL(env, name, fl, m, isLinear)
-        case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumDecl(env, name, cs, m)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyRecordStructGen(env, name, fl, m, isLinear, generics)
+        case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumGen(env, name, cs, m, generics)
         case .staticD(let vis, let name, let ty, let v): tyRecordStatic(env, name, ty, v)
         case .opaqueD(let vis, let name, let under): tyRecordOpaque(env, name, under)
         case .deriveD(let ps, let target): tyRecordDerive(env, ps, target)
@@ -7559,19 +7562,161 @@ func tyRecordOpaque(_ env: inout TyEnv, _ name: String, _ under: Vec[Nd]) using 
     env.opUnder.push(tyAnnSpelling(under))
 }
 
-func tyRecordDerive(_ env: inout TyEnv, _ ps: Vec[Nd], _ target: Vec[Nd]) using Alloc {
+func tyRecordStructGen(_ env: inout TyEnv, _ name: String, _ fl: Vec[Nd], _ m: Vec[Nd], _ isLinear: Bool, _ gens: Vec[Nd]) using Alloc {
+    tyRecordStructDeclL(env, name, fl, m, isLinear)
+    tyRecordTypeGens(env, name, gens)
+}
+
+func tyRecordEnumGen(_ env: inout TyEnv, _ name: String, _ cs: Vec[Nd], _ m: Vec[Nd], _ gens: Vec[Nd]) using Alloc {
+    tyRecordEnumDecl(env, name, cs, m)
+    tyRecordTypeGens(env, name, gens)
+}
+
+func tyRecordTypeGens(_ env: inout TyEnv, _ owner: String, _ gens: Vec[Nd]) using Alloc {
     var i: Int = 0
-    while i < ps.len() {
-        if tyIsEqDerive(ps.get(i) ?? Nd.wildcard) { env.eqTypes.push(tyAnnSpelling(target)) }
+    while i < gens.len() {
+        match gens.get(i) ?? Nd.wildcard {
+            case .genType(let n, let bounds): tyTypeGenRow(env, owner, n)
+            default: noop()
+        }
         i = i + 1
     }
 }
 
-func tyIsEqDerive(_ p: Nd) -> Bool {
-    return match p {
-        case .named(let path, let g, let a): streq(path, "Eq")
-        default: false
+func tyTypeGenRow(_ env: inout TyEnv, _ owner: String, _ n: String) using Alloc {
+    env.tgOwner.push(own(owner))
+    env.tgName.push(own(n))
+}
+
+func tyRecordDerive(_ env: inout TyEnv, _ ps: Vec[Nd], _ target: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < ps.len() {
+        let pn = tyDeriveProtoName(ps.get(i) ?? Nd.wildcard)
+        if !streq(pn, "") {
+            env.drvType.push(tyAnnSpelling(target))
+            env.drvProto.push(pn)
+        }
+        i = i + 1
     }
+}
+
+func tyDeriveProtoName(_ p: Nd) using Alloc -> String {
+    return match p {
+        case .named(let path, let g, let a): own(path)
+        default: own("")
+    }
+}
+
+func tyDerives(_ env: inout TyEnv, _ t: String, _ p: String) using Alloc -> Bool {
+    var i: Int = 0
+    while i < env.drvType.len() {
+        if streq(env.drvType.get(i) ?? own(""), t) && streq(env.drvProto.get(i) ?? own(""), p) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// §12.3 a structural derive (Eq, Hash, Clone, Debug, Display) needs each field
+// (and each enum payload) to conform. A field typed by the target's own
+// generic parameter is deferred to the instantiation.
+func tyCheckDerive(_ env: inout TyEnv, _ ps: Vec[Nd], _ target: Vec[Nd]) using Alloc {
+    let t = tyAnnSpelling(target)
+    if !esInList(env.structs, t) && !esInList(env.eName, t) { return }
+    var i: Int = 0
+    while i < ps.len() {
+        let p = tyDeriveProtoName(ps.get(i) ?? Nd.wildcard)
+        if streq(p, "Eq") || streq(p, "Hash") || streq(p, "Clone") || streq(p, "Debug") || streq(p, "Display") {
+            if esInList(env.structs, t) { tyDeriveFields(env, p, t) } else { tyDerivePayloads(env, p, t) }
+        }
+        i = i + 1
+    }
+}
+
+func tyDeriveFields(_ env: inout TyEnv, _ p: String, _ t: String) using Alloc {
+    var i: Int = 0
+    while i < env.sFldStruct.len() {
+        if streq(env.sFldStruct.get(i) ?? own(""), t) {
+            let ft = env.sFldType.get(i) ?? own("")
+            if !tyDrvConforms(env, p, ft, t, 0) {
+                var m: String = "derive("
+                m.append(p)
+                m.append(") for '")
+                m.append(t)
+                m.append("': field '")
+                m.append(env.sFldName.get(i) ?? own(""))
+                m.append("' of type ")
+                m.append(ft)
+                m.append(" is not ")
+                m.append(p)
+                m.append("-conformant")
+                env.bad.push(m)
+            }
+        }
+        i = i + 1
+    }
+}
+
+func tyDerivePayloads(_ env: inout TyEnv, _ p: String, _ t: String) using Alloc {
+    var i: Int = 0
+    while i < env.ecpEnum.len() {
+        if streq(env.ecpEnum.get(i) ?? own(""), t) {
+            let ft = env.ecpType.get(i) ?? own("")
+            if !tyDrvConforms(env, p, ft, t, 0) {
+                var m: String = "derive("
+                m.append(p)
+                m.append(") for '")
+                m.append(t)
+                m.append("': case '")
+                m.append(env.ecpCase.get(i) ?? own(""))
+                m.append("' carries ")
+                m.append(ft)
+                m.append(", which is not ")
+                m.append(p)
+                m.append("-conformant")
+                env.bad.push(m)
+            }
+        }
+        i = i + 1
+    }
+}
+
+// The resolver's type_satisfies_bound (Eq, Hash, Clone) and
+// is_display_conformant (Debug, Display), over type spellings.
+func tyDrvConforms(_ env: inout TyEnv, _ p: String, _ sp: String, _ owner: String, _ depth: Int) using Alloc -> Bool {
+    let n = sp.len()
+    if n == 0 || depth > 32 { return true }
+    if tyOwnerGen(env, owner, sp) { return true }
+    let display = streq(p, "Debug") || streq(p, "Display")
+    if tyDrvPrim(sp) { return true }
+    if (sp.byteAt(n - 1) ?? 0) == 63 { return tyDrvConforms(env, p, own(sp.slice(0, n - 1)), owner, depth + 1) }   // '?'
+    if (sp.byteAt(0) ?? 0) == 91 {   // '[': the C++ std::array has no std::hash
+        if streq(p, "Hash") { return false }
+        return tyDrvConforms(env, p, tyArrayElem(sp), owner, depth + 1)
+    }
+    if tyStartsWith(sp, "Vec[") {
+        if !streq(p, "Eq") && !streq(p, "Clone") { return false }
+        return tyDrvConforms(env, p, own(sp.slice(4, n - 1)), owner, depth + 1)
+    }
+    let base = tyBaseName(sp)
+    if esInList(env.structs, base) || esInList(env.eName, base) || esInList(env.opName, base) {
+        if display { return tyDerives(env, base, "Display") || tyDerives(env, base, "Debug") }
+        return tyDerives(env, base, p)
+    }
+    return false
+}
+
+func tyOwnerGen(_ env: inout TyEnv, _ owner: String, _ n: String) using Alloc -> Bool {
+    var i: Int = 0
+    while i < env.tgOwner.len() {
+        if streq(env.tgOwner.get(i) ?? own(""), owner) && streq(env.tgName.get(i) ?? own(""), n) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func tyDrvPrim(_ sp: String) -> Bool {
+    return tyIsNumeric(sp) || streq(sp, "Bool") || streq(sp, "Char") || streq(sp, "Unit")
+        || streq(sp, "String") || streq(sp, "Str") || streq(sp, "StrConst")
 }
 
 // ----- §4 `v as T` reinterprets bytes ---------------------------------------
@@ -8332,6 +8477,7 @@ func tyCheckDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
         case .enumD(let vis, let name, let cs, let m, let generics): tyCheckEnumN(env, name, generics, m)
         case .constD(let vis, let name, let ty, let v): tyCheckConst(env, ty, v)
         case .staticD(let vis, let name, let ty, let v): tyCheckNoinit(env, name, ty, v)
+        case .deriveD(let ps, let target): tyCheckDerive(env, ps, target)
         default: noop()
     }
 }
@@ -11918,7 +12064,7 @@ func tyCheckBinOp(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) 
 // derive gives an ordering yet.
 func tyNominalCmp(_ env: inout TyEnv, _ op: String, _ lt: String) using Alloc {
     let eq = streq(op, "==") || streq(op, "!=")
-    if eq && esInList(env.eqTypes, tyBaseName(lt)) { return }
+    if eq && tyDerives(env, tyBaseName(lt), "Eq") { return }
     var m: String = "operator '"
     m.append(op)
     m.append("' on ")
@@ -13266,7 +13412,8 @@ func main() -> Int32 {
                                      prName: Vec.new(), prRef: Vec.new(), ctDepth: 0, ctFns: Vec.new(),
                                      pLabel: Vec.new(), mlOwner: Vec.new(), mlName: Vec.new(), mlLabel: Vec.new(), niName: Vec.new(),
                                      neKey: Vec.new(), neLocal: Vec.new(),
-                                     opName: Vec.new(), opUnder: Vec.new(), eqTypes: Vec.new())
+                                     opName: Vec.new(), opUnder: Vec.new(), drvType: Vec.new(), drvProto: Vec.new(),
+                                     tgOwner: Vec.new(), tgName: Vec.new())
                     tyRefines(&tenv, p.toks)
                     tyCopyUnions(&tenv, p.unions)
                     tyCheck(&tenv, u)

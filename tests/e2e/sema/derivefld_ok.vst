@@ -1,0 +1,44 @@
+// §12.3 a derive over fields that conform: primitives, strings, optionals and
+// arrays of conforming types, a Vec under Eq and Clone, other derived types,
+// and the target's own generic parameter (checked at instantiation).
+
+struct Inner {
+    let n: Int32
+}
+derive(Eq, Hash, Clone, Debug) for Inner
+
+struct H {
+    let i: Inner
+    let f: Float64
+    let s: String
+    let o: Inner?
+}
+derive(Eq, Hash, Clone, Debug) for H
+
+struct A {
+    let a: [4]UInt8
+}
+derive(Eq, Clone, Debug) for A
+
+struct V {
+    let xs: Vec[Inner]
+}
+derive(Eq, Clone) for V
+
+struct G[T] {
+    let v: T
+    let n: Int32
+}
+derive(Eq, Clone) for G
+
+enum E {
+    case a(Inner)
+    case b(Int32)
+    case c
+}
+derive(Eq, Debug) for E
+
+opaque type Id = UInt32
+derive(Eq, Hash, Debug) for Id
+
+func main() -> Int32 { return 0 }

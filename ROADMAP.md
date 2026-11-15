@@ -136,7 +136,7 @@ to 5 below. What's left is the sema-side `unsound` rows in the Gaps tables:
 7. ~~String interpolation needs `using Alloc` (Gaps §4).~~ Done.
 8. ~~`as` byte reinterpretation checks size, alignment and `Trivial` (Gaps
    §4).~~ Done; the `std::bit_cast` lowering is still missing.
-9. `derive` validation beyond `Default` (Gaps §12.3).
+9. ~~`derive` validation beyond `Default` (Gaps §12.3).~~ Done.
 10. An implicit `asm` clobber is an error, and the weak-CAS loop shapes
     (Annex §14.4, §14.9.3).
 11. `Vec.push` takes its value by `sink`. The rule is one line in each

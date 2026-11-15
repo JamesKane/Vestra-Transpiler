@@ -1,0 +1,29 @@
+// §12.3 a structural derive needs each field and payload to conform. The
+// bootstrap validated only Default, so these passed sema and failed in the
+// C++ compiler.
+
+derive(Eq, Hash) for H
+
+struct Inner {
+    let n: Int32
+}
+
+struct H {
+    let i: Inner
+    let f: Float64
+}
+
+struct V {
+    let xs: Vec[Int32]
+    let o: Inner?
+    let a: [2]UInt8
+}
+derive(Hash, Debug, Clone) for V
+
+enum E {
+    case a(Inner)
+    case b(Int32)
+}
+derive(Eq, Display) for E
+
+func main() -> Int32 { return 0 }

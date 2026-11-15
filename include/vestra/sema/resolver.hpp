@@ -255,6 +255,8 @@ private:
     std::string opaque_underlying_text(TypePtr t);
     // §4 a compound assignment `x op= y` obeys the rules of `x op y`.
     void check_compound_assign(const ast::AssignStmt& a, TypePtr lhs);
+    // §12.3 a structural derive needs each field / payload to conform.
+    void check_derive_fields(const ast::DeriveDecl& dd);
     bool negating_int_lit_ = false;
     // §7 the uses of a `nonescaping` parameter that don't let it escape: a
     // call's callee, and an argument to another `nonescaping` parameter.

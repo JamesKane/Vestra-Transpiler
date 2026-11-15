@@ -265,6 +265,7 @@ void Resolver::check_decl(const ast::Decl& d) {
                 }
             }
         }
+        check_derive_fields(dd);
         bool derives_default = false;
         for (const auto& proto : dd.protocols) {
             if (proto == nullptr || proto->kind != ast::NodeKind::NamedType) {
@@ -360,6 +361,103 @@ void Resolver::check_decl(const ast::Decl& d) {
     }
     default:
         break;
+    }
+}
+
+// §12.3 a structural derive (Eq, Hash, Clone, Debug, Display) needs each field
+// (and each enum payload) to conform. A field typed by the target's own
+// generic parameter is deferred to the instantiation, as Default's check is.
+void Resolver::check_derive_fields(const ast::DeriveDecl& dd) {
+    if (dd.target == nullptr || dd.target->kind != ast::NodeKind::NamedType) {
+        return;
+    }
+    const auto& tt = static_cast<const ast::NamedType&>(*dd.target);
+    if (tt.path.empty()) {
+        return;
+    }
+    const auto* sym = scopes_.global().lookup_local(tt.path.back());
+    if (sym == nullptr || sym->decl == nullptr) {
+        return;
+    }
+    const std::vector<ast::GenericParam>* generics = nullptr;
+    if (sym->kind == SymbolKind::Struct) {
+        generics = &static_cast<const ast::StructDecl&>(*sym->decl).generics;
+    } else if (sym->kind == SymbolKind::Enum) {
+        generics = &static_cast<const ast::EnumDecl&>(*sym->decl).generics;
+    } else {
+        return;
+    }
+    ScopeStack::Guard g(scopes_);
+    for (const auto& gp : *generics) {
+        if (gp.name.empty()) {
+            continue;
+        }
+        Symbol gs;
+        gs.name = gp.name;
+        gs.kind = SymbolKind::GenericParam;
+        gs.type = types_->make_generic_param(gp.name);
+        gs.definition_range = gp.range;
+        gs.generic = &gp;
+        (void)g.scope().insert(std::move(gs));
+    }
+    for (const auto& proto : dd.protocols) {
+        if (proto == nullptr || proto->kind != ast::NodeKind::NamedType) {
+            continue;
+        }
+        const auto& pn = static_cast<const ast::NamedType&>(*proto);
+        if (pn.path.size() != 1) {
+            continue;
+        }
+        const std::string& p = pn.path.front();
+        const bool display = p == "Debug" || p == "Display";
+        if (!display && p != "Eq" && p != "Hash" && p != "Clone") {
+            continue;
+        }
+        auto conforms = [&](TypePtr ft) {
+            if (ft == nullptr || ft->is_error() || ft->kind() == TypeKind::GenericParam) {
+                return true;
+            }
+            return display ? is_display_conformant(ft) : type_satisfies_bound(ft, p);
+        };
+        if (sym->kind == SymbolKind::Struct) {
+            const auto& sd = static_cast<const ast::StructDecl&>(*sym->decl);
+            for (const auto& f : sd.fields) {
+                if (f.kind == ast::StructDecl::Field::Kind::Embed || f.type == nullptr) {
+                    continue;
+                }
+                auto ft = resolve_type(*f.type);
+                if (!conforms(ft)) {
+                    error_at(f.range,
+                             std::format("derive({}) for '{}': field '{}' of type {} is not "
+                                         "{}-conformant",
+                                         p,
+                                         sd.name,
+                                         f.name,
+                                         ft->describe(),
+                                         p));
+                }
+            }
+        } else {
+            const auto& ed = static_cast<const ast::EnumDecl&>(*sym->decl);
+            for (const auto& c : ed.cases) {
+                for (const auto& [n, ty] : c.payload) {
+                    if (ty == nullptr) {
+                        continue;
+                    }
+                    auto ft = resolve_type(*ty);
+                    if (!conforms(ft)) {
+                        error_at(ty->range,
+                                 std::format("derive({}) for '{}': case '{}' carries {}, which "
+                                             "is not {}-conformant",
+                                             p,
+                                             ed.name,
+                                             c.name,
+                                             ft->describe(),
+                                             p));
+                    }
+                }
+            }
+        }
     }
 }
 

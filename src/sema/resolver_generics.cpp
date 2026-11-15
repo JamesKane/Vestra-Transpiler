@@ -166,10 +166,20 @@ bool Resolver::type_satisfies_bound(TypePtr t, std::string_view protocol) const 
             return true;
         }
         switch (t->kind()) {
-        case TypeKind::Optional:
         case TypeKind::Vector:
+            // The C++ lowering (std::array) has no std::hash.
+            return protocol != "Hash" && type_satisfies_bound(t->inner(), protocol);
+        case TypeKind::Optional:
             return type_satisfies_bound(t->inner(), protocol);
+        case TypeKind::Vec:
+            // §18 a Vec compares and clones element-wise; it has no hash
+            // and no formatter.
+            return (protocol == "Eq" || protocol == "Clone")
+                   && type_satisfies_bound(t->inner(), protocol);
         case TypeKind::Tuple:
+            if (protocol == "Hash") {
+                return false;  // std::tuple has no std::hash either
+            }
             for (const auto& p : t->parts()) {
                 if (!type_satisfies_bound(p, protocol)) {
                     return false;
