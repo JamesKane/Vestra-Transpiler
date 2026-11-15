@@ -1494,6 +1494,9 @@ void Resolver::check_stmt(const ast::Stmt& s) {
 
         auto lhs = check_expr(*a.target);
         check_mutable_place(*a.target, a.range);  // after typing: views are judged by type
+        if (a.op != ast::AssignOp::Assign) {
+            check_compound_assign(a, lhs);
+        }
         // Pass the target type as the expected type for the rhs so an
         // int literal (`i + 1`) adapts to the slot width (Int32 vs Int)
         // — same propagation as `let x: Int32 = i + 1` already does.

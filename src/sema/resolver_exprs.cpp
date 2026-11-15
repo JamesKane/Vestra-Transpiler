@@ -1073,6 +1073,86 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
     return t;
 }
 
+bool Resolver::nominal_cmp_kind(TypePtr t) {
+    return t != nullptr && (t->kind() == TypeKind::OpaqueType || t->kind() == TypeKind::Struct);
+}
+
+std::string Resolver::opaque_underlying_text(TypePtr t) {
+    if (t->nominal_decl() != nullptr && t->nominal_decl()->kind == ast::NodeKind::Opaque) {
+        const auto& od = static_cast<const ast::OpaqueDecl&>(*t->nominal_decl());
+        if (od.underlying != nullptr) {
+            return resolve_type(*od.underlying)->describe();
+        }
+    }
+    return "its representation";
+}
+
+void Resolver::check_nominal_comparison(const ast::BinaryExpr& b, TypePtr lhs) {
+    const bool equality = b.op == ast::BinaryOp::Eq || b.op == ast::BinaryOp::Ne;
+    if (equality && type_satisfies_bound(lhs, "Eq")) {
+        return;
+    }
+    const std::string name = lhs->describe();
+    const std::string need = equality ? std::format("`derive(Eq) for {}`", name)
+                                      : std::string("an ordering, which no derive provides yet");
+    std::string why;
+    if (lhs->kind() == TypeKind::OpaqueType) {
+        why = std::format(": an opaque type inherits none of {}'s operations",
+                          opaque_underlying_text(lhs));
+    }
+    error_at(b.range,
+             std::format("operator '{}' on {} needs {}{}",
+                         b.op == ast::BinaryOp::Eq   ? "=="
+                         : b.op == ast::BinaryOp::Ne ? "!="
+                         : b.op == ast::BinaryOp::Lt ? "<"
+                         : b.op == ast::BinaryOp::Le ? "<="
+                         : b.op == ast::BinaryOp::Gt ? ">"
+                                                     : ">=",
+                         name,
+                         need,
+                         why));
+}
+
+void Resolver::check_compound_assign(const ast::AssignStmt& a, TypePtr lhs) {
+    if (lhs == nullptr || lhs->is_error()) {
+        return;
+    }
+    switch (a.op) {
+    case ast::AssignOp::AddAssign:
+        // `s += "x"` appends to a String; Duration adds to Duration.
+        if (lhs->kind() == TypeKind::String || lhs->kind() == TypeKind::Duration) {
+            return;
+        }
+        [[fallthrough]];
+    case ast::AssignOp::SubAssign:
+    case ast::AssignOp::MulAssign:
+    case ast::AssignOp::DivAssign:
+    case ast::AssignOp::ModAssign:
+        if (lhs->kind() == TypeKind::Duration) {
+            return;
+        }
+        if (!lhs->is_numeric()) {
+            error_at(a.target->range,
+                     std::format("arithmetic operator requires numeric operands, got {}",
+                                 lhs->describe()));
+        }
+        return;
+    case ast::AssignOp::BitAndAssign:
+    case ast::AssignOp::BitOrAssign:
+    case ast::AssignOp::BitXorAssign:
+    case ast::AssignOp::ShlAssign:
+    case ast::AssignOp::ShrAssign:
+        if (!lhs->is_integer()) {
+            error_at(
+                a.target->range,
+                std::format("bitwise operator requires integer operands, got {}", lhs->describe()));
+        }
+        return;
+    default:
+        return;
+    }
+}
+
 void Resolver::check_int_literal_range(const ast::IntLit& lit, TypePtr t) {
     const bool negated = negating_int_lit_;
     negating_int_lit_ = false;
@@ -1485,6 +1565,13 @@ TypePtr Resolver::check_binary(const ast::BinaryExpr& b, TypePtr expected) {
     case ast::BinaryOp::Ge:
         if (!require_match()) {
             return types_->error();
+        }
+        // §6, §12.3 an opaque type inherits none of its representation's
+        // operations, and a struct compares only by a derive: `==`/`!=`
+        // need `derive(Eq)`, and no derive gives an ordering yet. (Plain
+        // enum cases compare without one.)
+        if (nominal_cmp_kind(lhs)) {
+            check_nominal_comparison(b, lhs);
         }
         // §7 an operation on a generic parameter is gated by its bounds:
         // `==`/`!=` need Eq, the orderings need Ord (Comparable).

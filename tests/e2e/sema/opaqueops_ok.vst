@@ -1,0 +1,53 @@
+// §6 an opaque type compares once it derives Eq; its value crosses back to
+// the representation for arithmetic. A struct compares by `derive(Eq)`, plain
+// enum cases compare without one, and `+=` appends to a String.
+
+opaque type EntityId = UInt32
+derive(Eq) for EntityId
+
+struct P {
+    let x: Int32
+}
+derive(Eq) for P
+
+enum Color {
+    case red
+    case green
+}
+
+func same(_ a: EntityId, _ b: EntityId) -> Bool {
+    return a == b || a != b
+}
+
+func next(_ a: EntityId) -> EntityId {
+    return EntityId(UInt32(a) + 1)
+}
+
+func samePoint(_ p: P, _ r: P) -> Bool {
+    return p == r
+}
+
+func isRed(_ c: Color) -> Bool {
+    return c == .red
+}
+
+func build() using Alloc -> Int32 {
+    var s: String = "a"
+    s += "b"
+    var n: UInt32 = 1
+    n <<= 2
+    n |= 1
+    n += 3
+    var f: Float64 = 1.5
+    f *= 2.0
+    return 0
+}
+
+func main() -> Int32 {
+    if same(next(EntityId(1)), EntityId(2)) && samePoint(P(x: 1), P(x: 1)) && isRed(.red) {
+        with Alloc {
+            return build()
+        }
+    }
+    return 1
+}

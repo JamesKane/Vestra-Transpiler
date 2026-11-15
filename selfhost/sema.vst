@@ -7509,6 +7509,9 @@ struct TyEnv {
     var niName: Vec[String]     // global: Annex §4.5 `@noinit` statics not in scope as values
     var neKey: Vec[String]      // global: §7 `nonescaping` parameters, as "func#idx"
     var neLocal: Vec[String]    // per function: its own `nonescaping` parameters
+    var opName: Vec[String]     // global: §6 opaque type names ...
+    var opUnder: Vec[String]    // ... -> the representation's spelling
+    var eqTypes: Vec[String]    // global: §12.3 the types a `derive(Eq)` names
 }
 
 
@@ -7533,7 +7536,29 @@ func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyRecordStructDeclL(env, name, fl, m, isLinear)
         case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumDecl(env, name, cs, m)
         case .staticD(let vis, let name, let ty, let v): tyRecordStatic(env, name, ty, v)
+        case .opaqueD(let vis, let name, let under): tyRecordOpaque(env, name, under)
+        case .deriveD(let ps, let target): tyRecordDerive(env, ps, target)
         default: noop()
+    }
+}
+
+func tyRecordOpaque(_ env: inout TyEnv, _ name: String, _ under: Vec[Nd]) using Alloc {
+    env.opName.push(own(name))
+    env.opUnder.push(tyAnnSpelling(under))
+}
+
+func tyRecordDerive(_ env: inout TyEnv, _ ps: Vec[Nd], _ target: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < ps.len() {
+        if tyIsEqDerive(ps.get(i) ?? Nd.wildcard) { env.eqTypes.push(tyAnnSpelling(target)) }
+        i = i + 1
+    }
+}
+
+func tyIsEqDerive(_ p: Nd) -> Bool {
+    return match p {
+        case .named(let path, let g, let a): streq(path, "Eq")
+        default: false
     }
 }
 
@@ -10387,7 +10412,7 @@ func tyStmt(_ env: inout TyEnv, _ s: Nd) using Alloc {
         case .varS(let p, let ty, let v): tyLetMu(env, p, ty, v, true)
         case .exprS(let e): tyExprStmt(env, e)
         case .retS(let v): tyRet(env, v)
-        case .assignS(let op, let t, let v): tyAssign(env, t, v)
+        case .assignS(let op, let t, let v): tyAssign(env, op, t, v)
         case .whileS(let c, let b): tyWhile(env, c, b)
         case .forS(let pp, let it, let b): tyForMu(env, pp, it, b)
         case .withS(let caps, let vals, let body): tyWithEs(env, caps, vals, body)
@@ -10617,10 +10642,10 @@ func tyAddSymSp(_ env: inout TyEnv, _ n: String, _ sp: String) using Alloc {
 // Assignment (incl. compound ops, which the resolver checks identically): the
 // value must be assignable to the target. Only ident targets type to a known
 // slot here; member/index targets are unknown and tolerated.
-func tyAssign(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+func tyAssign(_ env: inout TyEnv, _ op: String, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     esAssign(env, t, v)
     if !esIsIdent(t) { tyBoxed(env, t) }
-    tyAssignRest(env, t, v)
+    tyAssignRest(env, op, t, v)
     // A reassigned view binding is made fresh after its value (with any
     // awaits in it) is evaluated.
     let tn = esIdentOf(t)
@@ -10637,8 +10662,9 @@ func esIdentOf(_ v: Vec[Nd]) using Alloc -> String {
     return own("")
 }
 
-func tyAssignRest(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+func tyAssignRest(_ env: inout TyEnv, _ op: String, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     muCheck(env, t)
+    if !streq(op, "=") { tyCompound(env, op, t) }
     tyBoxed(env, v)
     let lt = tyInferBoxed(env, t)
     let rt = tyInferBoxed(env, v)
@@ -11725,12 +11751,72 @@ func tyCheckBinOp(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) 
         else if !tyReqMatch(lt, rt) { env.bad.push(tyDiffMsg(lt, rt)) }
     } else if isCmpOp(op) {
         if !tyReqMatch(lt, rt) { env.bad.push(tyDiffMsg(lt, rt)) }
+        else if esInList(env.opName, lt) || esInList(env.structs, tyBaseName(lt)) { tyNominalCmp(env, op, lt) }
         else if tyGenSeq(env, lt) >= 0 {
             // §7 `==` / `!=` on a generic parameter need Eq, orderings Ord.
             var need: String = "Comparable"
             if streq(op, "==") || streq(op, "!=") { need = "Eq" }
             if !tyGenHas(env, lt, need) { env.bad.push(tyGenOpMsg(op, lt, need)) }
         }
+    }
+}
+
+// §6, §12.3 an opaque type inherits none of its representation's operations,
+// and a struct compares only by a derive: `==` / `!=` need `derive(Eq)`, and no
+// derive gives an ordering yet.
+func tyNominalCmp(_ env: inout TyEnv, _ op: String, _ lt: String) using Alloc {
+    let eq = streq(op, "==") || streq(op, "!=")
+    if eq && esInList(env.eqTypes, tyBaseName(lt)) { return }
+    var m: String = "operator '"
+    m.append(op)
+    m.append("' on ")
+    m.append(lt)
+    m.append(" needs ")
+    if eq {
+        m.append("`derive(Eq) for ")
+        m.append(lt)
+        m.append("`")
+    } else {
+        m.append("an ordering, which no derive provides yet")
+    }
+    let oi = tyStrIndex(env.opName, lt)
+    if oi >= 0 {
+        m.append(": an opaque type inherits none of ")
+        m.append(env.opUnder.get(oi) ?? own(""))
+        m.append("'s operations")
+    }
+    env.bad.push(m)
+}
+
+func tyStrIndex(_ xs: Vec[String], _ n: Str) using Alloc -> Int {
+    var i: Int = 0
+    while i < xs.len() {
+        if streq(xs.get(i) ?? own(""), n) { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+// `Pair[Int32]` -> `Pair`.
+func tyBaseName(_ sp: String) using Alloc -> String {
+    var i: Int = 0
+    while i < sp.len() {
+        if (sp.byteAt(i) ?? 0) == 91 { return own(sp.slice(0, i)) }   // '['
+        i = i + 1
+    }
+    return own(sp)
+}
+
+// §4 `x op= y` obeys the rules of `x op y` on the target's type. `+=` also
+// appends to a String, and Duration takes the arithmetic forms.
+func tyCompound(_ env: inout TyEnv, _ op: String, _ t: Vec[Nd]) using Alloc {
+    let lt = tyInferBoxed(env, t)
+    if streq(lt, "") || streq(lt, "Duration") { return }
+    if streq(op, "+=") && streq(lt, "String") { return }
+    if streq(op, "+=") || streq(op, "-=") || streq(op, "*=") || streq(op, "/=") || streq(op, "%=") {
+        if !tyIsNumeric(lt) { env.bad.push(tyArithMsg(lt)) }
+    } else if streq(op, "&=") || streq(op, "|=") || streq(op, "^=") || streq(op, "<<=") || streq(op, ">>=") {
+        if !tyIsInt(lt) { env.bad.push(tyBitMsg(lt)) }
     }
 }
 
@@ -13027,7 +13113,8 @@ func main() -> Int32 {
                                      fgFn: Vec.new(), fgName: Vec.new(), fgBound: Vec.new(),
                                      prName: Vec.new(), prRef: Vec.new(), ctDepth: 0, ctFns: Vec.new(),
                                      pLabel: Vec.new(), mlOwner: Vec.new(), mlName: Vec.new(), mlLabel: Vec.new(), niName: Vec.new(),
-                                     neKey: Vec.new(), neLocal: Vec.new())
+                                     neKey: Vec.new(), neLocal: Vec.new(),
+                                     opName: Vec.new(), opUnder: Vec.new(), eqTypes: Vec.new())
                     tyRefines(&tenv, p.toks)
                     tyCopyUnions(&tenv, p.unions)
                     tyCheck(&tenv, u)

@@ -1,0 +1,37 @@
+// §6 an opaque type inherits none of its representation's operations, and a
+// struct compares only by a derive. The bootstrap accepted `==` and `<` on
+// both, and checked no compound assignment against its operator.
+
+opaque type EntityId = UInt32
+opaque type UserId = UInt32
+
+struct P {
+    let x: Int32
+}
+derive(Eq) for P
+
+struct G[T] {
+    let v: T
+}
+
+func cmp(a: EntityId, b: EntityId, p: P, r: P, g: G[Int32], h: G[Int32]) -> Bool {
+    let x = a == b
+    let y = a < b
+    let z = p < r
+    let w = g == h
+    return x && y && z && w
+}
+
+func compound(a: EntityId, b: EntityId) -> Int32 {
+    var q = a
+    q += b
+    var flag = true
+    flag |= false
+    var f: Float64 = 1.5
+    f <<= 2
+    var on2 = true
+    on2 -= true
+    return 0
+}
+
+func main() -> Int32 { return compound(a: EntityId(1), b: EntityId(2)) }

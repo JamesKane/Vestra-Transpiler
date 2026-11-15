@@ -108,7 +108,6 @@ Each gap has one of four kinds:
 |---|---|---|---|
 | §6 | `deinit` | missing | Parsed (`parser_decls.cpp:57`) but never checked or emitted, so no C++ destructor is generated. Its no-capability rule goes unchecked (`print` in `deinit` passes). |
 | §6 | `embed` fields | missing (partial) | Memberwise init rejects the embed label ("not constructible (yet)", `resolver_call.cpp:1223`). The explicit `e.t.p` path fails. Ambiguous promoted names are not diagnosed. |
-| §6 | Opaque types inherit no operations | unsound | `==` between two values of an opaque `EntityId` is accepted. |
 | §6 | `@repr(wire)` byte order | missing | "@repr(wire) is not supported yet". |
 | §6 | Exhaustiveness beyond enum scrutinees | weaker | Checked only when the scrutinee is an enum (through nested enum, `Bool` and wildcard payload patterns). A match on an integer, `Bool`, tuple or optional with no `default` is not checked, and a tuple sub-pattern counts only when all its elements are wildcards. |
 | §6, §17.2 | `inout func` and `sink func` in an enum body | missing | "expected 'case' or member in enum body". A struct body takes both; an enum body takes only a plain `func`. |
@@ -193,7 +192,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 | §12.3 | Protocol `comptime` default implementations (`Self.fields`, `self[f]`) | missing | "expected expression, got Self". |
 | §12.3 | `derive` as adoption of a reflective default | divergent | Each derive is hand-written C++ emission (`cpp_emitter.cpp:260`, `:547`). |
 | §12.3 | `derive` validation | unsound | `derive(Eq)` over a non-`Eq` field passes sema and fails in clang. Only `Default` is validated. (An unknown derive name is an error, and a user protocol's reflective default is "not supported yet".) |
-| §12.3, §18.1 | `derive(Ord)` and `compare()` | missing | "derive(Ord) is not supported yet"; "no field or method 'compare'". |
+| §12.3, §18.1 | `derive(Ord)` and `compare()` | missing | "derive(Ord) is not supported yet"; "no field or method 'compare'". So no opaque type or struct can be ordered: `<` on either is "needs an ordering, which no derive provides yet". |
 | §12.4 | Hygiene (template names resolve at the definition site) | unsound | A quote that references a global `k` captures a local `k` at the use site. `gensym()` is opt-in only. |
 | §12.4 | Compound field types in generated declarations | unsound | A field typed `[4]Int32` or `Int32?` makes the per-field `quote` silently vanish from `expand` and `build`. |
 | §12.4 | `.asType()`, splices in struct-name position | missing | "expected struct name". |

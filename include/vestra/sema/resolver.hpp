@@ -247,6 +247,14 @@ private:
     // is set while the literal is the operand of a unary `-`, so `-128` is
     // checked as a value and not as `128` then negated.
     void check_int_literal_range(const ast::IntLit& lit, TypePtr t);
+    // §6 an opaque type inherits none of its representation's operations,
+    // and a struct has none until derived: a comparison needs `derive(Eq)`
+    // (equality) and is never an ordering.
+    static bool nominal_cmp_kind(TypePtr t);
+    void check_nominal_comparison(const ast::BinaryExpr& b, TypePtr lhs);
+    std::string opaque_underlying_text(TypePtr t);
+    // §4 a compound assignment `x op= y` obeys the rules of `x op y`.
+    void check_compound_assign(const ast::AssignStmt& a, TypePtr lhs);
     bool negating_int_lit_ = false;
     // §7 the uses of a `nonescaping` parameter that don't let it escape: a
     // call's callee, and an argument to another `nonescaping` parameter.
