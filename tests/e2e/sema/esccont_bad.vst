@@ -1,0 +1,111 @@
+// §19.4 an owned container of views (`Vec[Str]`, `HashMap[Str, V]`) carries
+// its elements' sources: a split of a local, a view pushed or stored into the
+// container, and an element read back out all trace to that local.
+
+struct Words {
+    let items: Vec[Str]
+}
+
+func badSplit() using Alloc -> Vec[Str] {
+    let s: String = "a,b"
+    return s.split(",")
+}
+
+func badPush() using Alloc -> Vec[Str] {
+    var out: Vec[Str] = Vec.new()
+    let s: String = "x"
+    out.push(s)
+    return out
+}
+
+func badInner() using Alloc -> Int {
+    var out: Vec[Str] = Vec.new()
+    if true {
+        let s: String = "x"
+        out.push(s)
+    }
+    return out.len()
+}
+
+func badFor() using Alloc -> Str {
+    let s: String = "a,b"
+    for p in s.split(",") {
+        return p
+    }
+    return ""
+}
+
+func badIndex() using Alloc -> Str {
+    let s: String = "a,b"
+    let parts = s.split(",")
+    return parts[0]
+}
+
+func badMapKey() using Alloc -> HashMap[Str, Int] {
+    var m: HashMap[Str, Int] = HashMap.new()
+    let k: String = "k"
+    m.set(k, 1)
+    return m
+}
+
+func badMapVal() using Alloc -> HashMap[Int, Str] {
+    var m: HashMap[Int, Str] = HashMap.new()
+    let v: String = "v"
+    m.set(1, v)
+    return m
+}
+
+func badLit() -> [2]Str {
+    let a: String = "a"
+    let sa: Str = a.slice(0, 1)
+    let v: [2]Str = [sa, "b"]
+    return v
+}
+
+func badStruct() using Alloc -> Words {
+    let s: String = "a b"
+    return Words(items: s.split(" "))
+}
+
+func badSet() using Alloc -> Vec[Str] {
+    var out: Vec[Str] = Vec.new()
+    out.push("x")
+    let s: String = "a b"
+    out.set(0, s)
+    return out
+}
+
+func badIdx() using Alloc -> Vec[Str] {
+    var out: Vec[Str] = Vec.new()
+    out.push("x")
+    let s: String = "a b"
+    let sv: Str = s.slice(0, 1)
+    out[0] = sv
+    return out
+}
+
+func mk() using Alloc -> String { return "x" }
+
+func badTemp() using Alloc -> Vec[Str] {
+    return mk().split(",")
+}
+
+// A container the caller owns (`self.items`, an `inout` parameter) outlives
+// the function, so a view written into it may not come from a local.
+struct Bag {
+    var items: Vec[Str]
+    func addLocal() using Alloc {
+        let s: String = "x"
+        self.items.push(s)
+    }
+}
+
+func fill(_ out: inout Vec[Str]) using Alloc {
+    let s: String = "x"
+    out.push(s)
+}
+
+func fillIdx(_ out: inout Vec[Str]) using Alloc {
+    let s: String = "x"
+    out[0] = s.slice(0, 1)
+}

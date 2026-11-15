@@ -1506,7 +1506,10 @@ void Resolver::check_stmt(const ast::Stmt& s) {
             sym.kind = SymbolKind::Local;
             sym.type = elem_type != nullptr ? elem_type : types_->error();
             sym.definition_range = f.pattern->range;
+            const std::string name = sym.name;
             (void)g.scope().insert(std::move(sym));
+            // §19.4 the escape checker tracks a view element back to `xs`.
+            resolution_.set_binding_symbol(&s, scopes_.current().lookup(name));
         } else if (f.pattern && f.pattern->kind == ast::NodeKind::TuplePat) {
             // §6 `for (a, b) in zip(xs, ys)` — destructure each
             // element of the iterator into a tuple pattern.

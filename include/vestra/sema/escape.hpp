@@ -60,6 +60,16 @@ private:
     [[nodiscard]] Origins origins(const ast::Expr& e) const;
     [[nodiscard]] Origins storage_of(const ast::Expr& e) const;
 
+    // §19.4 an owned container of views (`Vec[Str]`) carries its elements'
+    // sources: writes into a local one add to them.
+    void check_container_write(const ast::CallExpr& c);
+    void add_sources(const Symbol* sym, const Origins& o, diag::SourceRange site);
+    [[nodiscard]] const Symbol* container_local(const ast::Expr& e) const;
+    [[nodiscard]] std::string outliving_root(const ast::Expr& e, TypePtr& out) const;
+    void check_outliving_store(const std::string& target, const Origins& o, diag::SourceRange site);
+    [[nodiscard]] TypePtr element_slot(TypePtr container, std::size_t i) const;
+    [[nodiscard]] bool flows_into(const ast::Expr& arg, TypePtr slot) const;
+
     [[nodiscard]] bool is_view(TypePtr t, int depth = 0) const;
     [[nodiscard]] bool ast_is_view(const ast::Type* t, int depth = 0) const;
     [[nodiscard]] const ast::StructDecl* unit_struct(std::string_view name) const;
@@ -69,6 +79,7 @@ private:
     diag::DiagnosticReporter* reporter_;
 
     const ast::FuncDecl* func_ = nullptr;
+    const ast::StructDecl* struct_ = nullptr;  // the struct whose method is checked
     bool result_is_view_ = false;
     std::unordered_map<const Symbol*, Origins> locals_;
     // The `with RawMemory` / `with Mmio` blocks around the current point.

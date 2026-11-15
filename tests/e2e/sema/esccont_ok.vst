@@ -1,0 +1,80 @@
+// §19.4 a container of views whose sources outlive the call may be returned:
+// a split of a parameter, `args()` (program lifetime), views pushed from a
+// parameter, and an element read from a parameter's split.
+
+struct Words {
+    let items: Vec[Str]
+}
+
+func okSplit(_ s: Str) using Alloc -> Vec[Str] {
+    return s.split(",")
+}
+
+func okArgs() using Alloc -> Vec[Str] {
+    return args()
+}
+
+func okPush(_ p: Str) using Alloc -> Vec[Str] {
+    var out: Vec[Str] = Vec.new()
+    out.push(p)
+    out.push("lit")
+    return out
+}
+
+func okIndex(_ s: Str) using Alloc -> Str {
+    let parts = s.split(",")
+    return parts[0]
+}
+
+func okFor(_ s: Str) using Alloc -> Str {
+    for p in s.split(",") {
+        return p
+    }
+    return ""
+}
+
+func okMapVal(_ k: Str) using Alloc -> HashMap[Str, Int] {
+    var m: HashMap[Str, Int] = HashMap.new()
+    let n: Int = 3
+    m.set(k, n)
+    return m
+}
+
+func okKeys(_ m: HashMap[Str, Int]) using Alloc -> Vec[Str] {
+    return m.keys()
+}
+
+func okLit(_ a: Str) -> [2]Str {
+    let v: [2]Str = [a, "b"]
+    return v
+}
+
+func okStruct(_ s: Str) using Alloc -> Words {
+    return Words(items: s.split(" "))
+}
+
+func okInts() using Alloc -> Vec[Int] {
+    var out: Vec[Int] = Vec.new()
+    let n: Int = 3
+    out.push(n)
+    out.set(0, n)
+    return out
+}
+
+func okLocalUse() using Alloc -> Int {
+    let s: String = "a,b,c"
+    let parts = s.split(",")
+    return parts.len()
+}
+
+struct Bag {
+    var items: Vec[Str]
+    func addParam(_ p: Str) using Alloc {
+        self.items.push(p)
+    }
+}
+
+func fillOk(_ out: inout Vec[Str], _ p: Str) using Alloc {
+    out.push(p)
+    out[0] = p
+}

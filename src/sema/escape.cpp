@@ -51,11 +51,13 @@ void EscapeChecker::check() {
         if (d->kind == ast::NodeKind::Func) {
             check_func(static_cast<const ast::FuncDecl&>(*d));
         } else if (d->kind == ast::NodeKind::Struct) {
-            for (const auto& m : static_cast<const ast::StructDecl&>(*d).methods) {
+            struct_ = static_cast<const ast::StructDecl*>(d.get());
+            for (const auto& m : struct_->methods) {
                 if (m->kind == ast::NodeKind::Func) {
                     check_func(static_cast<const ast::FuncDecl&>(*m));
                 }
             }
+            struct_ = nullptr;
         } else if (d->kind == ast::NodeKind::Enum) {
             for (const auto& m : static_cast<const ast::EnumDecl&>(*d).methods) {
                 if (m->kind == ast::NodeKind::Func) {
@@ -89,7 +91,9 @@ bool EscapeChecker::is_view(TypePtr t, int depth) const {
         return true;
     case TypeKind::Optional:
     case TypeKind::Vector:
+    case TypeKind::Vec:  // an owned container of views carries their sources
         return is_view(t->inner(), depth + 1);
+    case TypeKind::HashMap:
     case TypeKind::Tuple:
         for (auto p : t->parts()) {
             if (is_view(p, depth + 1)) {
@@ -134,11 +138,6 @@ bool EscapeChecker::ast_is_view(const ast::Type* t, int depth) const {
             && (n.path[0] == "Span" || n.path[0] == "MutSpan" || n.path[0] == "Str"
                 || n.path[0] == "MmioView" || n.path[0] == "MmioRegion")) {
             return true;
-        }
-        // Owned containers of views (`Vec[Str]`, as `split` and `args()`
-        // return) are admitted for now; see the Box / Channel rule.
-        if (n.path.size() == 1 && (n.path[0] == "Vec" || n.path[0] == "HashMap")) {
-            return false;
         }
         for (const auto& a : n.type_args) {
             if (ast_is_view(a.get(), depth + 1)) {
@@ -264,6 +263,21 @@ void EscapeChecker::check_stmt(const ast::Stmt& s) {
             }
         } else if (a.target != nullptr) {
             scan(*a.target);
+            // `xs[i] = v` / `m[k] = v` into a container of views.
+            if (strip(*a.target).kind == ast::NodeKind::IndexExpr && a.value != nullptr) {
+                const auto& ix = static_cast<const ast::IndexExpr&>(strip(*a.target));
+                if (const auto* sym = container_local(*ix.base)) {
+                    if (flows_into(*a.value, element_slot(sym->type, 1))) {
+                        add_sources(sym, origins(*a.value), s.range);
+                    }
+                } else {
+                    TypePtr ct;
+                    if (auto root = outliving_root(*ix.base, ct);
+                        !root.empty() && flows_into(*a.value, element_slot(ct, 1))) {
+                        check_outliving_store(root, origins(*a.value), s.range);
+                    }
+                }
+            }
         }
         if (a.target != nullptr && strip(*a.target).kind == ast::NodeKind::IdentExpr) {
             const auto* sym = resolution_->symbol_of(&strip(*a.target));
@@ -286,10 +300,15 @@ void EscapeChecker::check_stmt(const ast::Stmt& s) {
         }
         break;
     }
-    case ast::NodeKind::ExprStmt:
-        scan(*static_cast<const ast::ExprStmt&>(s).expr);
-        check_expr(*static_cast<const ast::ExprStmt&>(s).expr);
+    case ast::NodeKind::ExprStmt: {
+        const auto& x = *static_cast<const ast::ExprStmt&>(s).expr;
+        scan(x);
+        check_expr(x);
+        if (strip(x).kind == ast::NodeKind::CallExpr) {
+            check_container_write(static_cast<const ast::CallExpr&>(strip(x)));
+        }
         break;
+    }
     case ast::NodeKind::WhileStmt: {
         const auto& w = static_cast<const ast::WhileStmt&>(s);
         scan(*w.cond);
@@ -303,6 +322,12 @@ void EscapeChecker::check_stmt(const ast::Stmt& s) {
         const auto& f = static_cast<const ast::ForStmt&>(s);
         scan(*f.iter);
         check_expr(*f.iter);
+        // An element of a container of views views what the container does.
+        if (const auto* sym = resolution_->binding_symbol(&s);
+            sym != nullptr && is_view(sym->type)) {
+            locals_[sym] = origins(*f.iter);
+            decl_depth_[sym] = depth_ + 1;
+        }
         if (f.body) {
             check_expr(*f.body);
         }
@@ -660,6 +685,22 @@ EscapeChecker::Origins EscapeChecker::origins(const ast::Expr& e0) const {
         }
         return out;
     }
+    case ast::NodeKind::VectorLitExpr:
+    case ast::NodeKind::TupleLitExpr: {
+        // A literal of views holds each element's sources.
+        const auto& els = e.kind == ast::NodeKind::VectorLitExpr
+                              ? static_cast<const ast::VectorLitExpr&>(e).elements
+                              : static_cast<const ast::TupleLitExpr&>(e).elements;
+        Origins out;
+        for (const auto& el : els) {
+            auto et = resolution_->type_of(el.get());
+            if (is_view(et) || (et != nullptr && et->kind() == TypeKind::String)) {
+                auto o = origins(*el);
+                out.insert(out.end(), o.begin(), o.end());
+            }
+        }
+        return out;
+    }
     case ast::NodeKind::MatchExpr: {
         Origins out;
         for (const auto& arm : static_cast<const ast::MatchExpr&>(e).arms) {
@@ -735,6 +776,199 @@ EscapeChecker::Origins EscapeChecker::origins(const ast::Expr& e0) const {
     }
     default:
         return {};
+    }
+}
+
+// A local container of views (`var xs: Vec[Str]`) named by `e`.
+const Symbol* EscapeChecker::container_local(const ast::Expr& e) const {
+    const auto& b = strip(e);
+    if (b.kind != ast::NodeKind::IdentExpr) {
+        return nullptr;
+    }
+    const auto* sym = resolution_->symbol_of(&b);
+    if (sym == nullptr || !locals_.contains(sym) || sym->type == nullptr
+        || (sym->type->kind() != TypeKind::Vec && sym->type->kind() != TypeKind::HashMap)) {
+        return nullptr;
+    }
+    return sym;
+}
+
+// The slot argument `i` of a write lands in: a Vec's element, or a
+// HashMap's key (0) or value (1).
+TypePtr EscapeChecker::element_slot(TypePtr container, std::size_t i) const {
+    if (container == nullptr) {
+        return nullptr;
+    }
+    if (container->kind() == TypeKind::HashMap) {
+        return i < container->parts().size() ? container->parts()[i] : nullptr;
+    }
+    return container->inner();
+}
+
+// Whether `arg` stores a view into `slot`: it is one, or it is owned storage
+// a view slot borrows (a String into a Str, a Vec or array into a Span).
+bool EscapeChecker::flows_into(const ast::Expr& arg, TypePtr slot) const {
+    if (!is_view(slot)) {
+        return false;
+    }
+    auto at = resolution_->type_of(&arg);
+    if (at == nullptr) {
+        return false;
+    }
+    if (is_view(at)) {
+        return true;
+    }
+    if (slot->kind() == TypeKind::Str) {
+        return at->kind() == TypeKind::String;
+    }
+    if (slot->kind() == TypeKind::Span || slot->kind() == TypeKind::MutSpan) {
+        return at->kind() == TypeKind::Vec || at->kind() == TypeKind::Vector;
+    }
+    return false;
+}
+
+void EscapeChecker::add_sources(const Symbol* sym, const Origins& o, diag::SourceRange site) {
+    auto& cur = locals_[sym];
+    cur.insert(cur.end(), o.begin(), o.end());
+    auto dd = decl_depth_.find(sym);
+    check_store(sym, dd != decl_depth_.end() ? dd->second : 1, o, site);
+}
+
+// §19.4 `xs.push(v)`, `m.insert(k, v)`, `xs.extend(ys)`: a view written into
+// a local container joins the container's sources.
+void EscapeChecker::check_container_write(const ast::CallExpr& c) {
+    if (c.callee == nullptr || c.callee->kind != ast::NodeKind::MemberExpr) {
+        return;
+    }
+    const auto& m = static_cast<const ast::MemberExpr&>(*c.callee);
+    const auto* sym = container_local(*m.base);
+    // A container the caller owns (`self.items`, an `inout` parameter)
+    // outlives this function.
+    TypePtr ct = sym != nullptr ? sym->type : nullptr;
+    const std::string root = sym == nullptr ? outliving_root(*m.base, ct) : std::string{};
+    if (sym == nullptr && root.empty()) {
+        return;
+    }
+    const bool map = ct->kind() == TypeKind::HashMap;
+    for (std::size_t i = 0; i < c.args.size(); ++i) {
+        const auto* a = c.args[i].value.get();
+        if (a == nullptr) {
+            continue;
+        }
+        // A whole container appended brings its own sources.
+        auto at = resolution_->type_of(a);
+        bool flows = at != nullptr && at->kind() == ct->kind() && is_view(at);
+        flows = flows || flows_into(*a, element_slot(ct, map ? i : 0));
+        if (!flows) {
+            continue;
+        }
+        if (sym != nullptr) {
+            add_sources(sym, origins(*a), c.range);
+        } else {
+            check_outliving_store(root, origins(*a), c.range);
+        }
+    }
+}
+
+// The caller-owned root of a container place (`self`, `self.items`, an
+// `inout` / `read` parameter), or "" when it is local or not a container of
+// views.
+std::string EscapeChecker::outliving_root(const ast::Expr& e, TypePtr& out) const {
+    auto t = resolution_->type_of(&strip(e));
+    // `self.field`: the resolver leaves `self` untyped, so read the field's
+    // declared type off the enclosing struct.
+    if ((t == nullptr || t->is_error()) && strip(e).kind == ast::NodeKind::MemberExpr
+        && struct_ != nullptr) {
+        const auto& m = static_cast<const ast::MemberExpr&>(strip(e));
+        if (m.base != nullptr && strip(*m.base).kind == ast::NodeKind::SelfExpr) {
+            for (const auto& f : struct_->fields) {
+                if (f.name == m.member) {
+                    t = resolution_->types()->member_type(f.type.get());
+                }
+            }
+        }
+    }
+    out = t;
+    if (t == nullptr || (t->kind() != TypeKind::Vec && t->kind() != TypeKind::HashMap)
+        || !is_view(t)) {
+        return {};
+    }
+    const ast::Expr* p = &strip(e);
+    while (true) {
+        if (p->kind == ast::NodeKind::MemberExpr) {
+            p = &strip(*static_cast<const ast::MemberExpr*>(p)->base);
+        } else if (p->kind == ast::NodeKind::IndexExpr) {
+            p = &strip(*static_cast<const ast::IndexExpr*>(p)->base);
+        } else {
+            break;
+        }
+    }
+    if (p->kind == ast::NodeKind::SelfExpr) {
+        return "self";
+    }
+    if (p->kind != ast::NodeKind::IdentExpr || func_ == nullptr) {
+        return {};
+    }
+    const auto* sym = resolution_->symbol_of(p);
+    if (sym == nullptr || sym->kind != SymbolKind::Parameter) {
+        return {};
+    }
+    for (const auto& prm : func_->params) {
+        if (prm.name == sym->name && prm.mode == ast::ParamMode::Sink) {
+            return {};
+        }
+    }
+    return sym->name;
+}
+
+// §19.4 a view stored into a container that outlives the function: like a
+// return, it may not view the function's own storage or a temporary.
+void EscapeChecker::check_outliving_store(const std::string& target,
+                                          const Origins& o,
+                                          diag::SourceRange site) {
+    for (const auto& og : o) {
+        switch (og.kind) {
+        case Origin::Kind::Local:
+            if (og.sym != nullptr) {
+                reporter_->report(
+                    diag::Diagnostic::error(std::format("'{}' would outlive '{}', which its view "
+                                                        "comes from: '{}' is local to '{}'",
+                                                        target,
+                                                        og.sym->name,
+                                                        og.sym->name,
+                                                        func_->name))
+                        .at(site));
+                return;
+            }
+            break;
+        case Origin::Kind::Temp:
+            reporter_->report(
+                diag::Diagnostic::error(std::format("'{}' would hold a view of a temporary, which "
+                                                    "ends with this statement",
+                                                    target))
+                    .at(site));
+            return;
+        case Origin::Kind::Raw:
+            if (og.block.is_valid()) {
+                reporter_->report(
+                    diag::Diagnostic::error(std::format("'{}' would outlive the `with RawMemory` "
+                                                        "block that minted its view (Annex §10.5)",
+                                                        target))
+                        .at(site));
+                return;
+            }
+            break;
+        case Origin::Kind::Mmio:
+            if (og.block.is_valid()) {
+                reporter_->report(
+                    diag::Diagnostic::error(std::format("'{}' would outlive the `with Mmio` block "
+                                                        "that minted its view (Annex §14.11)",
+                                                        target))
+                        .at(site));
+                return;
+            }
+            break;
+        }
     }
 }
 

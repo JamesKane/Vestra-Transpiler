@@ -116,9 +116,10 @@ first, in both front ends (bootstrap and `selfhost/sema.vst`, held to
 identical diagnostics), because the new backend will trust whatever sema
 accepts. Ordered by how likely each is to let a wrong program through:
 
-1. **Escape analysis, the rest:** owned containers of views (`Vec[Str]` is
-   admitted while the builtin `split` and `args()` return one; the decision is
-   a lazy `split` iterator or tracking sources through the container).
+1. **Escape analysis, the rest:** a view stored into a field
+   (`self.items = s.split(",")`, `self.name = local.slice(0, 1)`) is not
+   checked; owned containers of views are otherwise tracked through their
+   writes and reads.
 
 2. **Smaller unsound items:**
     - `@noinit` limited to `Trivial` types (the spike's `sys.kernel`, a
@@ -129,8 +130,9 @@ accepts. Ordered by how likely each is to let a wrong program through:
     - `compilerFence(.relaxed)` rejected;
     - `using InterruptsOff` rejected;
     - `@kernel_init` reachable only from init code, including through `&f`;
-    - `self.field` typed inside a generic struct's methods (today it has no
-      type, so nothing about it is checked; Gaps §7);
+    - `self` typed inside every method (the resolver has no case for it, so
+      `self.field` has no type in any struct's methods and nothing about it
+      is checked: `return self.n` passes where the result is `Bool`; Gaps §7);
     - an atomic ordering held in a variable (only a literal `.case` is
       checked, so `load(o)` with `o == .release` reaches C++ as UB).
 
