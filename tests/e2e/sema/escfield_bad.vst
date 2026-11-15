@@ -1,0 +1,42 @@
+// §19.4 a view stored into a field or element: into `self` or an `inout`
+// parameter it outlives the function, so it may not view a local; into a
+// local struct it joins that struct's sources.
+
+struct Words {
+    var items: Vec[Str]
+    var name: Str
+    inout func setLocal() using Alloc {
+        let s: String = "a,b"
+        self.items = s.split(",")
+    }
+    inout func setName() {
+        let s: String = "ab"
+        self.name = s.slice(0, 1)
+    }
+}
+
+func viaInout(_ w: inout Words) {
+    let s: String = "ab"
+    w.name = s.slice(0, 1)
+}
+
+func localStruct(_ p: Str) using Alloc -> Words {
+    var w = Words(items: p.split(","), name: "x")
+    let s: String = "ab"
+    w.name = s.slice(0, 1)
+    return w
+}
+
+func innerBlock(_ p: Str) using Alloc -> Int {
+    var w = Words(items: p.split(","), name: "x")
+    if true {
+        let s: String = "ab"
+        w.name = s.slice(0, 1)
+    }
+    return w.items.len()
+}
+
+func viaIdx(_ ws: inout Vec[Words]) {
+    let s: String = "ab"
+    ws[0].name = s.slice(0, 1)
+}

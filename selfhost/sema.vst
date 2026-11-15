@@ -10011,22 +10011,42 @@ func esAssign(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     if let tn = t.get(0) {
         match tn {
             case .ident(let n): esReassign(env, n, v)
-            case .index(let b, let i): esIndexWrite(env, b, v)
+            case .index(let b, let i): esPlaceWrite(env, t, esElemSlot(esPlaceType(env, b), 1), v)
+            case .member(let b, let m, let ch): esPlaceWrite(env, t, esPlaceType(env, t), v)
             default: noop()
         }
     }
 }
 
-// §19.4 `xs[i] = v` into a local container of views.
-func esIndexWrite(_ env: inout TyEnv, _ b: Vec[Nd], _ v: Vec[Nd]) using Alloc {
-    let n = esContainerLocal(env, b)
-    if !streq(n, "") {
-        if esFlowsInto(env, v, esElemSlot(tyInferBoxed(env, b), 1)) { esAddSources(env, n, esOrig(env, v)) }
+// §19.4 `w.name = v`, `self.items = v`, `xs[i] = v`: a view stored into a
+// field or element joins a local root's sources, and may not outlive the
+// function when the root is the caller's (`self`, a parameter).
+func esPlaceWrite(_ env: inout TyEnv, _ t: Vec[Nd], _ slot: String, _ v: Vec[Nd]) using Alloc {
+    if !esFlowsInto(env, v, slot) { return }
+    let rn = esRootBind(t)
+    if streq(rn, "") { return }
+    if streq(rn, "self") { esCheckOutStore(env, rn, esOrig(env, v)); return }
+    if esLocalIdx(env, rn) >= 0 {
+        if esViewIdx(env, rn) >= 0 { esAddSources(env, rn, esOrig(env, v)) }
         return
     }
-    let root = esOutRoot(env, b)
-    if streq(root, "") { return }
-    if esFlowsInto(env, v, esElemSlot(esPlaceType(env, b), 1)) { esCheckOutStore(env, root, esOrig(env, v)) }
+    let pn = esParamRoot(env, rn)
+    if !streq(pn, "") { esCheckOutStore(env, pn, esOrig(env, v)) }
+}
+
+// The binding a place is rooted in: "self", an identifier, or "".
+func esRootBind(_ b: Vec[Nd]) using Alloc -> String {
+    if let x = b.get(0) {
+        return match x {
+            case .member(let base, let m, let ch): esRootBind(base)
+            case .index(let base, let i): esRootBind(base)
+            case .paren(let inner): esRootBind(inner)
+            case .selfE: own("self")
+            case .ident(let n): own(n)
+            default: own("")
+        }
+    }
+    return own("")
 }
 
 // A container place's type; `self.field` reads the field off the struct

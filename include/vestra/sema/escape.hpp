@@ -66,6 +66,10 @@ private:
     void add_sources(const Symbol* sym, const Origins& o, diag::SourceRange site);
     [[nodiscard]] const Symbol* container_local(const ast::Expr& e) const;
     [[nodiscard]] std::string outliving_root(const ast::Expr& e, TypePtr& out) const;
+    [[nodiscard]] std::string caller_root(const ast::Expr& e) const;
+    [[nodiscard]] TypePtr place_type(const ast::Expr& e) const;
+    [[nodiscard]] static const ast::Expr& place_root(const ast::Expr& e);
+    void check_place_store(const ast::Expr& target, const ast::Expr& value, diag::SourceRange site);
     void check_outliving_store(const std::string& target, const Origins& o, diag::SourceRange site);
     [[nodiscard]] TypePtr element_slot(TypePtr container, std::size_t i) const;
     [[nodiscard]] bool flows_into(const ast::Expr& arg, TypePtr slot) const;

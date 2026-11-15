@@ -128,7 +128,7 @@ Each gap has one of four kinds:
 | §7 | A const generic `N` as a value in the body | missing | "undefined name 'N'". |
 | §17.3 | Const-expression array lengths `[N + 1]T` | missing | Parse error. |
 | §7 | Bounds `Primitive`, `Trivial`, `Copyable`, `Iterator` | missing | "bound 'Primitive' is not supported yet". (`Ord` and `Hashable` are checked as `Comparable` and `Hash`.) |
-| §7 | `self` in a method | unsound | `self` has no type in any method (the resolver has no case for it), so `self.n` where `n: Int32`, returned from a method whose result is `Bool`, is accepted, and in a generic struct `self.a - self.b` escapes the bound checks. A parameter typed `T` is checked (its `<` needs `T: Comparable`). |
+| §7 | `self` in a method | unsound | `self` has no type in any method (the resolver has no case for it), so `self.n` where `n: Int32`, returned from a method whose result is `Bool`, is accepted, a method that only reads its receiver can still call `self.xs.push(1)`, and in a generic struct `self.a - self.b` escapes the bound checks. A parameter typed `T` is checked (its `<` needs `T: Comparable`). |
 | §7 | Protocol conformance | missing | An extension missing a required method is accepted. A protocol method on a bounded `T` gives "no field or method". Extensions on primitive types don't attach. |
 | §7 | `some P` | missing | Erased to the protocol type. `-> some Shape` returning `Sq` is a type mismatch. |
 | §7 | `dyn P` existentials | missing | `let d: dyn Shape = Sq(...)` is a mismatch. |
@@ -164,7 +164,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §10, §19.4 | Owned containers of views | unsound (partial) | A `Vec` / `HashMap` / array of views carries its elements' sources: a `split` of a local, `push` / `set` / `xs[i] =` of a local's view, an element read back out (index, `get`, `for`), and a write of a local's view into a container the caller owns (`self.items`, an `inout` parameter) are all checked. Not yet: a whole-value store into a field (`self.items = s.split(",")`, or any view stored into a field), and a container write nested inside a larger expression rather than as its own statement. |
+| §10, §19.4 | Owned containers of views | unsound (partial) | A `Vec` / `HashMap` / array of views carries its elements' sources: a `split` of a local, `push` / `set` / `xs[i] =` of a local's view, an element read back out (index, `get`, `for`), a write of a local's view into a container the caller owns (`self.items`, an `inout` parameter), and a view stored into a field or element (`self.name = v`, `w.name = v`, `ws[0].name = v`) are all checked. Not yet: a container write nested inside a larger expression rather than as its own statement. |
 | §10 | `Buffer[T]`, `Buffer(fixed:)` | missing | "undefined name". `Vec` is the substitute. |
 | §10, §11 | `Arc[T]` | missing | "undefined name". |
 | §10 | `StridedSpan[T]` | missing | "unknown type". |

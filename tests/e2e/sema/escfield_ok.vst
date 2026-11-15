@@ -1,0 +1,28 @@
+// §19.4 a view stored into a field is fine when its source outlives the
+// place it lands in.
+
+struct Words {
+    var items: Vec[Str]
+    var name: Str
+    inout func setOk(_ p: Str) using Alloc {
+        self.items = p.split(",")
+        self.name = p
+    }
+}
+
+func viaInoutOk(_ w: inout Words, _ p: Str) {
+    w.name = p
+}
+
+func localStructOk(_ p: Str) using Alloc -> Words {
+    var w = Words(items: p.split(","), name: "x")
+    w.name = p.slice(0, 1)
+    return w
+}
+
+func localUse() using Alloc -> Int {
+    let s: String = "a,b"
+    var w = Words(items: s.split(","), name: "x")
+    w.name = s.slice(0, 1)
+    return w.items.len()
+}

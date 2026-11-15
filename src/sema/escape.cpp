@@ -263,20 +263,8 @@ void EscapeChecker::check_stmt(const ast::Stmt& s) {
             }
         } else if (a.target != nullptr) {
             scan(*a.target);
-            // `xs[i] = v` / `m[k] = v` into a container of views.
-            if (strip(*a.target).kind == ast::NodeKind::IndexExpr && a.value != nullptr) {
-                const auto& ix = static_cast<const ast::IndexExpr&>(strip(*a.target));
-                if (const auto* sym = container_local(*ix.base)) {
-                    if (flows_into(*a.value, element_slot(sym->type, 1))) {
-                        add_sources(sym, origins(*a.value), s.range);
-                    }
-                } else {
-                    TypePtr ct;
-                    if (auto root = outliving_root(*ix.base, ct);
-                        !root.empty() && flows_into(*a.value, element_slot(ct, 1))) {
-                        check_outliving_store(root, origins(*a.value), s.range);
-                    }
-                }
+            if (a.value != nullptr) {
+                check_place_store(*a.target, *a.value, s.range);
             }
         }
         if (a.target != nullptr && strip(*a.target).kind == ast::NodeKind::IdentExpr) {
@@ -873,10 +861,10 @@ void EscapeChecker::check_container_write(const ast::CallExpr& c) {
 // The caller-owned root of a container place (`self`, `self.items`, an
 // `inout` / `read` parameter), or "" when it is local or not a container of
 // views.
-std::string EscapeChecker::outliving_root(const ast::Expr& e, TypePtr& out) const {
+// A place's type. `self.field`: the resolver leaves `self` untyped, so read
+// the field's declared type off the enclosing struct.
+TypePtr EscapeChecker::place_type(const ast::Expr& e) const {
     auto t = resolution_->type_of(&strip(e));
-    // `self.field`: the resolver leaves `self` untyped, so read the field's
-    // declared type off the enclosing struct.
     if ((t == nullptr || t->is_error()) && strip(e).kind == ast::NodeKind::MemberExpr
         && struct_ != nullptr) {
         const auto& m = static_cast<const ast::MemberExpr&>(strip(e));
@@ -888,11 +876,11 @@ std::string EscapeChecker::outliving_root(const ast::Expr& e, TypePtr& out) cons
             }
         }
     }
-    out = t;
-    if (t == nullptr || (t->kind() != TypeKind::Vec && t->kind() != TypeKind::HashMap)
-        || !is_view(t)) {
-        return {};
-    }
+    return t;
+}
+
+// The binding a place (`a.b[i].c`) is rooted in.
+const ast::Expr& EscapeChecker::place_root(const ast::Expr& e) {
     const ast::Expr* p = &strip(e);
     while (true) {
         if (p->kind == ast::NodeKind::MemberExpr) {
@@ -900,12 +888,62 @@ std::string EscapeChecker::outliving_root(const ast::Expr& e, TypePtr& out) cons
         } else if (p->kind == ast::NodeKind::IndexExpr) {
             p = &strip(*static_cast<const ast::IndexExpr*>(p)->base);
         } else {
-            break;
+            return *p;
         }
     }
+}
+
+// §19.4 `w.name = v`, `self.items = v`, `xs[i] = v`: a view stored into a
+// field or element joins a local root's sources, and may not outlive the
+// function when the root is the caller's (`self`, a parameter).
+void EscapeChecker::check_place_store(const ast::Expr& target,
+                                      const ast::Expr& value,
+                                      diag::SourceRange site) {
+    const auto& t = strip(target);
+    TypePtr slot;
+    if (t.kind == ast::NodeKind::IndexExpr) {
+        slot = element_slot(place_type(*static_cast<const ast::IndexExpr&>(t).base), 1);
+    } else if (t.kind == ast::NodeKind::MemberExpr) {
+        slot = place_type(t);
+    } else {
+        return;
+    }
+    if (!flows_into(value, slot)) {
+        return;
+    }
+    const auto& root = place_root(t);
+    if (root.kind == ast::NodeKind::SelfExpr) {
+        check_outliving_store("self", origins(value), site);
+        return;
+    }
+    if (root.kind != ast::NodeKind::IdentExpr) {
+        return;
+    }
+    const auto* sym = resolution_->symbol_of(&root);
+    if (sym != nullptr && sym->kind == SymbolKind::Local && locals_.contains(sym)) {
+        add_sources(sym, origins(value), site);
+    } else if (auto name = caller_root(root); !name.empty()) {
+        check_outliving_store(name, origins(value), site);
+    }
+}
+
+std::string EscapeChecker::outliving_root(const ast::Expr& e, TypePtr& out) const {
+    auto t = place_type(e);
+    out = t;
+    if (t == nullptr || (t->kind() != TypeKind::Vec && t->kind() != TypeKind::HashMap)
+        || !is_view(t)) {
+        return {};
+    }
+    const ast::Expr* p = &place_root(e);
     if (p->kind == ast::NodeKind::SelfExpr) {
         return "self";
     }
+    return caller_root(*p);
+}
+
+// The name of a non-`sink` parameter `e` names (the caller's storage), or "".
+std::string EscapeChecker::caller_root(const ast::Expr& e) const {
+    const ast::Expr* p = &e;
     if (p->kind != ast::NodeKind::IdentExpr || func_ == nullptr) {
         return {};
     }
