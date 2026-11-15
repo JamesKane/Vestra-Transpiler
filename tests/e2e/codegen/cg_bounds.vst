@@ -1,0 +1,10 @@
+// §19.10 a single index lowers to the prelude's bounds-checked
+// `__vstr::at(base, i)`: reads, writes, nested indices and chunk views.
+
+func sum(_ s: Span[Int32], _ m: inout [4][4]Int32, _ i: Int) -> Int32 {
+    m[i][i + 1] = s[i]
+    m[0][0] += 1
+    let cs = s.chunks(2)
+    let c = cs[0]
+    return m[i][0] + c[0]
+}

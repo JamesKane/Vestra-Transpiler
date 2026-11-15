@@ -10939,12 +10939,22 @@ func emitIfElseValue(_ env: inout TyEnv, _ els: Vec[Nd]) using Alloc, Log {
     }
 }
 
-// Indexing lowers to a subscript. Container bases (Vec / Span / MutSpan) take
+// Indexing lowers to `__vstr::at(base, i)` (§19.10). Otherwise, container bases (Vec / Span / MutSpan) take
 // std::size_t in operator[], so the (signed) index is cast: `xs[i]` ->
 // `xs[static_cast<std::size_t>(i)]`; a fixed-size `[N]T` array (std::array)
 // indexes plainly — the bootstrap casts only container bases. (Single-index
 // only.)
 func emitIndex(_ env: inout TyEnv, _ base: Vec[Nd], _ idxs: Vec[Nd]) using Alloc, Log {
+    // §19.10 a single index is bounds-checked by the prelude's `__vstr::at`,
+    // which also takes the index to std::size_t.
+    if idxs.len() == 1 {
+        print("__vstr::at(")
+        emitBoxed(env, base)
+        print(", ")
+        emitBoxed(env, idxs)
+        print(")")
+        return
+    }
     let plainIdx = tyIsArray(tyInferBoxed(env, base))
     emitBoxed(env, base)
     print("[")

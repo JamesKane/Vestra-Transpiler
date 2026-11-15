@@ -1029,8 +1029,8 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         case TypeKind::Vector:
         case TypeKind::Span:
         case TypeKind::MutSpan:
-        // §18.5 indexing a Vec[T] yields T (unchecked at the C++ layer, as for
-        // a Span; `get(i) -> T?` is the bounds-checked read).
+        // §18.5 indexing a Vec[T] yields T, and traps out of range as a Span
+        // does (§19.10); `get(i) -> T?` is the read that can't trap.
         case TypeKind::Vec:
             t = base_t->inner();
             break;

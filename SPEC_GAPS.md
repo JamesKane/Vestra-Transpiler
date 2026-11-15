@@ -45,7 +45,6 @@ Each gap has one of four kinds:
 2. **Generated C++ can have undefined or reordered behaviour where Vestra
    defines it.**
    - Signed overflow, which Vestra traps.
-   - Unchecked indexing.
    - Argument evaluation order.
    - `??` evaluates its right side eagerly in a global's initializer, or
      when it holds a `try`, `await`, `if` or `match`.
@@ -291,7 +290,6 @@ fails in clang.
 | §19.6 | Consumed only by the type's consumer or a destructure | divergent | Any `sink` param counts, so an empty `func dropit(_ h: sink H)` drops anything. No destructure form exists. |
 | §19.6 | Panic paths need not consume linear values | divergent (over-strict) | `let h = H(...); panic("x")` reports "never consumed". |
 | §19.9 | Left-to-right evaluation of arguments and operands | unsound | Emitted as direct C++ calls and operators, so order is whatever the C++ compiler chooses. |
-| §19.10 | Bounds-checked indexing | unsound | `[N]T` and `Span` indexing lower to unchecked `a[i]`. Only `Vec.get` and `char_at` check. |
 
 Linear obligations do carry correctly through `Optional`, `Box` and generic
 structs, contrary to an older ROADMAP note.

@@ -1,0 +1,8 @@
+// §19.10 the bounds-checked index lowering under --no-libc: `__vstr::at`
+// over the freestanding std::array and span.
+
+func pick(_ s: Span[UInt32], _ i: Int) -> UInt32 {
+    var t: [2]UInt32 = [1, 2]
+    t[1] = s[i]
+    return t[i & 1]
+}

@@ -1,0 +1,21 @@
+// §19.10 indexing is bounds-checked. Reads, writes and compound writes in
+// range work as before; the index comes from argv, so the C++ compiler
+// can't see it: with no arguments, the last read is one past the end and
+// panics.
+
+func main() using Log, Alloc -> Int32 {
+    let extra = args().len() - 1
+    var t: [4]Int32 = [1, 2, 3, 4]
+    t[0] = 10
+    t[3] += 5
+    var xs: Vec[Int32] = Vec.new()
+    xs.push(7)
+    xs.push(8)
+    xs[1] = 80
+    let i: UInt8 = 2
+    let a = t[i]
+    print("t0=\(t[0]) t3=\(t[3]) a=\(a) x1=\(xs[1])\n")
+    let bad = t[4 + extra]
+    print("unreachable \(bad)\n")
+    return 0
+}

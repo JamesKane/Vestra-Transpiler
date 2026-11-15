@@ -1912,11 +1912,11 @@ TEST_CASE("Span .isEmpty emits std::span::empty") {
     CHECK(f.out.source.find("s.empty()") != std::string::npos);
 }
 
-TEST_CASE("Span indexing casts the index to size_t") {
+TEST_CASE("Span indexing is bounds-checked through __vstr::at") {
     SemaEmitFixture f("func first(_ s: Span[Int32]) -> Int32 {\n"
                       "    return s[0]\n"
                       "}\n");
-    CHECK(f.out.source.find("s[static_cast<std::size_t>(0)]") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::at(s, 0)") != std::string::npos);
 }
 
 // ---- §10 panic / abort / unreachable -------------------------------------
@@ -2992,7 +2992,7 @@ TEST_CASE("Vec[T] lowers to std::vector with push / len / index") {
     CHECK(f.out.source.find("std::vector<std::int32_t> xs = std::vector<std::int32_t>{}")
           != std::string::npos);
     CHECK(f.out.source.find("xs.push_back(7)") != std::string::npos);
-    CHECK(f.out.source.find("xs[static_cast<std::size_t>(0)]") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::at(xs, 0)") != std::string::npos);
     CHECK(f.out.source.find("static_cast<std::intptr_t>(xs.size())") != std::string::npos);
 }
 
@@ -3317,7 +3317,7 @@ TEST_CASE("a chunks result used as a value lowers .count to count() and indexes 
     CHECK(f.out.header.find("operator[](std::size_t i) const") != std::string::npos);
     // `.count` on the ChunkIter value lowers to count(); indexing casts.
     CHECK(f.out.source.find("(cs).count()") != std::string::npos);
-    CHECK(f.out.source.find("cs[static_cast<std::size_t>(") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::at(cs, ") != std::string::npos);
 }
 
 TEST_CASE("binary operands are parenthesized where C++ precedence would regroup them") {

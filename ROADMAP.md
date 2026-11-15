@@ -99,7 +99,8 @@ hit:
   is a nonzero literal.
 - ~~`&+ &- &*` wrap (Gaps §4).~~ Done in the C++ emitter, through prelude
   helpers.
-- Bounds-checked `[N]T` and `Span` indexing (Gaps §19.10).
+- ~~Bounds-checked `[N]T` and `Span` indexing (Gaps §19.10).~~ Done in the C++
+  emitter: a single index lowers to the prelude's `__vstr::at`.
 - Left-to-right evaluation of arguments and operands (Gaps §19.9).
 - ~~`??` evaluates its right side lazily (Gaps §19.9).~~ Done in the C++
   emitter for any default with an effect; a global's initializer and a
@@ -146,9 +147,8 @@ sema-side `unsound` rows from the Gaps tables below:
     (Annex §14.4, §14.9.3).~~ Done (asm on aarch64 only).
 11. ~~`Vec.push` takes its value by `sink` (Gaps §18).~~ Done.
 
-The codegen-side `unsound` rows (overflow traps, bounds checks, evaluation
-order) belong to the backend work above. A
-name spelled as a C++ keyword is rejected with a diagnostic until the
+The codegen-side `unsound` rows (overflow traps, evaluation order) belong
+to the backend work above. A name spelled as a C++ keyword is rejected with a diagnostic until the
 backend renames it.
 
 ## Self-hosting

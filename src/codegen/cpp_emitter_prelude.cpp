@@ -266,6 +266,24 @@ constexpr auto irem(A a, B b) -> decltype(a % b) {
 }
 template <class A, class B> constexpr void idiv_assign(A& a, B b) { a = static_cast<A>(idiv(a, b)); }
 template <class A, class B> constexpr void irem_assign(A& a, B b) { a = static_cast<A>(irem(a, b)); }
+// §19.10 indexing is bounds-checked: `a[i]` on a `[N]T`, Span, MutSpan,
+// Vec or chunk iterator panics unless 0 <= i < the base's length. It
+// returns what the subscript does (a reference, or a chunk's sub-view), so
+// `a[i] = v` and `&a[i]` still work.
+template <class C>
+constexpr auto index_len(const C& c) {
+    if constexpr (requires { c.size(); }) { return c.size(); }
+    else { return static_cast<decltype(sizeof(0))>(c.count()); }
+}
+template <class C, class I>
+constexpr decltype(auto) at(C&& c, I i) {
+    using Z = decltype(sizeof(0));
+    if constexpr (I(-1) < I(0)) {
+        if (i < I(0)) { panic("index out of range"); }
+    }
+    if (static_cast<Z>(i) >= static_cast<Z>(index_len(c))) { panic("index out of range"); }
+    return c[static_cast<Z>(i)];
+}
 
 )__div";
 }
@@ -324,8 +342,8 @@ struct Chunks {
     // First-class (non-mutating) accessors: count() is the number of chunks
     // (ceil(size/step)); operator[] returns the i-th sub-view. Neither touches
     // the `off` cursor, so random access and a `for` consume are independent
-    // (the for-loop copies the struct anyway). The index is the caller's
-    // responsibility, matching std::span's unchecked operator[].
+    // (the for-loop copies the struct anyway). Vestra's `cs[i]` reaches
+    // operator[] through __vstr::at, which checks i against count().
     [[nodiscard]] std::intptr_t count() const {
         if (step == 0) { return 0; }
         return static_cast<std::intptr_t>((data.size() + step - 1) / step);

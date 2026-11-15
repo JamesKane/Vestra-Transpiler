@@ -4517,6 +4517,16 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // std::size_t — cast the (signed) Int index to keep
         // -Wsign-conversion quiet.
         const auto& ix = static_cast<const ast::IndexExpr&>(e);
+        // §19.10 a single index is bounds-checked by the prelude's
+        // `__vstr::at`, which also takes the index to std::size_t.
+        if (ix.indices.size() == 1) {
+            os << "__vstr::at(";
+            emit_expr(os, *ix.base);
+            os << ", ";
+            emit_expr(os, *ix.indices[0]);
+            os << ")";
+            break;
+        }
         bool span_base = false;
         if (resolution_ != nullptr && ix.base != nullptr) {
             auto bt = resolution_->type_of(ix.base.get());
