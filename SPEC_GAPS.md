@@ -82,7 +82,6 @@ Each gap has one of four kinds:
 | §4 | Integer overflow does not trap in debug | unsound | `a + b` lowers to plain C++ `+` on `int32_t`. No checked arithmetic exists anywhere in `src/`. |
 | §4 | `&+ &- &*` always wrap | unsound | They lower to plain `+`, which is UB on signed types (`cpp_emitter.cpp:679`, "signed UB, TODO"). |
 | §4 | Division by zero traps | unsound | Lowers to a raw `a / b`. |
-| §4 | Integer literals are range-checked against the target type | unsound | `return 300` as `Int8` and `return -1` as `UInt8` are both accepted. |
 | §4 | `as` byte reinterpretation (size, alignment, `Trivial`) | unsound | Sema returns the target type unchecked (`resolver_exprs.cpp:909`). `UInt64 as Float32` is accepted, and codegen emits `/* unsupported */`. `as?` behaves the same. |
 | §4 | `x.to[T]()` / `x.toWrapping[T]()` conversions | divergent | Neither exists. `Int32(c)` is the substitute and is an unchecked `static_cast`. |
 | §4 | `addingChecked` and friends | missing | "no field or method 'addingChecked'". |
@@ -91,7 +90,7 @@ Each gap has one of four kinds:
 | §4 | `StrConst` copies freely | divergent | Passing a `StrConst` to two `sink` params gives "use of 's' after it was moved". |
 | §3 | A block's tail value is its result | missing (partial) | `{ K }` with an untyped const gives "can reach the end of its body without returning". |
 | §3, §17.1 | `'\u{...}'` char escapes | missing | "unterminated character literal". |
-| §3 | Identifiers that are C++ keywords | unsound | A Vestra name such as `mutable` or `class` is emitted verbatim, and the C++ doesn't compile. |
+| §3 | Identifiers that are C++ keywords | unsound | A Vestra name such as `mutable`, `class` or `signed` is emitted verbatim, and the C++ doesn't compile. |
 | §6, §17.1 | Byte-char literal `b'/'` | missing | "undefined name 'b'". |
 | §17.1 | Unicode identifiers | missing | `café` gives "unexpected character". |
 
@@ -378,6 +377,10 @@ These are problems in the spec itself, not in the compiler:
   `RawMemory`. And in an argument, `&ctx` is the `inout` marker, not
   `&decl` (§14.6.3 says position disambiguates them, but both are prefix
   `&` in the same position), so the pointer is bound first.
+- §17.6's `literal` pattern is the §17.5 `literal`, which has no sign, so a
+  match on a signed integer can't spell `case -1:`. The bootstrap follows
+  the grammar and gives "expected pattern" at the `-`. Every
+  integer literal is still range-checked against the scrutinee's type (§4).
 
 ## Not determined
 

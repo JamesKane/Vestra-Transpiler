@@ -1,0 +1,31 @@
+// §4 an integer literal must fit the integer type it adopts; the bootstrap
+// used to wrap `300` into an Int8 and `-1` into a UInt8 without a word.
+
+struct Px { var r: UInt8 }
+
+const top: UInt16 = 65536
+
+func over() -> Int8 { return 300 }
+func under() -> UInt8 { return -1 }
+func takes(_ x: UInt8) -> UInt8 { return x }
+
+func kind(_ x: Int8) -> Int32 {
+    return match x {
+        case 128: 1
+        default: 0
+    }
+}
+
+func main() -> Int32 {
+    let a: Int8 = -129
+    let d: Int32 = 0x8000_0000
+    let e: Int32 = -0x8000_0001
+    let g: UInt128 = 340282366920938463463374607431768211456
+    let h: Int16 = 0b1000_0000_0000_0000
+    let i: UInt8? = 256
+    var j: UInt32 = 0
+    j = 4294967296
+    let p = Px(r: 256)
+    let q = takes(0o400)
+    return 0
+}

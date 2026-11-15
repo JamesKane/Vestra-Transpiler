@@ -243,6 +243,13 @@ private:
     TypePtr check_expr(const ast::Expr& e, TypePtr expected = nullptr);
     TypePtr check_binary(const ast::BinaryExpr& b, TypePtr expected);
     TypePtr check_unary(const ast::UnaryExpr& u, TypePtr expected);
+    // §4: an integer literal must fit the integer type it adopts. `negated`
+    // is set while the literal is the operand of a unary `-`, so `-128` is
+    // checked as a value and not as `128` then negated.
+    void check_int_literal_range(const ast::IntLit& lit, TypePtr t);
+    bool negating_int_lit_ = false;
+    diag::SourceRange neg_lit_range_{};
+    std::unordered_set<const ast::IntLit*> lit_range_reported_;
     TypePtr check_call(const ast::CallExpr& c, TypePtr expected = nullptr);
     TypePtr check_call_inner(const ast::CallExpr& c, TypePtr expected);
     // §4 the writes a typed call makes: `&` arguments and a mutating receiver.

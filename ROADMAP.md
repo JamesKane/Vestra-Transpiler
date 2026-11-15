@@ -93,8 +93,8 @@ lowering to C++. They are fixed by the new backend, not patched in the C++
 emitter, unless a patch is a few lines and closes an unsoundness the spike can
 hit:
 
-- Integer overflow traps in debug; `&+ &- &*` wrap; division by zero traps;
-  integer literals range-checked (Gaps §4).
+- Integer overflow traps in debug; `&+ &- &*` wrap; division by zero traps
+  (Gaps §4).
 - Bounds-checked `[N]T` and `Span` indexing (Gaps §19.10).
 - Left-to-right evaluation of arguments and operands (Gaps §19.9).
 - `??` evaluates its right side lazily (Gaps §9). This one is a cheap fix
@@ -118,11 +118,11 @@ accepts. Ordered by how likely each is to let a wrong program through:
 
 The Annex A list (MMIO payloads, fences, `using InterruptsOff`,
 `@kernel_init` addresses, `@noinit` values, `self` typing, variable
-orderings, `Atomic[T]`, `swapContext`) is closed. What's left is the
-sema-side `unsound` rows in the Gaps tables:
+orderings, `Atomic[T]`, `swapContext`) is closed, and so is item 1
+below. What's left is the sema-side `unsound` rows in the Gaps tables:
 
-1. Integer literals range-checked against the target type (`return 300` as
-   `Int8`; Gaps §4).
+1. ~~Integer literals range-checked against the target type (`return 300` as
+   `Int8`; Gaps §4).~~ Done.
 2. Exclusivity across an `inout` method receiver (`p.bump(&p.a)`; Gaps
    §19.3).
 3. `send` takes its argument by `sink` (`ch.send(b); return b.n`; Gaps

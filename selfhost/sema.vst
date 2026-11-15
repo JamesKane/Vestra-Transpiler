@@ -8693,6 +8693,7 @@ func tyCheckConst(_ env: inout TyEnv, _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     let ann = tyAnnSpelling(ty)
     if streq(ann, "") { return }
     let vt = tyInferBoxed(env, v)
+    tyLitRange(env, v, ann)
     if !tyFits(vt, v, ann) { env.bad.push(tyConstMsg(vt, ann)) }
 }
 
@@ -8864,6 +8865,7 @@ func tyCheckEnumPat(_ env: inout TyEnv, _ st: String, _ cn: String, _ children: 
 func tyCheckLitPat(_ env: inout TyEnv, _ st: String, _ inner: Vec[Nd]) using Alloc {
     let lt = tyInferBoxed(env, inner)
     if streq(lt, "") { return }
+    tyLitRange(env, inner, st)
     if !tyAssignable(lt, st) && !tyAssignable(st, lt) && !tyLitFits(inner, st) { env.bad.push(tyLitScrutMsg(lt, st)) }
 }
 
@@ -9778,6 +9780,7 @@ func tyCtorArgLabeled(_ env: inout TyEnv, _ structName: String, _ idx: Int, _ la
     if !tyHasField(env, structName, label) { env.bad.push(tyNoFieldMsg(structName, label)); return }
     let ft = tyFieldType(env, structName, label)
     let at = tyInferBoxed(env, val)
+    tyLitRange(env, val, ft)
     if !tyFits(at, val, ft) { env.bad.push(tyFieldMsg(label, ft, at)) }
     seen.push(label)
 }
@@ -9822,6 +9825,7 @@ func tyCheckArgVal(_ env: inout TyEnv, _ fname: String, _ idx: Int, _ val: Vec[N
     let at = tyInferBoxed(env, val)
     let pt = tyParamType(env, fname, idx)
     if tyIsCalleeGen(env, fname, pt) { return }   // a `T` parameter binds, rather than constrains
+    tyLitRange(env, val, pt)
     if !tyFits(at, val, pt) { env.bad.push(tyArgMsg(idx + 1, at, pt)) }
 }
 
@@ -10154,6 +10158,7 @@ func tyLet(_ env: inout TyEnv, _ pat: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd]) usin
     let ann = tyAnnSpelling(ty)
     if !streq(ann, "") {
         let vt = tyInferBoxed(env, v)
+        tyLitRange(env, v, ann)
         if !tyFits(vt, v, ann) { env.bad.push(tyInitMsg(vt, ann)) }
     }
     tyBoxed(env, v)
@@ -10208,6 +10213,7 @@ func tyAssignRest(_ env: inout TyEnv, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     let lt = tyInferBoxed(env, t)
     let rt = tyInferBoxed(env, v)
     if streq(lt, "") || streq(rt, "") { return }
+    tyLitRange(env, v, lt)
     if !tyFits(rt, v, lt) { env.bad.push(tyAssignMsg(rt, lt)) }
 }
 
@@ -10228,6 +10234,8 @@ func tyRet(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc {
     if streq(env.curRet, "") { return }
     var rt: String = own("Unit")
     if v.len() > 0 { rt = tyInferBoxed(env, v) }
+    let retTy = own(env.curRet)
+    tyLitRange(env, v, retTy)
     if !tyFits(rt, v, env.curRet) { env.bad.push(tyReturnMsg(rt, env.curRet)) }
 }
 
@@ -11515,7 +11523,166 @@ func tyFits(_ t: String, _ e: Vec[Nd], _ to: String) using Alloc -> Bool {
     return tyLitFits(e, to)
 }
 
+// §4: an integer literal must fit the integer type it lands in. `-` on a
+// literal (through parens) is checked as the negative value. The limits run
+// to 128 bits, so a hex/octal/binary literal is measured by its bit count and
+// a decimal one by comparing its digits against the limit's.
+func tyLitRange(_ env: inout TyEnv, _ e: Vec[Nd], _ to: String) using Alloc {
+    var t: String = own(to)
+    if (t.byteAt(t.len() - 1) ?? 0) == 63 { t = tyUnwrapOpt(t) }   // T? -> T
+    if tyStartsWith(t, "Atomic[") { t = own(t.slice(7, t.len() - 1)) }
+    if !tyIsInt(t) { return }
+    var neg: Bool = false
+    var lit: String = own("")
+    var cur: Vec[Nd] = e
+    var go: Bool = true
+    while go {
+        go = false
+        if let n = cur.get(0) {
+            match n {
+                case .paren(let x): tyLitStep(&cur, &go, x)
+                case .unary(let op, let x): tyLitNeg(&cur, &go, &neg, op, x)
+                case .intLit(let s): tyLitSet(&lit, s)
+                default: noop()
+            }
+        }
+    }
+    if streq(lit, "") { return }
+    if tyLitInRange(lit, t, neg) { return }
+    var m: String = own("integer literal ")
+    if neg { m.append("-") }
+    m.append(lit)
+    m.append(" doesn't fit in ")
+    m.append(t)
+    m.append(" (range ")
+    m.append(tyIntLo(t))
+    m.append(" to ")
+    m.append(tyIntHi(t))
+    m.append(")")
+    env.bad.push(m)
+}
+
+func tyLitStep(_ cur: inout Vec[Nd], _ go: inout Bool, _ x: Vec[Nd]) {
+    cur = x
+    go = true
+}
+
+func tyLitNeg(_ cur: inout Vec[Nd], _ go: inout Bool, _ neg: inout Bool, _ op: String, _ x: Vec[Nd]) {
+    if !streq(op, "-") || neg { return }
+    neg = true
+    cur = x
+    go = true
+}
+
+func tyLitSet(_ lit: inout String, _ s: String) using Alloc {
+    lit = own(s)
+}
+
+func tyIntBits(_ t: String) -> Int {
+    if streq(t, "Int8") || streq(t, "UInt8") { return 8 }
+    if streq(t, "Int16") || streq(t, "UInt16") { return 16 }
+    if streq(t, "Int32") || streq(t, "UInt32") { return 32 }
+    if streq(t, "Int128") || streq(t, "UInt128") { return 128 }
+    return 64
+}
+
+func tyIntLo(_ t: String) using Alloc -> String {
+    if !tyIsSignedInt(t) { return own("0") }
+    let b = tyIntBits(t)
+    if b == 8 { return own("-128") }
+    if b == 16 { return own("-32768") }
+    if b == 32 { return own("-2147483648") }
+    if b == 128 { return own("-170141183460469231731687303715884105728") }
+    return own("-9223372036854775808")
+}
+
+func tyIntHi(_ t: String) using Alloc -> String {
+    let b = tyIntBits(t)
+    if tyIsSignedInt(t) {
+        if b == 8 { return own("127") }
+        if b == 16 { return own("32767") }
+        if b == 32 { return own("2147483647") }
+        if b == 128 { return own("170141183460469231731687303715884105727") }
+        return own("9223372036854775807")
+    }
+    if b == 8 { return own("255") }
+    if b == 16 { return own("65535") }
+    if b == 32 { return own("4294967295") }
+    if b == 128 { return own("340282366920938463463374607431768211455") }
+    return own("18446744073709551615")
+}
+
+func tyDigitVal(_ c: Int) -> Int {
+    if c >= 48 && c <= 57 { return c - 48 }
+    if c >= 97 && c <= 102 { return c - 87 }
+    if c >= 65 && c <= 70 { return c - 55 }
+    return 99
+}
+
+func tyLitInRange(_ lit: String, _ t: String, _ neg: Bool) using Alloc -> Bool {
+    // Strip `_` and the base prefix, then leading zeros.
+    var base: Int = 10
+    var at: Int = 0
+    if lit.len() >= 2 && (lit.byteAt(0) ?? 0) == 48 {
+        let p = Int(lit.byteAt(1) ?? 0)
+        if p == 120 || p == 88 { base = 16 }
+        if p == 111 || p == 79 { base = 8 }
+        if p == 98 || p == 66 { base = 2 }
+        if base != 10 { at = 2 }
+    }
+    var ds: String = own("")
+    var i: Int = at
+    while i < lit.len() {
+        let c = Int(lit.byteAt(i) ?? 0)
+        if c != 95 {
+            if tyDigitVal(c) >= base { return true }   // not a plain spelling; the lexer owns it
+            if !(ds.len() == 0 && c == 48) { ds.append(lit.slice(i, i + 1)) }
+        }
+        i = i + 1
+    }
+    if ds.len() == 0 { return true }                  // zero fits everything, `-0` too
+    let sgn = tyIsSignedInt(t)
+    if neg && !sgn { return false }
+    let width = tyIntBits(t)
+    if base == 10 {
+        var lim: String = tyIntHi(t)
+        if neg { lim = own(tyIntLo(t).slice(1, tyIntLo(t).len())) }
+        if ds.len() != lim.len() { return ds.len() < lim.len() }
+        var j: Int = 0
+        while j < ds.len() {
+            let a = Int(ds.byteAt(j) ?? 0)
+            let b = Int(lim.byteAt(j) ?? 0)
+            if a != b { return a < b }
+            j = j + 1
+        }
+        return true
+    }
+    // Bit count of a power-of-two base: the first digit's bits plus the rest.
+    let per = if base == 16 { 4 } else { if base == 8 { 3 } else { 1 } }
+    var first: Int = tyDigitVal(Int(ds.byteAt(0) ?? 0))
+    var fb: Int = 0
+    while first > 0 {
+        fb = fb + 1
+        first = first / 2
+    }
+    let bits = fb + per * (ds.len() - 1)
+    if !sgn { return bits <= width }
+    if bits <= width - 1 { return true }
+    if !neg || bits != width { return false }
+    // -2^(w-1): the leading digit is a power of two and the rest are zero.
+    let lead = tyDigitVal(Int(ds.byteAt(0) ?? 0))
+    if lead != 1 && lead != 2 && lead != 4 && lead != 8 { return false }
+    var k: Int = 1
+    while k < ds.len() {
+        if (ds.byteAt(k) ?? 0) != 48 { return false }
+        k = k + 1
+    }
+    return true
+}
+
 func tyLitFits(_ e: Vec[Nd], _ to: String) using Alloc -> Bool {
+    // A literal adopts the payload of an expected `T?`, as in the bootstrap.
+    if to.len() > 1 && (to.byteAt(to.len() - 1) ?? 0) == 63 { return tyLitFits(e, tyUnwrapOpt(to)) }
     if tyIsNumLitTree(e) {
         if tyHasFloatLit(e) { return streq(to, "Float32") || streq(to, "Float64") }
         return tyIsInt(to)   // an integer literal doesn't become a float

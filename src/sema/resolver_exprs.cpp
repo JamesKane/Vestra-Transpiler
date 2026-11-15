@@ -242,6 +242,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
             }
             t = (int_hint != nullptr && int_hint->is_integer()) ? int_hint
                                                                 : types_->primitive(TypeKind::Int);
+            check_int_literal_range(static_cast<const ast::IntLit&>(e), t);
         }
         break;
     case ast::NodeKind::FloatLit: {
@@ -1051,10 +1052,116 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
     return t;
 }
 
+void Resolver::check_int_literal_range(const ast::IntLit& lit, TypePtr t) {
+    const bool negated = negating_int_lit_;
+    negating_int_lit_ = false;
+    if (t == nullptr || !t->is_integer()) {
+        return;
+    }
+    // Parse into 128 bits; a literal wider than that never fits.
+    std::string_view raw = lit.text;
+    std::string digits;
+    for (char c : raw) {
+        if (c != '_') {
+            digits.push_back(c);
+        }
+    }
+    unsigned base = 10;
+    std::size_t at = 0;
+    if (digits.size() >= 2 && digits[0] == '0') {
+        switch (digits[1]) {
+        case 'x': case 'X': base = 16; at = 2; break;
+        case 'o': case 'O': base = 8; at = 2; break;
+        case 'b': case 'B': base = 2; at = 2; break;
+        default: break;
+        }
+    }
+    using U128 = unsigned __int128;
+    U128 v = 0;
+    bool wide = false;
+    for (std::size_t i = at; i < digits.size(); ++i) {
+        const char c = digits[i];
+        unsigned d = 0;
+        if (c >= '0' && c <= '9') {
+            d = static_cast<unsigned>(c - '0');
+        } else if (c >= 'a' && c <= 'f') {
+            d = static_cast<unsigned>(c - 'a' + 10);
+        } else if (c >= 'A' && c <= 'F') {
+            d = static_cast<unsigned>(c - 'A' + 10);
+        } else {
+            return;  // not a plain integer spelling; the lexer owns that error
+        }
+        if (d >= base) {
+            return;
+        }
+        if (v > (~U128{0} - d) / base) {
+            wide = true;
+            break;
+        }
+        v = v * base + d;
+    }
+    unsigned bits = 64;
+    bool is_signed = true;
+    std::string_view lo;
+    std::string_view hi;
+    switch (t->kind()) {
+    case TypeKind::Int8: bits = 8; lo = "-128"; hi = "127"; break;
+    case TypeKind::Int16: bits = 16; lo = "-32768"; hi = "32767"; break;
+    case TypeKind::Int32: bits = 32; lo = "-2147483648"; hi = "2147483647"; break;
+    case TypeKind::Int64:
+    case TypeKind::Int: lo = "-9223372036854775808"; hi = "9223372036854775807"; break;
+    case TypeKind::Int128:
+        bits = 128;
+        lo = "-170141183460469231731687303715884105728";
+        hi = "170141183460469231731687303715884105727";
+        break;
+    case TypeKind::UInt8: bits = 8; is_signed = false; hi = "255"; break;
+    case TypeKind::UInt16: bits = 16; is_signed = false; hi = "65535"; break;
+    case TypeKind::UInt32: bits = 32; is_signed = false; hi = "4294967295"; break;
+    case TypeKind::UInt64:
+    case TypeKind::UInt: is_signed = false; hi = "18446744073709551615"; break;
+    case TypeKind::UInt128:
+        bits = 128;
+        is_signed = false;
+        hi = "340282366920938463463374607431768211455";
+        break;
+    default: return;
+    }
+    if (!is_signed) {
+        lo = "0";
+    }
+    bool fits = !wide;
+    if (fits) {
+        const U128 one = 1;
+        if (is_signed) {
+            const U128 mag = one << (bits - 1);  // |min|; max is mag - 1
+            fits = negated ? v <= mag : v < mag;
+        } else {
+            const U128 max = bits == 128 ? ~U128{0} : (one << bits) - 1;
+            fits = negated ? v == 0 : v <= max;
+        }
+    }
+    if (!fits && lit_range_reported_.insert(&lit).second) {
+        error_at(negated ? neg_lit_range_ : lit.range, std::format("integer literal {}{} doesn't fit in {} (range {} to {})",
+                                        negated ? "-" : "", lit.text, t->describe(), lo, hi));
+    }
+}
+
 TypePtr Resolver::check_unary(const ast::UnaryExpr& u, TypePtr expected) {
     // Negation / bit-not preserve the operand's type, so the expected type
     // can be propagated inward.
+    const ast::Expr* lit_under = u.operand.get();
+    while (lit_under != nullptr && lit_under->kind == ast::NodeKind::ParenExpr) {
+        lit_under = static_cast<const ast::ParenExpr*>(lit_under)->inner.get();
+    }
+    const bool neg_lit = u.op == ast::UnaryOp::Neg && lit_under != nullptr
+                         && lit_under->kind == ast::NodeKind::IntLit;
+    if (neg_lit) {
+        negating_int_lit_ = true;
+        neg_lit_range_ = u.range;
+    }
     auto operand = check_expr(*u.operand, expected);
+    negating_int_lit_ = false;
     if (operand == nullptr || operand->is_error()) {
         return types_->error();
     }

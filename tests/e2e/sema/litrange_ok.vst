@@ -1,0 +1,36 @@
+// §4 integer literals at the edges of their type all fit: both ends of each
+// signed range, the top of each unsigned one, `-0` for an unsigned, hex and
+// binary spellings, parens around a negated literal, a literal pattern.
+
+struct Px { var r: UInt8 }
+
+const top: UInt16 = 65535
+
+func lowest() -> Int8 { return -128 }
+func widest() -> UInt64 { return 0xFFFF_FFFF_FFFF_FFFF }
+func takes(_ x: UInt8) -> UInt8 { return x }
+
+func kind(_ x: Int8) -> Int32 {
+    return match x {
+        case 127: 1
+        case 0: 2
+        default: 0
+    }
+}
+
+func main() -> Int32 {
+    let a: Int8 = 127
+    let b: Int8 = -(128)
+    let c: UInt8 = -0
+    let d: Int32 = 0x7fff_ffff
+    let e: Int32 = -0x8000_0000
+    let f: Int64 = -9223372036854775808
+    let g: UInt128 = 340282366920938463463374607431768211455
+    let h: Int16 = 0b0111_1111_1111_1111
+    let i: UInt8? = 255
+    var j: UInt32 = 0
+    j = 4294967295
+    let p = Px(r: 255)
+    let q = takes(0o377)
+    return 0
+}
