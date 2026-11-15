@@ -1,0 +1,23 @@
+// §10 a closure passed straight to a `nonescaping` parameter may capture a
+// view, and an escaping one may capture an owned copy.
+
+func run(_ f: nonescaping () -> Int) -> Int { return f() }
+
+func passed(_ w: Str) -> Int {
+    let v: Str = copy w
+    return run({ => v.len() })
+}
+
+func owned() using Alloc -> () -> Int {
+    let s: String = "owned"
+    return { => s.len() }
+}
+
+func inner() -> () -> Int {
+    return { =>
+        let t: Str = "lit"
+        t.len()
+    }
+}
+
+func main() -> Int32 { return 0 }

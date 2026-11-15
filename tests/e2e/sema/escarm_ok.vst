@@ -24,3 +24,7 @@ func local(_ k: K) using Alloc -> Int {
 }
 
 func main() -> Int32 { return 0 }
+
+func bound(_ xs: inout Vec[Str], _ w: Str) using Alloc {
+    let u = xs.push(w)
+}

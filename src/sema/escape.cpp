@@ -236,6 +236,10 @@ void EscapeChecker::check_stmt(const ast::Stmt& s) {
         }
         scan(*value);
         check_expr(*value);
+        // `let u = xs.push(v)` writes the container as the statement would.
+        if (strip(*value).kind == ast::NodeKind::CallExpr) {
+            check_container_write(static_cast<const ast::CallExpr&>(strip(*value)));
+        }
         const auto* sym = resolution_->binding_symbol(&s);
         if (sym != nullptr) {
             decl_depth_[sym] = depth_;

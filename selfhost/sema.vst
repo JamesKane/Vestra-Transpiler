@@ -9460,8 +9460,123 @@ func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
         case .matchE(let scrut, let arms): tyMatch(env, scrut, arms)
         case .doCatchE(let db, let en, let et, let cb): tyPair(env, db, cb)
         case .comptimeE(let inner): tyComptimeE(env, inner)
+        case .closureE(let ps, let body): tyCloCaptures(env, ps, body)
         default: noop()
     }
+}
+
+// §10 a non-escapable value "may not be ... captured by an escaping closure":
+// a closure's type is a plain function type, so a view it captured would leave
+// with it untracked. (A closure handed straight to a `nonescaping` parameter or
+// a builtin that runs it before returning is skipped in tyExprCall.)
+func tyCloCaptures(_ env: inout TyEnv, _ ps: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    var used: Vec[String] = Vec.new()
+    var bound: Vec[String] = Vec.new()
+    cvV(ps, used, bound)
+    while used.len() > 0 { let _ = used.pop() }   // the params are bound, not used
+    var k: Int = 0
+    while k < ps.len() {
+        match ps.get(k) ?? Nd.wildcard {
+            case .ident(let n): bound.push(own(n))
+            default: noop()
+        }
+        k = k + 1
+    }
+    cvV(body, used, bound)
+    var i: Int = 0
+    while i < used.len() {
+        let n = used.get(i) ?? own("")
+        let sp = tySymType(env, n)
+        if !esInList(bound, n) && esView(env, sp, 0) {
+            var m: String = "a closure that can escape captures the view '"
+            m.append(n)
+            m.append("' (")
+            m.append(sp)
+            m.append("): pass the closure straight to a `nonescaping` parameter, or capture an owned copy (§10)")
+            env.bad.push(m)
+        }
+        i = i + 1
+    }
+}
+
+// The names a closure body uses (in order, once each) and binds.
+func cvV(_ xs: Vec[Nd], _ used: inout Vec[String], _ bound: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < xs.len() {
+        cvN(xs.get(i) ?? Nd.wildcard, used, bound)
+        i = i + 1
+    }
+}
+
+func cvN(_ n: Nd, _ used: inout Vec[String], _ bound: inout Vec[String]) using Alloc {
+    match n {
+        case .ident(let x): cvUse(x, used)
+        case .identP(let x): bound.push(own(x))
+        case .bindP(let x): bound.push(own(x))
+        case .enumP(let c, let xs): cvV(xs, used, bound)
+        case .tupleP(let xs): cvV(xs, used, bound)
+        case .orP(let xs): cvV(xs, used, bound)
+        case .block(let ss): cvV(ss, used, bound)
+        case .letS(let p, let t, let v): cvPair(p, v, used, bound)
+        case .varS(let p, let t, let v): cvPair(p, v, used, bound)
+        case .exprS(let x): cvV(x, used, bound)
+        case .retS(let x): cvV(x, used, bound)
+        case .assignS(let op, let t, let v): cvPair(t, v, used, bound)
+        case .whileS(let c, let b): cvPair(c, b, used, bound)
+        case .forS(let p, let it, let b): cvFor(p, it, b, used, bound)
+        case .withS(let caps, let vals, let b): cvPair(vals, b, used, bound)
+        case .ifE(let ln, let li, let c, let t, let e): cvIf(ln, li, c, t, e, used, bound)
+        case .matchE(let sc, let arms): cvPair(sc, arms, used, bound)
+        case .matchArm(let d, let pt, let g, let b): cvArm(pt, g, b, used, bound)
+        case .closureE(let ps, let b): cvPair(ps, b, used, bound)
+        case .call(let c, let a): cvPair(c, a, used, bound)
+        case .arg(let l, let io, let v): cvV(v, used, bound)
+        case .paren(let x): cvV(x, used, bound)
+        case .unary(let op, let x): cvV(x, used, bound)
+        case .binary(let op, let a, let b): cvPair(a, b, used, bound)
+        case .member(let b, let nm, let c): cvV(b, used, bound)
+        case .index(let b, let ix): cvPair(b, ix, used, bound)
+        case .asE(let v, let t, let o): cvV(v, used, bound)
+        case .prefixE(let kw, let x): cvV(x, used, bound)
+        case .throwE(let x): cvV(x, used, bound)
+        case .addrOf(let x): cvV(x, used, bound)
+        case .vecLit(let xs): cvV(xs, used, bound)
+        case .tupleLit(let xs): cvV(xs, used, bound)
+        case .interpE(let lits, let xs): cvV(xs, used, bound)
+        case .doCatchE(let db, let en, let et, let cb): cvCatch(db, en, cb, used, bound)
+        default: noop()
+    }
+}
+
+func cvUse(_ x: String, _ used: inout Vec[String]) using Alloc {
+    if !esInList(used, x) { used.push(own(x)) }
+}
+
+func cvPair(_ a: Vec[Nd], _ b: Vec[Nd], _ used: inout Vec[String], _ bound: inout Vec[String]) using Alloc {
+    cvV(a, used, bound)
+    cvV(b, used, bound)
+}
+
+func cvFor(_ p: Vec[Nd], _ it: Vec[Nd], _ b: Vec[Nd], _ used: inout Vec[String], _ bound: inout Vec[String]) using Alloc {
+    cvV(it, used, bound)
+    cvV(p, used, bound)
+    cvV(b, used, bound)
+}
+
+func cvIf(_ ln: String, _ li: Vec[Nd], _ c: Vec[Nd], _ t: Vec[Nd], _ e: Vec[Nd], _ used: inout Vec[String], _ bound: inout Vec[String]) using Alloc {
+    if !streq(ln, "") { bound.push(own(ln)) }
+    cvPair(li, c, used, bound)
+    cvPair(t, e, used, bound)
+}
+
+func cvArm(_ pt: Vec[Nd], _ g: Vec[Nd], _ b: Vec[Nd], _ used: inout Vec[String], _ bound: inout Vec[String]) using Alloc {
+    cvV(pt, used, bound)
+    cvPair(g, b, used, bound)
+}
+
+func cvCatch(_ db: Vec[Nd], _ en: String, _ cb: Vec[Nd], _ used: inout Vec[String], _ bound: inout Vec[String]) using Alloc {
+    if !streq(en, "") { bound.push(own(en)) }
+    cvPair(db, cb, used, bound)
 }
 
 func tyIdentUse(_ env: inout TyEnv, _ n: String) using Alloc {
@@ -10189,11 +10304,35 @@ func tyExprCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Al
         let a = args.get(i) ?? Nd.wildcard
         let an = tyNeIdent(ownArgValue(a))
         if !streq(an, "") && esInList(env.neLocal, an) && esInList(env.neKey, tyNeKey(fname, i)) { esAwUse(env, an) }
-        else { tyExpr(env, a) }
+        else if !tyCloArgOk(env, callee, fname, i, a) { tyExpr(env, a) }
         i = i + 1
     }
     tyCheckCallArgs(env, callee, args)
     muCall(env, callee, args)
+}
+
+// §10 a closure literal passed straight to a `nonescaping` parameter, or to a
+// builtin that runs it before returning (`map` / `filter`'s function,
+// `parallel`'s body, `.mapError`'s mapping), may capture a view.
+func tyCloArgOk(_ env: inout TyEnv, _ callee: Vec[Nd], _ fname: String, _ i: Int, _ a: Nd) using Alloc -> Bool {
+    if !tyIsCloLit(ownArgValue(a)) { return false }
+    if esInList(env.neKey, tyNeKey(fname, i)) { return true }
+    if tyArity(env, fname) < 0 {
+        if i == 1 && (streq(fname, "map") || streq(fname, "filter")) { return true }
+        if i == 2 && streq(fname, "parallel") { return true }
+    }
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let b, let nm, let c): i == 0 && streq(nm, "mapError")
+        default: false
+    }
+}
+
+func tyIsCloLit(_ v: Vec[Nd]) using Alloc -> Bool {
+    return match v.get(0) ?? Nd.wildcard {
+        case .closureE(let ps, let b): true
+        case .paren(let x): tyIsCloLit(x)
+        default: false
+    }
 }
 
 // ----- §14.9 atomic orderings and CAS labels ----------------------------------
@@ -10912,6 +11051,11 @@ func tyLetMu(_ env: inout TyEnv, _ p: Vec[Nd], _ ty: Vec[Nd], _ v: Vec[Nd], _ is
     if ty.len() > 0 { esSlot(env, tyAnnSpelling(ty)) }
     else if esIsBoxNew(v) { esSlot(env, esBoxNewSp(env, v)) }
     tyLet(env, p, ty, v)
+    // `let u = xs.push(v)` writes the container as the statement would.
+    match v.get(0) ?? Nd.wildcard {
+        case .call(let callee, let args): esContainerWrite(env, callee, args)
+        default: noop()
+    }
     esLet(env, p, ty, v)
     muBind(env, p, isVar)
 }

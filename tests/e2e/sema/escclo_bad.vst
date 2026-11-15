@@ -1,0 +1,27 @@
+// §10 a non-escapable value may not be captured by an escaping closure: a
+// closure's type is a plain function type, so the view would leave with it.
+
+struct H { var f: () -> Int }
+
+func run(_ f: () -> Int) -> Int { return f() }
+
+func ret(_ w: Str) -> () -> Int {
+    return { => w.len() }
+}
+
+func local() using Alloc -> () -> Int {
+    let s: String = "a b"
+    let parts: Vec[Str] = s.split(" ")
+    return { => parts.len() }
+}
+
+func stored(_ w: Str) -> H {
+    let f: () -> Int = { => w.len() + 1 }
+    return H(f: f)
+}
+
+func passed(_ w: Str) -> Int {
+    return run({ => w.len() })
+}
+
+func main() -> Int32 { return 0 }

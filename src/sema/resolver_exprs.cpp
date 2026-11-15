@@ -14,6 +14,7 @@
 
 #include "resolver_internal.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <format>
@@ -296,6 +297,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
             check_visibility(*sym, e.range);
             t = sym->type != nullptr ? sym->type : types_->error();
             check_noinit_value_use(*sym, ident.name, e.range);
+            check_view_capture(*sym, e.range);
             if (sym->nonescaping && sym->kind == SymbolKind::Parameter
                 && !nonesc_ok_.contains(&e) && nonesc_reported_.insert(&e).second) {
                 error_at(e.range,
@@ -420,6 +422,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
             t = types_->error();
             break;
         }
+        closures_.push_back(&cx);
         ScopeStack::Guard g(scopes_);
         for (std::size_t i = 0; i < cx.params.size(); ++i) {
             Symbol sym;
@@ -450,6 +453,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
                 check_stmt(*stmt);
             }
         }
+        closures_.pop_back();
         if (body_type == nullptr) {
             body_type = types_->unit();
         }
@@ -1698,6 +1702,49 @@ TypePtr Resolver::check_if(const ast::IfExpr& i, TypePtr expected) {
         return types_->error();
     }
     return then_type;
+}
+
+}  // namespace vestra::sema
+
+namespace vestra::sema {
+
+// §10 a non-escapable value "may not be ... captured by an escaping closure":
+// a closure's type is a plain function type, so a view it captured would
+// leave with it untracked. A closure handed straight to a `nonescaping`
+// parameter, or to a builtin that runs it before returning, may capture one.
+void Resolver::check_view_capture(const Symbol& sym, diag::SourceRange at) {
+    if (closures_.empty()
+        || (sym.kind != SymbolKind::Local && sym.kind != SymbolKind::Parameter)) {
+        return;
+    }
+    TypePtr t = sym.type;
+    const bool view = non_escapable(t)
+                      || (t != nullptr
+                          && ((t->kind() == TypeKind::Vec && non_escapable(t->inner()))
+                              || (t->kind() == TypeKind::HashMap
+                                  && std::ranges::any_of(t->parts(), [&](TypePtr p) {
+                                         return non_escapable(p);
+                                     }))));
+    if (!view) {
+        return;
+    }
+    const auto& d = sym.definition_range;
+    for (const auto* cx : closures_) {
+        const auto& r = cx->range;
+        const bool own = d.begin.file == r.begin.file && d.begin.offset >= r.begin.offset
+                         && d.begin.offset + d.length <= r.begin.offset + r.length;
+        if (own || nonesc_ok_.contains(cx)) {
+            continue;
+        }
+        if (view_capture_reported_.emplace(cx, &sym).second) {
+            error_at(at,
+                     std::format("a closure that can escape captures the view '{}' ({}): pass the "
+                                 "closure straight to a `nonescaping` parameter, or capture an "
+                                 "owned copy (§10)",
+                                 sym.name,
+                                 t->describe()));
+        }
+    }
 }
 
 }  // namespace vestra::sema

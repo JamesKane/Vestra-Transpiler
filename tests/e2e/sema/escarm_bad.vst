@@ -28,3 +28,9 @@ func fill(_ xs: inout Vec[Str], _ k: K) using Alloc {
 }
 
 func main() -> Int32 { return 0 }
+
+// A write whose (Unit) result is bound writes the container all the same.
+func bound(_ xs: inout Vec[Str]) using Alloc {
+    let s: String = "local"
+    let u = xs.push(s)
+}

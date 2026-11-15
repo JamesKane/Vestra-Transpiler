@@ -11,10 +11,12 @@
 
 #include <deque>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace vestra::sema {
@@ -263,6 +265,13 @@ private:
     // call's callee, and an argument to another `nonescaping` parameter.
     std::unordered_set<const ast::Expr*> nonesc_ok_;
     std::unordered_set<const ast::Expr*> nonesc_reported_;
+    // §10 a non-escapable value may not be captured by an escaping closure:
+    // the closures around the current point, innermost last. One passed
+    // straight to a `nonescaping` parameter or a synchronous builtin is in
+    // `nonesc_ok_`.
+    std::vector<const ast::ClosureExpr*> closures_;
+    std::set<std::pair<const ast::Expr*, const Symbol*>> view_capture_reported_;
+    void check_view_capture(const Symbol& sym, diag::SourceRange at);
     static const ast::Expr* peel_parens(const ast::Expr* e);
     diag::SourceRange neg_lit_range_{};
     std::unordered_set<const ast::IntLit*> lit_range_reported_;

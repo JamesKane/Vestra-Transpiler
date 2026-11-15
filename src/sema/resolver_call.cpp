@@ -290,6 +290,7 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
                 // function symbols ignore the hint and their types
                 // are checked against the (E) -> E' shape below.
                 auto expected_fn = types_->make_function({base_t->result()}, nullptr);
+                nonesc_ok_.insert(peel_parens(c.args[0].value.get()));  // applied at once
                 auto arg_t = check_expr(*c.args[0].value, expected_fn);
                 if (arg_t == nullptr || arg_t->is_error()) {
                     return types_->error();
@@ -422,6 +423,7 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
                     }
                 }
                 auto txs = check_expr(*c.args[0].value);
+                nonesc_ok_.insert(peel_parens(c.args[1].value.get()));
                 auto exs = iterator_element(txs);
                 if (exs == nullptr && txs != nullptr && !txs->is_error()) {
                     error_at(c.args[0].value->range,
@@ -514,6 +516,7 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
             TypePtr slice_t =
                 (td != nullptr && td->kind() == TypeKind::MutSpan) ? td : types_->error();
             auto body_expected = types_->make_function({slice_t}, types_->unit());
+            nonesc_ok_.insert(peel_parens(c.args[2].value.get()));  // joined before it returns
             auto tb = check_expr(*c.args[2].value, body_expected);
             if (tb != nullptr && !tb->is_error()
                 && (tb->kind() != TypeKind::Function || tb->parts().size() != 1)) {
