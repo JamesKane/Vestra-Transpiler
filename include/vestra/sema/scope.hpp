@@ -44,6 +44,9 @@ struct Symbol {
     // receiver of an `inout` method)? `let`, `read` parameters and pattern
     // bindings are not; `var`, `inout` and `sink` parameters are.
     bool is_mutable = true;
+    // §7 a `nonescaping` closure parameter: it may be called, or passed on to
+    // another `nonescaping` parameter, and nothing else.
+    bool nonescaping = false;
     // §5/§18.4 partition provenance. When this binding is a sub-view derived
     // from a parent place — a `split(at:)` half or a `chunks(of:)` iterator —
     // `provenance_root` is the parent's Symbol and `provenance_segment` is a

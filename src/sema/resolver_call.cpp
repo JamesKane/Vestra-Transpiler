@@ -132,6 +132,13 @@ void Resolver::check_call_writes(const ast::CallExpr& c) {
     }
 }
 
+const ast::Expr* Resolver::peel_parens(const ast::Expr* e) {
+    while (e != nullptr && e->kind == ast::NodeKind::ParenExpr) {
+        e = static_cast<const ast::ParenExpr*>(e)->inner.get();
+    }
+    return e;
+}
+
 TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
     // §14.5 lending a plain static `inout` from an interrupt handler writes it.
     if (in_interrupt_handler()) {
@@ -1242,6 +1249,7 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
     // call position (`.circle(radius: 1.0)`) can resolve against the expected
     // enum type.
     if (callee_type == nullptr) {
+        nonesc_ok_.insert(peel_parens(c.callee.get()));
         callee_type = check_expr(*c.callee, expected);
     }
     if (callee_type == nullptr || callee_type->is_error()) {
@@ -1522,6 +1530,17 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
     std::unordered_map<std::string, TypePtr> bindings;
     if (expected != nullptr && callee_type->result() != nullptr) {
         unify_generic(callee_type->result(), expected, bindings, c.range);
+    }
+
+    // §7 an argument bound to a `nonescaping` parameter may itself be one.
+    if (const auto* cs = resolution_.symbol_of(c.callee.get());
+        cs != nullptr && cs->decl != nullptr && cs->decl->kind == ast::NodeKind::Func) {
+        const auto& cf = static_cast<const ast::FuncDecl&>(*cs->decl);
+        for (std::size_t i = 0; i < c.args.size() && i < cf.params.size(); ++i) {
+            if (cf.params[i].nonescaping) {
+                nonesc_ok_.insert(peel_parens(c.args[i].value.get()));
+            }
+        }
     }
 
     // Pass 1: collect bindings from concrete arg types. We don't enforce

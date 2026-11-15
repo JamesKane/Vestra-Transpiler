@@ -1,0 +1,11 @@
+// §7 a `nonescaping` closure parameter may be called, and passed on to
+// another `nonescaping` parameter; an ordinary one may still be stored.
+
+struct H { var f: (Int32) -> Int32 }
+
+func pass(_ f: nonescaping (Int32) -> Int32) -> Int32 { return f(2) }
+func twice(_ f: nonescaping (Int32) -> Int32) -> Int32 { return f(1) + (f)(2) + pass(f) }
+func keep(_ f: (Int32) -> Int32) -> H { return H(f: f) }
+func dbl(_ x: Int32) -> Int32 { return x * 2 }
+
+func main() -> Int32 { return twice(dbl) }

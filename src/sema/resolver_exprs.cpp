@@ -287,6 +287,14 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
             check_visibility(*sym, e.range);
             t = sym->type != nullptr ? sym->type : types_->error();
             check_noinit_value_use(*sym, ident.name, e.range);
+            if (sym->nonescaping && sym->kind == SymbolKind::Parameter
+                && !nonesc_ok_.contains(&e) && nonesc_reported_.insert(&e).second) {
+                error_at(e.range,
+                         std::format("'{}' is a nonescaping closure parameter: it can be called, "
+                                     "or passed to another nonescaping parameter, but not stored, "
+                                     "returned or captured",
+                                     ident.name));
+            }
         }
         break;
     }
@@ -659,6 +667,19 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         // T is the call's result type.
         const auto& sp = static_cast<const ast::SpawnExpr&>(e);
         t = types_->make_future(check_expr(*sp.inner));
+        // §7 a spawned call outlives the caller's frame, so a `nonescaping`
+        // parameter can't be what it calls.
+        if (sp.inner != nullptr && sp.inner->kind == ast::NodeKind::CallExpr) {
+            const auto* callee =
+                peel_parens(static_cast<const ast::CallExpr&>(*sp.inner).callee.get());
+            const auto* cs = callee != nullptr ? resolution_.symbol_of(callee) : nullptr;
+            if (cs != nullptr && cs->nonescaping && nonesc_reported_.insert(callee).second) {
+                error_at(callee->range,
+                         std::format("'{}' is a nonescaping closure parameter, so it can't be "
+                                     "spawned: the task could outlive the call",
+                                     cs->name));
+            }
+        }
         // §10/§11 "spawn captures by value": the spawned task copies its read
         // parameters into the coroutine frame, so each must be an owned value.
         // A non-escapable borrowed view (Span / MutSpan) parameter would copy

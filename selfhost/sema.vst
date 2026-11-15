@@ -7377,6 +7377,8 @@ struct TyEnv {
     var mlName: Vec[String]     // ... method ...
     var mlLabel: Vec[String]    // ... -> argument label, in order
     var niName: Vec[String]     // global: Annex §4.5 `@noinit` statics not in scope as values
+    var neKey: Vec[String]      // global: §7 `nonescaping` parameters, as "func#idx"
+    var neLocal: Vec[String]    // per function: its own `nonescaping` parameters
 }
 
 
@@ -7934,9 +7936,21 @@ func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ resul
 
 func tyRecordParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ p: Nd) using Alloc {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyPushParamL(env, name, idx, tyAnnSpelling(ty), tyWantLabel(lo, lbl, nm))
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyRecordParamNe(env, name, idx, ne, tyAnnSpelling(ty), tyWantLabel(lo, lbl, nm))
         default: noop()
     }
+}
+
+func tyRecordParamNe(_ env: inout TyEnv, _ name: String, _ idx: Int, _ ne: Bool, _ sp: String, _ label: String) using Alloc {
+    tyPushParamL(env, name, idx, sp, label)
+    if ne { env.neKey.push(tyNeKey(name, idx)) }
+}
+
+func tyNeKey(_ name: String, _ idx: Int) using Alloc -> String {
+    var k: String = own(name)
+    k.append("#")
+    k.append(intToStr(idx))
+    return k
 }
 
 func tyPushParamL(_ env: inout TyEnv, _ name: String, _ idx: Int, _ sp: String, _ label: String) using Alloc {
@@ -8657,6 +8671,7 @@ func tyRegisterParams(_ env: inout TyEnv, _ params: Vec[Nd]) using Alloc {
     while env.muFlag.len() > 0 { let _ = env.muFlag.pop() }
     while env.muKind.len() > 0 { let _ = env.muKind.pop() }
     while env.muMarks.len() > 0 { let _ = env.muMarks.pop() }
+    while env.neLocal.len() > 0 { let _ = env.neLocal.pop() }
     var i: Int = 0
     while i < params.len() {
         tyRegisterParam(env, params.get(i) ?? Nd.wildcard)
@@ -8666,9 +8681,14 @@ func tyRegisterParams(_ env: inout TyEnv, _ params: Vec[Nd]) using Alloc {
 
 func tyRegisterParam(_ env: inout TyEnv, _ p: Nd) using Alloc {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyAddParamMu(env, nm, md, ty)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty): tyAddParamNe(env, nm, ne, md, ty)
         default: noop()
     }
+}
+
+func tyAddParamNe(_ env: inout TyEnv, _ nm: String, _ ne: Bool, _ md: String, _ ty: Vec[Nd]) using Alloc {
+    tyAddParamMu(env, nm, md, ty)
+    if ne { env.neLocal.push(own(nm)) }
 }
 
 // §7 a `read` parameter is immutable; `inout` and `sink` may be written.
@@ -8967,6 +8987,12 @@ func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
 
 func tyIdentUse(_ env: inout TyEnv, _ n: String) using Alloc {
     esAwUse(env, n)
+    if esInList(env.neLocal, n) {
+        var q: String = "'"
+        q.append(n)
+        q.append("' is a nonescaping closure parameter: it can be called, or passed to another nonescaping parameter, but not stored, returned or captured")
+        env.bad.push(q)
+    }
     if !esInList(env.niName, n) || muLocalIdx(env, n) >= 0 { return }
     var m: String = "'"
     m.append(n)
@@ -9005,7 +9031,39 @@ func tyComptimeE(_ env: inout TyEnv, _ inner: Vec[Nd]) using Alloc {
 func tyPrefixE(_ env: inout TyEnv, _ kw: String, _ inner: Vec[Nd]) using Alloc {
     tyBoxed(env, inner)
     if streq(kw, "await ") { env.esAwaits = env.esAwaits + 1 }
-    if streq(kw, "spawn ") { tySpawnArgs(env, inner) }
+    if streq(kw, "spawn ") {
+        tySpawnNe(env, inner)
+        tySpawnArgs(env, inner)
+    }
+}
+
+// §7 a spawned call outlives the caller, so it can't call a `nonescaping` one.
+func tySpawnNe(_ env: inout TyEnv, _ inner: Vec[Nd]) using Alloc {
+    match inner.get(0) ?? Nd.wildcard {
+        case .call(let callee, let args): tySpawnNeCallee(env, callee)
+        default: noop()
+    }
+}
+
+func tySpawnNeCallee(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc {
+    let n = tyNeIdent(callee)
+    if streq(n, "") || !esInList(env.neLocal, n) { return }
+    var m: String = "'"
+    m.append(n)
+    m.append("' is a nonescaping closure parameter, so it can't be spawned: the task could outlive the call")
+    env.bad.push(m)
+}
+
+// The name a (parenthesized) bare identifier spells, else "".
+func tyNeIdent(_ v: Vec[Nd]) using Alloc -> String {
+    if let n = v.get(0) {
+        return match n {
+            case .ident(let x): own(x)
+            case .paren(let x): tyNeIdent(x)
+            default: own("")
+        }
+    }
+    return own("")
 }
 
 // §10 / §11 a spawned task captures its arguments by value, so a parameter of
@@ -9638,12 +9696,19 @@ func tyGuardMsg(_ got: String) using Alloc -> String {
 }
 
 func tyExprCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
-    tyBoxed(env, callee)
+    // §7 calling a `nonescaping` parameter, or handing it on to another one,
+    // doesn't let it escape.
+    let cn = tyNeIdent(callee)
+    if !streq(cn, "") && esInList(env.neLocal, cn) { esAwUse(env, cn) } else { tyBoxed(env, callee) }
     tyAtomicCall(env, callee, args)
     tyComptimeCall(env, callee)
+    let fname = exCalleeNameBoxed(callee)
     var i: Int = 0
     while i < args.len() {
-        tyExpr(env, args.get(i) ?? Nd.wildcard)
+        let a = args.get(i) ?? Nd.wildcard
+        let an = tyNeIdent(ownArgValue(a))
+        if !streq(an, "") && esInList(env.neLocal, an) && esInList(env.neKey, tyNeKey(fname, i)) { esAwUse(env, an) }
+        else { tyExpr(env, a) }
         i = i + 1
     }
     tyCheckCallArgs(env, callee, args)
@@ -12831,7 +12896,8 @@ func main() -> Int32 {
                                      gName: Vec.new(), gBound: Vec.new(), gSeq: Vec.new(), gNext: 0,
                                      fgFn: Vec.new(), fgName: Vec.new(), fgBound: Vec.new(),
                                      prName: Vec.new(), prRef: Vec.new(), ctDepth: 0, ctFns: Vec.new(),
-                                     pLabel: Vec.new(), mlOwner: Vec.new(), mlName: Vec.new(), mlLabel: Vec.new(), niName: Vec.new())
+                                     pLabel: Vec.new(), mlOwner: Vec.new(), mlName: Vec.new(), mlLabel: Vec.new(), niName: Vec.new(),
+                                     neKey: Vec.new(), neLocal: Vec.new())
                     tyRefines(&tenv, p.toks)
                     tyCopyUnions(&tenv, p.unions)
                     tyCheck(&tenv, u)

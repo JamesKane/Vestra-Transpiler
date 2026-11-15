@@ -1,0 +1,18 @@
+// §7 the bootstrap parsed `nonescaping` and then ignored it, so the
+// parameter could be returned, bound, stored, handed to an escaping
+// parameter, or spawned.
+
+struct H { var f: (Int32) -> Int32 }
+
+func keep(_ f: (Int32) -> Int32) -> Int32 { return f(1) }
+func ret(_ f: nonescaping (Int32) -> Int32) -> (Int32) -> Int32 { return f }
+func bound(_ f: nonescaping (Int32) -> Int32) -> Int32 { let g: (Int32) -> Int32 = f; return g(1) }
+func handed(_ f: nonescaping (Int32) -> Int32) -> Int32 { return keep(f) }
+func stored(_ f: nonescaping (Int32) -> Int32) -> Int32 { let h: H = H(f: f); return 0 }
+
+async func spawned(_ f: nonescaping (Int32) -> Int32) using Async -> Int32 {
+    let t = spawn f(1)
+    return await t
+}
+
+func main() -> Int32 { return 0 }

@@ -248,6 +248,11 @@ private:
     // checked as a value and not as `128` then negated.
     void check_int_literal_range(const ast::IntLit& lit, TypePtr t);
     bool negating_int_lit_ = false;
+    // §7 the uses of a `nonescaping` parameter that don't let it escape: a
+    // call's callee, and an argument to another `nonescaping` parameter.
+    std::unordered_set<const ast::Expr*> nonesc_ok_;
+    std::unordered_set<const ast::Expr*> nonesc_reported_;
+    static const ast::Expr* peel_parens(const ast::Expr* e);
     diag::SourceRange neg_lit_range_{};
     std::unordered_set<const ast::IntLit*> lit_range_reported_;
     TypePtr check_call(const ast::CallExpr& c, TypePtr expected = nullptr);

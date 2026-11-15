@@ -745,6 +745,7 @@ void Resolver::check_func(const ast::FuncDecl& f) {
         // §7 a `read` parameter is an immutable borrow; `inout` and `sink` own
         // (or exclusively borrow) a value the body may change.
         s.is_mutable = p.mode == ast::ParamMode::Inout || p.mode == ast::ParamMode::Sink;
+        s.nonescaping = p.nonescaping;
         s.type = param_type;
         s.definition_range = p.range;
         if (auto* prev = g.scope().insert(std::move(s))) {
