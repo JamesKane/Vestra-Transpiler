@@ -367,6 +367,11 @@ private:
     // Annex §14.11: an MMIO view's T is a silicon-bus width (a fixed-width
     // integer up to 64 bits, a float, Bool or Char).
     [[nodiscard]] static bool is_mmio_payload(TypePtr t);
+    // Annex §4.5 a `@noinit static` is not in scope as a value: only `&buf`
+    // names it. Cells reached only through compiler-known methods (Atomic,
+    // AtomicTaggedPointer, PerCpu, Context, Padded of those) are excepted.
+    [[nodiscard]] bool is_method_cell(TypePtr t);
+    void check_noinit_value_use(const Symbol& sym, std::string_view name, diag::SourceRange r);
     [[nodiscard]] static bool owns_resources(TypePtr t);
     std::unordered_set<std::size_t> slot_reported_;
 

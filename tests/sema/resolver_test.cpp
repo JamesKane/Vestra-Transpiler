@@ -1519,13 +1519,21 @@ TEST_CASE("@stack_protector with no argument is rejected") {
 // ---- §A11 Padded[T] (§14.8) ----------------------------------------------
 
 TEST_CASE("Padded[T] resolves and .value returns T") {
+    // `@noinit` storage is reached through its address (Annex §4.5).
     CHECK(check_errors("@noinit static slot: Padded[UInt64]\n"
-                       "func read_it() -> UInt64 { return slot.value }\n")
+                       "func read_it() using RawMemory -> UInt64 {\n"
+                       "    let p: Ptr[Padded[UInt64]] = &slot\n"
+                       "    return p.value.value\n"
+                       "}\n")
           == 0);
-    // A static holds an immutable value (§4): the write goes through `&slot`.
+    CHECK(check_detail("@noinit static slot: Padded[UInt64]\n"
+                       "func read_it() -> UInt64 { return slot.value }\n")
+              .first_message.find("'slot' is @noinit storage")
+          != std::string::npos);
+    // Writing by name is rejected too: the write goes through `&slot`.
     auto r = check_detail("@noinit static slot: Padded[UInt64]\n"
                           "func write_it(_ v: UInt64) { slot.value = v }\n");
-    CHECK(r.first_message.find("'slot' is a static, which holds an immutable value")
+    CHECK(r.first_message.find("reach it through `&slot` under `RawMemory`")
           != std::string::npos);
 }
 

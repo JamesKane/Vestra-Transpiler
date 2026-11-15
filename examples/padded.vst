@@ -47,8 +47,9 @@ func set_cell(_ v: UInt64) using RawMemory {
     p.value.value = v
 }
 
-func get_cell() -> UInt64 {
-    return cell.value
+func get_cell() using RawMemory -> UInt64 {
+    let p: Ptr[Padded[UInt64]] = &cell
+    return p.value.value
 }
 
 // `Padded[Atomic[UInt32]]` — the lock-free queue slot shape.

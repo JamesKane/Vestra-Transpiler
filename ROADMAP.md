@@ -117,8 +117,6 @@ identical diagnostics), because the new backend will trust whatever sema
 accepts. Ordered by how likely each is to let a wrong program through:
 
 1. **Smaller unsound items:**
-    - `@noinit` storage reachable only through `&buf` under `RawMemory`
-      (the `Trivial` half is done; `buf[0]` still reads it directly);
     - `self` typed inside every method (the resolver has no case for it, so
       `self.field` has no type in any struct's methods and nothing about it
       is checked: `return self.n` passes where the result is `Bool`, and a
@@ -127,7 +125,10 @@ accepts. Ordered by how likely each is to let a wrong program through:
       checked, so `load(o)` with `o == .release` reaches C++ as UB);
     - `Atomic[T]` requires a §4 primitive (the bootstrap's `is_primitive`
       also admits `String`, `Str` and `Unit`, and the self-hosted checker
-      has no `T` rule at all).
+      has no `T` rule at all);
+    - `Scheduler.swapContext` takes the spec's `MutPtr[Context]` /
+      `Ptr[Context]` (it still takes `Context` values, which is why a
+      `@noinit` `Context` stays in scope as a value).
 
     (Annex A table, and Gaps §7 for `self.field`)
 

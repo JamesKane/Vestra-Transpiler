@@ -667,6 +667,38 @@ namespace vestra::sema {
 // (register-class bits, no resources, not linear), or null when it is.
 // Resource-free wrappers over Trivial bits (Atomic, PerCpu, Padded, an
 // optional, a fixed array) are Trivial when their contents are.
+// A cell reached only through its compiler-known methods: an atomic, a
+// per-hart slot, a task Context, or one of those padded to a cache line.
+bool Resolver::is_method_cell(TypePtr t) {
+    switch (t->kind()) {
+    case TypeKind::Atomic:
+    case TypeKind::AtomicTaggedPointer:
+    case TypeKind::PerCpu:
+        return true;
+    case TypeKind::Padded:
+        return t->inner() != nullptr && is_method_cell(t->inner());
+    default:
+        return t->nominal_decl() != nullptr && t->nominal_decl() == builtin_context_decl_.get();
+    }
+}
+
+void Resolver::check_noinit_value_use(const Symbol& sym, std::string_view name,
+                                      diag::SourceRange r) {
+    if (sym.kind != SymbolKind::Static || sym.decl == nullptr
+        || sym.decl->kind != ast::NodeKind::Static
+        || !static_cast<const ast::StaticDecl&>(*sym.decl).noinit) {
+        return;
+    }
+    if (sym.type == nullptr || sym.type->is_error() || is_method_cell(sym.type)) {
+        return;
+    }
+    error_at(r,
+             std::format("'{}' is @noinit storage, which isn't in scope as a value: reach it "
+                         "through `&{}` under `RawMemory` (Annex §4.5)",
+                         name,
+                         name));
+}
+
 bool Resolver::is_mmio_payload(TypePtr t) {
     if (t == nullptr) {
         return false;

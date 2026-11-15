@@ -57,6 +57,9 @@ func kernel_entry() -> Int32 {
 
 // Pure read access so the e2e driver can confirm the static is
 // addressable and reads back as zero (the .bss-initialized default).
-func first_cap_byte() -> UInt8 {
-    return cap_table_buf[0]
+// `@noinit` storage isn't in scope as a value, so the read goes through
+// its address under `RawMemory` (Annex §4.5).
+func first_cap_byte() using RawMemory -> UInt8 {
+    let p: Ptr[[16]UInt8] = &cap_table_buf
+    return p.value[0]
 }

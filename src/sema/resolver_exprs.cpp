@@ -285,6 +285,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
             resolution_.set_symbol(&e, sym);
             check_visibility(*sym, e.range);
             t = sym->type != nullptr ? sym->type : types_->error();
+            check_noinit_value_use(*sym, ident.name, e.range);
         }
         break;
     }

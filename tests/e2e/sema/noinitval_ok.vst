@@ -1,0 +1,21 @@
+// Annex §4.5 `@noinit` storage is reached through `&buf`. Cells read only
+// through their compiler-known methods (Atomic, PerCpu, Context, Padded of
+// those) stay in scope.
+
+@noinit static buf: [16]UInt8
+@noinit static head: Atomic[UInt64]
+@noinit static hits: PerCpu[Atomic[UInt32]]
+@noinit static slot: Padded[Atomic[UInt32]]
+
+func firstByte() using RawMemory -> UInt8 {
+    let p: Ptr[[16]UInt8] = &buf
+    return p.value[0]
+}
+
+func bump() -> UInt64 {
+    let _ = hits.mine().fetchAdd(1, .seqCst)
+    let _ = slot.value.load(.acquire)
+    return head.load(.acquire)
+}
+
+func shadow(_ buf: Int) -> Int { return buf }

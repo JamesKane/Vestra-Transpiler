@@ -7115,6 +7115,7 @@ struct TyEnv {
     var mlOwner: Vec[String]    // global: per-method-parameter rows — owner ...
     var mlName: Vec[String]     // ... method ...
     var mlLabel: Vec[String]    // ... -> argument label, in order
+    var niName: Vec[String]     // global: Annex §4.5 `@noinit` statics not in scope as values
 }
 
 
@@ -7138,7 +7139,7 @@ func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
             tyRecordFuncV(env, mods, name, g, params, caps, t, r)
         case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): tyRecordStructDeclL(env, name, fl, m, isLinear)
         case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumDecl(env, name, cs, m)
-        case .staticD(let vis, let name, let ty, let v): tyRecordStatic(env, name, ty)
+        case .staticD(let vis, let name, let ty, let v): tyRecordStatic(env, name, ty, v)
         default: noop()
     }
 }
@@ -7258,9 +7259,10 @@ func tyTrivialPayloads(_ env: inout TyEnv, _ en: String, _ depth: Int) using All
     return own("")
 }
 
-func tyRecordStatic(_ env: inout TyEnv, _ name: String, _ ty: Vec[Nd]) using Alloc {
+func tyRecordStatic(_ env: inout TyEnv, _ name: String, _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
     env.stName.push(own(name))
     let sp = tyAnnSpelling(ty)
+    if v.len() == 0 && sp.len() > 0 && !tyIsMethodCell(sp) { env.niName.push(own(name)) }
     env.stAtomic.push(tyStartsWith(sp, "Atomic[") || tyStartsWith(sp, "AtomicTaggedPointer["))
     env.stSpell.push(own(sp))
 }
@@ -8628,7 +8630,7 @@ func tyPair(_ env: inout TyEnv, _ a: Vec[Nd], _ b: Vec[Nd]) using Alloc {
 func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
     match e {
         case .call(let callee, let args): tyExprCall(env, callee, args)
-        case .ident(let n): esAwUse(env, n)
+        case .ident(let n): tyIdentUse(env, n)
         case .prefixE(let kw, let inner): tyPrefixE(env, kw, inner)
         case .paren(let x): tyBoxed(env, x)
         case .unary(let op, let x): tyUnary(env, op, x)
@@ -8638,7 +8640,7 @@ func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
         case .ifE(let ln, let li, let cond, let thenB, let els): tyIfMu(env, ln, li, cond, thenB, els)
         case .block(let stmts): tyBlock(env, stmts)
         case .asE(let v, let t, let o): tyBoxed(env, v)
-        case .addrOf(let x): tyBoxed(env, x)
+        case .addrOf(let x): tyAddrOf(env, x)
         case .arg(let l, let io, let v): tyBoxed(env, v)
         case .throwE(let inner): tyBoxed(env, inner)
         case .matchE(let scrut, let arms): tyMatch(env, scrut, arms)
@@ -8646,6 +8648,34 @@ func tyExpr(_ env: inout TyEnv, _ e: Nd) using Alloc {
         case .comptimeE(let inner): tyComptimeE(env, inner)
         default: noop()
     }
+}
+
+func tyIdentUse(_ env: inout TyEnv, _ n: String) using Alloc {
+    esAwUse(env, n)
+    if !esInList(env.niName, n) || muLocalIdx(env, n) >= 0 { return }
+    var m: String = "'"
+    m.append(n)
+    m.append("' is @noinit storage, which isn't in scope as a value: reach it through `&")
+    m.append(n)
+    m.append("` under `RawMemory` (Annex §4.5)")
+    env.bad.push(m)
+}
+
+// `&buf` is the one way to name `@noinit` storage.
+func tyAddrOf(_ env: inout TyEnv, _ x: Vec[Nd]) using Alloc {
+    match x.get(0) ?? Nd.wildcard {
+        case .ident(let n): esAwUse(env, n)
+        default: tyBoxed(env, x)
+    }
+}
+
+// A cell reached only through its compiler-known methods: an atomic, a
+// per-hart slot, a task Context, or one of those padded to a cache line.
+func tyIsMethodCell(_ sp: String) using Alloc -> Bool {
+    if tyStartsWith(sp, "Atomic[") || tyStartsWith(sp, "AtomicTaggedPointer[") || tyStartsWith(sp, "PerCpu[") { return true }
+    if streq(sp, "Context") { return true }
+    if tyStartsWith(sp, "Padded[") && sp.len() > 8 { return tyIsMethodCell(own(sp.slice(7, sp.len() - 1))) }
+    return false
 }
 
 // §12.1 a `comptime { }` body is checked as pure code (see tyComptimeCall).
@@ -12271,7 +12301,7 @@ func main() -> Int32 {
                                      gName: Vec.new(), gBound: Vec.new(), gSeq: Vec.new(), gNext: 0,
                                      fgFn: Vec.new(), fgName: Vec.new(), fgBound: Vec.new(),
                                      prName: Vec.new(), prRef: Vec.new(), ctDepth: 0, ctFns: Vec.new(),
-                                     pLabel: Vec.new(), mlOwner: Vec.new(), mlName: Vec.new(), mlLabel: Vec.new())
+                                     pLabel: Vec.new(), mlOwner: Vec.new(), mlName: Vec.new(), mlLabel: Vec.new(), niName: Vec.new())
                     tyRefines(&tenv, p.toks)
                     tyCopyUnions(&tenv, p.unions)
                     tyCheck(&tenv, u)

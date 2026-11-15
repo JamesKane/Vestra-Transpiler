@@ -1,0 +1,14 @@
+// Annex §4.5 `@noinit` storage is not in scope as a value: reading it by name
+// would read bytes nothing initialized. Only `&buf` names it.
+
+struct Pair { var a: UInt32; var b: UInt32 }
+
+@noinit static buf: [16]UInt8
+@noinit static ready: Bool
+@noinit static pair: Pair
+
+func peek() -> UInt8 {
+    if ready { return 1 }
+    let _ = pair.a
+    return buf[0]
+}
