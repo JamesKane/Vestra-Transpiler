@@ -1,0 +1,32 @@
+// §3 the C++ backend writes names as they are, so a declaration spelled as a
+// C++ keyword can't be emitted yet: each kind of name is reported, in order.
+
+struct register {
+    var class: Int32
+    func mutable() -> Int32 { return 1 }
+}
+
+enum Mode {
+    case explicit
+    case other
+}
+
+enum Shape {
+    case dot(virtual: Int32)
+}
+
+const friend: Int32 = 1
+
+func signed(_ unsigned: Int32) -> Int32 {
+    let volatile: Int32 = unsigned
+    for typename in 0..<3 { }
+    return volatile
+}
+
+func pick(_ s: Shape) -> Int32 {
+    return match s {
+        case .dot(let goto): goto
+    }
+}
+
+func main() -> Int32 { return 0 }

@@ -143,8 +143,9 @@ sema-side `unsound` rows from the Gaps tables below:
 11. ~~`Vec.push` takes its value by `sink` (Gaps §18).~~ Done.
 
 The codegen-side `unsound` rows (overflow traps, `&+` wrapping, division by
-zero, bounds checks, evaluation order, C++ keyword names)
-belong to the backend work above.
+zero, bounds checks, evaluation order) belong to the backend work above. A
+name spelled as a C++ keyword is rejected with a diagnostic until the
+backend renames it.
 
 ## Self-hosting
 

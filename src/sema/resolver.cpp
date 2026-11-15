@@ -17,7 +17,9 @@
 #include <array>
 #include <cstdlib>
 #include <format>
+#include <iterator>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -189,6 +191,7 @@ void Resolver::resolve() {
         check_decl(*d);
     }
     check_unselected_branches();
+    check_cpp_keyword_names();
     // Only a unit that resolved cleanly is ever imported (the driver stops on
     // the first error), and only then is re-resolving its member types
     // guaranteed silent.
@@ -1338,6 +1341,112 @@ void fold_extensions(ast::CompilationUnit& unit) {
         out.push_back(std::move(d));
     }
     unit.decls = std::move(out);
+}
+
+}  // namespace vestra::sema
+
+namespace vestra::sema {
+
+namespace {
+
+// The C++ keywords and alternative tokens (C++26). A Vestra name spelled as one
+// lowers verbatim, and the C++ doesn't compile.
+constexpr std::string_view kCppKeywords[] = {
+    "alignas",      "alignof",      "and",          "and_eq",      "asm",
+    "auto",         "bitand",       "bitor",        "bool",        "break",
+    "case",         "catch",        "char",         "char8_t",     "char16_t",
+    "char32_t",     "class",        "co_await",     "co_return",   "co_yield",
+    "compl",        "concept",      "const",        "consteval",   "constexpr",
+    "constinit",    "const_cast",   "continue",     "contract_assert", "decltype",
+    "default",      "delete",       "do",           "double",      "dynamic_cast",
+    "else",         "enum",         "explicit",     "export",      "extern",
+    "false",        "float",        "for",          "friend",      "goto",
+    "if",           "inline",       "int",          "long",        "mutable",
+    "namespace",    "new",          "noexcept",     "not",         "not_eq",
+    "nullptr",      "operator",     "or",           "or_eq",       "private",
+    "protected",    "public",       "register",     "reinterpret_cast", "requires",
+    "return",       "short",        "signed",       "sizeof",      "static",
+    "static_assert", "static_cast", "struct",       "switch",      "template",
+    "this",         "thread_local", "throw",        "true",        "try",
+    "typedef",      "typeid",       "typename",     "union",       "unsigned",
+    "using",        "virtual",      "void",         "volatile",    "wchar_t",
+    "while",        "xor",          "xor_eq",
+};
+
+}  // namespace
+
+bool Resolver::is_cpp_keyword(std::string_view name) {
+    return std::ranges::find(kCppKeywords, name) != std::end(kCppKeywords);
+}
+
+// §3 a Vestra name may be any identifier, but the C++ backend writes names
+// verbatim, so one spelled as a C++ keyword (`class`, `mutable`, `signed`)
+// would not compile. Until the backend renames them, say so here, once per
+// declaration, in source order.
+void Resolver::check_cpp_keyword_names() {
+    std::set<diag::FileId> files;
+    for (const auto& d : unit_->decls) {
+        if (d->range.is_valid()) {
+            files.insert(d->range.begin.file);
+        }
+    }
+    std::vector<std::pair<diag::SourceRange, std::string>> hits;
+    auto note = [&](std::string_view name, diag::SourceRange r) {
+        if (r.is_valid() && files.contains(r.begin.file) && is_cpp_keyword(name)) {
+            hits.emplace_back(r, std::string{name});
+        }
+    };
+    scopes_.for_each_symbol([&](const Symbol& s) { note(s.name, s.definition_range); });
+    auto methods = [&](const std::vector<ast::DeclPtr>& ms) {
+        for (const auto& m : ms) {
+            if (m != nullptr && m->kind == ast::NodeKind::Func) {
+                note(static_cast<const ast::FuncDecl&>(*m).name, m->range);
+            }
+        }
+    };
+    for (const auto& d : unit_->decls) {
+        if (gated_out(*d)) {
+            continue;
+        }
+        if (d->kind == ast::NodeKind::Struct) {
+            const auto& sd = static_cast<const ast::StructDecl&>(*d);
+            for (const auto& f : sd.fields) {
+                note(f.name, f.range);
+            }
+            methods(sd.methods);
+        } else if (d->kind == ast::NodeKind::Enum) {
+            const auto& ed = static_cast<const ast::EnumDecl&>(*d);
+            // A payload enum's cases lower to `<case>_t` structs; only an
+            // `enum class` spells a case bare.
+            const bool bare = std::ranges::all_of(ed.cases, [](const auto& c) {
+                return c.payload.empty();
+            });
+            for (const auto& c : ed.cases) {
+                if (bare) {
+                    note(c.name, c.range);
+                }
+                for (const auto& [label, t] : c.payload) {
+                    note(label, c.range);
+                }
+            }
+            methods(ed.methods);
+        }
+    }
+    std::ranges::sort(hits, [](const auto& a, const auto& b) {
+        if (a.first.begin.offset != b.first.begin.offset) {
+            return a.first.begin.offset < b.first.begin.offset;
+        }
+        return a.second < b.second;
+    });
+    std::set<std::pair<std::size_t, std::string>> seen;
+    for (const auto& [r, name] : hits) {
+        if (seen.emplace(r.begin.offset, name).second) {
+            error_at(r,
+                     std::format("'{}' is a C++ keyword, and the C++ backend writes names as "
+                                 "they are, so it can't name anything yet; rename it",
+                                 name));
+        }
+    }
 }
 
 }  // namespace vestra::sema

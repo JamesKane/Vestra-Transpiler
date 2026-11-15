@@ -91,7 +91,7 @@ Each gap has one of four kinds:
 | §4 | `StrConst` copies freely | divergent | Passing a `StrConst` to two `sink` params gives "use of 's' after it was moved". |
 | §3 | A block's tail value is its result | missing (partial) | `{ K }` with an untyped const gives "can reach the end of its body without returning". |
 | §3, §17.1 | `'\u{...}'` char escapes | missing | "unterminated character literal". |
-| §3 | Identifiers that are C++ keywords | unsound | A Vestra name such as `mutable`, `class` or `signed` is emitted verbatim, and the C++ doesn't compile. |
+| §3 | Identifiers that are C++ keywords | missing | A declaration named with a C++ keyword (`mutable`, `class`, `signed`, `double`) is rejected with a diagnostic that asks for a rename, since the C++ backend writes names as they are. Words that are only contextual in C++ (`final`, `override`) and a payload enum's cases (lowered as `<case>_t`) are accepted. The backend does not rename them yet. |
 | §6, §17.1 | Byte-char literal `b'/'` | missing | "undefined name 'b'". |
 | §17.1 | Unicode identifiers | missing | `café` gives "unexpected character". |
 

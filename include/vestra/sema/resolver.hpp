@@ -272,6 +272,9 @@ private:
     std::vector<const ast::ClosureExpr*> closures_;
     std::set<std::pair<const ast::Expr*, const Symbol*>> view_capture_reported_;
     void check_view_capture(const Symbol& sym, diag::SourceRange at);
+    // §3 a name spelled as a C++ keyword can't be emitted yet.
+    void check_cpp_keyword_names();
+    [[nodiscard]] static bool is_cpp_keyword(std::string_view name);
     static const ast::Expr* peel_parens(const ast::Expr* e);
     diag::SourceRange neg_lit_range_{};
     std::unordered_set<const ast::IntLit*> lit_range_reported_;

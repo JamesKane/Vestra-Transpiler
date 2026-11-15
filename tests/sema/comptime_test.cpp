@@ -205,8 +205,8 @@ TEST_CASE("folding a Bool comparison threads through to the side table") {
 // ---- §12.1 phase 2: comptime function calls -------------------------------
 
 TEST_CASE("phase 2: a simple comptime function call folds") {
-    auto v = resolver_fold("comptime func double(_ x: Int) -> Int { return x * 2 }\n"
-                           "const Four: Int = comptime { double(2) }\n",
+    auto v = resolver_fold("comptime func twice(_ x: Int) -> Int { return x * 2 }\n"
+                           "const Four: Int = comptime { twice(2) }\n",
                            "Four");
     REQUIRE(v);
     CHECK(v->i == 4);
@@ -231,10 +231,10 @@ TEST_CASE("phase 2: comptime call composed with a binary op") {
 }
 
 TEST_CASE("phase 2: a regular (non-comptime) func is not foldable") {
-    // `double` is missing the `comptime` modifier — the folder must refuse
+    // `twice` is missing the `comptime` modifier — the folder must refuse
     // and leave the codegen to emit the runtime call.
-    auto v = resolver_fold("func double(_ x: Int) -> Int { return x * 2 }\n"
-                           "const Four: Int = double(2)\n",
+    auto v = resolver_fold("func twice(_ x: Int) -> Int { return x * 2 }\n"
+                           "const Four: Int = twice(2)\n",
                            "Four");
     CHECK_FALSE(v.has_value());
 }
@@ -626,8 +626,8 @@ TEST_CASE("phase 5: sqrt of a negative bails (caller falls back to runtime)") {
 }
 
 TEST_CASE("phase 5: tau composes with arithmetic and a comptime func call") {
-    auto v = resolver_fold("comptime func double(_ x: Float64) -> Float64 { return x * 2.0 }\n"
-                           "const TwoTau: Float64 = comptime { double(tau) }\n",
+    auto v = resolver_fold("comptime func twice(_ x: Float64) -> Float64 { return x * 2.0 }\n"
+                           "const TwoTau: Float64 = comptime { twice(tau) }\n",
                            "TwoTau");
     REQUIRE(v);
     CHECK(v->f == doctest::Approx(2.0 * 6.283185307179586));

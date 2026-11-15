@@ -10335,6 +10335,240 @@ func tyIsCloLit(_ v: Vec[Nd]) using Alloc -> Bool {
     }
 }
 
+// ----- §3 a name spelled as a C++ keyword (the bootstrap's
+// check_cpp_keyword_names) ------------------------------------------------------
+// The C++ backend writes names as they are, so a declaration named `class`,
+// `mutable` or `signed` can't be emitted yet. Declarations and bindings are
+// visited in source order, as the bootstrap sorts its reports.
+func kwCheck(_ u: NUnit) using Alloc -> Vec[String] {
+    var out: Vec[String] = Vec.new()
+    kwDecls(u.decls, out)
+    return out
+}
+
+func kwIsCpp(_ n: Str) -> Bool {
+    if streq(n, "alignas") || streq(n, "alignof") || streq(n, "and") || streq(n, "and_eq") || streq(n, "asm") || streq(n, "auto") { return true }
+    if streq(n, "bitand") || streq(n, "bitor") || streq(n, "bool") || streq(n, "break") || streq(n, "case") || streq(n, "catch") { return true }
+    if streq(n, "char") || streq(n, "char8_t") || streq(n, "char16_t") || streq(n, "char32_t") || streq(n, "class") || streq(n, "co_await") { return true }
+    if streq(n, "co_return") || streq(n, "co_yield") || streq(n, "compl") || streq(n, "concept") || streq(n, "const") || streq(n, "consteval") { return true }
+    if streq(n, "constexpr") || streq(n, "constinit") || streq(n, "const_cast") || streq(n, "continue") || streq(n, "contract_assert") || streq(n, "decltype") { return true }
+    if streq(n, "default") || streq(n, "delete") || streq(n, "do") || streq(n, "double") || streq(n, "dynamic_cast") || streq(n, "else") { return true }
+    if streq(n, "enum") || streq(n, "explicit") || streq(n, "export") || streq(n, "extern") || streq(n, "false") || streq(n, "float") { return true }
+    if streq(n, "for") || streq(n, "friend") || streq(n, "goto") || streq(n, "if") || streq(n, "inline") || streq(n, "int") { return true }
+    if streq(n, "long") || streq(n, "mutable") || streq(n, "namespace") || streq(n, "new") || streq(n, "noexcept") || streq(n, "not") { return true }
+    if streq(n, "not_eq") || streq(n, "nullptr") || streq(n, "operator") || streq(n, "or") || streq(n, "or_eq") || streq(n, "private") { return true }
+    if streq(n, "protected") || streq(n, "public") || streq(n, "register") || streq(n, "reinterpret_cast") || streq(n, "requires") || streq(n, "return") { return true }
+    if streq(n, "short") || streq(n, "signed") || streq(n, "sizeof") || streq(n, "static") || streq(n, "static_assert") || streq(n, "static_cast") { return true }
+    if streq(n, "struct") || streq(n, "switch") || streq(n, "template") || streq(n, "this") || streq(n, "thread_local") || streq(n, "throw") { return true }
+    if streq(n, "true") || streq(n, "try") || streq(n, "typedef") || streq(n, "typeid") || streq(n, "typename") || streq(n, "union") { return true }
+    if streq(n, "unsigned") || streq(n, "using") || streq(n, "virtual") || streq(n, "void") || streq(n, "volatile") || streq(n, "wchar_t") { return true }
+    if streq(n, "while") || streq(n, "xor") || streq(n, "xor_eq") { return true }
+    return false
+}
+
+func kwName(_ n: Str, _ out: inout Vec[String]) using Alloc {
+    if !kwIsCpp(n) || !kwIsIdent(n) { return }
+    var m: String = "'"
+    m.append(n)
+    m.append("' is a C++ keyword, and the C++ backend writes names as they are, so it can't name anything yet; rename it")
+    out.push(m)
+}
+
+func kwDecls(_ ds: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < ds.len() {
+        kwDecl(ds.get(i) ?? Nd.wildcard, out)
+        i = i + 1
+    }
+}
+
+func kwDecl(_ d: Nd, _ out: inout Vec[String]) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let pp, let caps, let t, let r, let b): if !kwDeclMacro(mods, r) { kwFunc(name, g, pp, b, out) }
+        case .structD(let vis, let name, let fl, let ms, let dn, let lin, let g): kwStruct(name, g, fl, ms, dn, out)
+        case .enumD(let vis, let name, let cs, let ms, let g): kwEnum(name, g, cs, ms, out)
+        case .constD(let vis, let name, let t, let v): kwNamed(name, v, out)
+        case .staticD(let vis, let name, let t, let v): kwNamed(name, v, out)
+        case .opaqueD(let vis, let name, let t): kwName(name, out)
+        default: noop()
+    }
+}
+
+// A declaration macro (`comptime func … -> [Decl]`) is expanded away before
+// codegen, as the bootstrap's is_decl_macro drops it.
+func kwDeclMacro(_ mods: Str, _ r: Vec[Nd]) using Alloc -> Bool {
+    if !containsSub(mods, "comptime ") { return false }
+    return match r.get(0) ?? Nd.wildcard {
+        // vsema's type parser reads `[Decl]` as a vector whose length is `Decl`.
+        case .vecT(let len, let x): streq(len, "Decl") || (streq(len, "") && kwNamedDecl(x))
+        default: false
+    }
+}
+
+func kwNamedDecl(_ x: Vec[Nd]) using Alloc -> Bool {
+    return match x.get(0) ?? Nd.wildcard {
+        case .named(let path, let g, let a): streq(path, "Decl")
+        default: false
+    }
+}
+
+// A Vestra keyword never names anything; one seen here is a misparse (vsema
+// has no macro model, so a quote body can come apart).
+func kwIsIdent(_ n: Str) -> Bool {
+    return match keywordKind(n) {
+        case .identifier: true
+        default: false
+    }
+}
+
+func kwNamed(_ name: Str, _ v: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    kwName(name, out)
+    kwV(v, out)
+}
+
+func kwFunc(_ name: Str, _ g: Vec[Nd], _ pp: Vec[Nd], _ b: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    kwName(name, out)
+    kwV(g, out)
+    kwV(pp, out)
+    kwV(b, out)
+}
+
+func kwStruct(_ name: Str, _ g: Vec[Nd], _ fl: Vec[Nd], _ ms: Vec[Nd], _ dn: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    kwName(name, out)
+    kwV(g, out)
+    kwV(fl, out)
+    kwDecls(ms, out)
+    kwV(dn, out)
+}
+
+func kwEnum(_ name: Str, _ g: Vec[Nd], _ cs: Vec[Nd], _ ms: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    kwName(name, out)
+    kwV(g, out)
+    // A payload enum's cases lower to `<case>_t` structs; only an `enum class`
+    // spells a case bare.
+    var bare: Bool = true
+    var i: Int = 0
+    while i < cs.len() {
+        match cs.get(i) ?? Nd.wildcard {
+            case .enumCase(let n, let ps): if ps.len() > 0 { bare = false }
+            default: noop()
+        }
+        i = i + 1
+    }
+    var j: Int = 0
+    while j < cs.len() {
+        match cs.get(j) ?? Nd.wildcard {
+            case .enumCase(let n, let ps): kwCase(n, ps, bare, out)
+            default: noop()
+        }
+        j = j + 1
+    }
+    kwDecls(ms, out)
+}
+
+func kwCase(_ n: Str, _ ps: Vec[Nd], _ bare: Bool, _ out: inout Vec[String]) using Alloc {
+    if bare { kwName(n, out) }
+    var i: Int = 0
+    while i < ps.len() {
+        match ps.get(i) ?? Nd.wildcard {
+            case .payElem(let l, let t): kwName(l, out)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func kwV(_ xs: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < xs.len() {
+        kwN(xs.get(i) ?? Nd.wildcard, out)
+        i = i + 1
+    }
+}
+
+func kwN(_ n: Nd, _ out: inout Vec[String]) using Alloc {
+    match n {
+        case .genType(let x, let b): kwName(x, out)
+        case .genConst(let x, let t): kwName(x, out)
+        case .param(let lo, let l, let x, let ne, let md, let t): kwName(x, out)
+        case .field(let k, let x, let t): kwName(x, out)
+        case .identP(let x): kwName(x, out)
+        case .bindP(let x): kwName(x, out)
+        case .enumP(let c, let xs): kwV(xs, out)
+        case .tupleP(let xs): kwV(xs, out)
+        case .orP(let xs): kwV(xs, out)
+        case .block(let ss): kwV(ss, out)
+        case .letS(let p, let t, let v): kwPair(p, v, out)
+        case .varS(let p, let t, let v): kwPair(p, v, out)
+        case .exprS(let x): kwV(x, out)
+        case .retS(let x): kwV(x, out)
+        case .assignS(let op, let t, let v): kwPair(t, v, out)
+        case .whileS(let c, let b): kwPair(c, b, out)
+        case .forS(let p, let it, let b): kwFor(p, it, b, out)
+        case .withS(let caps, let vals, let b): kwPair(vals, b, out)
+        case .ifE(let ln, let li, let c, let t, let e): kwIf(ln, li, c, t, e, out)
+        case .matchE(let sc, let arms): kwPair(sc, arms, out)
+        case .matchArm(let d, let pt, let g, let b): kwArm(pt, g, b, out)
+        case .closureE(let ps, let b): kwClosure(ps, b, out)
+        case .call(let c, let a): kwPair(c, a, out)
+        case .arg(let l, let io, let v): kwV(v, out)
+        case .paren(let x): kwV(x, out)
+        case .unary(let op, let x): kwV(x, out)
+        case .binary(let op, let a, let b): kwPair(a, b, out)
+        case .member(let b, let nm, let c): kwV(b, out)
+        case .index(let b, let ix): kwPair(b, ix, out)
+        case .asE(let v, let t, let o): kwV(v, out)
+        case .prefixE(let kw, let x): kwV(x, out)
+        case .throwE(let x): kwV(x, out)
+        case .vecLit(let xs): kwV(xs, out)
+        case .tupleLit(let xs): kwV(xs, out)
+        case .interpE(let lits, let xs): kwV(xs, out)
+        case .comptimeE(let x): kwV(x, out)
+        case .doCatchE(let db, let en, let et, let cb): kwCatch(db, en, cb, out)
+        default: noop()
+    }
+}
+
+func kwPair(_ a: Vec[Nd], _ b: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    kwV(a, out)
+    kwV(b, out)
+}
+
+func kwFor(_ p: Vec[Nd], _ it: Vec[Nd], _ b: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    kwV(p, out)
+    kwV(it, out)
+    kwV(b, out)
+}
+
+func kwIf(_ ln: Str, _ li: Vec[Nd], _ c: Vec[Nd], _ t: Vec[Nd], _ e: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    if !streq(ln, "") { kwName(ln, out) }
+    kwPair(li, c, out)
+    kwPair(t, e, out)
+}
+
+func kwArm(_ pt: Vec[Nd], _ g: Vec[Nd], _ b: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    kwV(pt, out)
+    kwPair(g, b, out)
+}
+
+func kwClosure(_ ps: Vec[Nd], _ b: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < ps.len() {
+        match ps.get(i) ?? Nd.wildcard {
+            case .ident(let x): kwName(x, out)
+            default: noop()
+        }
+        i = i + 1
+    }
+    kwV(b, out)
+}
+
+func kwCatch(_ db: Vec[Nd], _ en: Str, _ cb: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    kwV(db, out)
+    if !streq(en, "") { kwName(en, out) }
+    kwV(cb, out)
+}
+
 // ----- §14.9 atomic orderings and CAS labels ----------------------------------
 // A load can't release, a store can't acquire, and a CAS failure ordering may be
 // neither .release nor .acqRel, nor stronger than its success ordering. Labeled
@@ -13676,6 +13910,12 @@ func main() -> Int32 {
                         abi = abi + 1
                     }
                     resolve(&env, u)
+                    let kwBad = kwCheck(u)
+                    var kwi: Int = 0
+                    while kwi < kwBad.len() {
+                        if let msg = kwBad.get(kwi) { println(msg) }
+                        kwi = kwi + 1
+                    }
                     var di: Int = 0
                     while di < env.dups.len() {
                         if let msg = env.dups.get(di) { println(msg) }

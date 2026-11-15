@@ -92,6 +92,12 @@ public:
 
     [[nodiscard]] Scope* parent() const noexcept { return parent_; }
 
+    template <class F> void for_each_symbol(F&& f) const {
+        for (const auto& [name, sym] : symbols_) {
+            f(sym);
+        }
+    }
+
 private:
     Scope* parent_;
     std::unordered_map<std::string, Symbol> symbols_;
@@ -115,6 +121,13 @@ public:
 
     Scope& push();
     void pop();
+
+    // Every symbol of every scope made so far (popped scopes are kept).
+    template <class F> void for_each_symbol(F&& f) const {
+        for (const auto& sc : scopes_) {
+            sc->for_each_symbol(f);
+        }
+    }
 
     // RAII helper — pushes on construction, pops on destruction.
     class Guard {

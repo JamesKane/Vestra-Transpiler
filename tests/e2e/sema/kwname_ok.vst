@@ -1,0 +1,21 @@
+// §3 a name that is only contextual in C++ (`final`, `override`),
+// or a payload enum's case (lowered as `<case>_t`), emits fine.
+
+enum Value {
+    case int(Int32)
+    case double(Int32)
+}
+
+func final(_ override: Int32) -> Int32 {
+    let total: Int32 = override + 1
+    return total
+}
+
+func asInt(_ v: Value) -> Int32 {
+    return match v {
+        case .int(let n): n
+        case .double(let n): n * 2
+    }
+}
+
+func main() -> Int32 { return final(1) + asInt(Value.int(2)) }
