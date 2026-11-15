@@ -320,6 +320,10 @@ private:
     // §11 — true while emitting an `async func` body, so a `return` lowers
     // to `co_return` (the function is a C++20 coroutine returning Task<T>).
     bool current_func_is_async_ = false;
+    // §19.9 emitting a const / static initializer, which has no block scope
+    // for a lazy `??` default to capture from.
+    bool global_init_ = false;
+    [[nodiscard]] static bool coalesce_is_lazy(const ast::Expr& e);
 
     // §9 — true while emitting the body of a Unit-returning `throws(E)`
     // function (C++ `std::expected<void, E>`). A bare `return` must then

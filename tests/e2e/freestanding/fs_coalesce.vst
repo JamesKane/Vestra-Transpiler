@@ -1,0 +1,8 @@
+// §19.9 the lazy `??` lowering under --no-libc: the default runs in a callback
+// handed to __vstr::coalesce, over the freestanding optional.
+
+func fallback(_ n: Int32) -> Int32 { return n + 1 }
+
+func pick(_ o: Int32?, _ n: Int32) -> Int32 {
+    return o ?? fallback(n)
+}

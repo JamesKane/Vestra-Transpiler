@@ -28,6 +28,15 @@ void emit_prelude_never(std::ostream& hdr) {
     hdr << "        std::unreachable();\n";
     hdr << "    }\n";
     hdr << "};\n\n";
+    // §19.9 `a ?? b` evaluates `b` only when `a` is none. The default comes
+    // from a callback given the payload type, so it converts (or diverges,
+    // as a `Never`) exactly as `value_or`'s argument would.
+    hdr << "template <class T> struct coalesce_tag { using type = T; };\n";
+    hdr << "template <class O, class F>\n";
+    hdr << "constexpr auto coalesce(O&& o, F&& f) -> std::remove_cvref_t<decltype(*o)> {\n";
+    hdr << "    if (o.has_value()) { return *static_cast<O&&>(o); }\n";
+    hdr << "    return f(coalesce_tag<std::remove_cvref_t<decltype(*o)>>{});\n";
+    hdr << "}\n\n";
 }
 
 void emit_prelude_str_queries(std::ostream& hdr) {

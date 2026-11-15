@@ -1,0 +1,23 @@
+// §19.9 `a ?? b` evaluates `b` only when `a` is none: a default with an effect
+// (a call, an index, a division) runs only then, and a `Never` default is fine.
+
+func noisy(_ tag: Str, _ n: Int32) using Log, Alloc -> Int32 {
+    print("ran \(tag)")
+    return n
+}
+
+func boom() -> Never { panic("the default of a some ran") }
+
+func main() using Log, Alloc -> Int32 {
+    let full: Int32? = 5
+    let empty: Int32? = nil
+    let xs: Vec[Int32] = Vec.new()
+    let zero: Int32 = 0
+    let a = full ?? noisy("a", 1)
+    let b = empty ?? noisy("b", 2)
+    let c = full ?? boom()
+    let d = full ?? xs[0]
+    let e = full ?? (7 / zero)
+    print("a=\(a) b=\(b) c=\(c) d=\(d) e=\(e)")
+    return 0
+}

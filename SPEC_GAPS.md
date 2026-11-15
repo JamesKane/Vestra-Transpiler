@@ -48,7 +48,8 @@ Each gap has one of four kinds:
    - Unchecked indexing.
    - Division by zero.
    - Argument evaluation order.
-   - `??` evaluates its right side eagerly.
+   - `??` evaluates its right side eagerly in a global's initializer, or
+     when it holds a `try`, `await`, `if` or `match`.
 3. **Unfoldable comptime constructs degrade to a warning.** `build` prints
    "codegen does not yet support: expression" and emits
    `/* unsupported: expression */`. The output then either fails to compile
@@ -148,7 +149,7 @@ Each gap has one of four kinds:
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §19.9 | `??` short-circuits | unsound | `o ?? p(7)` emits `(o).value_or(p(7))`, which always evaluates `p(7)`. |
+| §19.9 | `??` short-circuits | weaker | A default with an effect (a call, an index, a division) runs in a callback handed to `__vstr::coalesce`, so `o ?? p(7)` calls `p` only when `o` is none; a plain default (a name, a literal, a member) still reads as `value_or`. Two forms stay eager: a const or static initializer (no block scope for the callback to capture from), and a default holding a `try`, `await`, `if`, `match` or other expression whose control flow a callback would change. |
 | §9 | `Ptr[T]?` is niche-optimized to one word | weaker | It lowers to `std::optional<const T*>`. |
 | §9 | Panic behaviour (`abort` / `hang` / `reset`) set per executable | missing | A hosted panic is hard-wired to `std::abort` (`cpp_emitter.cpp:3648`). No manifest exists. |
 | §17.4 | `do` with several `catch` clauses and pattern catches | missing (partial) | One `catch` only, and it takes a name, not a pattern. A bare `catch {` is rejected. |

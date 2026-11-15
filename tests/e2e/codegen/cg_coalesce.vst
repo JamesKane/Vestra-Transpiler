@@ -1,0 +1,28 @@
+// §19.9 `??`: a plain default reads as `value_or`; one with an effect (a call,
+// an index, a division) runs in a callback, so it is evaluated only on none.
+
+enum Shape {
+    case dot
+    case circle(Int32)
+}
+
+func area(_ n: Int32) -> Int32 { return n * n }
+
+func plain(_ o: Int32?, _ d: Int32) -> Int32 {
+    let a = o ?? 0
+    let b = o ?? -1
+    let c = o ?? d
+    return a + b + c
+}
+
+func lazy(_ o: Int32?, _ xs: Vec[Int32], _ d: Int32) -> Int32 {
+    let a = o ?? area(d)
+    let b = o ?? xs[0]
+    let c = o ?? (10 / d)
+    let e = o ?? (o ?? area(2))
+    return a + b + c + e
+}
+
+func ctor(_ s: Shape?) -> Shape {
+    return s ?? Shape.circle(1)
+}

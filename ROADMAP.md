@@ -97,8 +97,9 @@ hit:
   (Gaps §4).
 - Bounds-checked `[N]T` and `Span` indexing (Gaps §19.10).
 - Left-to-right evaluation of arguments and operands (Gaps §19.9).
-- `??` evaluates its right side lazily (Gaps §9). This one is a cheap fix
-  in the C++ emitter too, and should not wait.
+- ~~`??` evaluates its right side lazily (Gaps §19.9).~~ Done in the C++
+  emitter for any default with an effect; a global's initializer and a
+  default holding `try` / `await` / `if` / `match` stay eager.
 - `Ptr[T]?` is one word (Gaps §9).
 - The `@deterministic` FP contract (Gaps §13).
 - Tier V ABI: capabilities as parameters, editions, the link-time check
@@ -142,7 +143,7 @@ sema-side `unsound` rows from the Gaps tables below:
 11. ~~`Vec.push` takes its value by `sink` (Gaps §18).~~ Done.
 
 The codegen-side `unsound` rows (overflow traps, `&+` wrapping, division by
-zero, bounds checks, `??` laziness, evaluation order, C++ keyword names)
+zero, bounds checks, evaluation order, C++ keyword names)
 belong to the backend work above.
 
 ## Self-hosting

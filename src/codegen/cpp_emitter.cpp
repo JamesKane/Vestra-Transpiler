@@ -797,7 +797,9 @@ void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl
         }
         hdr << " " << c.name << " = ";
         if (c.value) {
+            global_init_ = true;
             emit_expr(hdr, *c.value);
+            global_init_ = false;
         }
         hdr << ";\n";
         break;
@@ -834,7 +836,9 @@ void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl
         }
         if (!la.noinit && s.value) {
             hdr << " = ";
+            global_init_ = true;
             emit_expr(hdr, *s.value);
+            global_init_ = false;
         }
         hdr << ";\n";
         if (vector_table) {
@@ -2883,10 +2887,19 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     case ast::NodeKind::BinaryExpr: {
         const auto& b = static_cast<const ast::BinaryExpr&>(e);
         if (b.op == ast::BinaryOp::Coalesce) {
-            // §9 nil-coalescing: `a ?? b` → `(a).value_or(b)`. value_or
-            // eagerly evaluates b (vs the ternary form which short-
-            // circuits); for the literal/identifier defaults that are
-            // the common case this is fine and reads cleanly.
+            // §9, §19.9 nil-coalescing: `a ?? b` evaluates `b` only when `a`
+            // is none. A default that can do something (a call, an index, a
+            // division) runs in a callback; a plain one reads as
+            // `(a).value_or(b)`. A global's initializer has no block scope
+            // to capture from, so it stays eager.
+            if (!global_init_ && coalesce_is_lazy(*b.rhs)) {
+                os << "__vstr::coalesce(";
+                emit_expr(os, *b.lhs);
+                os << ", [&](auto __t) -> typename decltype(__t)::type { return ";
+                emit_expr(os, *b.rhs);
+                os << "; })";
+                break;
+            }
             os << "(";
             emit_expr(os, *b.lhs);
             os << ").value_or(";
@@ -4729,6 +4742,73 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         unsupported(os, "expression", e.range);
         break;
     }
+}
+
+}  // namespace vestra::codegen
+
+namespace vestra::codegen {
+
+// §19.9 whether `a ?? b`'s default must run lazily: it is made only of names,
+// literals, members, calls, indexing and operators (anything else, such as a
+// `try`, `await` or `if`, stays eager), and it contains a call, an index or a
+// division that could do something. The selfhost codegen's coalesceLazy
+// mirrors this.
+bool CppEmitter::coalesce_is_lazy(const ast::Expr& e) {
+    bool effect = false;
+    auto walk = [&](auto& self, const ast::Expr& x) -> bool {
+        switch (x.kind) {
+        case ast::NodeKind::IntLit:
+        case ast::NodeKind::FloatLit:
+        case ast::NodeKind::StringLit:
+        case ast::NodeKind::CharLit:
+        case ast::NodeKind::BoolLit:
+        case ast::NodeKind::NilLit:
+        case ast::NodeKind::IdentExpr:
+        case ast::NodeKind::SelfExpr:
+        case ast::NodeKind::LeadingDotExpr:
+            return true;
+        case ast::NodeKind::ParenExpr:
+            return self(self, *static_cast<const ast::ParenExpr&>(x).inner);
+        case ast::NodeKind::MemberExpr:
+            return self(self, *static_cast<const ast::MemberExpr&>(x).base);
+        case ast::NodeKind::UnaryExpr:
+            return self(self, *static_cast<const ast::UnaryExpr&>(x).operand);
+        case ast::NodeKind::BinaryExpr: {
+            const auto& b = static_cast<const ast::BinaryExpr&>(x);
+            effect = effect || b.op == ast::BinaryOp::Div || b.op == ast::BinaryOp::Mod;
+            return self(self, *b.lhs) && self(self, *b.rhs);
+        }
+        case ast::NodeKind::IndexExpr: {
+            const auto& ix = static_cast<const ast::IndexExpr&>(x);
+            effect = true;
+            if (!self(self, *ix.base)) {
+                return false;
+            }
+            for (const auto& i : ix.indices) {
+                if (!self(self, *i)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        case ast::NodeKind::CallExpr: {
+            const auto& c = static_cast<const ast::CallExpr&>(x);
+            effect = true;
+            if (c.callee == nullptr || !self(self, *c.callee)) {
+                return false;
+            }
+            for (const auto& a : c.args) {
+                if (a.value == nullptr || !self(self, *a.value)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        default:
+            return false;
+        }
+    };
+    return walk(walk, e) && effect;
 }
 
 }  // namespace vestra::codegen

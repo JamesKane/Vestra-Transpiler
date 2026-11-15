@@ -3042,6 +3042,7 @@ struct TyEnv {
     var hasModule: Bool         // global: unit declares `module ...` (an entry `main` only exists OUTSIDE a module)
     var tpN: Int                // file-global `__vstr_tp_unused_<N>` tuple-wildcard counter (monotonic, matches the bootstrap)
     var noLibc: Bool            // global: `--no-libc`, the §15.5 freestanding profile
+    var inGlobal: Bool          // emitting a const / static initializer (§19.9: `??` stays eager there)
     var linears: Vec[String]    // global: §5 linear struct names, closed over fields
     var cfName: Vec[String]     // global: §12.1 folded consts, in order ...
     var cfVal: Vec[Int]         // ... and their integer values
@@ -5298,7 +5299,7 @@ func buildTyEnv(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc -> TyEnv
                     imports: Vec.new(),
                     hasModule: u.hasMod,
                     tpN: 0,
-                    noLibc: noLibc,
+                    noLibc: noLibc, inGlobal: false,
                     linears: Vec.new(),
                     cfName: Vec.new(), cfVal: Vec.new(),
                     pCurName: Vec.new(),
@@ -6710,8 +6711,10 @@ func emitGlobalDefSym(_ env: inout TyEnv, _ prefix: Str, _ name: Str, _ ty: Vec[
         // An array-literal initializer takes its element type from the
         // annotation, as a `let` does (the bootstrap types the literal from
         // its declaration).
+        env.inGlobal = true
         if valIsVecLit(value) { emitVecLitVal(env, annElemBox(ty), value) }
         else { emitBoxed(env, value) }
+        env.inGlobal = false
     }
     print(";\n")
 }
@@ -12916,12 +12919,77 @@ func vecOpName(_ op: Str) using Alloc -> String {
     return own("vec_div")
 }
 
+// §19.9 `l ?? r` evaluates `r` only when `l` is none: a default that can do
+// something (a call, an index, a division) runs in a callback, as the
+// bootstrap's coalesce_is_lazy decides; a plain one reads as `value_or`.
 func emitCoalesce(_ env: inout TyEnv, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc, Log {
+    var effect: Bool = false
+    if !env.inGlobal && r.len() > 0 && coalesceOk(r.get(0) ?? Nd.wildcard, effect) && effect {
+        print("__vstr::coalesce(")
+        emitBoxed(env, l)
+        print(", [&](auto __t) -> typename decltype(__t)::type { return ")
+        emitBoxed(env, r)
+        print("; })")
+        return
+    }
     print("(")
     emitBoxed(env, l)
     print(").value_or(")
     emitBoxed(env, r)
     print(")")
+}
+
+// Whether `n` is made only of names, literals, members, calls, indexing and
+// operators; `effect` is set by a call, an index, or a `/` / `%`.
+func coalesceOk(_ n: Nd, _ effect: inout Bool) using Alloc -> Bool {
+    return match n {
+        case .intLit(let t): true
+        case .floatLit(let t): true
+        case .strLit(let t): true
+        case .charLit(let t): true
+        case .boolLit(let b): true
+        case .nilLit: true
+        case .ident(let x): true
+        case .selfE: true
+        case .leadingDot(let x): true
+        case .paren(let x): coalesceOkBoxed(x, effect)
+        case .member(let b, let nm, let c): coalesceOkBoxed(b, effect)
+        case .unary(let op, let x): coalesceOkBoxed(x, effect)
+        case .binary(let op, let a, let b): coalesceOkBinary(op, a, b, effect)
+        case .index(let b, let ix): coalesceOkIndex(b, ix, effect)
+        case .call(let c, let args): coalesceOkCall(c, args, effect)
+        case .arg(let l, let io, let v): coalesceOkBoxed(v, effect)
+        case _: false
+    }
+}
+
+func coalesceOkBoxed(_ v: Vec[Nd], _ effect: inout Bool) using Alloc -> Bool {
+    if v.len() == 0 { return false }
+    return coalesceOk(v.get(0) ?? Nd.wildcard, effect)
+}
+
+func coalesceOkAll(_ xs: Vec[Nd], _ effect: inout Bool) using Alloc -> Bool {
+    var i: Int = 0
+    while i < xs.len() {
+        if !coalesceOk(xs.get(i) ?? Nd.wildcard, effect) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+func coalesceOkBinary(_ op: Str, _ a: Vec[Nd], _ b: Vec[Nd], _ effect: inout Bool) using Alloc -> Bool {
+    if streq(op, "/") || streq(op, "%") { effect = true }
+    return coalesceOkBoxed(a, effect) && coalesceOkBoxed(b, effect)
+}
+
+func coalesceOkIndex(_ b: Vec[Nd], _ ix: Vec[Nd], _ effect: inout Bool) using Alloc -> Bool {
+    effect = true
+    return coalesceOkBoxed(b, effect) && coalesceOkAll(ix, effect)
+}
+
+func coalesceOkCall(_ c: Vec[Nd], _ args: Vec[Nd], _ effect: inout Bool) using Alloc -> Bool {
+    effect = true
+    return coalesceOkBoxed(c, effect) && coalesceOkAll(args, effect)
 }
 
 // Basename of the input path without its `.vst` extension (the `.hpp`/`.cpp` stem).
