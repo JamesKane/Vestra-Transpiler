@@ -339,6 +339,7 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | §14.7.1 rule 5 | One-way: ordinary code may not reach `@kernel_init` | unsound (partial) | Direct calls are rejected. `let p = &ki` from ordinary code passes. |
 | §14.12.3 | `@no_auto_barrier` on a statement | missing | Function level only. The statement form is a parse error. |
 | §14.8 | `PerCpu[T]` layout | weaker | One `alignas(64)` slot shared by every hart (`cpp_emitter_prelude.cpp:369`). `slot(hartId)` ignores `hartId`. No `[MAX_HARTS]` array, and no `tpidr_el1` / `gs` / `tp` read. |
+| §14.9 | `Atomic[T]` requires `T: Primitive` | unsound | The bootstrap admits `String`, `Str`, `StrConst` and `Unit` as primitives; the self-hosted checker has no `T` rule. (The MMIO views now take only §4 primitives up to 64 bits.) |
 | §14.9.1, §14.9.3 | Ordering legality for an ordering held in a variable | unsound | Only a literal `.case` is checked. `load(o)` with `o` a `.release` parameter emits `std::memory_order_release`, which is UB. |
 | §14.9.2 | Orderings default to `.seqCst` | divergent | The ordering argument is mandatory. |
 | §14.9.3 | CAS argument labels | divergent | Labels are optional: positional `compareExchange(0, 1, .seqCst, .acquire)` is accepted. A label that is given must be the one for its position, so reordered labels are an error rather than a silent swap. |
@@ -351,7 +352,6 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | §14.10.3 | `cleanDataRounding` / `invalidateDataRounding` | missing | |
 | §14.10.3 | Strict cache-range alignment | weaker | A runtime `panic` using the `CTR_EL0` line size, not a compile error against `cfg.option`. Hosted builds make every cache op a no-op. |
 | §14.10.6 | `prefetch` | missing | |
-| §14.11.1 | `MmioView[T]` requires `T: Primitive` | unsound | `MmioView.at(MutPtr[S])` with a struct `S` passes. |
 | §14.11.1 | Debug-build alignment check | missing | The prelude `MmioView` is a bare volatile pointer. |
 | §14.12.3 | RISC-V auto-barriers (`SFENCE.VMA` after `satp`) | unsound | `satp` has `sync_after_write = false` (`sysregs.hpp`). On non-aarch64 targets the post-write barrier is a plain thread fence. |
 | §14.12.2 | Register spellings and typed handles | divergent (minor) | `currentEL` is unknown (the table spells it `currentel`). Every handle is `UInt64`. |

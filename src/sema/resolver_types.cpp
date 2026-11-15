@@ -144,7 +144,7 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
             // §A6 (§14.11) typed MMIO views. T must be primitive.
             if (n.path[0] == "MmioView" && n.type_args.size() == 1) {
                 TypePtr inner = n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error();
-                if (inner != nullptr && !inner->is_error() && !inner->is_primitive()) {
+                if (inner != nullptr && !inner->is_error() && !is_mmio_payload(inner)) {
                     error_at(t.range,
                              std::format("MmioView[T] requires T to be a primitive, got {}",
                                          inner->describe()));
@@ -154,7 +154,7 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
             }
             if (n.path[0] == "MmioRegion" && n.type_args.size() == 1) {
                 TypePtr inner = n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error();
-                if (inner != nullptr && !inner->is_error() && !inner->is_primitive()) {
+                if (inner != nullptr && !inner->is_error() && !is_mmio_payload(inner)) {
                     error_at(t.range,
                              std::format("MmioRegion[T] requires T to be a primitive, got {}",
                                          inner->describe()));
@@ -169,7 +169,7 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
             // the host's native.
             if (n.path[0] == "MmioWireView" && n.type_args.size() == 1) {
                 TypePtr inner = n.type_args[0] ? resolve_type(*n.type_args[0]) : types_->error();
-                if (inner != nullptr && !inner->is_error() && !inner->is_primitive()) {
+                if (inner != nullptr && !inner->is_error() && !is_mmio_payload(inner)) {
                     error_at(t.range,
                              std::format("MmioWireView[T] requires T to be a primitive, got {}",
                                          inner->describe()));
@@ -667,6 +667,22 @@ namespace vestra::sema {
 // (register-class bits, no resources, not linear), or null when it is.
 // Resource-free wrappers over Trivial bits (Atomic, PerCpu, Padded, an
 // optional, a fixed array) are Trivial when their contents are.
+bool Resolver::is_mmio_payload(TypePtr t) {
+    if (t == nullptr) {
+        return false;
+    }
+    switch (t->kind()) {
+    case TypeKind::Int128:
+    case TypeKind::UInt128:
+        return false;
+    case TypeKind::Bool:
+    case TypeKind::Char:
+        return true;
+    default:
+        return t->is_integer() || t->is_float();
+    }
+}
+
 TypePtr Resolver::trivial_blocker(TypePtr t, int depth) {
     if (t == nullptr || t->is_error() || depth > 32) {
         return nullptr;

@@ -1,0 +1,13 @@
+// Annex §14.11 `MmioView.at(p)` takes its T from the MutPtr[T] argument, so a
+// pointer to a struct can't mint a view any more than the annotation can.
+
+struct Pair { var a: UInt32; var b: UInt32 }
+
+func open(_ p: MutPtr[Pair], _ q: MutPtr[Int128]) using Mmio {
+    with Mmio {
+        let v = MmioView.at(p)
+        let r = MmioRegion.at(q, count: 4)
+        let _ = v
+        let _ = r
+    }
+}

@@ -364,6 +364,9 @@ private:
     // Annex §4.5 the innermost type keeping `t` from being Trivial, or null.
     [[nodiscard]] TypePtr trivial_blocker(TypePtr t, int depth = 0);
     [[nodiscard]] static bool trivial_blocker_is_linear(TypePtr t);
+    // Annex §14.11: an MMIO view's T is a silicon-bus width (a fixed-width
+    // integer up to 64 bits, a float, Bool or Char).
+    [[nodiscard]] static bool is_mmio_payload(TypePtr t);
     [[nodiscard]] static bool owns_resources(TypePtr t);
     std::unordered_set<std::size_t> slot_reported_;
 

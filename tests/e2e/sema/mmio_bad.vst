@@ -1,0 +1,11 @@
+// Annex §14.11 an MMIO view's T must be a silicon-bus width. A struct, a
+// string, a 128-bit integer or Unit can't be one register read or write,
+// whether the view is spelled in a type or minted by `.at(ptr)`.
+
+struct Pair { var a: UInt32; var b: UInt32 }
+
+func views(_ v: MmioView[Pair], _ r: MmioRegion[String], _ w: MmioView[UInt128]) {}
+
+func local() {
+    let _u: MmioView[Unit]? = nil
+}

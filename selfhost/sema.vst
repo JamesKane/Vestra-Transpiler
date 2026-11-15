@@ -3644,7 +3644,32 @@ func tnNamed(_ env: inout TnEnv, _ path: String, _ args: Vec[Nd]) using Alloc {
     if tnLastDot(path) >= 0 { tnQualifiedNamed(env, path, args); return }
     if !tnKnown(env, path) { env.bad.push(unknownTypeMsg(path)); return }
     if args.len() > 0 && tnUserNonGeneric(env, path) { env.bad.push(notGenericMsg(path)); return }
+    let nb = env.bad.len()
     tnTypeList(env, args)
+    if env.bad.len() == nb && args.len() == 1 && tyIsMmioName(path) {
+        let sp = typeSpelling(args.get(0) ?? Nd.wildcard)
+        if !tyIsMmioPayload(sp) { env.bad.push(tyMmioPayloadMsg(path, sp)) }
+    }
+}
+
+// Annex §14.11 the MMIO view types, whose T is a silicon-bus width.
+func tyIsMmioName(_ n: Str) -> Bool {
+    return streq(n, "MmioView") || streq(n, "MmioRegion") || streq(n, "MmioWireView")
+}
+
+// A fixed-width integer up to 64 bits, a float, Bool or Char.
+func tyIsMmioPayload(_ sp: Str) -> Bool {
+    return streq(sp, "Int8") || streq(sp, "Int16") || streq(sp, "Int32") || streq(sp, "Int64")
+        || streq(sp, "Int") || streq(sp, "UInt8") || streq(sp, "UInt16") || streq(sp, "UInt32")
+        || streq(sp, "UInt64") || streq(sp, "UInt") || streq(sp, "Float32") || streq(sp, "Float64")
+        || streq(sp, "Bool") || streq(sp, "Char")
+}
+
+func tyMmioPayloadMsg(_ n: Str, _ sp: Str) using Alloc -> String {
+    var s: String = own(n)
+    s.append("[T] requires T to be a primitive, got ")
+    s.append(sp)
+    return s
 }
 
 // A dotted type head `mod.Type` references a public type of an imported module.
@@ -9336,6 +9361,7 @@ func tyCasStrongMsg(_ f: String, _ su: String) using Alloc -> String {
 // must be assignable to its parameter. Calls to builtins / methods / struct
 // constructors (no entry in funcName) are left to later slices.
 func tyCheckCallArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    tyCheckMmioAt(env, callee, args)
     let fname = exCalleeNameBoxed(callee)
     tyCheckMethodLabels(env, callee, args)
     let arity = tyArity(env, fname)
@@ -9354,6 +9380,26 @@ func tyCheckCallArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) usi
         return
     }
     if tyIsStruct(env, fname) { tyCheckCtor(env, fname, args) }
+}
+
+// Annex §14.11 `MmioView.at(p)` (and MmioRegion / MmioWireView) takes its T
+// from the MutPtr[T] argument, which must be a silicon-bus width.
+func tyCheckMmioAt(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    var n: String = own("")
+    if esCalleeIs(callee, "MmioView", "at") { n = own("MmioView") }
+    if esCalleeIs(callee, "MmioRegion", "at") { n = own("MmioRegion") }
+    if esCalleeIs(callee, "MmioWireView", "at") { n = own("MmioWireView") }
+    if n.len() == 0 || args.len() == 0 { return }
+    match args.get(0) ?? Nd.wildcard {
+        case .arg(let label, let isInout, let val): tyCheckMmioPtr(env, n, tyInferBoxed(env, val))
+        default: noop()
+    }
+}
+
+func tyCheckMmioPtr(_ env: inout TyEnv, _ n: String, _ at: String) using Alloc {
+    if !tyStartsWith(at, "MutPtr[") || at.len() < 8 { return }
+    let inner = own(at.slice(7, at.len() - 1))
+    if !tyIsMmioPayload(inner) { env.bad.push(tyMmioPayloadMsg(n, inner)) }
 }
 
 // §7 the free function's parameter labels, in order.

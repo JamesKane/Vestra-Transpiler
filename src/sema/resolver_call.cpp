@@ -693,6 +693,12 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
                 TypePtr T = (ptr_t != nullptr && ptr_t->kind() == TypeKind::MutPtr)
                                 ? ptr_t->inner()
                                 : types_->error();
+                if (T != nullptr && !T->is_error() && !is_mmio_payload(T)) {
+                    error_at(c.args[0].value->range,
+                             std::format("MmioWireView[T] requires T to be a primitive, got {}",
+                                         T->describe()));
+                    T = types_->error();
+                }
                 if (endian_arg_t != nullptr && !endian_arg_t->is_error()
                     && !TypeArena::equal(endian_arg_t, endian_t)) {
                     error_at(c.args[1].value->range,
@@ -733,6 +739,12 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
                 TypePtr T = (ptr_t != nullptr && ptr_t->kind() == TypeKind::MutPtr)
                                 ? ptr_t->inner()
                                 : types_->error();
+                if (T != nullptr && !T->is_error() && !is_mmio_payload(T)) {
+                    error_at(c.args[0].value->range,
+                             std::format("{}[T] requires T to be a primitive, got {}",
+                                         bi.name, T->describe()));
+                    T = types_->error();
+                }
                 if (!is_view) {
                     auto ct = check_expr(*c.args[1].value, types_->primitive(TypeKind::Int));
                     if (ct != nullptr && !ct->is_error() && !ct->is_integer()) {

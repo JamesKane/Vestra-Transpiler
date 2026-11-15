@@ -119,7 +119,6 @@ accepts. Ordered by how likely each is to let a wrong program through:
 1. **Smaller unsound items:**
     - `@noinit` storage reachable only through `&buf` under `RawMemory`
       (the `Trivial` half is done; `buf[0]` still reads it directly);
-    - `MmioView[T]` requires `T: Primitive`;
     - `compilerFence(.relaxed)` rejected;
     - `using InterruptsOff` rejected;
     - `@kernel_init` reachable only from init code, including through `&f`;
@@ -128,7 +127,10 @@ accepts. Ordered by how likely each is to let a wrong program through:
       is checked: `return self.n` passes where the result is `Bool`, and a
       read-only method can call `self.xs.push(1)`; Gaps §7);
     - an atomic ordering held in a variable (only a literal `.case` is
-      checked, so `load(o)` with `o == .release` reaches C++ as UB).
+      checked, so `load(o)` with `o == .release` reaches C++ as UB);
+    - `Atomic[T]` requires a §4 primitive (the bootstrap's `is_primitive`
+      also admits `String`, `Str` and `Unit`, and the self-hosted checker
+      has no `T` rule at all).
 
     (Annex A table, and Gaps §7 for `self.field`)
 

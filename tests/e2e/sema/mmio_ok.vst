@@ -1,0 +1,15 @@
+// Annex §14.11 an MMIO view's T is a silicon-bus width: a fixed-width integer
+// up to 64 bits, a float, Bool or Char.
+
+func readReg(_ v: MmioView[UInt32]) -> UInt32 { return v.read() }
+
+func regs(_ r: MmioRegion[UInt64], _ f: MmioView[Float32], _ b: MmioView[Bool]) {}
+
+func open(_ p: MutPtr[UInt32], _ q: MutPtr[UInt8]) using Mmio {
+    with Mmio {
+        let v = MmioView.at(p)
+        let r = MmioRegion.at(q, count: 16)
+        let _ = v.read()
+        let _ = r
+    }
+}
