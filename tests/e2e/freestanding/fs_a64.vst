@@ -48,8 +48,10 @@ func arm(_ v: UInt64) using Asm -> UInt64 {
 @noinit static mainTask: Context
 @noinit static workerTask: Context
 @noinit static workerStack: [512]UInt64
-func worker() using Asm -> Never {
-    Scheduler.swapContext(workerTask, mainTask)
+func worker() using Asm, RawMemory -> Never {
+    let me: MutPtr[Context] = MutPtr.unchecked(fromAddress: (&workerTask).address)
+    let main: Ptr[Context] = &mainTask
+    Scheduler.swapContext(saving: me, loading: main)
     while true { }
 }
 func startWorker() using Asm, RawMemory {
@@ -57,7 +59,8 @@ func startWorker() using Asm, RawMemory {
     // address (Annex §4.5).
     let w: MutPtr[Context] = MutPtr.unchecked(fromAddress: (&workerTask).address)
     w.value = Context.start(entry: worker, stack: (&workerStack).address + 4096)
-    Scheduler.swapContext(mainTask, workerTask)
+    let m: MutPtr[Context] = MutPtr.unchecked(fromAddress: (&mainTask).address)
+    Scheduler.swapContext(saving: m, loading: w)
 }
 // §14.5.3 a compiler-emitted vector table over a canonical trap frame.
 @repr(C)

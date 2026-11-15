@@ -36,14 +36,17 @@ func onPanic(_ message: Str, _ file: StrConst, _ line: Int) -> Never {
 @noinit static pingCtx: Context
 @align(16) @noinit static pingStack: [64]UInt64
 
-func ping() using Asm -> Never {
+func ping() using Asm, RawMemory -> Never {
+    let me: MutPtr[Context] = MutPtr.unchecked(fromAddress: (&pingCtx).address)
+    let boot: Ptr[Context] = &bootCtx
     while true {
-        Scheduler.swapContext(pingCtx, bootCtx)
+        Scheduler.swapContext(saving: me, loading: boot)
     }
 }
 
 public func startPing() using Asm, RawMemory {
     let c: MutPtr[Context] = MutPtr.unchecked(fromAddress: (&pingCtx).address)
     c.value = Context.start(entry: ping, stack: (&pingStack).address + 512)
-    Scheduler.swapContext(bootCtx, pingCtx)
+    let boot: MutPtr[Context] = MutPtr.unchecked(fromAddress: (&bootCtx).address)
+    Scheduler.swapContext(saving: boot, loading: c)
 }

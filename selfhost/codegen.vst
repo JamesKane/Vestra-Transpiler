@@ -11490,9 +11490,9 @@ func isGatedSysreg(_ r: Str) -> Bool {
 }
 
 // Static calls on two runtime namespaces, mirroring cpp_emitter.cpp:
-//   * §A7 (§14.14) `Scheduler.swapContext(saving, loading)` ->
-//     `__vstr::scheduler_swap_context(&saving, &loading)` (sema takes the
-//     Context values; the shim wants pointers).
+//   * §A7 (§14.14) `Scheduler.swapContext(saving:, loading:)` ->
+//     `__vstr::scheduler_swap_context(saving, loading)` (the two pointers
+//     as they are).
 //   * §A11 (§14.8) `PerCpu.new(v)` -> `std::make_unique<__vstr::PerCpu<T>>(
 //     __vstr::PerCpu<T>{v})`. The bootstrap reads T off the call's
 //     Box[PerCpu[T]] type and falls back to the argument's; vgen has no
@@ -11516,9 +11516,9 @@ func emitSysStaticOn(_ env: inout TyEnv, _ ns: Str, _ name: Str, _ args: Vec[Nd]
         return true
     }
     if streq(ns, "Scheduler") && streq(name, "swapContext") && args.len() == 2 {
-        print("__vstr::scheduler_swap_context(&")
+        print("__vstr::scheduler_swap_context(")
         emitArg(env, args.get(0) ?? Nd.wildcard)
-        print(", &")
+        print(", ")
         emitArg(env, args.get(1) ?? Nd.wildcard)
         print(")")
         return true

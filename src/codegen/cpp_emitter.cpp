@@ -3090,19 +3090,17 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 }
             }
         }
-        // §A7 (§14.14) `Scheduler.swapContext(saving, loading)`
-        // lowers to the __vstr runtime shim. v0.5 sema accepts the
-        // arguments as `Context` values (because `&decl` from
-        // §14.6.3 isn't shipped yet); the codegen wraps each arg
-        // in `&` so the shim receives the C++ pointers it expects.
+        // §A7 (§14.14) `Scheduler.swapContext(saving:, loading:)`
+        // lowers to the __vstr runtime shim, which takes the two
+        // pointers as they are (`Context*`, `const Context*`).
         if (c.callee && c.callee->kind == ast::NodeKind::MemberExpr) {
             const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
             if (mem.base != nullptr && mem.base->kind == ast::NodeKind::IdentExpr
                 && static_cast<const ast::IdentExpr&>(*mem.base).name == "Scheduler"
                 && mem.member == "swapContext" && c.args.size() == 2) {
-                os << "__vstr::scheduler_swap_context(&";
+                os << "__vstr::scheduler_swap_context(";
                 emit_expr(os, *c.args[0].value);
-                os << ", &";
+                os << ", ";
                 emit_expr(os, *c.args[1].value);
                 os << ")";
                 break;

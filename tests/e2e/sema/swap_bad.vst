@@ -1,0 +1,21 @@
+// §14.14 swapContext used to take Context values; it takes the spec's
+// labeled pointers.
+
+@noinit static bootCtx: Context
+
+func labels(_ s: MutPtr[Context], _ l: Ptr[Context]) using Asm {
+    Scheduler.swapContext(s, l)
+    Scheduler.swapContext(loading: s, saving: l)
+}
+
+func types(_ s: MutPtr[Context], _ l: Ptr[Context], _ n: UInt64) using Asm {
+    Scheduler.swapContext(saving: l, loading: s)
+    Scheduler.swapContext(saving: s, loading: n)
+}
+
+func value() using Asm -> UInt64 {
+    let c = bootCtx
+    return 0
+}
+
+func main() -> Int32 { return 0 }

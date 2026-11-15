@@ -519,13 +519,11 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
-    // §A7 (§14.14) `Scheduler.swapContext(saving:, loading:)` —
-    // the context-switch primitive. The spec signature uses
-    // `MutPtr[Context]` / `Ptr[Context]` arguments derived from
-    // `&decl` (§14.6.3). v0.5 doesn't yet have the `&decl`
-    // address-of operator, so we accept `Context` values directly
-    // — the codegen wraps each argument in `&` when lowering. When
-    // `&decl` lands, this intercept tightens to the pointer form.
+    // §A7 (§14.14) `Scheduler.swapContext(saving: MutPtr[Context],
+    // loading: Ptr[Context])`, the context-switch primitive: save into
+    // `*saving`, resume from `*loading`. A `Context` is `@noinit` storage,
+    // so its pointers come from `&decl` (a `MutPtr` through
+    // `MutPtr.unchecked(fromAddress:)`); a `MutPtr` also serves `loading`.
     if (c.callee->kind == ast::NodeKind::MemberExpr) {
         const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
         if (mem.base != nullptr && mem.base->kind == ast::NodeKind::IdentExpr) {
@@ -538,27 +536,47 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
                     }
                     error_at(c.range,
                              "Scheduler.swapContext takes exactly two arguments "
-                             "(saving: Context, loading: Context)");
+                             "(saving: MutPtr[Context], loading: Ptr[Context])");
                     return types_->unit();
+                }
+                static constexpr std::array<std::string_view, 2> kLabels{"saving", "loading"};
+                for (std::size_t i = 0; i < 2; ++i) {
+                    const auto& lbl = c.args[i].label;
+                    if (lbl.empty()) {
+                        error_at(c.args[i].value->range,
+                                 std::format("argument {} of 'swapContext' is missing its label '{}:'",
+                                             i + 1,
+                                             kLabels[i]));
+                    } else if (lbl != kLabels[i]) {
+                        error_at(c.args[i].value->range,
+                                 std::format("argument {} of 'swapContext' is labeled '{}:', but the "
+                                             "parameter's label is '{}:'",
+                                             i + 1,
+                                             lbl,
+                                             kLabels[i]));
+                    }
                 }
                 TypePtr context_t =
                     builtin_context_decl_ != nullptr
                         ? types_->make_nominal(TypeKind::Struct, builtin_context_decl_.get())
                         : types_->error();
-                auto saving_t = check_expr(*c.args[0].value, context_t);
-                auto loading_t = check_expr(*c.args[1].value, context_t);
+                TypePtr saving_want = types_->make_mut_ptr(context_t);
+                TypePtr loading_want = types_->make_ptr(context_t);
+                auto saving_t = check_expr(*c.args[0].value, saving_want);
+                auto loading_t = check_expr(*c.args[1].value, loading_want);
                 if (saving_t != nullptr && !saving_t->is_error()
-                    && !TypeArena::equal(saving_t, context_t)) {
+                    && !TypeArena::equal(saving_t, saving_want)) {
                     error_at(c.args[0].value->range,
                              std::format("Scheduler.swapContext saving argument must be "
-                                         "Context, got {}",
+                                         "MutPtr[Context], got {}",
                                          saving_t->describe()));
                 }
                 if (loading_t != nullptr && !loading_t->is_error()
-                    && !TypeArena::equal(loading_t, context_t)) {
+                    && !TypeArena::equal(loading_t, loading_want)
+                    && !TypeArena::equal(loading_t, saving_want)) {
                     error_at(c.args[1].value->range,
                              std::format("Scheduler.swapContext loading argument must be "
-                                         "Context, got {}",
+                                         "Ptr[Context], got {}",
                                          loading_t->describe()));
                 }
                 return types_->unit();

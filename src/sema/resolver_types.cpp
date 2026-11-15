@@ -678,7 +678,7 @@ bool Resolver::is_method_cell(TypePtr t) {
     case TypeKind::Padded:
         return t->inner() != nullptr && is_method_cell(t->inner());
     default:
-        return t->nominal_decl() != nullptr && t->nominal_decl() == builtin_context_decl_.get();
+        return false;
     }
 }
 

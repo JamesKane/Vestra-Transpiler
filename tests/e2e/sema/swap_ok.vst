@@ -1,0 +1,15 @@
+// §14.14 `Scheduler.swapContext(saving: MutPtr[Context], loading: Ptr[Context])`:
+// a Context is @noinit storage, named by `&ctx`; a MutPtr also serves
+// `loading`.
+
+@noinit static bootCtx: Context
+@noinit static taskCtx: Context
+
+func swapIn() using Asm, RawMemory {
+    let boot: MutPtr[Context] = MutPtr.unchecked(fromAddress: (&bootCtx).address)
+    let task: Ptr[Context] = &taskCtx
+    Scheduler.swapContext(saving: boot, loading: task)
+    Scheduler.swapContext(saving: boot, loading: boot)
+}
+
+func main() -> Int32 { return 0 }

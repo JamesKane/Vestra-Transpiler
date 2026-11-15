@@ -1,6 +1,6 @@
-// Static calls on two runtime namespaces. §A7 `Scheduler.swapContext(a, b)`
-// takes Context values and lowers to the pointer-taking
-// `__vstr::scheduler_swap_context(&a, &b)`. §A11 `PerCpu.new(v)` heap-
+// Static calls on two runtime namespaces. §A7 `Scheduler.swapContext(saving:
+// a, loading: b)` takes the two pointers and lowers to
+// `__vstr::scheduler_swap_context(a, b)`. §A11 `PerCpu.new(v)` heap-
 // allocates a `__vstr::PerCpu<T>` around `v`, T read off the argument (a
 // typed parameter, a struct construction).
 @noinit static saved: Context
@@ -11,9 +11,12 @@ struct Stats {
     var misses: UInt32
 }
 
-func bounce() using Asm {
-    Scheduler.swapContext(saved, next)
-    Scheduler.swapContext(next, saved)
+func bounce() using Asm, RawMemory {
+    let s: MutPtr[Context] = MutPtr.unchecked(fromAddress: (&saved).address)
+    let n: MutPtr[Context] = MutPtr.unchecked(fromAddress: (&next).address)
+    let back: Ptr[Context] = &saved
+    Scheduler.swapContext(saving: s, loading: n)
+    Scheduler.swapContext(saving: n, loading: back)
 }
 
 func counter(_ seed: UInt64) -> UInt64 {

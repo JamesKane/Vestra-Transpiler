@@ -63,9 +63,13 @@ func nested_bump() {
     }
 }
 
-// Drive Scheduler.swapContext between two Context slots. The
-// hosted shim is a no-op; the kernel target replaces it with the
-// save/restore sequence.
-func switch_tasks() using Asm {
-    Scheduler.swapContext(slot_a, slot_b)
+// Drive Scheduler.swapContext between two Context slots: save into
+// `slot_a`, resume from `slot_b`. A slot is `@noinit` storage, so it's
+// named by `&slot` (bound first: in an argument, `&` marks `inout`);
+// the saving side needs a `MutPtr`. The hosted shim is a no-op; the
+// kernel target replaces it with the save/restore sequence.
+func switch_tasks() using Asm, RawMemory {
+    let save: MutPtr[Context] = MutPtr.unchecked(fromAddress: (&slot_a).address)
+    let load: Ptr[Context] = &slot_b
+    Scheduler.swapContext(saving: save, loading: load)
 }

@@ -116,12 +116,32 @@ first, in both front ends (bootstrap and `selfhost/sema.vst`, held to
 identical diagnostics), because the new backend will trust whatever sema
 accepts. Ordered by how likely each is to let a wrong program through:
 
-1. **Smaller unsound items:**
-    - `Scheduler.swapContext` takes the spec's `MutPtr[Context]` /
-      `Ptr[Context]` (it still takes `Context` values, which is why a
-      `@noinit` `Context` stays in scope as a value).
+The Annex A list (MMIO payloads, fences, `using InterruptsOff`,
+`@kernel_init` addresses, `@noinit` values, `self` typing, variable
+orderings, `Atomic[T]`, `swapContext`) is closed. What's left is the
+sema-side `unsound` rows in the Gaps tables:
 
-    (Annex A table)
+1. Integer literals range-checked against the target type (`return 300` as
+   `Int8`; Gaps §4).
+2. Exclusivity across an `inout` method receiver (`p.bump(&p.a)`; Gaps
+   §19.3).
+3. `send` takes its argument by `sink` (`ch.send(b); return b.n`; Gaps
+   §11.1).
+4. No moving a field out of a `deinit` type (`take(r.b)`; Gaps §6).
+5. `nonescaping` closure parameters, and a closure's capability row (Gaps
+   §7, §8).
+6. Opaque types inherit no operations (`==` on an opaque `EntityId`; Gaps
+   §6).
+7. String interpolation needs `using Alloc` (Gaps §4).
+8. `as` byte reinterpretation checks size, alignment and `Trivial` (Gaps
+   §4).
+9. `derive` validation beyond `Default` (Gaps §12.3).
+10. An implicit `asm` clobber is an error, and the weak-CAS loop shapes
+    (Annex §14.4, §14.9.3).
+
+The codegen-side `unsound` rows (overflow traps, `&+` wrapping, division by
+zero, bounds checks, `??` laziness, evaluation order, C++ keyword names)
+belong to the backend work above.
 
 ## Self-hosting
 

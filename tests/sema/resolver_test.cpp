@@ -1642,19 +1642,32 @@ TEST_CASE("`with InterruptsOff { ... }` resolves cleanly") {
           == 0);
 }
 
-TEST_CASE("Scheduler.swapContext accepts two Context arguments") {
+TEST_CASE("Scheduler.swapContext takes MutPtr[Context] and Ptr[Context]") {
     CHECK(check_errors("@noinit static a: Context\n"
                        "@noinit static b: Context\n"
-                       "func ok() { Scheduler.swapContext(a, b) }\n")
+                       "func ok(_ s: MutPtr[Context]) {\n"
+                       "    let l: Ptr[Context] = &b\n"
+                       "    Scheduler.swapContext(saving: s, loading: l)\n"
+                       "    Scheduler.swapContext(saving: s, loading: s)\n"
+                       "}\n")
           == 0);
 }
 
-TEST_CASE("Scheduler.swapContext rejects a non-Context argument") {
-    auto r = check_detail("@noinit static a: Context\n"
-                          "func bad(_ x: Int32) { Scheduler.swapContext(a, x) }\n");
+TEST_CASE("Scheduler.swapContext rejects a non-pointer argument") {
+    auto r = check_detail("func bad(_ s: MutPtr[Context], _ x: Int32) {\n"
+                          "    Scheduler.swapContext(saving: s, loading: x)\n"
+                          "}\n");
     CHECK(r.error_count >= 1);
-    CHECK(r.first_message.find("Scheduler.swapContext loading argument must be Context")
+    CHECK(r.first_message.find("Scheduler.swapContext loading argument must be Ptr[Context]")
           != std::string::npos);
+}
+
+TEST_CASE("Scheduler.swapContext needs its labels, and a Context static isn't a value") {
+    auto r = check_detail("@noinit static a: Context\n"
+                          "func bad(_ s: MutPtr[Context]) { Scheduler.swapContext(s, a) }\n");
+    CHECK(r.first_message.find("argument 1 of 'swapContext' is missing its label 'saving:'")
+          != std::string::npos);
+    CHECK(r.error_count >= 3);
 }
 
 // ---- §A6 MMIO views (§14.11) ---------------------------------------------

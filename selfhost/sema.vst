@@ -3004,6 +3004,8 @@ func addBuiltins(_ env: inout Env) using Alloc {
     addName(env, "MutSpan")
     addName(env, "Channel")   // §11 Channel.new
     addName(env, "MmioView")  // Annex §14.11 MmioView.at
+    addName(env, "Scheduler") // §14.14 Scheduler.swapContext / Context.start
+    addName(env, "Context")
     addName(env, "MmioRegion")
     addName(env, "String")
     addName(env, "Str")
@@ -3513,6 +3515,7 @@ func tnSeedBuiltins(_ env: inout TnEnv) using Alloc {
     env.types.push("Ordering"); env.types.push("AtomicTaggedPointer")   // Annex §14.9
     env.types.push("Padded"); env.types.push("PerCpu") // Annex §14.8
     env.types.push("MmioView"); env.types.push("MmioRegion")   // Annex §14.11
+    env.types.push("Context")   // §14.14 a task's saved register set
 }
 
 func tnCollectType(_ env: inout TnEnv, _ d: Nd) using Alloc {
@@ -4540,6 +4543,11 @@ func checkMemberCallee(_ env: inout CapEnv, _ base: Vec[Nd], _ member: String) u
             case .ident(let b): requireAllocCtor(env, b)
             default: noop()
         }
+    }
+    // §14.14 swapping register sets, or building one, is an instruction
+    // sequence: gated on Asm (rule 5).
+    if (streq(member, "swapContext") && esIdentIs(base, "Scheduler")) || (streq(member, "start") && esIdentIs(base, "Context")) {
+        require(env, "Asm")
     }
 }
 
@@ -8741,10 +8749,9 @@ func tyAddrOf(_ env: inout TyEnv, _ x: Vec[Nd]) using Alloc {
 }
 
 // A cell reached only through its compiler-known methods: an atomic, a
-// per-hart slot, a task Context, or one of those padded to a cache line.
+// per-hart slot, or one of those padded to a cache line.
 func tyIsMethodCell(_ sp: String) using Alloc -> Bool {
     if tyStartsWith(sp, "Atomic[") || tyStartsWith(sp, "AtomicTaggedPointer[") || tyStartsWith(sp, "PerCpu[") { return true }
-    if streq(sp, "Context") { return true }
     if tyStartsWith(sp, "Padded[") && sp.len() > 8 { return tyIsMethodCell(own(sp.slice(7, sp.len() - 1))) }
     return false
 }
@@ -9561,6 +9568,7 @@ func tyCasStrongMsg(_ f: String, _ su: String) using Alloc -> String {
 // constructors (no entry in funcName) are left to later slices.
 func tyCheckCallArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
     tyCheckMmioAt(env, callee, args)
+    tyCheckSwap(env, callee, args)
     let fname = exCalleeNameBoxed(callee)
     tyCheckMethodLabels(env, callee, args)
     let arity = tyArity(env, fname)
@@ -9593,6 +9601,40 @@ func tyCheckMmioAt(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using
         case .arg(let label, let isInout, let val): tyCheckMmioPtr(env, n, tyInferBoxed(env, val))
         default: noop()
     }
+}
+
+// §14.14 `Scheduler.swapContext(saving: MutPtr[Context], loading: Ptr[Context])`:
+// both labels, and the two pointers (a MutPtr also serves `loading`).
+func tyCheckSwap(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc {
+    if !esCalleeIs(callee, "Scheduler", "swapContext") { return }
+    if args.len() != 2 {
+        env.bad.push(own("Scheduler.swapContext takes exactly two arguments (saving: MutPtr[Context], loading: Ptr[Context])"))
+        return
+    }
+    var want: Vec[String] = Vec.new()
+    want.push(own("saving"))
+    want.push(own("loading"))
+    tyCheckLabels(env, own("swapContext"), want, args)
+    match args.get(0) ?? Nd.wildcard {
+        case .arg(let label, let io, let v): tySwapArg(env, "saving", "MutPtr[Context]", tyInferBoxed(env, v))
+        default: noop()
+    }
+    match args.get(1) ?? Nd.wildcard {
+        case .arg(let label, let io, let v): tySwapArg(env, "loading", "Ptr[Context]", tyInferBoxed(env, v))
+        default: noop()
+    }
+}
+
+func tySwapArg(_ env: inout TyEnv, _ which: Str, _ want: Str, _ got: String) using Alloc {
+    if got.len() == 0 || streq(got, want) { return }
+    if streq(which, "loading") && streq(got, "MutPtr[Context]") { return }
+    var s: String = "Scheduler.swapContext "
+    s.append(which)
+    s.append(" argument must be ")
+    s.append(want)
+    s.append(", got ")
+    s.append(got)
+    env.bad.push(s)
 }
 
 func tyCheckMmioPtr(_ env: inout TyEnv, _ n: String, _ at: String) using Alloc {

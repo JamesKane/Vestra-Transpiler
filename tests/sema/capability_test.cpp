@@ -993,6 +993,8 @@ TEST_CASE("@kernel_init is one-way; @boot can't call ordinary code (§14.7)") {
 
 TEST_CASE("swapContext and Context.start need Asm (§14.14 rule 5)") {
     auto r = check("@noinit static a: Context\n@noinit static b: Context\n"
-                   "func f() {\n    Scheduler.swapContext(a, b)\n}\n");
+                   "func f() {\n    let p: Ptr[Context] = &b\n"
+                   "    Scheduler.swapContext(saving: MutPtr.unchecked(fromAddress: p.address), "
+                   "loading: p)\n}\n");
     CHECK(r.first_message.find("missing capability 'Asm'") != std::string::npos);
 }
