@@ -12849,6 +12849,18 @@ func tyIsOptional(_ sp: Str) -> Bool {
 // `l ?? r` lowers to `(l).value_or(r)`.
 func emitBinary(_ env: inout TyEnv, _ op: Str, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc, Log {
     if streq(op, "??") { emitCoalesce(env, l, r); return }
+    // §4 `&+ &- &*` wrap through a prelude helper (cpp_emitter.cpp's
+    // emit_wrap_operand): an integer-literal operand goes in as a `wlit`.
+    if streq(op, "&+") || streq(op, "&-") || streq(op, "&*") {
+        if streq(op, "&+") { print("__vstr::wrap_add(") }
+        else if streq(op, "&-") { print("__vstr::wrap_sub(") }
+        else { print("__vstr::wrap_mul(") }
+        emitWrapOperand(env, l)
+        print(", ")
+        emitWrapOperand(env, r)
+        print(")")
+        return
+    }
     // §13 vector arithmetic: `a * x + y` over `[N]T` operands lowers each
     // operator to the runtime's element-wise helper (cpp_emitter.cpp keys on
     // the expression's Vector result type).
@@ -12878,11 +12890,39 @@ func emitBinary(_ env: inout TyEnv, _ op: Str, _ l: Vec[Nd], _ r: Vec[Nd]) using
     if rp { print(")") }
 }
 
+func emitWrapOperand(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc, Log {
+    if wrapIsLit(v) {
+        print("__vstr::wlit(")
+        emitBoxed(env, v)
+        print(")")
+        return
+    }
+    emitBoxed(env, v)
+}
+
+func wrapIsLit(_ v: Vec[Nd]) -> Bool {
+    if v.len() == 0 { return false }
+    return match v.get(0) ?? Nd.wildcard {
+        case .intLit(let t): true
+        case .unary(let op, let x): streq(op, "-") && wrapIsBareLit(x)
+        case _: false
+    }
+}
+
+func wrapIsBareLit(_ v: Vec[Nd]) -> Bool {
+    if v.len() == 0 { return false }
+    return match v.get(0) ?? Nd.wildcard {
+        case .intLit(let t): true
+        case _: false
+    }
+}
+
 // C++ binding strength of an emitted infix operator (higher binds tighter);
-// 0 = never infix in the output (`??`, ranges), so never parenthesized.
+// 0 = never infix in the output (`??`, ranges, `&+ &- &*`), so never
+// parenthesized.
 func cppBinopPrec(_ op: Str) -> Int {
-    if streq(op, "*") || streq(op, "/") || streq(op, "%") || streq(op, "&*") { return 13 }
-    if streq(op, "+") || streq(op, "-") || streq(op, "&+") || streq(op, "&-") { return 12 }
+    if streq(op, "*") || streq(op, "/") || streq(op, "%") { return 13 }
+    if streq(op, "+") || streq(op, "-") { return 12 }
     if streq(op, "<<") || streq(op, ">>") { return 11 }
     if streq(op, "<") || streq(op, "<=") || streq(op, ">") || streq(op, ">=") { return 9 }
     if streq(op, "==") || streq(op, "!=") { return 8 }

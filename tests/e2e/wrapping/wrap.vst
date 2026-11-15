@@ -1,0 +1,24 @@
+// §4 `&+ &- &*` always wrap: modulo 2^N at the operands' width, on signed
+// types too, where C++'s `+` would be undefined. Built with UBSan, so a
+// signed overflow in the lowering would stop the run.
+
+func main() using Log, Alloc -> Int32 {
+    let a: Int32 = 2147483647
+    let b: Int8 = -128
+    let c: UInt8 = 250
+    let d: Int64 = 4611686018427387904
+    let e: Int16 = 300
+    let f: Int = 5
+    let g: Int32 = 7
+    let s1 = a &+ 1
+    let s2 = b &- 1
+    let s3 = c &+ 10
+    let s4 = d &* 4
+    let s5 = e &* e
+    let s6 = 1 &- c
+    let s7 = f &+ g
+    let s8 = a &+ a &* 2
+    let s9 = c &+ c == 244
+    print("s1=\(s1) s2=\(s2) s3=\(s3) s4=\(s4) s5=\(s5) s6=\(s6) s7=\(s7) s8=\(s8) s9=\(s9)\n")
+    return 0
+}

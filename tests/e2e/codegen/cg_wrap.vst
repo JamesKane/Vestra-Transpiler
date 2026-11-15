@@ -1,0 +1,16 @@
+// §4 `&+ &- &*` lower to the prelude's wrap helpers; an integer-literal
+// operand (or a negated one) goes in as a `wlit`, and a wrapping operand is
+// a call, so it never needs parens.
+
+func step(_ x: Int32, _ y: Int32) -> Int32 {
+    let a = x &+ y
+    let b = x &- 1
+    let c = -1 &* y
+    let d = (x &+ y) << 2
+    let e = a &+ b &* c
+    return d &- e
+}
+
+func hash(_ h: UInt64, _ b: UInt8) -> UInt64 {
+    return (h ^ UInt64(b)) &* 1099511628211
+}

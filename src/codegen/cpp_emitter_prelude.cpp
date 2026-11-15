@@ -14,6 +14,7 @@
 #include <array>
 #include <ostream>
 #include <string_view>
+#include <utility>
 
 namespace vestra::codegen::detail {
 
@@ -37,6 +38,52 @@ void emit_prelude_never(std::ostream& hdr) {
     hdr << "    if (o.has_value()) { return *static_cast<O&&>(o); }\n";
     hdr << "    return f(coalesce_tag<std::remove_cvref_t<decltype(*o)>>{});\n";
     hdr << "}\n\n";
+    // §4 `&+ &- &*` wrap. The operation runs in an unsigned type at least
+    // as wide as the operands and as `unsigned` (so promotion can't
+    // overflow), and the conversion back to the operand type is modular. The result type is the
+    // narrower operand's, as sema's sized-side-wins rule picks; an integer
+    // literal operand arrives as a `wlit` and takes the other side's type.
+    // The helpers use no <type_traits>: the freestanding profile has none.
+    hdr << "struct wlit {\n";
+    hdr << "    unsigned long long v;\n";
+    hdr << "    template <class I> constexpr wlit(I x) : v(static_cast<unsigned long long>(x)) {}\n";
+    hdr << "};\n";
+    hdr << "template <bool, class A, class B> struct wrap_pick { using type = A; };\n";
+    hdr << "template <class A, class B> struct wrap_pick<false, A, B> { using type = B; };\n";
+    hdr << "template <class A, class B> struct wrap_ty {\n";
+    hdr << "    using type = typename wrap_pick<(sizeof(B) < sizeof(A)), B, A>::type;\n";
+    hdr << "};\n";
+    hdr << "template <class A> struct wrap_ty<A, wlit> { using type = A; };\n";
+    hdr << "template <class B> struct wrap_ty<wlit, B> { using type = B; };\n";
+    hdr << "template <> struct wrap_ty<wlit, wlit> { using type = long long; };\n";
+    hdr << "template <class T> struct wrap_fp { static constexpr bool v = false; };\n";
+    hdr << "template <> struct wrap_fp<float> { static constexpr bool v = true; };\n";
+    hdr << "template <> struct wrap_fp<double> { static constexpr bool v = true; };\n";
+    hdr << "template <> struct wrap_fp<long double> { static constexpr bool v = true; };\n";
+    hdr << "template <class T> struct wrap_uw { using type = unsigned; };\n";
+    hdr << "template <class T> requires(sizeof(T) > sizeof(unsigned)) struct wrap_uw<T> {\n";
+    hdr << "    using type = unsigned long long;\n";
+    hdr << "};\n";
+    hdr << "template <class T, class V> constexpr T wrap_in(V x) { return static_cast<T>(x); }\n";
+    hdr << "template <class T> constexpr T wrap_in(wlit x) {\n";
+    hdr << "    if constexpr (wrap_fp<T>::v) { return static_cast<T>(static_cast<long long>(x.v)); }\n";
+    hdr << "    else { return static_cast<T>(x.v); }\n";
+    hdr << "}\n";
+    static constexpr std::pair<const char*, const char*> wrap_ops[] = {
+        {"wrap_add", "+"}, {"wrap_sub", "-"}, {"wrap_mul", "*"}};
+    for (const auto& [fn, op] : wrap_ops) {
+        hdr << "template <class A, class B>\n";
+        hdr << "constexpr auto " << fn << "(A a, B b) -> typename wrap_ty<A, B>::type {\n";
+        hdr << "    using T = typename wrap_ty<A, B>::type;\n";
+        hdr << "    if constexpr (wrap_fp<T>::v) {\n";
+        hdr << "        return wrap_in<T>(a) " << op << " wrap_in<T>(b);\n";
+        hdr << "    } else {\n";
+        hdr << "        using W = typename wrap_uw<T>::type;\n";
+        hdr << "        return static_cast<T>(wrap_in<W>(a) " << op << " wrap_in<W>(b));\n";
+        hdr << "    }\n";
+        hdr << "}\n";
+    }
+    hdr << "\n";
 }
 
 void emit_prelude_str_queries(std::ostream& hdr) {

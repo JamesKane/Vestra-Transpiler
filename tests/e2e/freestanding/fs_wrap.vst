@@ -1,0 +1,6 @@
+// §4 the wrapping lowering under --no-libc: the prelude's wrap helpers need
+// only <type_traits>.
+
+func mix(_ h: UInt32, _ x: Int32) -> Int32 {
+    return Int32(h) &* 31 &+ x
+}

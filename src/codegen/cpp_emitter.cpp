@@ -638,6 +638,26 @@ void CppEmitter::unsupported(std::ostream& os, std::string_view what, diag::Sour
     os << "/* unsupported: " << what << " */";
 }
 
+// An operand of `&+ &- &*`: an integer literal, or a negated one, has no
+// Vestra type of its own (it takes the other side's), so it goes to the
+// prelude helper wrapped as a `wlit`.
+void CppEmitter::emit_wrap_operand(std::ostream& os, const ast::Expr& e) {
+    const ast::Expr* lit = &e;
+    if (e.kind == ast::NodeKind::UnaryExpr) {
+        const auto& u = static_cast<const ast::UnaryExpr&>(e);
+        if (u.op == ast::UnaryOp::Neg) {
+            lit = u.operand.get();
+        }
+    }
+    if (lit->kind != ast::NodeKind::IntLit) {
+        emit_expr(os, e);
+        return;
+    }
+    os << "__vstr::wlit(";
+    emit_expr(os, e);
+    os << ")";
+}
+
 const char* CppEmitter::binop_text(ast::BinaryOp op) {
     switch (op) {
     case ast::BinaryOp::Add:
@@ -690,19 +710,16 @@ const char* CppEmitter::binop_text(ast::BinaryOp op) {
 namespace {
 
 // C++ binding strength of an emitted binary operator (higher binds tighter).
-// Operators that never lower to infix C++ (`??` -> `.value_or`, ranges)
-// return 0, meaning "an atom": they never need parens as an operand.
+// Operators that never lower to infix C++ (`??` -> `.value_or`, ranges,
+// `&+` -> `__vstr::wrap_add`) return 0, meaning "an atom": they never need parens as an operand.
 int cpp_binop_prec(ast::BinaryOp op) {
     switch (op) {
     case ast::BinaryOp::Mul:
     case ast::BinaryOp::Div:
     case ast::BinaryOp::Mod:
-    case ast::BinaryOp::WrappingMul:
         return 13;
     case ast::BinaryOp::Add:
     case ast::BinaryOp::Sub:
-    case ast::BinaryOp::WrappingAdd:
-    case ast::BinaryOp::WrappingSub:
         return 12;
     case ast::BinaryOp::Shl:
     case ast::BinaryOp::Shr:
@@ -2927,6 +2944,20 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << ")";
                 break;
             }
+        }
+        // §4 `&+ &- &*` wrap: a prelude helper does the operation in
+        // unsigned, where C++ wraps too. An integer literal operand goes in
+        // as a `wlit`, so the result takes the other operand's type.
+        if (b.op == ast::BinaryOp::WrappingAdd || b.op == ast::BinaryOp::WrappingSub
+            || b.op == ast::BinaryOp::WrappingMul) {
+            os << (b.op == ast::BinaryOp::WrappingAdd   ? "__vstr::wrap_add("
+                   : b.op == ast::BinaryOp::WrappingSub ? "__vstr::wrap_sub("
+                                                        : "__vstr::wrap_mul(");
+            emit_wrap_operand(os, *b.lhs);
+            os << ", ";
+            emit_wrap_operand(os, *b.rhs);
+            os << ")";
+            break;
         }
         // The tree already encodes §17.7 precedence, but C++ re-parses the
         // text with its own table. Parenthesize an operand only where the two
