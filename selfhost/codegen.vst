@@ -3159,17 +3159,81 @@ func tyDerives(_ env: inout TyEnv, _ target: Str, _ proto: Str) using Alloc -> B
 // members for free), and an explicit clone() for Clone that delegates to the
 // implicit copy constructor. Shared by the struct and the sum-type enum
 // wrapper, which emit the identical pair.
-func emitDerivedMembers(_ env: inout TyEnv, _ name: Str) using Alloc, Log {
+// derive(Ord) sits between them: a struct's `<` compares `fields` in order
+// (`ordFields` is false for the sum-type wrapper, whose `<` defers to the
+// variant's case-then-payload order), and the other three come from `<`.
+func emitDerivedMembers(_ env: inout TyEnv, _ name: Str, _ fields: Vec[Nd], _ ordFields: Bool) using Alloc, Log {
     if tyDerives(env, name, "Eq") {
         print("    [[nodiscard]] bool operator==(const ")
         print(name)
         print("&) const noexcept = default;\n")
+    }
+    if tyDerives(env, name, "Ord") {
+        if ordFields { emitOrdLt(name, fields) }
+        else {
+            print("    [[nodiscard]] bool operator<(const ")
+            print(name)
+            print("& o) const noexcept { return value < o.value; }\n")
+        }
+        emitOrdDerived(name)
     }
     if tyDerives(env, name, "Clone") {
         print("    [[nodiscard]] ")
         print(name)
         print(" clone() const { return *this; }\n")
     }
+}
+
+// `    bool operator<(const S& o) const noexcept { if (f < o.f) { return true; }
+// if (o.f < f) { return false; } ... return false; }`, embeds skipped.
+func emitOrdLt(_ name: Str, _ fields: Vec[Nd]) using Alloc, Log {
+    var named: Vec[String] = Vec.new()
+    var i: Int = 0
+    while i < fields.len() {
+        match fields.get(i) ?? Nd.wildcard {
+            case .field(let kind, let fname, let ty, let fattrs):
+                if !streq(kind, "embed ") && ty.len() > 0 { named.push(own(fname)) }
+            default: noop()
+        }
+        i = i + 1
+    }
+    print("    [[nodiscard]] bool operator<(const ")
+    print(name)
+    print("&")
+    if named.len() > 0 { print(" o") }
+    print(") const noexcept {")
+    var k: Int = 0
+    while k < named.len() {
+        print(" ")
+        emitOrdStep(named.get(k) ?? own(""))
+        k = k + 1
+    }
+    print(" return false; }\n")
+}
+
+// `if (f < o.f) { return true; } if (o.f < f) { return false; }`
+func emitOrdStep(_ f: Str) using Log {
+    print("if (")
+    print(f)
+    print(" < o.")
+    print(f)
+    print(") { return true; } if (o.")
+    print(f)
+    print(" < ")
+    print(f)
+    print(") { return false; }")
+}
+
+func emitOrdDerived(_ name: Str) using Log {
+    print("    [[nodiscard]] bool operator>(const ")
+    print(name)
+    print("& o) const noexcept { return o < *this; }\n")
+    print("    [[nodiscard]] bool operator<=(const ")
+    print(name)
+    print("& o) const noexcept { return !(o < *this); }\n")
+    print("    [[nodiscard]] bool operator>=(const ")
+    print(name)
+    print("& o) const noexcept { return !(*this < o); }\n")
 }
 
 func tyRecordEnumDecl(_ env: inout TyEnv, _ name: String, _ cases: Vec[Nd], _ methods: Vec[Nd], _ generics: Vec[Nd]) using Alloc {
@@ -6745,7 +6809,7 @@ func emitPayloadEnum(_ env: inout TyEnv, _ name: Str, _ cases: Vec[Nd]) using Al
         i = i + 1
     }
     emitVariantMember(cases)
-    emitDerivedMembers(env, name)
+    emitDerivedMembers(env, name, noE(), false)
     print("};\n\n")
 }
 
@@ -6782,7 +6846,32 @@ func emitCaseStructBody(_ env: inout TyEnv, _ owner: Str, _ cname: Str, _ payloa
         print("_t&) const noexcept = default;")
         any = true
     }
+    if tyDerives(env, owner, "Ord") {
+        if any { print(" ") }
+        emitCaseOrdLt(cname, payload)
+        any = true
+    }
     if any { print(" };\n") } else { print("};\n") }
+}
+
+// A case_t's lexicographic `<` over its payload fields (label, or `_<i>`).
+func emitCaseOrdLt(_ cname: Str, _ payload: Vec[Nd]) using Alloc, Log {
+    print("[[nodiscard]] bool operator<(const ")
+    print(cname)
+    print("_t&")
+    if payload.len() > 0 { print(" o") }
+    print(") const noexcept { ")
+    var i: Int = 0
+    while i < payload.len() {
+        match payload.get(i) ?? Nd.wildcard {
+            case .payElem(let label, let ty):
+                if streq(label, "") { emitOrdStep("_\(intToStr(i))") } else { emitOrdStep(label) }
+            default: noop()
+        }
+        print(" ")
+        i = i + 1
+    }
+    print("return false; }")
 }
 
 func emitPayloadField(_ pe: Nd, _ idx: Int) using Alloc, Log {
@@ -6933,7 +7022,7 @@ func emitStructDef(_ env: inout TyEnv, _ name: Str, _ fields: Vec[Nd], _ methods
         emitField(fields.get(i) ?? Nd.wildcard, isUnion)
         i = i + 1
     }
-    emitDerivedMembers(env, name)
+    emitDerivedMembers(env, name, fields, true)
     var m: Int = 0
     while m < methods.len() {
         emitMethod(env, name, methods.get(m) ?? Nd.wildcard)

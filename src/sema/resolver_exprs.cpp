@@ -1094,6 +1094,16 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
     return t;
 }
 
+bool Resolver::payload_enum(TypePtr t) {
+    if (t == nullptr || t->kind() != TypeKind::Enum || t->nominal_decl() == nullptr
+        || t->nominal_decl()->kind != ast::NodeKind::Enum) {
+        return false;
+    }
+    const auto& ed = static_cast<const ast::EnumDecl&>(*t->nominal_decl());
+    return !ed.generics.empty()
+           || std::ranges::any_of(ed.cases, [](const auto& c) { return !c.payload.empty(); });
+}
+
 bool Resolver::nominal_cmp_kind(TypePtr t) {
     return t != nullptr && (t->kind() == TypeKind::OpaqueType || t->kind() == TypeKind::Struct);
 }
@@ -1110,12 +1120,11 @@ std::string Resolver::opaque_underlying_text(TypePtr t) {
 
 void Resolver::check_nominal_comparison(const ast::BinaryExpr& b, TypePtr lhs) {
     const bool equality = b.op == ast::BinaryOp::Eq || b.op == ast::BinaryOp::Ne;
-    if (equality && type_satisfies_bound(lhs, "Eq")) {
+    if (type_satisfies_bound(lhs, equality ? "Eq" : "Ord")) {
         return;
     }
     const std::string name = lhs->describe();
-    const std::string need = equality ? std::format("`derive(Eq) for {}`", name)
-                                      : std::string("an ordering, which no derive provides yet");
+    const std::string need = std::format("`derive({}) for {}`", equality ? "Eq" : "Ord", name);
     std::string why;
     if (lhs->kind() == TypeKind::OpaqueType) {
         why = std::format(": an opaque type inherits none of {}'s operations",
@@ -1589,9 +1598,11 @@ TypePtr Resolver::check_binary(const ast::BinaryExpr& b, TypePtr expected) {
         }
         // §6, §12.3 an opaque type inherits none of its representation's
         // operations, and a struct compares only by a derive: `==`/`!=`
-        // need `derive(Eq)`, and no derive gives an ordering yet. (Plain
-        // enum cases compare without one.)
-        if (nominal_cmp_kind(lhs)) {
+        // need `derive(Eq)`, the orderings `derive(Ord)`. An enum whose
+        // cases carry payloads is ordered only by `derive(Ord)` as well.
+        // (Plain enum cases compare without one.)
+        if (nominal_cmp_kind(lhs) || (b.op != ast::BinaryOp::Eq && b.op != ast::BinaryOp::Ne
+                                      && payload_enum(lhs))) {
             check_nominal_comparison(b, lhs);
         }
         // §7 an operation on a generic parameter is gated by its bounds:

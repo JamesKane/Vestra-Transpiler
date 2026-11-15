@@ -1,6 +1,7 @@
 // §6 an opaque type inherits none of its representation's operations, and a
-// struct compares only by a derive. The bootstrap accepted `==` and `<` on
-// both, and checked no compound assignment against its operator.
+// struct compares only by a derive: equality by derive(Eq), an ordering by
+// derive(Ord). The bootstrap accepted `==` and `<` on both, and checked no
+// compound assignment against its operator.
 
 opaque type EntityId = UInt32
 opaque type UserId = UInt32
@@ -12,6 +13,17 @@ derive(Eq) for P
 
 struct G[T] {
     let v: T
+}
+
+// Cases with payloads lower to a variant, which has no ordering of its own.
+enum Shape {
+    case dot
+    case circle(r: Int32)
+}
+derive(Eq) for Shape
+
+func before(s: Shape, t: Shape) -> Bool {
+    return s < t
 }
 
 func cmp(a: EntityId, b: EntityId, p: P, r: P, g: G[Int32], h: G[Int32]) -> Bool {

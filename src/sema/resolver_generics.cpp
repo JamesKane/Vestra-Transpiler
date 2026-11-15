@@ -195,9 +195,8 @@ bool Resolver::type_satisfies_bound(TypePtr t, std::string_view protocol) const 
         }
     }
     if (protocol == "Comparable" || protocol == "Ordered") {
-        // Numeric, character, and string primitives have a natural ordering.
-        // v0.5 has no derive(Comparable), so a struct/enum can't yet declare
-        // one.
+        // Numeric, character, and string primitives have a natural ordering;
+        // a struct, enum or opaque type has one by `derive(Ord)`.
         if (t->is_numeric()) {
             return true;
         }
@@ -207,6 +206,10 @@ bool Resolver::type_satisfies_bound(TypePtr t, std::string_view protocol) const 
         case TypeKind::StrConst:
         case TypeKind::String:
             return true;
+        case TypeKind::Struct:
+        case TypeKind::Enum:
+        case TypeKind::OpaqueType:
+            return decl_derives(t->nominal_decl(), "Ord");
         default:
             return false;
         }

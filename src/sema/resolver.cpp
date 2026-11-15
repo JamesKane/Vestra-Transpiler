@@ -963,7 +963,7 @@ void Resolver::check_bound_names() {
 
 void Resolver::check_derive_names() {
     // The derives the emitter implements.
-    constexpr std::array<std::string_view, 6> known{"Eq", "Hash", "Clone",
+    constexpr std::array<std::string_view, 7> known{"Eq", "Ord", "Hash", "Clone",
                                                     "Debug", "Display", "Default"};
     for (const auto& d : unit_->decls) {
         if (d->kind != ast::NodeKind::Derive) {
@@ -981,10 +981,10 @@ void Resolver::check_derive_names() {
             if (std::ranges::any_of(known, [&](std::string_view n) { return n == name; })) {
                 continue;
             }
-            // `Ord` and a user protocol's reflective default are spec features
-            // this compiler doesn't have yet.
+            // A user protocol's reflective default is a spec feature this
+            // compiler doesn't have yet.
             const auto* sym = scopes_.global().lookup(name);
-            if (name == "Ord" || (sym != nullptr && sym->kind == SymbolKind::Protocol)) {
+            if (sym != nullptr && sym->kind == SymbolKind::Protocol) {
                 error_at(p->range, std::format("derive({}) is not supported yet", name));
             } else {
                 error_at(p->range, std::format("unknown derive '{}'", name));

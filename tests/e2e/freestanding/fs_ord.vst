@@ -1,0 +1,23 @@
+// §12.3 derive(Ord) under --no-libc: the operators are spelled out rather
+// than a defaulted `<=>` (which needs <compare>), and the freestanding
+// variant gains the case-then-payload `<` a sum enum defers to.
+
+struct P {
+    let a: Int32
+    let b: UInt8
+}
+derive(Eq, Ord) for P
+
+enum Shape {
+    case dot
+    case circle(r: Int32)
+}
+derive(Eq, Ord) for Shape
+
+func lt(_ x: P, _ y: P) -> Bool {
+    return x < y
+}
+
+func before(_ x: Shape, _ y: Shape) -> Bool {
+    return x < y
+}

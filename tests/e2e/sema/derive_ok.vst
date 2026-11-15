@@ -1,9 +1,23 @@
-// The six derives the emitter implements.
+// The seven derives the emitter implements, and the orderings derive(Ord)
+// admits on a struct, an enum with payloads and an opaque type.
 
 struct Point {
     var x: Int32
     var y: Int32
 }
-derive(Eq, Hash, Clone, Debug, Display, Default) for Point
+derive(Eq, Ord, Hash, Clone, Debug, Display, Default) for Point
+
+enum Shape {
+    case dot
+    case circle(r: Int32)
+}
+derive(Eq, Ord) for Shape
+
+opaque type Id = UInt32
+derive(Eq, Ord) for Id
+
+func before(p: Point, q: Point, s: Shape, t: Shape, i: Id, j: Id) -> Bool {
+    return p < q && s <= t && i > j
+}
 
 func main() -> Int32 { return 0 }

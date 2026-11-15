@@ -7647,11 +7647,23 @@ func tyDerives(_ env: inout TyEnv, _ t: String, _ p: String) using Alloc -> Bool
 // generic parameter is deferred to the instantiation.
 func tyCheckDerive(_ env: inout TyEnv, _ ps: Vec[Nd], _ target: Vec[Nd]) using Alloc {
     let t = tyAnnSpelling(target)
+    if !esInList(env.structs, t) && !esInList(env.eName, t) && !esInList(env.opName, t) { return }
+    // §18.1 `protocol Ord: Eq`: an ordering is adopted alongside equality.
+    var o: Int = 0
+    while o < ps.len() {
+        if streq(tyDeriveProtoName(ps.get(o) ?? Nd.wildcard), "Ord") && !tyDerives(env, t, "Eq") {
+            var m: String = "derive(Ord) for '"
+            m.append(t)
+            m.append("' needs derive(Eq) too: Ord refines Eq")
+            env.bad.push(m)
+        }
+        o = o + 1
+    }
     if !esInList(env.structs, t) && !esInList(env.eName, t) { return }
     var i: Int = 0
     while i < ps.len() {
         let p = tyDeriveProtoName(ps.get(i) ?? Nd.wildcard)
-        if streq(p, "Eq") || streq(p, "Hash") || streq(p, "Clone") || streq(p, "Debug") || streq(p, "Display") {
+        if streq(p, "Eq") || streq(p, "Ord") || streq(p, "Hash") || streq(p, "Clone") || streq(p, "Debug") || streq(p, "Display") {
             if esInList(env.structs, t) { tyDeriveFields(env, p, t) } else { tyDerivePayloads(env, p, t) }
         }
         i = i + 1
@@ -7713,6 +7725,14 @@ func tyDrvConforms(_ env: inout TyEnv, _ p: String, _ sp: String, _ owner: Strin
     if n == 0 || depth > 32 { return true }
     if tyOwnerGen(env, owner, sp) { return true }
     let display = streq(p, "Debug") || streq(p, "Display")
+    if streq(p, "Ord") {
+        // Numbers, characters and strings order naturally; a nominal type by
+        // `derive(Ord)`. Bool, optionals, arrays and Vec have no ordering.
+        if tyIsNumeric(sp) || streq(sp, "Char") || streq(sp, "String") || streq(sp, "Str") || streq(sp, "StrConst") { return true }
+        let ob = tyBaseName(sp)
+        if esInList(env.structs, ob) || esInList(env.eName, ob) || esInList(env.opName, ob) { return tyDerives(env, ob, "Ord") }
+        return false
+    }
     if tyDrvPrim(sp) { return true }
     if (sp.byteAt(n - 1) ?? 0) == 63 { return tyDrvConforms(env, p, own(sp.slice(0, n - 1)), owner, depth + 1) }   // '?'
     if (sp.byteAt(0) ?? 0) == 91 {   // '[': the C++ std::array has no std::hash
@@ -12621,6 +12641,7 @@ func tyCheckBinOp(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) 
     } else if isCmpOp(op) {
         if !tyReqMatch(lt, rt) { env.bad.push(tyDiffMsg(lt, rt)) }
         else if esInList(env.opName, lt) || esInList(env.structs, tyBaseName(lt)) { tyNominalCmp(env, op, lt) }
+        else if !streq(op, "==") && !streq(op, "!=") && tyPayloadEnum(env, tyBaseName(lt)) { tyNominalCmp(env, op, lt) }
         else if tyGenSeq(env, lt) >= 0 {
             // §7 `==` / `!=` on a generic parameter need Eq, orderings Ord.
             var need: String = "Comparable"
@@ -12630,24 +12651,31 @@ func tyCheckBinOp(_ env: inout TyEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd]) 
     }
 }
 
+// An enum lowered as a sum type (a case carries a payload, or it is generic):
+// C++ gives it no ordering of its own.
+func tyPayloadEnum(_ env: inout TyEnv, _ n: String) using Alloc -> Bool {
+    if !esInList(env.eName, n) { return false }
+    return esInList(env.ecpEnum, n) || esInList(env.tgOwner, n)
+}
+
 // §6, §12.3 an opaque type inherits none of its representation's operations,
-// and a struct compares only by a derive: `==` / `!=` need `derive(Eq)`, and no
-// derive gives an ordering yet.
+// and a struct compares only by a derive: `==` / `!=` need `derive(Eq)`, the
+// orderings `derive(Ord)`. An enum with payloads is ordered only by
+// `derive(Ord)` too.
 func tyNominalCmp(_ env: inout TyEnv, _ op: String, _ lt: String) using Alloc {
     let eq = streq(op, "==") || streq(op, "!=")
-    if eq && tyDerives(env, tyBaseName(lt), "Eq") { return }
+    var need: String = "Ord"
+    if eq { need = "Eq" }
+    if tyDerives(env, tyBaseName(lt), need) { return }
     var m: String = "operator '"
     m.append(op)
     m.append("' on ")
     m.append(lt)
-    m.append(" needs ")
-    if eq {
-        m.append("`derive(Eq) for ")
-        m.append(lt)
-        m.append("`")
-    } else {
-        m.append("an ordering, which no derive provides yet")
-    }
+    m.append(" needs `derive(")
+    m.append(need)
+    m.append(") for ")
+    m.append(lt)
+    m.append("`")
     let oi = tyStrIndex(env.opName, lt)
     if oi >= 0 {
         m.append(": an opaque type inherits none of ")
@@ -13659,8 +13687,8 @@ func attrCheck(_ u: NUnit, _ attrs: Vec[String], _ cfgBad: Vec[String], _ boundB
     return bad
 }
 
-// The derives the emitter implements (§12.3); `Ord` and a user protocol's
-// reflective default are spec features not implemented yet.
+// The derives the emitter implements (§12.3); a user protocol's reflective
+// default is a spec feature not implemented yet.
 func deriveCheck(_ bad: inout Vec[String], _ protos: Vec[Nd], _ unitProtos: Vec[String]) using Alloc {
     var i: Int = 0
     while i < protos.len() {
@@ -13673,10 +13701,10 @@ func deriveCheck(_ bad: inout Vec[String], _ protos: Vec[Nd], _ unitProtos: Vec[
 }
 
 func deriveName(_ bad: inout Vec[String], _ n: String, _ unitProtos: Vec[String]) using Alloc {
-    if containsSub(n, ".") || streq(n, "Eq") || streq(n, "Hash") || streq(n, "Clone")
+    if containsSub(n, ".") || streq(n, "Eq") || streq(n, "Ord") || streq(n, "Hash") || streq(n, "Clone")
         || streq(n, "Debug") || streq(n, "Display") || streq(n, "Default") { return }
     var m: String = ""
-    if streq(n, "Ord") || tnContains(unitProtos, n) {
+    if tnContains(unitProtos, n) {
         m.append("derive(")
         m.append(n)
         m.append(") is not supported yet")

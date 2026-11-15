@@ -26,4 +26,30 @@ enum E {
 }
 derive(Eq, Display) for E
 
+// An ordering needs every field ordered: Bool, an optional, an array and Vec
+// have none, nor does a struct without derive(Ord).
+struct O {
+    let b: Bool
+    let o: Int32?
+    let a: [2]UInt8
+    let xs: Vec[Int32]
+    let i: Inner
+}
+derive(Eq, Ord) for O
+
+enum F {
+    case p(Inner)
+    case q(Int32)
+}
+derive(Eq, Ord) for F
+
+// derive(Ord) needs derive(Eq) beside it, since `protocol Ord: Eq`.
+struct Lone {
+    var x: Int32
+}
+derive(Ord) for Lone
+
+opaque type Id = UInt32
+derive(Ord) for Id
+
 func main() -> Int32 { return 0 }

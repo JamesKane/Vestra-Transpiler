@@ -380,6 +380,17 @@ void Resolver::check_derive_fields(const ast::DeriveDecl& dd) {
     if (sym == nullptr || sym->decl == nullptr) {
         return;
     }
+    // §18.1 `protocol Ord: Eq`: an ordering is adopted alongside equality.
+    for (const auto& proto : dd.protocols) {
+        if (proto != nullptr && proto->kind == ast::NodeKind::NamedType
+            && static_cast<const ast::NamedType&>(*proto).path.size() == 1
+            && static_cast<const ast::NamedType&>(*proto).path.front() == "Ord"
+            && !decl_derives(static_cast<const ast::Decl*>(sym->decl), "Eq")) {
+            error_at(proto->range,
+                     std::format("derive(Ord) for '{}' needs derive(Eq) too: Ord refines Eq",
+                                 tt.path.back()));
+        }
+    }
     const std::vector<ast::GenericParam>* generics = nullptr;
     if (sym->kind == SymbolKind::Struct) {
         generics = &static_cast<const ast::StructDecl&>(*sym->decl).generics;
@@ -411,7 +422,7 @@ void Resolver::check_derive_fields(const ast::DeriveDecl& dd) {
         }
         const std::string& p = pn.path.front();
         const bool display = p == "Debug" || p == "Display";
-        if (!display && p != "Eq" && p != "Hash" && p != "Clone") {
+        if (!display && p != "Eq" && p != "Ord" && p != "Hash" && p != "Clone") {
             continue;
         }
         auto conforms = [&](TypePtr ft) {

@@ -251,9 +251,12 @@ private:
     // checked as a value and not as `128` then negated.
     void check_int_literal_range(const ast::IntLit& lit, TypePtr t);
     // §6 an opaque type inherits none of its representation's operations,
-    // and a struct has none until derived: a comparison needs `derive(Eq)`
-    // (equality) and is never an ordering.
+    // and a struct has none until derived: equality needs `derive(Eq)`, an
+    // ordering `derive(Ord)`.
     static bool nominal_cmp_kind(TypePtr t);
+    // An enum lowered as a sum type (a case carries a payload, or it is
+    // generic): C++ gives it no ordering of its own.
+    static bool payload_enum(TypePtr t);
     void check_nominal_comparison(const ast::BinaryExpr& b, TypePtr lhs);
     std::string opaque_underlying_text(TypePtr t);
     // §4 a compound assignment `x op= y` obeys the rules of `x op y`.

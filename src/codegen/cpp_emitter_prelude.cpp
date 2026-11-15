@@ -1913,6 +1913,7 @@ class variant {
     ~variant() { __each([](auto& a) { using A = remove_cvref_t<decltype(a)>; a.~A(); }); }
     [[nodiscard]] constexpr size_t index() const { return idx_; }
     friend bool operator==(const variant& a, const variant& b) { return a.idx_ == b.idx_ && a.__eq_at<0>(b); }
+    friend bool operator<(const variant& a, const variant& b) { return a.idx_ != b.idx_ ? a.idx_ < b.idx_ : a.__lt_at<0>(b); }
     template <size_t I> constexpr auto& __get() { return *reinterpret_cast<typename __vstr_nth<I, Ts...>::type*>(buf_); }
     template <size_t I> constexpr const auto& __get() const { return *reinterpret_cast<const typename __vstr_nth<I, Ts...>::type*>(buf_); }
     template <class F> void __each(F&& f) { __each_at<0>(f); }
@@ -1921,6 +1922,13 @@ class variant {
     template <size_t I> bool __eq_at(const variant& b) const {
         if constexpr (I < sizeof...(Ts)) {
             return idx_ == I ? __get<I>() == b.template __get<I>() : __eq_at<I + 1>(b);
+        } else {
+            return false;
+        }
+    }
+    template <size_t I> bool __lt_at(const variant& b) const {
+        if constexpr (I < sizeof...(Ts)) {
+            return idx_ == I ? __get<I>() < b.template __get<I>() : __lt_at<I + 1>(b);
         } else {
             return false;
         }

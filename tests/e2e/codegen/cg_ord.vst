@@ -1,0 +1,48 @@
+// §12.3 derive(Ord): a struct orders lexicographically by its fields in
+// declaration order, an enum with payloads by case then payload, and an
+// opaque type by its representation. The operators are spelled out from one
+// lexicographic `<` (no defaulted `<=>`, which needs <compare>), and a sum
+// enum's `<` defers to the variant's, which orders by case index first.
+
+struct P {
+    let a: Int32
+    let b: String
+}
+derive(Eq, Ord) for P
+
+enum Shape {
+    case dot
+    case circle(r: Int32)
+    case rect(w: Int32, h: Int32)
+}
+derive(Eq, Ord) for Shape
+
+opaque type Id = UInt32
+derive(Eq, Ord) for Id
+
+func biggest[T: Ord](_ a: T, _ b: T) -> T {
+    if a > b { return a }
+    return b
+}
+
+func flag(_ c: Bool) -> Int32 {
+    if c { return 1 }
+    return 0
+}
+
+func main() using Log, Alloc -> Int32 {
+    let p = P(a: 1, b: "x")
+    let q = P(a: 1, b: "y")
+    let r = P(a: 0, b: "z")
+    let s1 = Shape.circle(r: 5)
+    let s2 = Shape.rect(w: 1, h: 2)
+    let s3 = Shape.circle(r: 7)
+    let i = Id(3)
+    let j = Id(9)
+    let pq = flag(p < q) * 1000 + flag(q >= p) * 100 + flag(r < p) * 10 + flag(p <= p)
+    let sh = flag(s1 < s2) * 1000 + flag(s1 < s3) * 100 + flag(Shape.dot < s1) * 10 + flag(s3 > s1)
+    let id = flag(i < j) * 10 + flag(j <= i)
+    let big = biggest(p, q)
+    print("pq=\(pq) sh=\(sh) id=\(id) big=\(big.b)")
+    return 0
+}

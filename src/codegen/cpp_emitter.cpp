@@ -1841,6 +1841,19 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
             hdr << "[[nodiscard]] bool operator==(const " << s.name
                 << "&) const noexcept = default;\n";
         }
+        // §12.3 derive(Ord): a lexicographic `<` over the fields in
+        // declaration order, and the other three from it. Spelled out
+        // rather than a defaulted `<=>`, which needs <compare> and so is
+        // unavailable to the freestanding profile.
+        if (it->second.contains("Ord")) {
+            std::vector<std::string> names;
+            for (const auto& f : s.fields) {
+                if (f.kind != ast::StructDecl::Field::Kind::Embed && f.type != nullptr) {
+                    names.push_back(f.name);
+                }
+            }
+            emit_ord_ops(hdr, s.name, names);
+        }
         // §12.3 derive(Clone): emit an explicit `clone()` that delegates
         // to the implicit C++ copy ctor. For v0.5 every Vestra struct is
         // copy-constructible (we don't have move-only types yet), so the
@@ -2324,6 +2337,10 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
     // member compares).
     const bool wants_eq =
         derives_by_target_.contains(e.name) && derives_by_target_.at(e.name).contains("Eq");
+    // derive(Ord) likewise: `std::variant`'s `<` orders by case index, then
+    // by the payload's own `<`, which each case_t spells out field by field.
+    const bool wants_ord =
+        derives_by_target_.contains(e.name) && derives_by_target_.at(e.name).contains("Ord");
     // §7 generics phase 2 — `template <class T, ...>` ahead of the wrapper
     // struct. The per-case `*_t` structs are nested inside it, so a payload
     // field typed T refers to the enclosing template's parameter; no inner
@@ -2365,6 +2382,17 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
             hdr << "[[nodiscard]] bool operator==(const " << c.name
                 << "_t&) const noexcept = default; ";
         }
+        if (wants_ord) {
+            hdr << "[[nodiscard]] bool operator<(const " << c.name << "_t&"
+                << (c.payload.empty() ? "" : " o") << ") const noexcept { ";
+            for (std::size_t i = 0; i < c.payload.size(); ++i) {
+                const std::string field =
+                    c.payload[i].first.empty() ? std::format("_{}", i) : c.payload[i].first;
+                hdr << "if (" << field << " < o." << field << ") { return true; } if (o."
+                    << field << " < " << field << ") { return false; } ";
+            }
+            hdr << "return false; } ";
+        }
         hdr << "};\n";
     }
     write_indent(hdr, 1);
@@ -2385,6 +2413,12 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
             hdr << "[[nodiscard]] bool operator==(const " << e.name
                 << "&) const noexcept = default;\n";
         }
+        if (wants_ord) {
+            write_indent(hdr, 1);
+            hdr << "[[nodiscard]] bool operator<(const " << e.name
+                << "& o) const noexcept { return value < o.value; }\n";
+            emit_ord_derived(hdr, e.name);
+        }
         // §12.3 derive(Clone): same shape as the struct path.
         if (it->second.contains("Clone")) {
             write_indent(hdr, 1);
@@ -2392,6 +2426,32 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
         }
     }
     hdr << "};\n\n";
+}
+
+void CppEmitter::emit_ord_ops(std::ostream& hdr,
+                              std::string_view type_name,
+                              const std::vector<std::string>& fields) {
+    write_indent(hdr, 1);
+    hdr << "[[nodiscard]] bool operator<(const " << type_name << "&" << (fields.empty() ? "" : " o")
+        << ") const noexcept {";
+    for (const auto& f : fields) {
+        hdr << " if (" << f << " < o." << f << ") { return true; } if (o." << f << " < " << f
+            << ") { return false; }";
+    }
+    hdr << " return false; }\n";
+    emit_ord_derived(hdr, type_name);
+}
+
+void CppEmitter::emit_ord_derived(std::ostream& hdr, std::string_view type_name) {
+    write_indent(hdr, 1);
+    hdr << "[[nodiscard]] bool operator>(const " << type_name
+        << "& o) const noexcept { return o < *this; }\n";
+    write_indent(hdr, 1);
+    hdr << "[[nodiscard]] bool operator<=(const " << type_name
+        << "& o) const noexcept { return !(o < *this); }\n";
+    write_indent(hdr, 1);
+    hdr << "[[nodiscard]] bool operator>=(const " << type_name
+        << "& o) const noexcept { return !(*this < o); }\n";
 }
 
 // §10 move-on-consume helpers ------------------------------------------------

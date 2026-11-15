@@ -237,7 +237,9 @@ Missing entirely, in rough order of need:
 - **Text:** `String.push(Char)`, `asStr()`; slicing a `StrConst` yields a
   `StrConst`.
 - **Protocols as protocols:** `Eq`, `Hash`, `Display` and the rest, not only
-  `derive` names; `derive(Ord)` with `compare()`.
+  `derive` names; `compare()` returning an ordering (`derive(Ord)` gives
+  `<`, `<=`, `>`, `>=` already, but §18.1's `Ordering` collides with the
+  atomic memory order of the same name).
 - **Spelled-out types:** `Optional[T]`, `Result[T, E]`.
 - **Numerics:** `core.math`, `Matrix`, `Quat`, and math over `Float32`.
 

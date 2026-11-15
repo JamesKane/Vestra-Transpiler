@@ -176,6 +176,12 @@ private:
     // non-function-pointer types this falls through to `emit_type` +
     // the name. Used at every site that declares a variable / param
     // / field of a function-pointer type.
+    // §12.3 derive(Ord): a lexicographic `<` over `fields`, then the
+    // other three orderings from `<`.
+    void emit_ord_ops(std::ostream& hdr,
+                      std::string_view type_name,
+                      const std::vector<std::string>& fields);
+    void emit_ord_derived(std::ostream& hdr, std::string_view type_name);
     void emit_type_with_name(std::ostream& os,
                              const ast::Type& t,
                              std::string_view name,

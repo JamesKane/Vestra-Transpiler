@@ -1,5 +1,4 @@
-// A misspelt or invented derive used to be a silent no-op. `Ord` is a
-// spec derive this compiler doesn't implement yet.
+// A misspelt or invented derive used to be a silent no-op.
 
 struct Point {
     var x: Int32
