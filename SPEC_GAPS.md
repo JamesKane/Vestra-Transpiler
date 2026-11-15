@@ -128,7 +128,6 @@ Each gap has one of four kinds:
 | §7 | Associated types (`type Element = ...` in a conformance) | missing | Parse error. The spec's grammar has no production for it either; see [spec holes](#spec-holes-found-along-the-way). |
 | §7 | `@retroactive` is required on a foreign conformance | missing | `extension Int32: Hashable {}` is accepted. |
 | §7 | Operator overloading via `static func +` | missing | "expected 'let', 'var', 'embed', or 'func' inside struct". |
-| §7 | A struct field of function type | missing | Checks, but the C++ doesn't compile: `var f: (Int32) -> Int32` is emitted as `std::int32_t(*)(const std::int32_t&) f{};`, with the name outside the declarator. |
 
 ### §8: capabilities
 

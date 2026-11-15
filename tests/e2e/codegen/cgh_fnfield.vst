@@ -1,0 +1,33 @@
+// §7 a struct field or enum payload of function type: the name sits inside
+// the C++ declarator, `R(*f)(const T1&){}`, in the header the bootstrap and
+// vgen both emit.
+
+struct H {
+    var f: (Int32) -> Int32
+    var n: Int32
+}
+
+enum Op {
+    case unary(g: (Int32) -> Int32)
+    case none_
+}
+
+func dbl(x: Int32) -> Int32 { return x * 2 }
+func inc(x: Int32) -> Int32 { return x + 1 }
+
+func run(o: Op, x: Int32) -> Int32 {
+    return match o {
+        case .unary(let g): g(x)
+        case .none_: x
+    }
+}
+
+func main() using Log, Alloc -> Int32 {
+    var h = H(f: dbl, n: 3)
+    let g = h.f
+    print("v=\(g(h.n))\n")
+    h.f = inc
+    var hs: [2]H = [H(f: dbl, n: 1), H(f: inc, n: 2)]
+    print("w=\(hs[1].f(5)) h=\(h.f(h.n)) o=\(run(o: Op.unary(g: dbl), x: 21))\n")
+    return 0
+}

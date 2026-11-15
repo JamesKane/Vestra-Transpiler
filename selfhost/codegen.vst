@@ -6793,13 +6793,11 @@ func emitPayloadField(_ pe: Nd, _ idx: Int) using Alloc, Log {
 }
 
 func emitPayloadFieldParts(_ label: Str, _ ty: Vec[Nd], _ idx: Int) using Alloc, Log {
-    emitTypeBoxed(ty)
-    print(" ")
     if streq(label, "") {
-        print("_")
-        print(intToStr(idx))
+        let pos = "_\(intToStr(idx))"
+        emitTypeWithName(ty, pos)
     } else {
-        print(label)
+        emitTypeWithName(ty, label)
     }
     print("{};")
 }
@@ -7004,7 +7002,8 @@ func emitField(_ f: Nd, _ isUnion: Bool) using Alloc, Log {
     }
 }
 
-// `    [alignas(N) ]<type> <name>` then ` : <bits>` for a §4 `@bits(N)`
+// `    [alignas(N) ]<type> <name>` (a function type puts the name inside
+// its declarator, `R(*name)(T1)`) then ` : <bits>` for a §4 `@bits(N)`
 // bit-field (no default brace-init is legal there), nothing inside a
 // `@repr(union)` (a C++ union takes at most one default member
 // initializer, so construction picks the member), else `{}`.
@@ -7016,9 +7015,7 @@ func emitFieldDef(_ name: Str, _ ty: Vec[Nd], _ fattrs: Vec[Nd], _ isUnion: Bool
         print(al)
         print(") ")
     }
-    emitTypeBoxed(ty)
-    print(" ")
-    print(name)
+    emitTypeWithName(ty, name)
     let bits = layoutBits(fattrs)
     if !streq(bits, "") {
         print(" : ")
@@ -11331,8 +11328,10 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     if tryEmitMapError(env, callee, args) { return }
     if tryEmitScalarCast(env, callee, args) { return }
     if tryEmitOpaqueCtor(env, callee, args) { return }
-    if isStructCtor(callee, args) { emitStructCtor(env, callee, args); return }
     let fname = identBaseName(callee)
+    // §7 a call to a declared function carries labels too, so a leading
+    // label alone doesn't make the call a construction.
+    if isStructCtor(callee, args) && tyArity(env, own(fname)) < 0 { emitStructCtor(env, callee, args); return }
     if tryEmitPrint(env, fname, args) { return }
     if tryEmitBuiltin(env, fname, args) { return }
     if tryEmitOptTakePut(env, callee, args) { return }

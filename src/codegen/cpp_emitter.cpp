@@ -1806,10 +1806,13 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
         if (field_attrs.align > 0) {
             hdr << "alignas(" << field_attrs.align << ") ";
         }
+        // A function-typed field needs the name inside the declarator
+        // (`R(*f)(T1)`), so emit_type_with_name writes both.
         if (f.type) {
-            emit_type(hdr, *f.type);
+            emit_type_with_name(hdr, *f.type, f.name);
+        } else {
+            hdr << " " << f.name;
         }
-        hdr << " " << f.name;
         if (bits > 0) {
             // Bit-fields can't have a default brace-init; leave the
             // default value to the zero-init the C++ compiler gives
@@ -2349,11 +2352,14 @@ void CppEmitter::emit_enum(std::ostream& hdr, const ast::EnumDecl& e) {
             if (i != 0) {
                 hdr << " ";
             }
+            const std::string field =
+                c.payload[i].first.empty() ? std::format("_{}", i) : c.payload[i].first;
             if (c.payload[i].second) {
-                emit_type(hdr, *c.payload[i].second);
+                emit_type_with_name(hdr, *c.payload[i].second, field);
+            } else {
+                hdr << " " << field;
             }
-            hdr << " " << (c.payload[i].first.empty() ? std::format("_{}", i) : c.payload[i].first)
-                << "{}; ";
+            hdr << "{}; ";
         }
         if (wants_eq) {
             hdr << "[[nodiscard]] bool operator==(const " << c.name
