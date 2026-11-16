@@ -1,0 +1,11 @@
+// §4 `addingChecked` and friends type as `(T, Bool)`: the wrapped result
+// and whether the operation overflowed.
+
+func f(x: Int32, u: UInt8) -> Int32 {
+    let a: (Int32, Bool) = x.addingChecked(1)
+    let (b, bo) = u.subtractingChecked(2)
+    let c: (UInt8, Bool) = u.multipliedChecked(3)
+    return 0
+}
+
+func main() -> Int32 { return 0 }

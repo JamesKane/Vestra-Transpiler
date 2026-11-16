@@ -5010,6 +5010,13 @@ func tyBuiltinMethodRet(_ bt: String, _ name: String) using Alloc -> String {
     if tyStartsWith(bt, "HashMap[") { return tyMapMethodRet(bt, name) }
     if streq(bt, "String") || streq(bt, "Str") || streq(bt, "StrConst") { return tyStrMethodRet(name) }
     if tyIsNumericScalar(bt) && streq(name, "toString") { return own("String") }
+    // §4 `addingChecked` and friends: the wrapped result and the overflow.
+    if tyIsInt(bt) && isCheckedArith(name) {
+        var cp: Vec[String] = Vec.new()
+        cp.push(own(bt))
+        cp.push(own("Bool"))
+        return tyJoinTuple(cp)
+    }
     return own("")
 }
 
@@ -11984,7 +11991,22 @@ func emitBuiltinMethodOn(_ env: inout TyEnv, _ base: Vec[Nd], _ name: Str, _ cha
         print(")")
         return true
     }
+    // §4 `a.addingChecked(b)` -> `__vstr::add_checked(a, b)` (sub / mul alike).
+    if tyIsInt(bt) && isCheckedArith(name) && args.len() == 1 {
+        if streq(name, "addingChecked") { print("__vstr::add_checked(") }
+        else if streq(name, "subtractingChecked") { print("__vstr::sub_checked(") }
+        else { print("__vstr::mul_checked(") }
+        emitBoxed(env, base)
+        print(", ")
+        emitArg(env, args.get(0) ?? Nd.wildcard)
+        print(")")
+        return true
+    }
     return false
+}
+
+func isCheckedArith(_ name: Str) -> Bool {
+    return streq(name, "addingChecked") || streq(name, "subtractingChecked") || streq(name, "multipliedChecked")
 }
 
 func atomicRetIsT(_ name: Str) -> Bool {

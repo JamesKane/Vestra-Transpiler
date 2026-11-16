@@ -12941,6 +12941,13 @@ func tyMethodRet(_ env: inout TyEnv, _ owner: String, _ name: String) using Allo
 // The builtin projections whose results carry a view (§18.5): what the escape
 // pass needs to follow a `split` / `slice` / container read back to its source.
 func tyBuiltinMethodRet(_ owner: String, _ name: String) using Alloc -> String {
+    // §4 `addingChecked` and friends: the wrapped result and the overflow.
+    if tyIsInt(owner) && (streq(name, "addingChecked") || streq(name, "subtractingChecked") || streq(name, "multipliedChecked")) {
+        var t: String = "("
+        t.append(owner)
+        t.append(", Bool)")
+        return t
+    }
     if streq(owner, "String") || streq(owner, "Str") {
         if streq(name, "split") { return own("Vec[Str]") }
         if streq(name, "slice") { return own("Str") }

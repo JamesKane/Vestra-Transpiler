@@ -80,7 +80,7 @@ Each gap has one of four kinds:
 |---|---|---|---|
 | §4 | Integer overflow does not trap in debug | unsound | `a + b` lowers to plain C++ `+` on `int32_t`. No checked arithmetic exists anywhere in `src/`. `MIN / -1` wraps (the prelude's `idiv`) rather than trapping. |
 | §4 | `as` byte reinterpretation | missing (partial) | `as` is checked (both sides `Trivial`, one size and alignment, never into an enum) and lowers to `__builtin_bit_cast`. Sizes come from the `T.size` folder, so only primitives, vectors of them and structs of those can be reinterpreted. Nothing checks that the bytes are a valid value of the target, so `b as Bool` from a `UInt8` of 2 is accepted. `as?` is rejected, since the draft gives it no meaning (see [spec holes](#spec-holes-found-along-the-way)). |
-| §4 | `addingChecked` and friends | missing | "no field or method 'addingChecked'". |
+| §4 | `addingChecked` result type | weaker | `addingChecked`, `subtractingChecked` and `multipliedChecked` exist on every integer type, but they return a plain `(T, Bool)`, not the draft's `(T, overflow: Bool)`: §17 gives tuples no element labels (see "Spec holes"). The other two names are this compiler's; the draft names only `addingChecked`. |
 | §4 | `Enum.from(raw)` | missing | "enum 'C' has no case 'from'". |
 | §4, §12.1 | An interpolation folds to `StrConst` in a comptime context | missing | `const S: StrConst = "n=\(N)"` is "const value of type String does not match annotation StrConst". An interpolation is always a runtime `String`. |
 | §4 | `StrConst` copies freely | divergent | Passing a `StrConst` to two `sink` params gives "use of 's' after it was moved". |
@@ -360,6 +360,8 @@ These are problems in the spec itself, not in the compiler:
 - The hashing protocol is named `Hash` in §18 and `Hashable` in §7.
 - `Ordering` names both the comparison result (§18.1) and the atomic memory
   order (Annex §14.9.1).
+- §4 types `addingChecked` as `(T, overflow: Bool)`, but §17's tuple type
+  is `'(' type (',' type)+ ')'`, with no element labels.
 - §15 does not say whether `internal` is module-scoped or package-scoped.
 - Annex §14.14's `swapContext(saving: MutPtr[Context], ...)` has no direct
   source: `&decl` yields a `Ptr[T]?` (Annex §14.6.3), so the saving side

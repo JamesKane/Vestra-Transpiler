@@ -1,0 +1,11 @@
+// §4 `addingChecked` and friends under --no-libc: the helpers are
+// `__builtin_*_overflow` over the freestanding std::tuple.
+
+func add(_ a: UInt32, _ b: UInt32) -> (UInt32, Bool) {
+    return a.addingChecked(b)
+}
+
+func mul(_ a: Int64, _ b: Int64) -> Bool {
+    let (r, o) = a.multipliedChecked(b)
+    return o
+}

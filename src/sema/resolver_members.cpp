@@ -240,6 +240,16 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
             return types_->make_function({}, types_->primitive(TypeKind::String));
         }
     }
+    // §4 `a.addingChecked(b)` returns the wrapped result and whether it
+    // overflowed; `subtractingChecked` and `multipliedChecked` likewise. The
+    // draft types the result `(T, overflow: Bool)`, but §17's tuple grammar has
+    // no element labels, so it is the plain `(T, Bool)`.
+    if (owner_type->is_integer()
+        && (name == "addingChecked" || name == "subtractingChecked"
+            || name == "multipliedChecked")) {
+        return types_->make_function({owner_type},
+                                     types_->make_tuple({owner_type, types_->boolean()}));
+    }
     // §18.5 Char ASCII classification (the decision half of hand-tokenizing,
     // paired with `s.chars()` / `s.charAt()`): isDigit / isAlpha / isAlnum /
     // isSpace -> Bool. ASCII-only and locale-free; a Char compares directly

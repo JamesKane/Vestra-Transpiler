@@ -210,8 +210,8 @@ SPEC_GAPS):
    §6.8).
 8. **Lexical:** `'\u{...}'` escapes, `b'x'` byte chars, Unicode identifiers
    (Gaps §3).
-9. **Conversions:** ~~`x.to[T]()` / `x.toWrapping[T]()`~~ (done),
-   `addingChecked` and friends, `Enum.from(raw)` (Gaps §4).
+9. **Conversions:** ~~`x.to[T]()` / `x.toWrapping[T]()`~~ and
+   ~~`addingChecked` and friends~~ (done), `Enum.from(raw)` (Gaps §4).
 10. **Modules and packages:** a package manifest, `package` / `internal` /
     `private` visibility, the panic-behaviour setting (Gaps §15, §9).
 11. **Concurrency:** a real multi-threaded runtime, bounded channels, `send`

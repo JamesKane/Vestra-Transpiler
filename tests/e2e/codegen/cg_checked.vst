@@ -1,0 +1,22 @@
+// §4 `a.addingChecked(b)` returns the wrapped result and whether it
+// overflowed (`subtractingChecked` and `multipliedChecked` likewise), as a
+// plain `(T, Bool)`: §17 has no labelled tuple elements for the draft's
+// `(T, overflow: Bool)`. Each lowers to a `__builtin_*_overflow` helper.
+
+func flag(_ c: Bool) -> Int32 {
+    if c { return 1 }
+    return 0
+}
+
+func main() using Log, Alloc -> Int32 {
+    let x: Int8 = 120
+    let (a, ao) = x.addingChecked(10)
+    let (b, bo) = x.addingChecked(7)
+    let u: UInt8 = 3
+    let (c, co) = u.subtractingChecked(5)
+    let m: Int32 = 65536
+    let (d, dov) = m.multipliedChecked(65536)
+    let (e, eo) = m.multipliedChecked(2)
+    print("a=\(a) \(flag(ao)) b=\(b) \(flag(bo)) c=\(c) \(flag(co)) d=\(d) \(flag(dov)) e=\(e) \(flag(eo))")
+    return 0
+}

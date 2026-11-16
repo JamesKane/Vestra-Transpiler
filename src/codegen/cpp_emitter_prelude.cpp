@@ -250,6 +250,25 @@ constexpr T num_to(F v) {
 }
 
 )__to";
+    // §4 `addingChecked` and friends: the wrapped result and whether the
+    // operation overflowed T, which is the receiver's type.
+    hdr << R"__chk(template <class T, class U> constexpr std::tuple<T, bool> add_checked(T a, U b) {
+    T r{};
+    const bool o = __builtin_add_overflow(a, static_cast<T>(b), &r);
+    return {r, o};
+}
+template <class T, class U> constexpr std::tuple<T, bool> sub_checked(T a, U b) {
+    T r{};
+    const bool o = __builtin_sub_overflow(a, static_cast<T>(b), &r);
+    return {r, o};
+}
+template <class T, class U> constexpr std::tuple<T, bool> mul_checked(T a, U b) {
+    T r{};
+    const bool o = __builtin_mul_overflow(a, static_cast<T>(b), &r);
+    return {r, o};
+}
+
+)__chk";
     // §4 integer division or remainder by zero traps. `MIN / -1` overflows,
     // which is undefined in C++; it wraps here as `&-` would (0 &- MIN is
     // MIN), and `MIN % -1` is 0. A non-integer operand (a float) divides

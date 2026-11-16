@@ -1,0 +1,9 @@
+// §4 `addingChecked` is the pair, not the bare result: a caller must take
+// the overflow flag apart from the value.
+
+func f(x: Int32) -> Int32 {
+    let r: Int32 = x.addingChecked(1)
+    return 0
+}
+
+func main() -> Int32 { return 0 }

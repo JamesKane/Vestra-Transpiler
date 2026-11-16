@@ -3748,6 +3748,21 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << ")";
                 break;
             }
+            // §4 `a.addingChecked(b)` → `__vstr::add_checked(a, b)`, a
+            // `std::tuple<T, bool>` of the wrapped result and the overflow.
+            if (auto base_t = resolution_->type_of(mem.base.get());
+                base_t != nullptr && base_t->is_integer() && c.args.size() == 1
+                && (mem.member == "addingChecked" || mem.member == "subtractingChecked"
+                    || mem.member == "multipliedChecked")) {
+                os << (mem.member == "addingChecked"        ? "__vstr::add_checked("
+                       : mem.member == "subtractingChecked" ? "__vstr::sub_checked("
+                                                            : "__vstr::mul_checked(");
+                emit_expr(os, *mem.base);
+                os << ", ";
+                emit_expr(os, *c.args[0].value);
+                os << ")";
+                break;
+            }
             // §18.5 Char classification → the matching `__vstr::is_*` ASCII
             // predicate (isDigit / isAlpha / isAlnum / isSpace).
             if (auto base_t = resolution_->type_of(mem.base.get());
