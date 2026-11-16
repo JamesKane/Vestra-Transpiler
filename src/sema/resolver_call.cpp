@@ -1343,20 +1343,40 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
                 // explicit type arguments, not a subscript. Resolve each bracket
                 // entry as a type (a bare type name today; nested generics fall
                 // back to inference). Convert IdentExpr indices to types.
+                const auto& generics =
+                    (sym->decl->kind == ast::NodeKind::Struct)
+                        ? static_cast<const ast::StructDecl&>(*sym->decl).generics
+                        : static_cast<const ast::EnumDecl&>(*sym->decl).generics;
+                // Pair each bracket entry with its parameter in declaration
+                // order: a const parameter takes a value that folds to an
+                // integer (`Buf[4]`), a type parameter a type.
+                std::vector<const ast::GenericParam*> gps;
+                for (const auto& g : generics) {
+                    if (!g.name.empty()) {
+                        gps.push_back(&g);
+                    }
+                }
                 std::vector<TypePtr> targs;
                 bool all_types = !ix.indices.empty();
-                for (const auto& idx : ix.indices) {
-                    TypePtr t = type_from_index_expr(idx.get());
+                for (std::size_t k = 0; k < ix.indices.size(); ++k) {
+                    const auto& idx = ix.indices[k];
+                    TypePtr t = nullptr;
+                    if (k < gps.size() && gps[k]->is_const) {
+                        if (auto v = folder_.fold(*idx, comptime_env_, TypeKind::Int);
+                            v && v->kind == ComptimeValue::Kind::Int) {
+                            t = types_->make_const_value(v->i);
+                        } else if (v && v->kind == ComptimeValue::Kind::UInt) {
+                            t = types_->make_const_value(static_cast<std::int64_t>(v->u));
+                        }
+                    } else {
+                        t = type_from_index_expr(idx.get());
+                    }
                     if (t == nullptr) {
                         all_types = false;
                         break;
                     }
                     targs.push_back(t);
                 }
-                const auto& generics =
-                    (sym->decl->kind == ast::NodeKind::Struct)
-                        ? static_cast<const ast::StructDecl&>(*sym->decl).generics
-                        : static_cast<const ast::EnumDecl&>(*sym->decl).generics;
                 const std::size_t want = named_type_param_count(generics);
                 if (all_types && want > 0 && targs.size() == want) {
                     expected = sym->type->kind() == TypeKind::Struct

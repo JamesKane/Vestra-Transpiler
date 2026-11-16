@@ -3133,6 +3133,8 @@ struct TyEnv {
     var linears: Vec[String]    // global: §5 linear struct names, closed over fields
     var cfName: Vec[String]     // global: §12.1 folded consts, in order ...
     var cfVal: Vec[Int]         // ... and their integer values
+    var pfName: Vec[String]     // global: integer consts folded while building the env (a construction bracket's `Buf[LEN]`) ...
+    var pfVal: Vec[Int]         // ... and their values
     var pCurName: Vec[String]   // per-function: its parameter names (a storage place for if-let)
     var modLabel: String        // global: the module path `_`-joined, plus `_` (symbol prefixes)
     var inEnumMethod: Bool      // §6 emitting an enum method's free function: `self` is a parameter
@@ -3168,7 +3170,7 @@ func tyCollectDecl(_ env: inout TyEnv, _ d: Nd) using Alloc {
         case .enumD(let vis, let name, let cs, let m, let generics): tyRecordEnumDecl(env, name, cs, m, generics)
         case .deriveD(let protocols, let target): tyRecordDerive(env, protocols, target)
         case .opaqueD(let vis, let name, let under): tyRecordOpaque(env, name, under)
-        case .constD(let vis, let name, let ty, let v): tyRecordGlobal(env, name, ty)
+        case .constD(let vis, let name, let ty, let v): tyRecordConst(env, name, ty, v)
         case .staticD(let vis, let name, let ty, let v, let attrs): tyRecordGlobal(env, name, ty)
         default: noop()
     }
@@ -5588,7 +5590,7 @@ func buildTyEnv(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc -> TyEnv
                     tpN: 0,
                     noLibc: noLibc, inGlobal: false,
                     linears: Vec.new(),
-                    cfName: Vec.new(), cfVal: Vec.new(),
+                    cfName: Vec.new(), cfVal: Vec.new(), pfName: Vec.new(), pfVal: Vec.new(),
                     pCurName: Vec.new(),
                     modLabel: modLabelOf(u.hasMod, u.modPath),
                     inEnumMethod: false, cgName: Vec.new(), cgType: Vec.new(), emEnum: Vec.new(), emName: Vec.new(), emSink: Vec.new(), emPSink: Vec.new(),
@@ -6130,6 +6132,22 @@ func tryEmitExplicitTArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]
 
 func emitExplicitTArgCall(_ env: inout TyEnv, _ b: Vec[Nd], _ idxs: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
     let fname = dottedOf(b.get(0) ?? Nd.wildcard)
+    // §7 `Cell[Int32](v: 7)` / `Buf[4](...)` construct the named instance: the
+    // bracket is the instance's arguments, a named const folded to its value.
+    if !streq(fname, "") && tyIsGenType(env, fname) {
+        var targs: Vec[Nd] = Vec.new()
+        var t: Int = 0
+        while t < idxs.len() {
+            targs.push(Nd.named(ctorTArgSpelling(env, idxs.get(t) ?? Nd.wildcard), false, Vec.new()))
+            t = t + 1
+        }
+        var tb: Vec[Nd] = Vec.new()
+        tb.push(Nd.named(own(fname), true, targs))
+        var callee: Vec[Nd] = Vec.new()
+        callee.push(Nd.ident(own(fname)))
+        emitGenericCtorCall(env, tb, callee, args)
+        return true
+    }
     if streq(fname, "") || tyArity(env, fname) < 0 || !tnContainsC(env.gpOwner, fname) { return false }
     print(fname)
     print("<")
@@ -6164,6 +6182,46 @@ func emitExplicitTArgCall(_ env: inout TyEnv, _ b: Vec[Nd], _ idxs: Vec[Nd], _ a
     }
     print(")")
     return true
+}
+
+// A construction bracket entry: an integer (literal or folded const) prints
+// as its value, a type as its name.
+func ctorTArgSpelling(_ env: inout TyEnv, _ e: Nd) using Alloc -> String {
+    let n = dottedOf(e)
+    var i: Int = env.pfName.len() - 1
+    while i >= 0 {
+        if streq(env.pfName.get(i) ?? own(""), n) { return intToStr(env.pfVal.get(i) ?? 0) }
+        i = i - 1
+    }
+    var ok: Bool = true
+    let v = cfFold(env, e, ok)
+    if ok { return intToStr(v) }
+    return n
+}
+
+// A const records as a global; one with a signed integer value that folds
+// also lands in the pre-fold table.
+func tyRecordConst(_ env: inout TyEnv, _ name: Str, _ ty: Vec[Nd], _ v: Vec[Nd]) using Alloc {
+    tyRecordGlobal(env, name, ty)
+    let sp = tyAnnSpelling(ty)
+    if v.len() == 0 || !(streq(sp, "") || tyIsIntSp(sp)) || tyIsUnsignedSp(sp) { return }
+    var ok: Bool = true
+    let saveN = env.cfName.len()
+    var j: Int = 0
+    while j < env.pfName.len() {
+        env.cfName.push(own(env.pfName.get(j) ?? own("")))
+        env.cfVal.push(env.pfVal.get(j) ?? 0)
+        j = j + 1
+    }
+    let x = cfFold(env, v.get(0) ?? Nd.wildcard, ok)
+    while env.cfName.len() > saveN {
+        env.cfName.pop()
+        env.cfVal.pop()
+    }
+    if ok {
+        env.pfName.push(own(name))
+        env.pfVal.push(x)
+    }
 }
 
 func emitSelfE(_ env: inout TyEnv) using Alloc, Log {
