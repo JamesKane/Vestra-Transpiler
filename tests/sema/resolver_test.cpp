@@ -2002,6 +2002,33 @@ TEST_CASE("compareExchangeWeak in a `while cond { ... }` with a non-admitted con
     CHECK(r.first_message.find("compareExchangeWeak is admitted only as the CAS of a recognized") != std::string::npos);
 }
 
+TEST_CASE("@no_auto_barrier on a statement is admitted only inside @kernel_init") {
+    auto r = check_detail("func f(_ v: UInt64) using Asm {\n"
+                          "    @no_auto_barrier\n"
+                          "    Sysreg.ttbr0_el1.write(v)\n"
+                          "}\n");
+    CHECK(r.error_count == 1);
+    CHECK(r.first_message.find("@no_auto_barrier is admitted only on functions also attributed "
+                               "@kernel_init")
+          != std::string::npos);
+    auto ok = check_detail("@kernel_init\n"
+                           "func f(_ v: UInt64) using Asm {\n"
+                           "    @no_auto_barrier\n"
+                           "    Sysreg.ttbr0_el1.write(v)\n"
+                           "    Sysreg.sctlr_el1.write(v)\n"
+                           "}\n");
+    CHECK(ok.error_count == 0);
+}
+
+TEST_CASE("@allow_weak_cas admits the weak CAS of its statement, trailing ones included") {
+    auto r = check_detail("static c: Atomic[UInt32] = 0\n"
+                          "func g() -> Bool {\n"
+                          "    @allow_weak_cas\n"
+                          "    c.compareExchangeWeak(0, 1, .seqCst, .acquire).succeeded\n"
+                          "}\n");
+    CHECK(r.error_count == 0);
+}
+
 TEST_CASE("Atomic[T] initial value adopts the inner T from context") {
     // The Int literal `7` would otherwise default to Int and fail
     // assignment to Atomic[UInt32]. The hint-peel through Atomic in

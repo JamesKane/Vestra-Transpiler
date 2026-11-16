@@ -81,6 +81,16 @@ void CppEmitter::emit_tuple_pat_followons(
 }
 
 void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
+    // Annex §14.12.3 `@no_auto_barrier` on a statement drops the auto-emitted
+    // post-write barrier from the sysreg writes in that statement only.
+    struct NoAutoBarrierStmt {
+        bool* flag;
+        bool prev;
+        ~NoAutoBarrierStmt() { *flag = prev; }
+    } no_barrier{&current_no_auto_barrier_, current_no_auto_barrier_};
+    if (s.has_attribute("no_auto_barrier")) {
+        current_no_auto_barrier_ = true;
+    }
     // §9 try-hoisting: pull every TryExpr-Propagating in this statement's
     // expressions out into a stmt-position let-binding, so propagation
     // really escapes the enclosing throws(E) fn. The active_hoists_

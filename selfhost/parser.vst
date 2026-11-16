@@ -1557,12 +1557,32 @@ func parseBlock(_ p: inout Ps) using Alloc -> Nd {
     skipNL(&p)
     var stmts: Vec[Nd] = Vec.new()
     while !isKind(p, TokKind.rbrace) && !atEndP(p) {
-        stmts.push(parseStmt(&p))
+        let an = stmtAttrAhead(p)
+        if !streq(an, "") {
+            // A marker statement before the one it applies to; passes that
+            // don't read it skip it.
+            let _ = an
+            advP(&p)
+            advP(&p)
+        } else {
+            stmts.push(parseStmt(&p))
+        }
         skipNL(&p)
     }
     eat(p, TokKind.rbrace)
     return Nd.block(stmts)
 }
+
+// Annex §14.9.3 / §14.12.3 `@allow_weak_cas` / `@no_auto_barrier` on the
+// statement that follows, as the bootstrap reads them: only those two words
+// open an attributed statement; any other `@name` there is an expression.
+func stmtAttrAhead(_ p: inout Ps) -> Str {
+    if !isKind(p, TokKind.at) { return "" }
+    let t = p.toks.get(p.pos + 1) ?? eofTok()
+    if streq(t.text, "allow_weak_cas") || streq(t.text, "no_auto_barrier") { return t.text }
+    return ""
+}
+
 
 func parseStmt(_ p: inout Ps) using Alloc -> Nd {
     if isKind(p, TokKind.kwLet) {

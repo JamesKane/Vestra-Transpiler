@@ -19,7 +19,14 @@ ExprPtr cl(const ExprPtr& e) {
     return e ? clone(*e) : nullptr;
 }
 StmtPtr cls(const StmtPtr& s) {
-    return s ? clone(*s) : nullptr;
+    if (!s) {
+        return nullptr;
+    }
+    auto n = clone(*s);
+    if (n) {
+        n->attributes = s->attributes;
+    }
+    return n;
 }
 DeclPtr cld(const DeclPtr& d) {
     return d ? clone(*d) : nullptr;

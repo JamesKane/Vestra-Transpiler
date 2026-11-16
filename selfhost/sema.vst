@@ -895,6 +895,7 @@ enum Nd {
     case assignS(String, Vec[Nd], Vec[Nd])   // op, target, value
     case whileS(Vec[Nd], Vec[Nd])            // cond, body (block)
     case repeatS(Vec[Nd], Vec[Nd])           // cond, body (block): `repeat { B } while C`
+    case attrS(String)                       // `@allow_weak_cas` / `@no_auto_barrier`: applies to the next statement
     case forS(Vec[Nd], Vec[Nd], Vec[Nd])     // pattern, iter, body (block)
     case breakS(String)                      // label ("" if none)
     case continueS(String)
@@ -1608,12 +1609,40 @@ func parseBlock(_ p: inout Ps) using Alloc -> Nd {
     skipNL(&p)
     var stmts: Vec[Nd] = Vec.new()
     while !isKind(p, TokKind.rbrace) && !atEndP(p) {
-        stmts.push(parseStmt(&p))
+        let an = stmtAttrAhead(p)
+        if !streq(an, "") {
+            // A marker statement before the one it applies to; passes that
+            // don't read it skip it.
+            stmts.push(Nd.attrS(own(an)))
+            advP(&p)
+            advP(&p)
+        } else {
+            stmts.push(parseStmt(&p))
+        }
         skipNL(&p)
     }
     eat(p, TokKind.rbrace)
     return Nd.block(stmts)
 }
+
+// The marker statement `@name` (Nd.attrS) for `name`.
+func stmtAttrIs(_ s: Nd, _ name: Str) -> Bool {
+    return match s {
+        case .attrS(let n): streq(n, name)
+        default: false
+    }
+}
+
+// Annex §14.9.3 / §14.12.3 `@allow_weak_cas` / `@no_auto_barrier` on the
+// statement that follows, as the bootstrap reads them: only those two words
+// open an attributed statement; any other `@name` there is an expression.
+func stmtAttrAhead(_ p: inout Ps) -> Str {
+    if !isKind(p, TokKind.at) { return "" }
+    let t = p.toks.get(p.pos + 1) ?? eofTok()
+    if streq(t.text, "allow_weak_cas") || streq(t.text, "no_auto_barrier") { return t.text }
+    return ""
+}
+
 
 func parseStmt(_ p: inout Ps) using Alloc -> Nd {
     if isKind(p, TokKind.kwLet) {
@@ -7587,6 +7616,7 @@ struct TyEnv {
     var wcStmt: Int             // §14.9.3 the retry loop's admitted statement (-1 for none) ...
     var wcDepth: Int            // ... in the block at this depth ...
     var wcOk: Bool              // ... set while that statement is checked: its weak CAS is admitted
+    var wcAllow: Bool           // Annex §14.9.3 set while an `@allow_weak_cas` statement is checked
 }
 
 
@@ -10827,7 +10857,7 @@ func tyAtomicMember(_ env: inout TyEnv, _ base: Vec[Nd], _ op: String, _ args: V
         return
     }
     if kind == 1 && streq(op, "compareExchangeWeak") {
-        if env.wcOk { env.wcOk = false } else { env.bad.push(own(wcMsg())) }
+        if env.wcAllow { } else if env.wcOk { env.wcOk = false } else { env.bad.push(own(wcMsg())) }
     }
     let cas = streq(op, "compareExchange") || (kind == 1 && streq(op, "compareExchangeWeak"))
     if !cas { return }
@@ -11474,10 +11504,19 @@ func tyBlock(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc {
     env.esDepth = env.esDepth + 1
     muEnter(env)
     var i: Int = 0
+    var allow: Bool = false
     while i < stmts.len() {
-        if i == env.wcStmt && env.esDepth == env.wcDepth { env.wcOk = true }
-        tyStmt(env, stmts.get(i) ?? Nd.wildcard)
-        env.wcOk = false
+        let s = stmts.get(i) ?? Nd.wildcard
+        if stmtAttrIs(s, "allow_weak_cas") { allow = true }
+        else if !stmtAttrIs(s, "no_auto_barrier") {
+            if i == env.wcStmt && env.esDepth == env.wcDepth { env.wcOk = true }
+            let prevAllow = env.wcAllow
+            if allow { env.wcAllow = true }
+            tyStmt(env, s)
+            env.wcAllow = prevAllow
+            env.wcOk = false
+            allow = false
+        }
         i = i + 1
     }
     muLeave(env)
@@ -14228,7 +14267,7 @@ func main() -> Int32 {
                                      pLabel: Vec.new(), mlOwner: Vec.new(), mlName: Vec.new(), mlLabel: Vec.new(), niName: Vec.new(),
                                      neKey: Vec.new(), neLocal: Vec.new(),
                                      opName: Vec.new(), opUnder: Vec.new(), drvType: Vec.new(), drvProto: Vec.new(),
-                                     tgOwner: Vec.new(), tgName: Vec.new(), wcStmt: -1, wcDepth: 0, wcOk: false)
+                                     tgOwner: Vec.new(), tgName: Vec.new(), wcStmt: -1, wcDepth: 0, wcOk: false, wcAllow: false)
                     tyRefines(&tenv, p.toks)
                     tyCopyUnions(&tenv, p.unions)
                     tyCheck(&tenv, u)

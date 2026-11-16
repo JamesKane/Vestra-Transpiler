@@ -101,6 +101,22 @@ ast::StmtPtr Parser::parse_statement() {
         && (peek(1).kind == TokenKind::LParen || peek(1).kind == TokenKind::LBrace)) {
         return parse_asm_stmt();
     }
+    // Annex §14.9.3 / §14.12.3 `@allow_weak_cas` / `@no_auto_barrier` on the
+    // statement that follows. Any other `@name` here is an expression.
+    if (kind == TokenKind::At && peek(1).kind == TokenKind::Identifier
+        && (peek(1).lexeme == "allow_weak_cas" || peek(1).lexeme == "no_auto_barrier")) {
+        advance();  // '@'
+        std::string name{advance().lexeme};
+        if (check(TokenKind::LParen)) {
+            emit_error(peek().range, std::format("@{} takes no arguments", name));
+        }
+        skip_newlines();
+        auto inner = parse_statement();
+        if (inner) {
+            inner->attributes.insert(inner->attributes.begin(), std::move(name));
+        }
+        return inner;
+    }
     // §A4 (§14.9.3) `repeat { BODY } while COND` is contextual the same way:
     // an identifier `repeat` opening a statement and followed by `{`.
     if (kind == TokenKind::Identifier && peek().lexeme == "repeat"

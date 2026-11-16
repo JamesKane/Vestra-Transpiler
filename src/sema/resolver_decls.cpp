@@ -1185,7 +1185,11 @@ TypePtr Resolver::check_block_expr(const ast::BlockExpr& b, TypePtr expected) {
         if (s.kind == ast::NodeKind::ExprStmt && i + 1 == b.stmts.size()) {
             // Trailing expression: its type is the block's value type, and
             // it inherits the surrounding block's expected type.
+            const bool allow_weak = enter_stmt_attributes(s);
             last = check_expr(*static_cast<const ast::ExprStmt&>(s).expr, expected);
+            if (allow_weak) {
+                --allow_weak_cas_depth_;
+            }
         } else {
             check_stmt(s);
         }
@@ -1653,7 +1657,41 @@ void Resolver::check_naked_body(const ast::FuncDecl& f) {
     }
 }
 
+// Annex §14.9.3 `@allow_weak_cas` admits the weak CAS sites of its
+// statement (the caller drops the count once the statement is checked);
+// Annex §14.12.3 `@no_auto_barrier` is held to the function-level rule: only
+// inside `@kernel_init`.
+bool Resolver::enter_stmt_attributes(const ast::Stmt& s) {
+    if (s.has_attribute("no_auto_barrier")) {
+        const bool kinit = current_func_ != nullptr
+                           && std::ranges::any_of(current_func_->attributes,
+                                                  [](const ast::Attribute& a) {
+                                                      return a.name == "kernel_init";
+                                                  });
+        if (!kinit) {
+            error_at(s.range,
+                     "@no_auto_barrier is admitted only on functions also attributed "
+                     "@kernel_init — that's the boot-path subset where a following sysreg "
+                     "write subsumes the auto-emitted barrier");
+        }
+    }
+    if (!s.has_attribute("allow_weak_cas")) {
+        return false;
+    }
+    ++allow_weak_cas_depth_;
+    return true;
+}
+
 void Resolver::check_stmt(const ast::Stmt& s) {
+    struct AllowWeakCas {
+        int* depth;
+        bool on;
+        ~AllowWeakCas() {
+            if (on) {
+                --*depth;
+            }
+        }
+    } allow_weak{&allow_weak_cas_depth_, enter_stmt_attributes(s)};
     switch (s.kind) {
     case ast::NodeKind::LetStmt:
     case ast::NodeKind::VarStmt: {

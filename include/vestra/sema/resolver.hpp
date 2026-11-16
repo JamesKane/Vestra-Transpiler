@@ -565,8 +565,12 @@ private:
     // of `while !r.succeeded`, or the `let r = x.compareExchangeWeak(…)` of a
     // `while true` body that then has `if r.succeeded { break | return }`.
     // Each loop admits that one call; any other weak site is rejected.
-    // `@retry_loop` functions and `repeat … while` are not handled yet.
+    // `repeat { … } while !r.succeeded` admits its one too. A statement
+    // carrying `@allow_weak_cas` admits every weak site in it (the
+    // audit-visible escape), counted by allow_weak_cas_depth_.
     std::unordered_set<const ast::Expr*> admitted_weak_cas_;
+    int allow_weak_cas_depth_ = 0;
+    bool enter_stmt_attributes(const ast::Stmt& s);
     static const ast::Expr* weak_cas_of_loop(const ast::WhileStmt& w);
     // §17.6 set while a match arm's pattern is checked: there a bare
     // identifier matches an existing value (`let x` binds), which v0.5

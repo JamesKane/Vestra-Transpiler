@@ -1374,7 +1374,8 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
     // the user at the strong form. Doing the check here — after
     // callee resolution — keeps the test simple: we know the
     // synthesized method type and the call's range.
-    if (c.callee->kind == ast::NodeKind::MemberExpr && !admitted_weak_cas_.contains(&c)) {
+    if (c.callee->kind == ast::NodeKind::MemberExpr && !admitted_weak_cas_.contains(&c)
+        && allow_weak_cas_depth_ == 0) {
         const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
         if (mem.member == "compareExchangeWeak") {
             auto base_t = resolution_.type_of(mem.base.get());

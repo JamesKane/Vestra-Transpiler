@@ -1,0 +1,13 @@
+// Annex §14.9.3 `@allow_weak_cas` reaches only the statement after it: the
+// next one's weak CAS is still free-standing.
+
+static a: Atomic[UInt32] = 0
+
+func leaks() -> Bool {
+    @allow_weak_cas
+    let r = a.compareExchangeWeak(0, 1, .seqCst, .acquire)
+    let q = a.compareExchangeWeak(0, 1, .seqCst, .acquire)
+    return r.succeeded && q.succeeded
+}
+
+func main() -> Int32 { return 0 }

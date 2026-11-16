@@ -325,13 +325,12 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | §14.7 | `@boot` is "Vestra in surface" under seven rules | divergent (stricter) | The body may contain only `asm`. The hand-off is a raw `"b kmain"` string, unchecked and unmangled. The spilled-argument and comptime-`Trivial` rules are not checked: a nine-argument `@boot` passes. |
 | §14.7.1 rules 2, 3 | Call-graph reachability, `Alloc`-init ordering | missing | Only the `using` rows are enforced. *(code)* |
 | §14.7.1 rule 5 | One-way: ordinary code may not reach `@kernel_init` | weaker (self-hosted) | Calls and `&f` are rejected in both front ends. The self-hosted checker knows only the file's own free `@kernel_init` functions, not `@kernel_init` methods or ones reached through a module path. |
-| §14.12.3 | `@no_auto_barrier` on a statement | missing | Function level only. The statement form is a parse error. |
 | §14.8 | `PerCpu[T]` layout | weaker | One `alignas(64)` slot shared by every hart (`cpp_emitter_prelude.cpp:369`). `slot(hartId)` ignores `hartId`. No `[MAX_HARTS]` array, and no `tpidr_el1` / `gs` / `tp` read. |
 | §14.9.1, §14.9.3 | Ordering legality for an ordering held in a variable | weaker | A literal `.case` is a compile error; an ordering held in a variable is checked where it runs, and one the operation can't carry panics rather than reaching the C++ atomic. The self-hosted code generator doesn't emit the run-time check. |
 | §14.9.2 | Orderings default to `.seqCst` | divergent | The ordering argument is mandatory. |
 | §14.9.3 | CAS argument labels | divergent | Labels are optional: positional `compareExchange(0, 1, .seqCst, .acquire)` is accepted. A label that is given must be the one for its position, so reordered labels are an error rather than a silent swap. |
 | §14.9.2 | `fetchSet` / `fetchClear` on `Atomic[Bool]` | missing | |
-| §14.9.3 | `@retry_loop` predicate, `@allow_weak_cas` | missing | `@retry_loop` is "not supported yet". `@allow_weak_cas` on a statement is a parse error. |
+| §14.9.3 | `@retry_loop` predicate | missing | `@retry_loop` is "not supported yet". (`@allow_weak_cas` on a statement admits every weak CAS in that statement; on a declaration it is still "not supported yet".) |
 | §14.9.4 | Wide-atomic gate on `aarch64 +lse` / `x86_64 +cx16` | divergent | It requires `lse2` and rejects plain `+lse`. A host or unset target bypasses the gate (`resolver.cpp:203`), so a lock-based libatomic fallback is possible. It is checked at compile time, not at link time. |
 | §14.10 | `Cpu.` / `Cache.` / `Tlb.` namespaces, labeled `range:` / `scope:` | divergent | Free functions only. "undefined name 'Cpu'". |
 | §14.10.3 | `cleanDataRounding` / `invalidateDataRounding` | missing | |
@@ -364,6 +363,11 @@ These are problems in the spec itself, not in the compiler:
 - §4's `Command.from(raw)` "checks the discriminant", but nothing in the
   draft gives an enum discriminants: no raw type, no `case go = 1`.
 - §15 does not say whether `internal` is module-scoped or package-scoped.
+- Annex §14.9.3 and §14.12.3 put `@allow_weak_cas` and `@no_auto_barrier`
+  on a statement, but §17.4's `statement` has no attribute prefix, and a
+  statement opening with `@name(...)` is already an expression (a macro or
+  intrinsic call). The bootstrap reads only those two words as statement
+  attributes; each applies to the one statement after it.
 - Annex §14.9.3 writes the retry shape `repeat { … } while !r.succeeded`,
   but `repeat` is not in §17's keyword list and §17 has no `repeat`
   statement. The bootstrap reads `repeat` as contextual, like `asm`: an

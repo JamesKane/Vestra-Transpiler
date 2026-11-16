@@ -1,0 +1,19 @@
+// Annex §14.9.3 `@allow_weak_cas` on a statement admits its weak CAS sites,
+// outside any retry-loop shape; the audit lists each one.
+
+static a: Atomic[UInt32] = 0
+
+func once() -> Bool {
+    @allow_weak_cas
+    let r = a.compareExchangeWeak(0, 1, .seqCst, .acquire)
+    return r.succeeded
+}
+
+func twice() -> Bool {
+    @allow_weak_cas
+    let ok = a.compareExchangeWeak(0, 1, .seqCst, .acquire).succeeded
+        && a.compareExchangeWeak(1, 2, .seqCst, .acquire).succeeded
+    return ok
+}
+
+func main() -> Int32 { return 0 }

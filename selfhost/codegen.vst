@@ -893,6 +893,7 @@ enum Nd {
     case assignS(String, Vec[Nd], Vec[Nd])   // op, target, value
     case whileS(Vec[Nd], Vec[Nd])            // cond, body (block)
     case repeatS(Vec[Nd], Vec[Nd])           // cond, body (block): `repeat { B } while C`
+    case attrS(String)                       // `@allow_weak_cas` / `@no_auto_barrier`: applies to the next statement
     case forS(Vec[Nd], Vec[Nd], Vec[Nd])     // pattern, iter, body (block)
     case breakS(String)                      // label ("" if none)
     case continueS(String)
@@ -1608,12 +1609,40 @@ func parseBlock(_ p: inout Ps) using Alloc -> Nd {
     skipNL(&p)
     var stmts: Vec[Nd] = Vec.new()
     while !isKind(p, TokKind.rbrace) && !atEndP(p) {
-        stmts.push(parseStmt(&p))
+        let an = stmtAttrAhead(p)
+        if !streq(an, "") {
+            // A marker statement before the one it applies to; passes that
+            // don't read it skip it.
+            stmts.push(Nd.attrS(own(an)))
+            advP(&p)
+            advP(&p)
+        } else {
+            stmts.push(parseStmt(&p))
+        }
         skipNL(&p)
     }
     eat(p, TokKind.rbrace)
     return Nd.block(stmts)
 }
+
+// The marker statement `@name` (Nd.attrS) for `name`.
+func stmtAttrIs(_ s: Nd, _ name: Str) -> Bool {
+    return match s {
+        case .attrS(let n): streq(n, name)
+        default: false
+    }
+}
+
+// Annex §14.9.3 / §14.12.3 `@allow_weak_cas` / `@no_auto_barrier` on the
+// statement that follows, as the bootstrap reads them: only those two words
+// open an attributed statement; any other `@name` there is an expression.
+func stmtAttrAhead(_ p: inout Ps) -> Str {
+    if !isKind(p, TokKind.at) { return "" }
+    let t = p.toks.get(p.pos + 1) ?? eofTok()
+    if streq(t.text, "allow_weak_cas") || streq(t.text, "no_auto_barrier") { return t.text }
+    return ""
+}
+
 
 func parseStmt(_ p: inout Ps) using Alloc -> Nd {
     if isKind(p, TokKind.kwLet) {
@@ -7911,10 +7940,24 @@ func emitBlockStmts(_ env: inout TyEnv, _ b: Nd, _ indent: Str) using Alloc, Log
     }
 }
 
+// Annex §14.12.3 a `@no_auto_barrier` marker drops the auto-emitted
+// barrier from the next statement's sysreg writes, as if the function
+// carried the attribute for that statement only.
 func emitStmtList(_ env: inout TyEnv, _ stmts: Vec[Nd], _ indent: Str) using Alloc, Log {
     var i: Int = 0
+    var noBarrier: Bool = false
     while i < stmts.len() {
-        emitStmt(env, stmts.get(i) ?? Nd.wildcard, indent)
+        let s = stmts.get(i) ?? Nd.wildcard
+        if stmtAttrIs(s, "no_auto_barrier") { noBarrier = true }
+        else if noBarrier {
+            let saved = ndsCopy(env.curAttrs)
+            env.curAttrs.push(Nd.attrN(own("no_auto_barrier"), Vec.new()))
+            emitStmt(env, s, indent)
+            env.curAttrs = saved
+            noBarrier = false
+        } else {
+            emitStmt(env, s, indent)
+        }
         i = i + 1
     }
 }

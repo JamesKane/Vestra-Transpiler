@@ -5,9 +5,11 @@
 
 #include "vestra/diag/source_manager.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace vestra::ast {
@@ -188,6 +190,14 @@ struct Decl : Node {
 };
 struct Stmt : Node {
     using Node::Node;
+    // Annex §14.9.3 / §14.12.3 statement attributes: `@allow_weak_cas` and
+    // `@no_auto_barrier` written on the line before a statement. Only those
+    // two words open an attributed statement; any other `@name` there is an
+    // expression (a macro or intrinsic call).
+    std::vector<std::string> attributes;
+    [[nodiscard]] bool has_attribute(std::string_view name) const {
+        return std::ranges::find(attributes, name) != attributes.end();
+    }
 };
 struct Expr : Node {
     using Node::Node;
