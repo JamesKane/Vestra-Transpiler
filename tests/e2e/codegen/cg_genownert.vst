@@ -1,0 +1,29 @@
+// §7 a generic type's methods may name its type parameter in their
+// signatures: an enum's and a struct's, called on an instance (where `T` is
+// the instance's argument).
+
+enum Pair2[T] {
+    case one(T)
+    case two(T, T)
+
+    func first() -> T {
+        return match self {
+            case .one(let a): a
+            case .two(let a, let b): a
+        }
+    }
+    func orElse(_ d: T) -> T { return d }
+}
+
+struct Cell[T] {
+    var v: T
+    func get() -> T { return self.v }
+    func replaced(_ x: T) -> Cell[T] { return Cell(v: x) }
+}
+
+func main() using Log, Alloc -> Int32 {
+    let p: Pair2[Int32] = Pair2.two(4, 5)
+    let c: Cell[Int32] = Cell(v: 7)
+    print("\(p.first() + 1) \(p.orElse(9)) \(c.get()) \(c.replaced(8).get())")
+    return 0
+}

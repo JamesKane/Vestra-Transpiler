@@ -7797,6 +7797,16 @@ func tyTypeGenRow(_ env: inout TyEnv, _ owner: String, _ n: String) using Alloc 
     env.tgName.push(own(n))
 }
 
+// Whether <n> is one of <owner>'s type parameters.
+func tyIsTypeGenOf(_ env: inout TyEnv, _ owner: String, _ n: String) using Alloc -> Bool {
+    var i: Int = 0
+    while i < env.tgOwner.len() {
+        if streq(env.tgOwner.get(i) ?? own(""), owner) && streq(env.tgName.get(i) ?? own(""), n) { return true }
+        i = i + 1
+    }
+    return false
+}
+
 func tyRecordDerive(_ env: inout TyEnv, _ ps: Vec[Nd], _ target: Vec[Nd]) using Alloc {
     var i: Int = 0
     while i < ps.len() {
@@ -10015,8 +10025,12 @@ func tyCheckAltPats(_ env: inout TyEnv, _ st: String, _ alts: Vec[Nd]) using All
 }
 
 func tyCheckEnumPat(_ env: inout TyEnv, _ st: String, _ cn: String, _ children: Vec[Nd]) using Alloc {
-    if !tyIsEnum(env, st) { env.bad.push(tyEnumPatNonEnumMsg(cn, st)); return }
-    let arity = tyCaseArity(env, st, cn)
+    // §18 Optional's own cases match an optional.
+    if st.len() > 1 && (st.charAt(st.len() - 1) ?? ' ') == '?' && (streq(cn, "some") || streq(cn, "none")) { return }
+    // A generic enum instance (`Pair[T]`, `Pair[Int32]`) matches by its base.
+    let base = tyBaseName(st)
+    if !tyIsEnum(env, base) { env.bad.push(tyEnumPatNonEnumMsg(cn, st)); return }
+    let arity = tyCaseArity(env, base, cn)
     // `case .x:` with no bindings ignores the payload (the bootstrap's rule).
     if arity >= 0 && children.len() > 0 && children.len() != arity { env.bad.push(tyPayloadArityMsg(cn, arity, children.len())) }
 }
@@ -11353,6 +11367,9 @@ func tyCtorArgLabeled(_ env: inout TyEnv, _ structName: String, _ idx: Int, _ la
     if streq(label, "") { env.bad.push(tyCtorLabelMsg(idx + 1)); return }
     if !tyHasField(env, structName, label) { env.bad.push(tyNoFieldMsg(structName, label)); return }
     let ft = tyFieldType(env, structName, label)
+    // §7 a field typed by the struct's own parameter takes any value: the
+    // construction binds it (the bootstrap infers the instance).
+    if tyIsTypeGenOf(env, structName, ft) { seen.push(label); return }
     let at = tyInferBoxed(env, val)
     tyLitRange(env, val, ft)
     if !tyFits(at, val, ft) { env.bad.push(tyFieldMsg(label, ft, at)) }
@@ -13578,6 +13595,11 @@ func tyHasFloatLit(_ e: Vec[Nd]) -> Bool {
 func tyAssignable(_ from: String, _ to: String) using Alloc -> Bool {
     if streq(from, "") || streq(to, "") { return true }   // unknown: don't pile on
     if streq(from, to) { return true }
+    // §7 a generic construction infers as its bare name (`Cell`); it fills any
+    // instance of that type (`Cell[T]`, `Cell[Int32]`), as the bootstrap's
+    // inference would bind it.
+    if !containsSub(from, "[") && tyStartsWith(to, from) && to.len() > from.len()
+        && (to.byteAt(from.len()) ?? 0) == 91 { return true }
     if tyStartsWith(from, "(") && tyStartsWith(to, "(") && containsSub(from, " -> ") && containsSub(to, " -> ") {
         return tyFnAssignable(from, to)
     }

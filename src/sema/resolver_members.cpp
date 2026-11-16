@@ -486,6 +486,35 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
                 if (out_method != nullptr) {
                     *out_method = &f;
                 }
+                // §7 a generic owner's parameters are in scope in its methods'
+                // signatures: each binds to this instance's argument, or to a
+                // placeholder when the owner is the bare template.
+                const std::vector<ast::GenericParam>* owner_generics = nullptr;
+                if (decl->kind == ast::NodeKind::Struct) {
+                    owner_generics = &static_cast<const ast::StructDecl&>(*decl).generics;
+                } else if (decl->kind == ast::NodeKind::Enum) {
+                    owner_generics = &static_cast<const ast::EnumDecl&>(*decl).generics;
+                }
+                ScopeStack::Guard g(scopes_);
+                if (owner_generics != nullptr) {
+                    const auto& args = owner_type->parts();
+                    std::size_t idx = 0;
+                    for (const auto& gp : *owner_generics) {
+                        if (gp.name.empty()) {
+                            continue;
+                        }
+                        Symbol gs;
+                        gs.name = gp.name;
+                        gs.kind = SymbolKind::GenericParam;
+                        gs.type = (idx < args.size() && args[idx] != nullptr)
+                                      ? args[idx]
+                                      : types_->make_generic_param(gp.name);
+                        gs.definition_range = gp.range;
+                        gs.generic = &gp;
+                        (void)g.scope().insert(std::move(gs));
+                        ++idx;
+                    }
+                }
                 return function_type_of(f);
             }
         }
