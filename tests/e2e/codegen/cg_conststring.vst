@@ -1,0 +1,16 @@
+// §12.1 a `const` annotated `String` owns its bytes: a std::string can't be a
+// constexpr global, so it lowers to an immutable inline global.
+
+const GREETING: String = "hi"
+const VIEW = "there"
+
+func shout(_ s: String) using Alloc -> String {
+    var out = copy s
+    out.append("!")
+    return out
+}
+
+func main() using Log, Alloc -> Int32 {
+    print("\(GREETING) \(VIEW) \(shout(copy GREETING)) \(GREETING.len())")
+    return 0
+}

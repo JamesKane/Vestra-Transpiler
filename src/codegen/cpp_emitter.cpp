@@ -1070,19 +1070,24 @@ void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl
         break;
     case ast::NodeKind::Const: {
         const auto& c = static_cast<const ast::ConstDecl&>(d);
-        hdr << "inline constexpr ";
+        // §12.1 a `String` const owns its bytes, and a std::string can't be a
+        // constexpr global: it is an immutable inline global built once.
+        const bool owned_string = c.type && c.type->kind == ast::NodeKind::NamedType
+                                  && static_cast<const ast::NamedType&>(*c.type).path
+                                         == std::vector<std::string>{"String"};
+        hdr << (owned_string ? "inline const " : "inline constexpr ");
         if (c.type) {
             emit_type(hdr, *c.type);
         } else {
             hdr << "auto";
         }
-        hdr << " " << c.name << " = ";
+        hdr << " " << c.name << (owned_string ? "{" : " = ");
         if (c.value) {
             global_init_ = true;
             emit_expr(hdr, *c.value);
             global_init_ = false;
         }
-        hdr << ";\n";
+        hdr << (owned_string ? "};\n" : ";\n");
         break;
     }
     case ast::NodeKind::Static: {

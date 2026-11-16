@@ -7238,6 +7238,18 @@ func emitConstDef(_ env: inout TyEnv, _ name: Str, _ ty: Vec[Nd], _ value: Vec[N
             return
         }
     }
+    // §12.1 a `String` const owns its bytes, and a std::string can't be a
+    // constexpr global: it is an immutable inline global built once.
+    if streq(sp, "String") && value.len() > 0 {
+        print("inline const std::string ")
+        print(name)
+        print("{")
+        env.inGlobal = true
+        emitBoxed(env, value)
+        env.inGlobal = false
+        print("};\n")
+        return
+    }
     emitGlobalDef(env, "inline constexpr ", name, ty, value)
 }
 
