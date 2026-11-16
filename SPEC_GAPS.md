@@ -191,7 +191,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 | §12.3, §18.1 | `compare()` | missing | `derive(Ord)` gives a struct (fields in declaration order), an enum (case order, then payload) and an opaque type (its representation) the four ordering operators, and satisfies a `T: Ord` bound. It needs `derive(Eq)` beside it, and each field and payload must be Ord: numbers, `Char`, strings, or a type that derives Ord; `Bool`, optionals, arrays, tuples and `Vec` have no ordering yet. There is still no `compare()` method ("no field or method 'compare'"), because `Ordering` already names the atomic memory order (see "Spec holes"). A plain enum orders by case without any derive, as it compares for equality without one. |
 | §12.4 | Hygiene across modules | weaker | A name in an expression macro's template resolves at the defining module's scope, past any use-site local, and is emitted module-qualified. An imported macro is called by its qualified name (`@mlib.addK(x)`, see "Spec holes"). Its template names resolve among that module's *public* declarations: naming a private one is an error, because the expansion may only name what the caller could write. Only expression macros can be imported; a declaration macro (`@bitField` on a struct) is still found in its own unit only. `gensym()` is still the way to make a fresh name. |
 | §12.4 | `.asType()`, splices in struct-name position | missing | "expected struct name". |
-| §12.4 | Builder API (`Decl.struct(...)`, `Expr.call(...)`) | missing | Parse error. |
+| §12.4 | Builder API (`Decl.struct(...)`, `Expr.call(...)`) | weaker | In a declaration macro: `Expr.ident(name)`, `Expr.literal(v)`, `Expr.member(base, name)`, `Expr.call(callee, [args])`, `Expr.binary(op, l, r)`, `Decl.field(name, type)`, `Decl.struct(name, [Field])` and `Decl.func(name, [Field], result, body)`. Each builds what the matching `quote` would (see "Spec holes" for the signatures). A misuse fails the expansion and names the builder. There are no builders for statements, enums, methods or labelled arguments, and an expression macro is still a single `quote` template, so builders work only in declaration macros. |
 | §12.4 | `error(at:, msg)` from a macro | missing | The macro fails with "did not expand to a declaration list". |
 | §12.4 | `quote` yielding a `Stmt` | missing | "expected expression, got let". |
 | §12.4 | `quote` only inside a comptime func | divergent (extension) | A plain function may use `quote` as an identity template. |
@@ -363,6 +363,14 @@ These are problems in the spec itself, not in the compiler:
 - §4's `Command.from(raw)` "checks the discriminant", but nothing in the
   draft gives an enum discriminants: no raw type, no `case go = 1`.
 - §15 does not say whether `internal` is module-scoped or package-scoped.
+- §12.4 names a builder API (`Decl.struct(…)`, `Expr.call(…)`, …) that
+  `quote` is sugar over, but gives no signatures. The bootstrap's are its
+  own, each the exact equivalent of one quote: `Expr.ident(String)`,
+  `Expr.literal(value)`, `Expr.member(Expr, String)`, `Expr.call(Expr,
+  [Expr])`, `Expr.binary(String op, Expr, Expr)`, `Decl.field(String,
+  type)`, `Decl.struct(String, [Field])` and `Decl.func(String, [Field],
+  type, Expr)`, where a type is a reflected `f.type` or a type-name String
+  and a `[Field]` is `d.fields` or `Decl.field` values.
 - §12.4 says how a macro is invoked (`@name` where it is written) but not how
   an imported one is named, and §5 keeps imports out of the unqualified
   scope. The bootstrap calls it by its qualified path, `@mlib.addK(x)`. It

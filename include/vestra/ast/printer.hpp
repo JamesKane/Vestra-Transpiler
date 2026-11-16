@@ -20,6 +20,8 @@ public:
     void print_to(std::ostream& os, const CompilationUnit& unit);
     // One expression in canonical source form.
     [[nodiscard]] std::string expr_text(const Expr& e);
+    // The source spelling of a binary operator (`+`, `<<`, `&&`, …).
+    static const char* binary_op_text(BinaryOp op);
 
 private:
     void print_decl(std::ostream& os, const Decl& d, int indent);
@@ -37,7 +39,6 @@ private:
 
     static void indent_to(std::ostream& os, int indent);
     static const char* visibility_kw(Visibility v);
-    static const char* binary_op_text(BinaryOp op);
     static const char* unary_op_text(UnaryOp op);
     static const char* assign_op_text(AssignOp op);
 };

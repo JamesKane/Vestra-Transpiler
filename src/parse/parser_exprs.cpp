@@ -865,7 +865,10 @@ ast::ExprPtr Parser::parse_postfix(ast::ExprPtr lhs) {
                 m->member_splice = parse_splice();
             } else if (check(TokenKind::Identifier) || check(TokenKind::KwType)
                        || check(TokenKind::KwEmbed) || check(TokenKind::KwDefault)
-                       || check(TokenKind::KwRead)) {
+                       || check(TokenKind::KwRead) || check(TokenKind::KwStruct)
+                       || check(TokenKind::KwFunc) || check(TokenKind::KwEnum)) {
+                // `struct` / `func` / `enum` name §12.4 builders:
+                // `Decl.struct(...)`, `Decl.func(...)`.
                 m->member = std::string{advance().lexeme};
             } else {
                 emit_error(peek().range, "expected member name after '.'");

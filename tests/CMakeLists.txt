@@ -215,6 +215,7 @@ add_test(
     COMMAND sh -c "mkdir -p ${ast_dumpdir} && $<TARGET_FILE:vestra> build ${CMAKE_CURRENT_SOURCE_DIR}/e2e/macro/xmod/main.vst --dump-ast -o ${ast_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${ast_dumpdir}/mm_c.txt && ${e2e_workdir}/vparse ${CMAKE_CURRENT_SOURCE_DIR}/e2e/macro/xmod/main.vst > ${ast_dumpdir}/mm_v.txt && diff ${ast_dumpdir}/mm_c.txt ${ast_dumpdir}/mm_v.txt")
 set_tests_properties(e2e_selfhost_parser_diff_macromod PROPERTIES DEPENDS e2e_selfhost_parser_compile)
 
+
 # ---------------------------------------------------------------------------
 # Dog-food compiler, phase 3: the Vestra semantic analyzer written in Vestra
 # (selfhost/sema.vst). Slice 1 is name resolution (undefined identifiers); slice 2
@@ -2886,6 +2887,19 @@ add_test(
 set_tests_properties(e2e_multifile_demo_run PROPERTIES
     DEPENDS                e2e_multifile_demo_compile
     PASS_REGULAR_EXPRESSION "multifile_demo OK")
+
+# §12.4 the macro builder API: generated struct and functions run.
+set(e2e_builder_dir ${e2e_workdir}/_macro_builder)
+add_test(
+    NAME    e2e_macro_builder_run
+    COMMAND sh -c "rm -rf ${e2e_builder_dir} && $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/tests/e2e/macro/builder_ok.vst -o ${e2e_builder_dir} >/dev/null && ${CMAKE_CXX_COMPILER} -std=c++26 -Wall -Wextra -O0 -I${e2e_builder_dir} ${e2e_builder_dir}/builder_ok.cpp -o ${e2e_builder_dir}/app && ${e2e_builder_dir}/app")
+set_tests_properties(e2e_macro_builder_run PROPERTIES
+    PASS_REGULAR_EXPRESSION "^total=7 twice=14 s=11 x=9")
+add_test(
+    NAME    e2e_macro_builder_errors
+    COMMAND sh -c "$<TARGET_FILE:vestra> check ${CMAKE_SOURCE_DIR}/tests/e2e/macro/builder_bad.vst 2>&1; true")
+set_tests_properties(e2e_macro_builder_errors PROPERTIES
+    PASS_REGULAR_EXPRESSION "@badName.: .Decl.struct. argument 1 must be a String.*@badOp.: .Expr.binary.: '[*][*]' is not a binary operator.*@noSuch.: .Decl.enum.: not a builder")
 
 # §12.4 an imported macro, called as `@mlib.addK(x)`: its template names
 # resolve in mlib (module-qualified in the C++), past use-site locals.

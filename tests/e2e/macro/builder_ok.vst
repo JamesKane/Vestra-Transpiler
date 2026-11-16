@@ -1,0 +1,34 @@
+// §12.4 the builder API under `quote`: `Expr.ident / literal / member / call
+// / binary` and `Decl.field / struct / func`. Each builds what the matching
+// quote would, so the macro below could be written either way; builders
+// suit code assembled in a loop, like the sum over `d.fields` here.
+
+comptime func shadow(_ d: Decl) -> [Decl] {
+    var out: [Decl] = quote { $d }
+    let sname = d.name + "Shadow"
+    out += [Decl.struct(sname, d.fields)]
+    var sum = Expr.literal(0)
+    for f in d.fields {
+        sum = Expr.binary("+", sum, Expr.member(Expr.ident("v"), f.name))
+    }
+    out += [Decl.func("total", [Decl.field("v", d.name)], "Int32", sum)]
+    let twice = Expr.call(Expr.ident("dbl"), [Expr.call(Expr.ident("total"), [Expr.ident("v")])])
+    out += [Decl.func("twiceTotal", [Decl.field("v", d.name)], "Int32", twice)]
+    out += [Decl.func("withExtra", [Decl.field("x", "Int64")], "Int64", Expr.ident("x"))]
+    return out
+}
+
+func dbl(_ x: Int32) -> Int32 { return x * 2 }
+
+@shadow
+struct P {
+    var a: Int32
+    var b: Int32
+}
+
+func main() using Log, Alloc -> Int32 {
+    let p = P(a: 3, b: 4)
+    let s = PShadow(a: 5, b: 6)
+    print("total=\(total(p)) twice=\(twiceTotal(p)) s=\(s.a + s.b) x=\(withExtra(9))")
+    return 0
+}

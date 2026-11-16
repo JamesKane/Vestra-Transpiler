@@ -5,6 +5,7 @@
 
 #include "vestra/ast/clone.hpp"
 #include "vestra/ast/nodes.hpp"
+#include "vestra/ast/printer.hpp"
 #include "vestra/sema/builtins.hpp"
 #include "vestra/sema/types.hpp"
 
@@ -1052,6 +1053,19 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
                     }
                 }
                 return make_bool(false);
+            }
+        }
+
+        // §12.4 the builder API: `Expr.call(…)`, `Decl.struct(…)`, … (unless
+        // the macro has a local of that name).
+        if (c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& m = static_cast<const ast::MemberExpr&>(*c.callee);
+            if (m.base && m.base->kind == ast::NodeKind::IdentExpr) {
+                const auto& family = static_cast<const ast::IdentExpr&>(*m.base).name;
+                if ((family == "Expr" || family == "Decl") && !frame.locals.contains(family)
+                    && !env.contains(family)) {
+                    return fold_builder(c, family, m.member, env, frame, depth);
+                }
             }
         }
 
@@ -2358,6 +2372,255 @@ ComptimeFolder::expand_decl_macro(const ast::FuncDecl& macro, const ast::Decl& a
         out.push_back(ast::clone(static_cast<const ast::Decl&>(*el.code)));
     }
     return out;
+}
+
+std::optional<ComptimeValue> ComptimeFolder::fold_builder(const ast::CallExpr& c,
+                                                          std::string_view family,
+                                                          std::string_view name,
+                                                          const Env& env,
+                                                          Frame& frame,
+                                                          int depth) const {
+    const std::string what = std::format("{}.{}", family, name);
+
+    auto expect_args = [&](std::size_t n, std::string_view shape) {
+        if (c.args.size() == n) {
+            return true;
+        }
+        macro_errors_.push_back(
+            {c.range, std::format("`{}` takes {} argument(s): {}", what, n, shape)});
+        return false;
+    };
+    // An argument that failed with its own reported error (a nested builder)
+    // reports nothing more here.
+    bool nested_failed = false;
+    auto arg = [&](std::size_t i) -> std::optional<ComptimeValue> {
+        const auto before = macro_errors_.size();
+        auto v = fold_with(*c.args[i].value, env, frame, TypeKind::Unit, depth + 1);
+        nested_failed = !v && macro_errors_.size() > before;
+        return v;
+    };
+    auto report = [&](const ast::Expr& at, std::string msg) {
+        if (!nested_failed) {
+            macro_errors_.push_back({at.range, std::move(msg)});
+        }
+    };
+    auto fail = [&](std::string why) -> std::optional<ComptimeValue> {
+        if (!nested_failed) {
+            macro_errors_.push_back({c.range, std::format("`{}`: {}", what, why)});
+        }
+        return std::nullopt;
+    };
+    auto string_arg = [&](std::size_t i, std::string& out) {
+        auto v = arg(i);
+        if (!v || v->kind != ComptimeValue::Kind::String) {
+            report(*c.args[i].value,
+                   std::format("`{}` argument {} must be a String", what, i + 1));
+            return false;
+        }
+        out = v->s;
+        return true;
+    };
+    auto code_arg = [&](std::size_t i, TypeKind kind, ast::ExprPtr& out) {
+        auto v = arg(i);
+        if (!v || v->kind != ComptimeValue::Kind::Code || !v->code || v->type != kind) {
+            report(*c.args[i].value,
+                   std::format("`{}` argument {} must be an Expr", what, i + 1));
+            return false;
+        }
+        out = ast::clone(static_cast<const ast::Expr&>(*v->code));
+        return true;
+    };
+    // A `[Field]` argument: `d.fields`, or a vector of `Decl.field(…)`.
+    auto fields_arg = [&](std::size_t i, std::vector<std::pair<std::string, ast::TypePtr>>& out) {
+        auto v = arg(i);
+        if (!v || v->kind != ComptimeValue::Kind::Vector) {
+            report(*c.args[i].value,
+                   std::format("`{}` argument {} must be a [Field] (`d.fields`, or "
+                             "`Decl.field(name, type)` values)",
+                             what, i + 1));
+            return false;
+        }
+        for (const auto& f : v->elements) {
+            if (f.kind != ComptimeValue::Kind::Field || f.elements.size() < 2) {
+                report(*c.args[i].value,
+                       std::format("`{}` argument {} must hold only Field values", what, i + 1));
+                return false;
+            }
+            auto ty = materialize_type(f.elements[1]);
+            if (!ty) {
+                report(*c.args[i].value,
+                       std::format("`{}`: field '{}' has no type that can be written", what, f.s));
+                return false;
+            }
+            out.emplace_back(f.s, std::move(ty));
+        }
+        return true;
+    };
+    auto code = [&](auto node, TypeKind kind) {
+        node->range = c.range;
+        return make_code(std::shared_ptr<const ast::Node>(std::move(node)), kind);
+    };
+
+    if (family == "Expr") {
+        if (name == "ident") {  // quote { name }
+            std::string n;
+            if (!expect_args(1, "a String name") || !string_arg(0, n)) {
+                return std::nullopt;
+            }
+            auto id = std::make_unique<ast::IdentExpr>();
+            id->name = std::move(n);
+            return code(std::move(id), TypeKind::AstExpr);
+        }
+        if (name == "literal") {  // quote { $(v) }
+            if (!expect_args(1, "an integer, float, Bool or String value")) {
+                return std::nullopt;
+            }
+            auto v = arg(0);
+            if (!v || v->kind == ComptimeValue::Kind::Code || v->kind == ComptimeValue::Kind::Vector) {
+                return fail("its argument must be an integer, float, Bool or String value");
+            }
+            auto lit = materialize_value(*v);
+            if (!lit) {
+                return fail("its argument has no literal form");
+            }
+            return code(std::move(lit), TypeKind::AstExpr);
+        }
+        if (name == "member") {  // quote { $base.name }
+            auto me = std::make_unique<ast::MemberExpr>();
+            if (!expect_args(2, "a base Expr and a String member name")
+                || !code_arg(0, TypeKind::AstExpr, me->base) || !string_arg(1, me->member)) {
+                return std::nullopt;
+            }
+            return code(std::move(me), TypeKind::AstExpr);
+        }
+        if (name == "call") {  // quote { $callee($a0, $a1, …) }
+            auto call = std::make_unique<ast::CallExpr>();
+            if (!expect_args(2, "a callee Expr and an [Expr] of arguments")
+                || !code_arg(0, TypeKind::AstExpr, call->callee)) {
+                return std::nullopt;
+            }
+            auto args = arg(1);
+            if (!args || args->kind != ComptimeValue::Kind::Vector) {
+                return fail("argument 2 must be an [Expr]");
+            }
+            for (const auto& a : args->elements) {
+                if (a.kind != ComptimeValue::Kind::Code || !a.code || a.type != TypeKind::AstExpr) {
+                    return fail("argument 2 must hold only Expr values");
+                }
+                ast::CallExpr::Arg ca;
+                ca.value = ast::clone(static_cast<const ast::Expr&>(*a.code));
+                call->args.push_back(std::move(ca));
+            }
+            return code(std::move(call), TypeKind::AstExpr);
+        }
+        if (name == "binary") {  // quote { $l op $r }
+            std::string op;
+            auto bin = std::make_unique<ast::BinaryExpr>();
+            if (!expect_args(3, "an operator String and two Expr operands")
+                || !string_arg(0, op) || !code_arg(1, TypeKind::AstExpr, bin->lhs)
+                || !code_arg(2, TypeKind::AstExpr, bin->rhs)) {
+                return std::nullopt;
+            }
+            bool found = false;
+            for (int k = 0; k <= static_cast<int>(ast::BinaryOp::WrappingMul); ++k) {
+                const auto candidate = static_cast<ast::BinaryOp>(k);
+                if (op == ast::Printer::binary_op_text(candidate)) {
+                    bin->op = candidate;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                return fail(std::format("'{}' is not a binary operator", op));
+            }
+            return code(std::move(bin), TypeKind::AstExpr);
+        }
+        return fail("not a builder; Expr has ident, literal, member, call and binary");
+    }
+
+    // family == "Decl"
+    if (name == "field") {  // the Field value `var name: type` (as d.fields yields)
+        std::string n;
+        if (!expect_args(2, "a String name and a type") || !string_arg(0, n)) {
+            return std::nullopt;
+        }
+        auto t = arg(1);
+        ast::TypePtr ty = t ? materialize_type(*t) : nullptr;
+        if (!ty) {
+            return fail("argument 2 must be a type: a field's `f.type`, or a type name String");
+        }
+        ComptimeValue field;
+        field.kind = ComptimeValue::Kind::Field;
+        field.type = TypeKind::Struct;
+        field.s = n;
+        field.elements.push_back(make_string(n));
+        ComptimeValue type_ref;
+        type_ref.kind = ComptimeValue::Kind::TypeRef;
+        type_ref.type = TypeKind::Struct;
+        type_ref.s = type_display_name(*ty);
+        type_ref.code = std::shared_ptr<const ast::Node>(std::move(ty));
+        field.elements.push_back(std::move(type_ref));
+        for (int k = 0; k < 3; ++k) {
+            field.elements.push_back(make_int(0, TypeKind::Int));
+        }
+        return field;
+    }
+    if (name == "struct") {  // quote { struct $name { var f: T … } }
+        std::string n;
+        std::vector<std::pair<std::string, ast::TypePtr>> fields;
+        if (!expect_args(2, "a String name and a [Field]") || !string_arg(0, n)
+            || !fields_arg(1, fields)) {
+            return std::nullopt;
+        }
+        auto sd = std::make_unique<ast::StructDecl>();
+        sd->name = std::move(n);
+        for (auto& [fname, fty] : fields) {
+            ast::StructDecl::Field f;
+            f.kind = ast::StructDecl::Field::Kind::Var;
+            f.name = fname;
+            f.type = std::move(fty);
+            f.range = c.range;
+            sd->fields.push_back(std::move(f));
+        }
+        return code(std::move(sd), TypeKind::AstDecl);
+    }
+    if (name == "func") {  // quote { func $name(_ p: T, …) -> $result { return $body } }
+        std::string n;
+        std::vector<std::pair<std::string, ast::TypePtr>> params;
+        auto fd = std::make_unique<ast::FuncDecl>();
+        if (!expect_args(4, "a String name, a [Field] of parameters, a result type and a "
+                            "body Expr")
+            || !string_arg(0, n) || !fields_arg(1, params)) {
+            return std::nullopt;
+        }
+        auto r = arg(2);
+        fd->result = r ? materialize_type(*r) : nullptr;
+        if (!fd->result) {
+            return fail("argument 3 must be a type: a field's `f.type`, or a type name String");
+        }
+        ast::ExprPtr body;
+        if (!code_arg(3, TypeKind::AstExpr, body)) {
+            return std::nullopt;
+        }
+        fd->name = std::move(n);
+        for (auto& [pname, pty] : params) {
+            ast::Param p;
+            p.label_omitted = true;
+            p.name = pname;
+            p.type = std::move(pty);
+            p.range = c.range;
+            fd->params.push_back(std::move(p));
+        }
+        auto ret = std::make_unique<ast::ReturnStmt>();
+        ret->value = std::move(body);
+        ret->range = c.range;
+        auto block = std::make_unique<ast::BlockExpr>();
+        block->range = c.range;
+        block->stmts.push_back(std::move(ret));
+        fd->body = std::move(block);
+        return code(std::move(fd), TypeKind::AstDecl);
+    }
+    return fail("not a builder; Decl has struct, func and field");
 }
 
 ByteLayout primitive_byte_layout(TypeKind k) {

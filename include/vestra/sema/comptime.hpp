@@ -243,6 +243,12 @@ private:
     // Code → clone). `subst_splices` walks a cloned quote body and replaces
     // each `$(expr)` splice by folding the inner and materializing it.
     [[nodiscard]] ast::ExprPtr materialize_value(const ComptimeValue& v) const;
+    // §12.4 the builder API, `Expr.call(…)` / `Decl.struct(…)` and the rest:
+    // each yields the Code value the equivalent `quote` would. A misuse
+    // records a MacroError naming the builder and fails the expansion.
+    [[nodiscard]] std::optional<ComptimeValue>
+    fold_builder(const ast::CallExpr& c, std::string_view family, std::string_view name,
+                 const Env& env, Frame& frame, int depth) const;
     void subst_splices(ast::ExprPtr& e, const Env& env, Frame& frame, int depth) const;
     void subst_splices_in_stmt(ast::Stmt& s, const Env& env, Frame& frame, int depth) const;
     // §12.4 like subst_splices, but for a child in identifier position (a call

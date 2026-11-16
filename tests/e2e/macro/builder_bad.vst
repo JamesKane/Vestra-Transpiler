@@ -1,0 +1,31 @@
+// §12.4 a builder misused fails the expansion and says why: a wrong
+// argument kind, an unknown operator, a builder that doesn't exist.
+
+comptime func badName(_ d: Decl) -> [Decl] {
+    return [Decl.struct(3, d.fields)]
+}
+
+@badName
+struct A {
+    var a: Int32
+}
+
+comptime func badOp(_ d: Decl) -> [Decl] {
+    return [Decl.func("f", [], "Int32", Expr.binary("**", Expr.literal(1), Expr.literal(2)))]
+}
+
+@badOp
+struct B {
+    var b: Int32
+}
+
+comptime func noSuch(_ d: Decl) -> [Decl] {
+    return [Decl.enum("E", d.fields)]
+}
+
+@noSuch
+struct C {
+    var c: Int32
+}
+
+func main() -> Int32 { return 0 }
