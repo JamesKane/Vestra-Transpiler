@@ -1,0 +1,29 @@
+// §17.7 payload sub-patterns in a match whose arms hold a `try` (the hoisted
+// if-chain over std::holds_alternative) are tested too.
+enum E { case bad }
+enum Inner { case x  case y }
+enum K { case down(Int32)  case side(Inner)  case none }
+
+func g(_ v: Int32) throws(E) -> Int32 {
+    if v < 0 { throw E.bad }
+    return v
+}
+
+func f(_ k: K) throws(E) -> Int32 {
+    return match k {
+        case .down(3): try g(30)
+        case .down(let n): try g(n)
+        case .side(.y): 9
+        case .side(_): 8
+        case .none: 0
+    }
+}
+
+func h(_ k: K) -> Int32 {
+    return do { try f(k) } catch (e: E) { -1 }
+}
+
+func main() using Log, Alloc -> Int32 {
+    print("\(h(K.down(3))) \(h(K.down(4))) \(h(K.side(Inner.y))) \(h(K.side(Inner.x)))")
+    return 0
+}

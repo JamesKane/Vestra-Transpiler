@@ -175,6 +175,15 @@ private:
     void emit_pat_predicate(std::ostream& os, const ast::Pattern& p, std::string_view base);
     void
     emit_pat_bindings(std::ostream& os, const ast::Pattern& p, std::string_view base, int indent);
+    // §17.7 the test a payload sub-pattern makes of the value at `base`, or
+    // "" when it always matches; and the bindings below a nested enum pattern.
+    std::string payload_pred(const ast::Pattern& p, const std::string& base);
+    std::string payload_preds(const ast::EnumPat& ep, const std::string& alt);
+    void emit_nested_pat_bindings(std::ostream& os,
+                                  const ast::Pattern& p,
+                                  const std::string& base,
+                                  int indent);
+    std::string enum_alt_type(sema::TypePtr t, const ast::EnumDecl& d, std::string_view c);
     // Match over a non-enum scrutinee (integer, bool, string, tuple).
     // Lowers to an IIFE that binds the scrutinee to `__vstr_m` and
     // walks an if/else-if chain over each arm's predicate, with arm

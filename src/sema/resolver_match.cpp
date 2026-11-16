@@ -375,11 +375,9 @@ TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
     auto register_unguarded_cases = [&](const ast::Pattern& p, auto& self) -> void {
         if (p.kind == ast::NodeKind::EnumPat) {
             const auto& ep = static_cast<const ast::EnumPat&>(p);
-            // `.some(k)` or `.some(0)` over an optional can fail, so it
-            // closes nothing. (A user enum's payload sub-patterns aren't
-            // tested yet, so its case still closes.)
-            if (resolution_.is_optional_pattern(&p)
-                && !std::ranges::all_of(ep.children,
+            // `.some(k)` or `.r(true, _)` can fail on its payload, so it
+            // closes nothing.
+            if (!std::ranges::all_of(ep.children,
                                         [this](const auto& c) { return pattern_is_wild(c.get(), resolution_); })) {
                 return;
             }
@@ -663,9 +661,8 @@ void Resolver::reject_bare_name_pattern(std::string_view name, diag::SourceRange
 
 // §17.6 a bare name in a match pattern compares the value against an
 // existing one (`let x` binds). It lowers to `==`, so it stands where a
-// literal could: at the top of an arm, in a tuple, an or-pattern or
-// `.some(...)`. A user enum's payload doesn't test its sub-patterns yet, and a
-// payloaded enum has no `==`, so both keep the old rejection.
+// literal could. A payloaded enum has no `==`, so against one it keeps the
+// old rejection.
 // Binds a rejected bare name anyway, so its uses don't cascade.
 void Resolver::bind_pattern_name(const ast::IdentPat& ip, TypePtr type) {
     Symbol sym;
@@ -678,8 +675,7 @@ void Resolver::bind_pattern_name(const ast::IdentPat& ip, TypePtr type) {
 }
 
 void Resolver::check_bare_name_pattern(const ast::IdentPat& ip, TypePtr scrutinee) {
-    if (in_enum_payload_ > 0
-        || (scrutinee != nullptr && scrutinee->kind() == TypeKind::Enum
+    if ((scrutinee != nullptr && scrutinee->kind() == TypeKind::Enum
             && scrutinee->nominal_decl() != nullptr
             && scrutinee->nominal_decl()->kind == ast::NodeKind::Enum
             && std::ranges::any_of(
@@ -848,6 +844,7 @@ void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
                      std::format("enum '{}' has no case '{}'", enum_decl.name, ep.case_name));
             return;
         }
+        resolution_.set_pattern_type(&p, scrutinee);
         // §8 `case .x:` with no bindings matches the case and ignores its
         // payload; a pattern that binds must bind every field (F18).
         if (!ep.children.empty() && ep.children.size() != c->payload.size()) {
@@ -867,9 +864,7 @@ void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
                                                                            *c->payload[i].second,
                                                                            scrutinee->parts())
                                        : types_->error();
-            ++in_enum_payload_;
             check_pattern(*ep.children[i], payload_type);
-            --in_enum_payload_;
         }
         break;
     }

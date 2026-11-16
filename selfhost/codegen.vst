@@ -9512,7 +9512,19 @@ func emitPayLambdaArmParts(_ env: inout TyEnv, _ ind: Str, _ i12: Str, _ en: Str
     print("::")
     let cn = armCaseName(pat)
     print(cn)
-    print("_t>(__vstr_alt_ref)) {\n")
+    print("_t>(__vstr_alt_ref)")
+    // §17.7 a payload sub-pattern that can fail joins the test.
+    let p0 = pat.get(0) ?? Nd.wildcard
+    if payTested(env, en, p0) {
+        var get: String = "std::get<"
+        get.append(en)
+        get.append("::")
+        get.append(cn)
+        get.append("_t>(__vstr_alt_ref)")
+        print(" && ")
+        payPreds(env, en, p0, get)
+    }
+    print(") {\n")
     if patHasBinding(pat) {
         print(i12)
         print("auto&& __vstr_alt = std::get<")
@@ -9539,10 +9551,21 @@ func patHasBinding(_ pat: Vec[Nd]) using Alloc -> Bool {
 func childrenHaveBinding(_ children: Vec[Nd]) using Alloc -> Bool {
     var i: Int = 0
     while i < children.len() {
-        if !streq(patNameOf(children.get(i) ?? Nd.wildcard), "") { return true }
+        if childBinds(children.get(i) ?? Nd.wildcard) { return true }
         i = i + 1
     }
     return false
+}
+
+// A payload child that reads the case: a binding or tuple, or an enum
+// pattern binding below. A bare name compares (§17.6) and reads nothing here.
+func childBinds(_ p: Nd) using Alloc -> Bool {
+    return match p {
+        case .bindP(let n): true
+        case .tupleP(let xs): true
+        case .enumP(let cn, let ch): childrenHaveBinding(ch)
+        default: false
+    }
 }
 
 func emitValMatchLambda(_ env: inout TyEnv, _ ind: Str, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc, Log {
@@ -10079,12 +10102,24 @@ func emitNestedPatNameList(_ env: inout TyEnv, _ elems: Vec[Nd], _ fNames: inout
             print(ph)
             fNames.push(ph)
             fPats.push(el)
-        } else {
+        } else if isWildP(el) {
             print("__vstr_tp_unused_")
+            print(intToStr(env.tpN))
+            env.tpN = env.tpN + 1
+        } else {
+            // A literal (or other testing) element still owes a name.
+            print("__vstr_tp_bind_")
             print(intToStr(env.tpN))
             env.tpN = env.tpN + 1
         }
         i = i + 1
+    }
+}
+
+func isWildP(_ p: Nd) -> Bool {
+    return match p {
+        case .wildcard: true
+        default: false
     }
 }
 
@@ -11581,45 +11616,343 @@ func emitVisitGroup(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ i16: Str, _ enu
     print("::")
     print(cn)
     print("_t>) {\n")
-    var lastGuarded: Bool = false
+    // An arm that always matches (no guard, no payload test) closes the case:
+    // later arms of it are dead and aren't emitted, as in the bootstrap. If
+    // none closes it the default's body, or `std::unreachable()`, ends it.
+    var closed: Bool = false
     var j: Int = 0
-    while j < arms.len() {
+    while j < arms.len() && !closed {
         let a = arms.get(j) ?? Nd.wildcard
         if !armIsDefault(a) {
-            if emitVisitScopes(env, i12, i16, enumName, cn, a) { lastGuarded = armGuarded(a) }
+            if emitVisitScopes(env, i12, i16, enumName, cn, a) == 2 { closed = true }
         }
         j = j + 1
     }
-    if lastGuarded && di >= 0 {
-        emitVisitFallback(env, i12, arms.get(di) ?? Nd.wildcard)
+    if !closed {
+        if di >= 0 {
+            emitVisitFallback(env, i12, arms.get(di) ?? Nd.wildcard)
+        } else {
+            print(i12)
+            print("std::unreachable();\n")
+        }
     }
 }
 
 // One scope per alternative of the arm that names case `cn` (an or-pattern
 // arm shares its body across the cases it covers, each scope binding through
-// its own alternative). True when any scope was emitted.
-func emitVisitScopes(_ env: inout TyEnv, _ i12: Str, _ i16: Str, _ enumName: Str, _ cn: Str, _ arm: Nd) using Alloc, Log -> Bool {
+// its own alternative). 0 when none was emitted, 2 when one always returns
+// (closing the case), else 1.
+func emitVisitScopes(_ env: inout TyEnv, _ i12: Str, _ i16: Str, _ enumName: Str, _ cn: Str, _ arm: Nd) using Alloc, Log -> Int {
     return match arm {
         case .matchArm(let isDef, let pat, let guard, let body): emitVisitAltScopes(env, i12, i16, enumName, cn, pat, guard, body)
+        default: 0
+    }
+}
+
+func emitVisitAltScopes(_ env: inout TyEnv, _ i12: Str, _ i16: Str, _ enumName: Str, _ cn: Str, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log -> Int {
+    let alts = armEnumAlts(pat)
+    var state: Int = 0
+    var i: Int = 0
+    while i < alts.len() && state < 2 {
+        let alt = alts.get(i) ?? Nd.wildcard
+        if streq(altCaseName(alt), cn) {
+            let tested = payTested(env, enumName, alt)
+            var one: Vec[Nd] = Vec.new()
+            one.push(alt)
+            if tested {
+                emitVisitTestedScope(env, i12, i16, enumName, one, guard, body)
+            } else {
+                emitVisitScopeParts(env, i12, i16, enumName, one, guard, body)
+            }
+            state = 1
+            if !tested && guard.len() == 0 { state = 2 }
+        }
+        i = i + 1
+    }
+    return state
+}
+
+// §17.7 an arm whose payload sub-patterns can fail tests them before binding:
+//
+//   { if (<tests>) { <bindings> [if (<guard>) {] return <body>; [}] } }
+func emitVisitTestedScope(_ env: inout TyEnv, _ i12: Str, _ i16: Str, _ enumName: Str, _ one: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    let i20 = deeper(i16)
+    print(i12)
+    print("{\n")
+    print(i16)
+    print("if (")
+    payPreds(env, enumName, one.get(0) ?? Nd.wildcard, "__vstr_alt")
+    print(") {\n")
+    emitPayloadBindings(env, i20, enumName, one)
+    if guard.len() > 0 {
+        print(i20)
+        print("if (")
+        emitBoxed(env, guard)
+        print(") {\n")
+        print(deeper(i20))
+        print("return ")
+        emitArmBody(env, body)
+        print(";\n")
+        print(i20)
+        print("}\n")
+    } else {
+        print(i20)
+        print("return ")
+        emitArmBody(env, body)
+        print(";\n")
+    }
+    print(i16)
+    print("}\n")
+    print(i12)
+    print("}\n")
+}
+
+// Whether any child of the enum pattern `p` (a case of `enumName`) tests.
+func payTested(_ env: inout TyEnv, _ enumName: Str, _ p: Nd) using Alloc -> Bool {
+    return match p {
+        case .enumP(let cn, let ch): patListTests(ch)
         default: false
     }
 }
 
-func emitVisitAltScopes(_ env: inout TyEnv, _ i12: Str, _ i16: Str, _ enumName: Str, _ cn: Str, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log -> Bool {
-    let alts = armEnumAlts(pat)
-    var any: Bool = false
+// A sub-pattern that can fail: a literal, range, bare (value) name, or enum
+// case; an or-pattern when every alternative can; a tuple when an element can.
+func patTests(_ p: Nd) -> Bool {
+    return match p {
+        case .litP(let x): true
+        case .rangeP(let lo, let hi, let incl): true
+        case .identP(let n): true
+        case .enumP(let cn, let ch): true
+        case .orP(let alts): patAllTest(alts)
+        case .tupleP(let xs): patListTests(xs)
+        default: false
+    }
+}
+
+func patListTests(_ xs: Vec[Nd]) -> Bool {
     var i: Int = 0
-    while i < alts.len() {
-        let alt = alts.get(i) ?? Nd.wildcard
-        if streq(altCaseName(alt), cn) {
-            var one: Vec[Nd] = Vec.new()
-            one.push(alt)
-            emitVisitScopeParts(env, i12, i16, enumName, one, guard, body)
-            any = true
+    while i < xs.len() {
+        if patTests(xs.get(i) ?? Nd.wildcard) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func patAllTest(_ xs: Vec[Nd]) -> Bool {
+    if xs.len() == 0 { return false }
+    var i: Int = 0
+    while i < xs.len() {
+        if !patTests(xs.get(i) ?? Nd.wildcard) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// The `&&` of the tests the enum pattern `p`'s children make, each against
+// `<alt>.<field>` (`alt` an expression of the case's `_t` type).
+func payPreds(_ env: inout TyEnv, _ enumName: Str, _ p: Nd, _ alt: Str) using Alloc, Log {
+    match p {
+        case .enumP(let cn, let ch): payChildPreds(env, enumName, cn, ch, alt)
+        default: noop()
+    }
+}
+
+func payChildPreds(_ env: inout TyEnv, _ enumName: Str, _ cn: Str, _ ch: Vec[Nd], _ alt: Str) using Alloc, Log {
+    var first: Bool = true
+    var i: Int = 0
+    while i < ch.len() {
+        let c = ch.get(i) ?? Nd.wildcard
+        if patTests(c) {
+            if !first { print(" && ") }
+            first = false
+            subPred(env, c, payFieldRef(env, alt, enumName, cn, i), tyPayFieldTy(env, enumName, cn, i))
         }
         i = i + 1
     }
-    return any
+}
+
+// `<alt>.<field>`: the case's declared label, else the positional `_<i>`.
+func payFieldRef(_ env: inout TyEnv, _ alt: Str, _ enumName: Str, _ cn: Str, _ i: Int) using Alloc -> String {
+    var s: String = own(alt)
+    s.append(".")
+    let fn = tyPayFieldName(env, enumName, cn, i)
+    if streq(fn, "") {
+        s.append("_")
+        s.append(intToStr(i))
+    } else {
+        s.append(fn)
+    }
+    return s
+}
+
+// The test a sub-pattern (one that `patTests`) makes of the value `base` of
+// type `ty`.
+func subPred(_ env: inout TyEnv, _ p: Nd, _ base: Str, _ ty: Str) using Alloc, Log {
+    match p {
+        case .litP(let lit): emitLitPred(env, base, lit)
+        case .rangeP(let lo, let hi, let incl): emitRangePred(env, base, lo, hi, incl)
+        case .identP(let n): emitValuePatPred(base, n)
+        case .orP(let alts): subOrPred(env, alts, base, ty)
+        case .tupleP(let xs): subTuplePred(env, xs, base, ty)
+        case .enumP(let cn, let ch): subEnumPred(env, cn, ch, base, ty)
+        default: print("true")
+    }
+}
+
+func subOrPred(_ env: inout TyEnv, _ alts: Vec[Nd], _ base: Str, _ ty: Str) using Alloc, Log {
+    print("(")
+    var i: Int = 0
+    while i < alts.len() {
+        if i > 0 { print(" || ") }
+        subPred(env, alts.get(i) ?? Nd.wildcard, base, ty)
+        i = i + 1
+    }
+    print(")")
+}
+
+func subTuplePred(_ env: inout TyEnv, _ xs: Vec[Nd], _ base: Str, _ ty: Str) using Alloc, Log {
+    let parts = tyTupleParts(ty)
+    var first: Bool = true
+    var i: Int = 0
+    while i < xs.len() {
+        let x = xs.get(i) ?? Nd.wildcard
+        if patTests(x) {
+            if !first { print(" && ") }
+            first = false
+            subPred(env, x, tupleGetRef(base, i), own(parts.get(i) ?? own("")))
+        }
+        i = i + 1
+    }
+}
+
+func tupleGetRef(_ base: Str, _ i: Int) using Alloc -> String {
+    var s: String = "std::get<"
+    s.append(intToStr(i))
+    s.append(">(")
+    s.append(base)
+    s.append(")")
+    return s
+}
+
+func subEnumPred(_ env: inout TyEnv, _ cn: Str, _ ch: Vec[Nd], _ base: Str, _ ty: Str) using Alloc, Log {
+    let inner = tyUnwrapOpt(own(ty))
+    if !streq(inner, "") {
+        // §18 `.some(p)` / `.none` against an optional.
+        if streq(cn, "none") {
+            print("!")
+            print(base)
+            print(".has_value()")
+            return
+        }
+        let c = ch.get(0) ?? Nd.wildcard
+        if ch.len() == 0 || !patTests(c) {
+            print(base)
+            print(".has_value()")
+            return
+        }
+        print("(")
+        print(base)
+        print(".has_value() && ")
+        var d: String = "(*"
+        d.append(base)
+        d.append(")")
+        subPred(env, c, d, inner)
+        print(")")
+        return
+    }
+    if !isPayloadEnum(env, ty) {
+        print("(")
+        print(base)
+        print(" == ")
+        print(cppOfSpelling(own(ty)))
+        print("::")
+        print(cn)
+        print(")")
+        return
+    }
+    let alt = payAltType(env, ty, cn)
+    let tested = patListTests(ch)
+    if tested { print("(") }
+    print("std::holds_alternative<")
+    print(alt)
+    print(">(")
+    print(base)
+    print(".value)")
+    if tested {
+        print(" && ")
+        payChildPreds(env, ty, cn, ch, payGetRef(alt, base))
+        print(")")
+    }
+}
+
+// `E::c_t`, a payloaded enum case's alternative type.
+func payAltType(_ env: inout TyEnv, _ ty: Str, _ cn: Str) using Alloc -> String {
+    var s: String = ""
+    if env.inEnumMethod && containsSub(ty, "[") { s.append("typename ") }
+    s.append(cppOfSpelling(own(ty)))
+    s.append("::")
+    s.append(cn)
+    s.append("_t")
+    return s
+}
+
+// `std::get<E::c_t>(<base>.value)`, the case held by an enum value.
+func payGetRef(_ alt: Str, _ base: Str) using Alloc -> String {
+    var s: String = "std::get<"
+    s.append(alt)
+    s.append(">(")
+    s.append(base)
+    s.append(".value)")
+    return s
+}
+
+// The bindings below a nested enum pattern, read through `base` (of type
+// `ty`), which the arm's tests have already checked holds that case.
+func nestedBindings(_ env: inout TyEnv, _ ind: Str, _ p: Nd, _ base: Str, _ ty: Str) using Alloc, Log {
+    match p {
+        case .bindP(let n): nestedBindOne(env, ind, n, base, ty)
+        case .tupleP(let xs): nestedTupleBindings(env, ind, xs, base, ty)
+        case .enumP(let cn, let ch): nestedEnumBindings(env, ind, cn, ch, base, ty)
+        default: noop()
+    }
+}
+
+func nestedBindOne(_ env: inout TyEnv, _ ind: Str, _ n: Str, _ base: Str, _ ty: Str) using Alloc, Log {
+    tyAddSymSpelling(&env, own(n), own(ty))
+    print(ind)
+    print("auto&& ")
+    print(n)
+    print(" = ")
+    print(base)
+    print(";\n")
+}
+
+func nestedTupleBindings(_ env: inout TyEnv, _ ind: Str, _ xs: Vec[Nd], _ base: Str, _ ty: Str) using Alloc, Log {
+    let parts = tyTupleParts(ty)
+    var i: Int = 0
+    while i < xs.len() {
+        nestedBindings(env, ind, xs.get(i) ?? Nd.wildcard, tupleGetRef(base, i), own(parts.get(i) ?? own("")))
+        i = i + 1
+    }
+}
+
+func nestedEnumBindings(_ env: inout TyEnv, _ ind: Str, _ cn: Str, _ ch: Vec[Nd], _ base: Str, _ ty: Str) using Alloc, Log {
+    let inner = tyUnwrapOpt(own(ty))
+    if !streq(inner, "") {
+        if ch.len() == 0 { return }
+        var d: String = "(*"
+        d.append(base)
+        d.append(")")
+        nestedBindings(env, ind, ch.get(0) ?? Nd.wildcard, d, inner)
+        return
+    }
+    if !isPayloadEnum(env, ty) { return }
+    let get = payGetRef(payAltType(env, ty, cn), base)
+    var i: Int = 0
+    while i < ch.len() {
+        nestedBindings(env, ind, ch.get(i) ?? Nd.wildcard, payFieldRef(env, get, ty, cn, i), tyPayFieldTy(env, ty, cn, i))
+        i = i + 1
+    }
 }
 
 func emitVisitScopeParts(_ env: inout TyEnv, _ i12: Str, _ i16: Str, _ enumName: Str, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
@@ -11708,6 +12041,12 @@ func emitBindingList(_ env: inout TyEnv, _ i16: Str, _ enumName: Str, _ cname: S
 
 func emitOneBinding(_ env: inout TyEnv, _ i16: Str, _ enumName: Str, _ cname: Str, _ child: Nd, _ idx: Int) using Alloc, Log {
     if isTuplePNode(child) { emitTuplePayloadBinding(env, i16, enumName, cname, child, idx); return }
+    // §17.6 a bare name compares; it binds nothing.
+    if isIdentPNode(child) { return }
+    if isEnumPNode(child) {
+        nestedBindings(env, i16, child, payFieldRef(env, "__vstr_alt", enumName, cname, idx), tyPayFieldTy(env, enumName, cname, idx))
+        return
+    }
     let bn = patNameOf(child)
     if streq(bn, "") { return }
     // The binding takes the case's DECLARED field type, so everything typed on

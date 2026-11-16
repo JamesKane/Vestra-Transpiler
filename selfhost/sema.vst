@@ -3401,7 +3401,7 @@ func resolveArm(_ env: inout Env, _ a: Nd) using Alloc {
 }
 
 func resolveArmParts(_ env: inout Env, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc {
-    bareScanList(env, pat, false)
+    bareScanList(env, pat, env.bareMiss.len())
     let save = env.names.len()
     scopeEnter(env)
     bindPatBoxed(env, pat)
@@ -3412,26 +3412,32 @@ func resolveArmParts(_ env: inout Env, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body:
 }
 
 // §17.6 a bare name in a match pattern compares against an existing value:
-// note each one, outside a user enum's payload, that names nothing in scope
-// (the type pass reports it).
-func bareScanList(_ env: inout Env, _ ps: Vec[Nd], _ inPayload: Bool) using Alloc {
+// note each one that names nothing in scope (the type pass reports it).
+func bareScanList(_ env: inout Env, _ ps: Vec[Nd], _ from: Int) using Alloc {
     var i: Int = 0
     while i < ps.len() {
-        bareScan(env, ps.get(i) ?? Nd.wildcard, inPayload)
+        bareScan(env, ps.get(i) ?? Nd.wildcard, from)
         i = i + 1
     }
 }
 
-func bareNote(_ env: inout Env, _ n: String, _ inPayload: Bool) using Alloc {
-    if !inPayload && !inScope(env, n) { env.bareMiss.push(n) }
+// A name missed once in an arm is bound from then on, so it is noted once.
+func bareNote(_ env: inout Env, _ n: String, _ from: Int) using Alloc {
+    if inScope(env, n) { return }
+    var i: Int = from
+    while i < env.bareMiss.len() {
+        if streq(env.bareMiss.get(i) ?? own(""), n) { return }
+        i = i + 1
+    }
+    env.bareMiss.push(n)
 }
 
-func bareScan(_ env: inout Env, _ p: Nd, _ inPayload: Bool) using Alloc {
+func bareScan(_ env: inout Env, _ p: Nd, _ from: Int) using Alloc {
     match p {
-        case .identP(let n): bareNote(env, n, inPayload)
-        case .enumP(let cn, let ch): bareScanList(env, ch, inPayload || !streq(cn, "some"))
-        case .orP(let alts): bareScanList(env, alts, inPayload)
-        case .tupleP(let xs): bareScanList(env, xs, inPayload)
+        case .identP(let n): bareNote(env, n, from)
+        case .enumP(let cn, let ch): bareScanList(env, ch, from)
+        case .orP(let alts): bareScanList(env, alts, from)
+        case .tupleP(let xs): bareScanList(env, xs, from)
         default: noop()
     }
 }
@@ -7781,6 +7787,7 @@ struct TyEnv {
     var dfFn: Vec[String]       // §17.2 functions with defaulted trailing parameters ...
     var dfN: Vec[Int]           // ... -> how many
     var bareMiss: Vec[String]   // §17.6 bare pattern names that name no value in scope
+    var bareArm: Int            // ... and where this arm's messages start in `bad`
 }
 
 
@@ -10182,19 +10189,56 @@ func tyCheckExhaustive(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) us
     }
 }
 
-// §17.6 over a payload-free enum a bare name compares against a value, so it
-// covers nothing; elsewhere it is rejected and, like the bootstrap, stays wild.
+// §17.6 a bare name compares against a value, so it covers nothing. One that
+// is rejected (it names nothing in scope, or is the whole pattern over a
+// payloaded enum) stays wild, as in the bootstrap.
 func tyValueHeads(_ env: inout TyEnv, _ st: String, _ rows: Vec[Nd]) using Alloc -> Vec[Nd] {
-    if tyEnumHasPayload(env, st) { return rows }
+    let top = !tyEnumHasPayload(env, st)
     var out: Vec[Nd] = Vec.new()
     var i: Int = 0
     while i < rows.len() {
         let r = rows.get(i) ?? Nd.wildcard
-        if tyIsIdentP(tyRowHead(r)) {
-            out.push(Nd.tupleP(tyOneLit()))
+        let h = tyRowHead(r)
+        if tyIsIdentP(h) {
+            if top && !esInList(env.bareMiss, tyIdentPName(h)) { out.push(Nd.tupleP(tyOneLit())) } else { out.push(r) }
         } else {
-            out.push(r)
+            var row: Vec[Nd] = Vec.new()
+            row.push(tyValuePat(env, h))
+            out.push(Nd.tupleP(row))
         }
+        i = i + 1
+    }
+    return out
+}
+
+func tyIdentPName(_ p: Nd) using Alloc -> String {
+    return match p {
+        case .identP(let n): own(n)
+        default: own("")
+    }
+}
+
+// Below the top, every bare name in scope is a value pattern.
+func tyValuePat(_ env: inout TyEnv, _ p: Nd) using Alloc -> Nd {
+    return match p {
+        case .identP(let n): tyValueIdent(env, p, n)
+        case .enumP(let cn, let ch): Nd.enumP(own(cn), tyValuePats(env, ch))
+        case .tupleP(let xs): Nd.tupleP(tyValuePats(env, xs))
+        case .orP(let alts): Nd.orP(tyValuePats(env, alts))
+        default: p
+    }
+}
+
+func tyValueIdent(_ env: inout TyEnv, _ p: Nd, _ n: String) using Alloc -> Nd {
+    if esInList(env.bareMiss, n) { return p }
+    return Nd.litP(Vec.new())
+}
+
+func tyValuePats(_ env: inout TyEnv, _ xs: Vec[Nd]) using Alloc -> Vec[Nd] {
+    var out: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < xs.len() {
+        out.push(tyValuePat(env, xs.get(i) ?? Nd.wildcard))
         i = i + 1
     }
     return out
@@ -10601,8 +10645,8 @@ func tyArm(_ env: inout TyEnv, _ st: String, _ a: Nd) using Alloc {
 }
 
 // §17.6 in a match arm a bare identifier compares against an existing value
-// (`let x` binds). A user enum's payload doesn't test its sub-patterns yet,
-// and a payloaded enum has no `==`, so a bare name there is still an error.
+// (`let x` binds). A payloaded enum has no `==`, so a bare name matching one
+// at the top of an arm is still an error.
 func tyBareNames(_ env: inout TyEnv, _ st: String, _ pat: Vec[Nd], _ inPayload: Bool) using Alloc {
     var i: Int = 0
     while i < pat.len() {
@@ -10631,11 +10675,19 @@ func tyBareEnumKids(_ env: inout TyEnv, _ st: String, _ cn: String, _ ch: Vec[Nd
 }
 
 func tyBareIdent(_ env: inout TyEnv, _ st: String, _ n: String, _ inPayload: Bool) using Alloc {
-    if inPayload || tyEnumHasPayload(env, tyBaseName(st)) {
+    if tyEnumHasPayload(env, tyBaseName(st)) {
         env.bad.push(tyBareMsg(n))
         return
     }
-    if esInList(env.bareMiss, n) { env.bad.push(tyBareMissMsg(n)) }
+    if !esInList(env.bareMiss, n) { return }
+    // A name missed once in an arm is bound from then on.
+    let m = tyBareMissMsg(n)
+    var i: Int = env.bareArm
+    while i < env.bad.len() {
+        if streq(env.bad.get(i) ?? own(""), m) { return }
+        i = i + 1
+    }
+    env.bad.push(m)
 }
 
 // An enum any of whose cases carries a payload.
@@ -10668,6 +10720,7 @@ func tyBareMsg(_ n: String) using Alloc -> String {
 
 // A match arm's pattern bindings are `let`s, scoped to the arm.
 func tyArmMu(_ env: inout TyEnv, _ st: String, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    env.bareArm = env.bad.len()
     tyBareNames(env, st, pat, false)
     muEnter(env)
     muPat(env, pat)
@@ -14653,7 +14706,7 @@ func main() -> Int32 {
                                      pLabel: Vec.new(), mlOwner: Vec.new(), mlName: Vec.new(), mlLabel: Vec.new(), niName: Vec.new(),
                                      neKey: Vec.new(), neLocal: Vec.new(),
                                      opName: Vec.new(), opUnder: Vec.new(), drvType: Vec.new(), drvProto: Vec.new(),
-                                     tgOwner: Vec.new(), tgName: Vec.new(), wcStmt: -1, wcDepth: 0, wcOk: false, wcAllow: false, wcSites: 0, wcLoopSites: 0, rlName: Vec.new(), rlAlways: Vec.new(), dfFn: Vec.new(), dfN: Vec.new(), bareMiss: env.bareMiss)
+                                     tgOwner: Vec.new(), tgName: Vec.new(), wcStmt: -1, wcDepth: 0, wcOk: false, wcAllow: false, wcSites: 0, wcLoopSites: 0, rlName: Vec.new(), rlAlways: Vec.new(), dfFn: Vec.new(), dfN: Vec.new(), bareMiss: env.bareMiss, bareArm: 0)
                     tyRefines(&tenv, p.toks)
                     tyCopyUnions(&tenv, p.unions)
                     tyCopyRetry(&tenv, p.retry, p.retryAlways)

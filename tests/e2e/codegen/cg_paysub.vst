@@ -1,0 +1,42 @@
+// §17.7 the sub-patterns in an enum case's payload are tested: `.down(3)`
+// matches only a 3, and a later `.down(let n)` takes the rest. They used to
+// be ignored, so the first arm for a case took every value of it.
+enum Inner { case x  case y }
+enum Shape { case dot  case box(Int32) }
+enum Outer { case p(Inner)  case q(Int32)  case r(Bool, Inner)  case s(Shape)  case t((Int32, Int32)) }
+
+func f(_ o: Outer, _ k: Int32) -> Int32 {
+    return match o {
+        case .p(.x) | .p(.y): 1
+        case .q(k): 100
+        case .q(0 | 1): 101
+        case .q(let n) where n > 50: n
+        case .q(_): 0
+        case .r(true, _): 2
+        case .r(false, .x): 3
+        case .r(false, .y): 4
+        case .s(.box(let w)) where w > 9: w
+        case .s(.box(7)): 70
+        case .s(_): 5
+        case .t((0, let b)): b
+        case .t(_): 6
+    }
+}
+
+func main() using Log, Alloc -> Int32 {
+    let a = f(Outer.r(false, Inner.y), 0)
+    let b = f(Outer.r(false, Inner.x), 0)
+    let c = f(Outer.r(true, Inner.x), 0)
+    let d = f(Outer.q(9), 9)
+    let e = f(Outer.q(1), 9)
+    let g = f(Outer.q(60), 9)
+    let h = f(Outer.q(20), 9)
+    let i = f(Outer.s(Shape.box(12)), 0)
+    let j = f(Outer.s(Shape.box(7)), 0)
+    let l = f(Outer.s(Shape.box(3)), 0)
+    let m = f(Outer.s(Shape.dot), 0)
+    let n = f(Outer.t((0, 8)), 0)
+    let o = f(Outer.t((1, 8)), 0)
+    print("\(a) \(b) \(c) \(d) \(e) \(g) \(h) \(i) \(j) \(l) \(m) \(n) \(o)")
+    return 0
+}

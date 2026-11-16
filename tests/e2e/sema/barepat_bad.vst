@@ -1,12 +1,13 @@
 // §17.6 a bare name in a match pattern matches an existing value; it used to
-// bind a fresh name instead, so the arm always matched. A user enum's payload
-// doesn't test sub-patterns yet, so a bare name there is still rejected, and
-// one that names nothing in scope is an error.
+// bind a fresh name instead, so the arm always matched. A payloaded enum has
+// no `==`, so a bare name can't match one, and a bare name that names nothing
+// in scope is an error.
 
 enum Key { case down(Int32)  case up(Int32)  case none }
 
-func code(_ k: Key) -> Int32 {
+func code(_ k: Key, _ last: Key) -> Int32 {
     return match k {
+        case last: 1
         case .down(n) | .up(n): n
         case .none: 0
     }

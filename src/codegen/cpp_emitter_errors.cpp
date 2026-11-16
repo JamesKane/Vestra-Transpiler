@@ -556,26 +556,32 @@ void CppEmitter::emit_match_in_lambda(std::ostream& os, const ast::MatchExpr& m,
         } else {
             os << "else if";
         }
-        os << " (std::holds_alternative<" << nominal_prefix(&enum_decl) << enum_decl.name << "::" << ep.case_name
-           << "_t>(__vstr_alt_ref)) {\n";
+        const std::string alt_t =
+            std::format("{}{}::{}_t", nominal_prefix(&enum_decl), enum_decl.name, ep.case_name);
+        // §17.7 a payload sub-pattern that can fail joins the test.
+        const auto pred = payload_preds(ep, std::format("std::get<{}>(__vstr_alt_ref)", alt_t));
+        os << " (std::holds_alternative<" << alt_t << ">(__vstr_alt_ref)"
+           << (pred.empty() ? "" : " && " + pred) << ") {\n";
 
         // Bind payload fields. The alt is `std::get<case_t>(__vstr_alt_ref)`;
         // only mint the named handle when there are children to read off it,
         // otherwise `-Werror=unused-variable` rejects the empty-payload arm.
-        const bool has_child_binding =
-            std::any_of(ep.children.begin(), ep.children.end(), [](const ast::PatternPtr& child) {
-                if (!child) {
-                    return false;
-                }
-                switch (child->kind) {
-                case ast::NodeKind::BindPat:
-                case ast::NodeKind::IdentPat:
-                case ast::NodeKind::TuplePat:
-                    return true;
-                default:
-                    return false;
-                }
-            });
+        auto binds = [&](const ast::Pattern& q, auto& self) -> bool {
+            switch (q.kind) {
+            case ast::NodeKind::BindPat:
+            case ast::NodeKind::TuplePat:
+                return true;
+            case ast::NodeKind::IdentPat:
+                return resolution_ == nullptr || !resolution_->is_value_pattern(&q);
+            case ast::NodeKind::EnumPat:
+                return std::ranges::any_of(static_cast<const ast::EnumPat&>(q).children,
+                                           [&](const auto& c) { return c && self(*c, self); });
+            default:
+                return false;
+            }
+        };
+        const bool has_child_binding = std::ranges::any_of(
+            ep.children, [&](const ast::PatternPtr& child) { return child && binds(*child, binds); });
         if (has_child_binding) {
             write_indent(os, indent + 1);
             os << "auto&& __vstr_alt = std::get<" << nominal_prefix(&enum_decl) << enum_decl.name << "::" << ep.case_name
@@ -591,7 +597,12 @@ void CppEmitter::emit_match_in_lambda(std::ostream& os, const ast::MatchExpr& m,
                 write_indent(os, indent + 1);
                 os << "auto&& " << static_cast<const ast::BindPat&>(child).name << " = __vstr_alt."
                    << field_name << ";\n";
+            } else if (child.kind == ast::NodeKind::EnumPat) {
+                emit_nested_pat_bindings(os, child, "__vstr_alt." + field_name, indent + 1);
             } else if (child.kind == ast::NodeKind::IdentPat) {
+                if (resolution_ != nullptr && resolution_->is_value_pattern(&child)) {
+                    continue;
+                }
                 write_indent(os, indent + 1);
                 os << "auto&& " << static_cast<const ast::IdentPat&>(child).name << " = __vstr_alt."
                    << field_name << ";\n";

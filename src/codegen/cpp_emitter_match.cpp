@@ -496,20 +496,25 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
         unsupported(os, "match arm pattern over payloaded enum", m.range);
     }
 
-    auto emit_payload_bindings = [&](const ast::EnumPat& ep, const ast::EnumDecl::Case& case_decl) {
+    auto emit_payload_bindings = [&](const ast::EnumPat& ep, const ast::EnumDecl::Case& case_decl, int ind) {
         for (std::size_t i = 0; i < ep.children.size() && i < case_decl.payload.size(); ++i) {
             const auto& child = *ep.children[i];
             std::string field_name = case_decl.payload[i].first.empty()
                                          ? std::format("_{}", i)
                                          : case_decl.payload[i].first;
             if (child.kind == ast::NodeKind::BindPat) {
-                write_indent(os, 4);
+                write_indent(os, ind);
                 os << "auto&& " << static_cast<const ast::BindPat&>(child).name << " = __vstr_alt."
                    << field_name << ";\n";
             } else if (child.kind == ast::NodeKind::IdentPat) {
-                write_indent(os, 4);
+                if (resolution_ != nullptr && resolution_->is_value_pattern(&child)) {
+                    continue;
+                }
+                write_indent(os, ind);
                 os << "auto&& " << static_cast<const ast::IdentPat&>(child).name << " = __vstr_alt."
                    << field_name << ";\n";
+            } else if (child.kind == ast::NodeKind::EnumPat) {
+                emit_nested_pat_bindings(os, child, "__vstr_alt." + field_name, ind);
             } else if (child.kind == ast::NodeKind::TuplePat) {
                 // §6 tuple-pattern payload child:
                 //   case .pair((a, b)): ...
@@ -520,7 +525,7 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
                 std::vector<std::string> sub_names;
                 std::vector<std::pair<std::string, const ast::TuplePat*>> sub_followons;
                 collect_tuple_pat_names(sub_tp, sub_names, sub_followons);
-                write_indent(os, 4);
+                write_indent(os, ind);
                 os << "auto&& [";
                 for (std::size_t k = 0; k < sub_names.size(); ++k) {
                     if (k != 0) {
@@ -529,7 +534,7 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
                     os << sub_names[k];
                 }
                 os << "] = __vstr_alt." << field_name << ";\n";
-                emit_tuple_pat_followons(os, sub_followons, 4);
+                emit_tuple_pat_followons(os, sub_followons, ind);
             }
             // Wildcard: nothing to bind.
         }
@@ -582,7 +587,36 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
             const ast::EnumPat& ep = *ac.ep;
             write_indent(os, 3);
             os << "{\n";
-            emit_payload_bindings(ep, *case_decl);
+            // §17.7 a sub-pattern that can fail (`.r(true, _)`, `.p(.x)`) tests
+            // the payload before anything binds from it, and like a guard
+            // lets later arms of the case run.
+            const auto pred = payload_preds(ep, "__vstr_alt");
+            if (!pred.empty()) {
+                write_indent(os, 4);
+                os << "if (" << pred << ") {\n";
+                emit_payload_bindings(ep, *case_decl, 5);
+                const int ret_ind = arm->guard ? 6 : 5;
+                if (arm->guard) {
+                    write_indent(os, 5);
+                    os << "if (";
+                    emit_expr(os, *arm->guard);
+                    os << ") {\n";
+                }
+                write_indent(os, ret_ind);
+                os << "return ";
+                emit_expr(os, *arm->body);
+                os << ";\n";
+                if (arm->guard) {
+                    write_indent(os, 5);
+                    os << "}\n";
+                }
+                write_indent(os, 4);
+                os << "}\n";
+                write_indent(os, 3);
+                os << "}\n";
+                continue;
+            }
+            emit_payload_bindings(ep, *case_decl, 4);
             if (arm->guard) {
                 write_indent(os, 4);
                 os << "if (";
@@ -643,6 +677,205 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
     os << "\n    }, ";
     emit_expr(os, *m.scrutinee);
     os << ".value)";
+}
+
+// §17.7 a payloaded enum's alternative type, `E::c_t` (or the generic
+// instance's `E<Int32>::c_t`).
+std::string CppEmitter::enum_alt_type(sema::TypePtr t, const ast::EnumDecl& d, std::string_view c) {
+    std::ostringstream o;
+    if (t != nullptr && !t->parts().empty()) {
+        if (in_enum_method_) {
+            o << "typename ";
+        }
+        emit_sema_type(o, t);
+    } else {
+        o << nominal_prefix(&d) << d.name;
+    }
+    o << "::" << c << "_t";
+    return o.str();
+}
+
+namespace {
+const ast::EnumDecl::Case* find_case(const ast::EnumDecl& d, std::string_view name) {
+    for (const auto& c : d.cases) {
+        if (c.name == name) {
+            return &c;
+        }
+    }
+    return nullptr;
+}
+
+std::string payload_field(const ast::EnumDecl::Case& c, std::size_t i) {
+    return c.payload[i].first.empty() ? std::format("_{}", i) : c.payload[i].first;
+}
+
+std::string conjoin(const std::vector<std::string>& parts) {
+    std::string out;
+    for (const auto& p : parts) {
+        if (p.empty()) {
+            continue;
+        }
+        if (!out.empty()) {
+            out += " && ";
+        }
+        out += p;
+    }
+    return out;
+}
+}  // namespace
+
+// The tests an enum pattern's children make of the case `alt` (an
+// expression of the case's `_t` type), joined with `&&`; "" when none.
+std::string CppEmitter::payload_preds(const ast::EnumPat& ep, const std::string& alt) {
+    const auto t = resolution_ != nullptr ? resolution_->pattern_type(&ep) : nullptr;
+    if (t == nullptr || t->nominal_decl() == nullptr) {
+        return "";
+    }
+    const auto& d = static_cast<const ast::EnumDecl&>(*t->nominal_decl());
+    const auto* c = find_case(d, ep.case_name);
+    if (c == nullptr) {
+        return "";
+    }
+    std::vector<std::string> parts;
+    for (std::size_t i = 0; i < ep.children.size() && i < c->payload.size(); ++i) {
+        if (ep.children[i] != nullptr) {
+            parts.push_back(payload_pred(*ep.children[i], alt + "." + payload_field(*c, i)));
+        }
+    }
+    return conjoin(parts);
+}
+
+std::string CppEmitter::payload_pred(const ast::Pattern& p, const std::string& base) {
+    switch (p.kind) {
+    case ast::NodeKind::IdentPat:
+        if (resolution_ != nullptr && resolution_->is_value_pattern(&p)) {
+            return std::format("({} == {})", base, static_cast<const ast::IdentPat&>(p).name);
+        }
+        return "";
+    case ast::NodeKind::LiteralPat:
+    case ast::NodeKind::RangePat: {
+        std::ostringstream o;
+        emit_pat_predicate(o, p, base);
+        return o.str();
+    }
+    case ast::NodeKind::OrPat: {
+        std::string out;
+        for (const auto& alt : static_cast<const ast::OrPat&>(p).alternatives) {
+            if (alt == nullptr) {
+                continue;
+            }
+            auto one = payload_pred(*alt, base);
+            if (one.empty()) {
+                return "";  // an always-matching alternative
+            }
+            out += out.empty() ? "(" : " || ";
+            out += one;
+        }
+        return out.empty() ? "" : out + ")";
+    }
+    case ast::NodeKind::TuplePat: {
+        const auto& tp = static_cast<const ast::TuplePat&>(p);
+        std::vector<std::string> parts;
+        for (std::size_t i = 0; i < tp.elements.size(); ++i) {
+            if (tp.elements[i] != nullptr) {
+                parts.push_back(
+                    payload_pred(*tp.elements[i], std::format("std::get<{}>({})", i, base)));
+            }
+        }
+        return conjoin(parts);
+    }
+    case ast::NodeKind::EnumPat: {
+        const auto& ep = static_cast<const ast::EnumPat&>(p);
+        if (resolution_ != nullptr && resolution_->is_optional_pattern(&p)) {
+            if (ep.case_name == "none") {
+                return std::format("!{}.has_value()", base);
+            }
+            std::string inner = ep.children.empty() || ep.children[0] == nullptr
+                                    ? ""
+                                    : payload_pred(*ep.children[0], std::format("(*{})", base));
+            return inner.empty() ? std::format("{}.has_value()", base)
+                                 : std::format("({}.has_value() && {})", base, inner);
+        }
+        const auto t = resolution_ != nullptr ? resolution_->pattern_type(&p) : nullptr;
+        if (t == nullptr || t->nominal_decl() == nullptr) {
+            return "";
+        }
+        const auto& d = static_cast<const ast::EnumDecl&>(*t->nominal_decl());
+        const bool payloaded =
+            std::ranges::any_of(d.cases, [](const auto& c) { return !c.payload.empty(); });
+        if (!payloaded) {
+            return std::format("({} == {}{}::{})", base, nominal_prefix(&d), d.name, ep.case_name);
+        }
+        const auto alt = enum_alt_type(t, d, ep.case_name);
+        auto kids = payload_preds(ep, std::format("std::get<{}>({}.value)", alt, base));
+        auto head = std::format("std::holds_alternative<{}>({}.value)", alt, base);
+        return kids.empty() ? head : std::format("({} && {})", head, kids);
+    }
+    default:
+        return "";
+    }
+}
+
+// The bindings below a nested enum pattern, read through the value at `base`
+// (which the arm's predicate has already checked holds that case).
+void CppEmitter::emit_nested_pat_bindings(std::ostream& os,
+                                          const ast::Pattern& p,
+                                          const std::string& base,
+                                          int indent) {
+    switch (p.kind) {
+    case ast::NodeKind::BindPat:
+        write_indent(os, indent);
+        os << "auto&& " << static_cast<const ast::BindPat&>(p).name << " = " << base << ";\n";
+        return;
+    case ast::NodeKind::IdentPat:
+        if (resolution_ != nullptr && resolution_->is_value_pattern(&p)) {
+            return;
+        }
+        write_indent(os, indent);
+        os << "auto&& " << static_cast<const ast::IdentPat&>(p).name << " = " << base << ";\n";
+        return;
+    case ast::NodeKind::TuplePat: {
+        const auto& tp = static_cast<const ast::TuplePat&>(p);
+        for (std::size_t i = 0; i < tp.elements.size(); ++i) {
+            if (tp.elements[i] != nullptr) {
+                emit_nested_pat_bindings(
+                    os, *tp.elements[i], std::format("std::get<{}>({})", i, base), indent);
+            }
+        }
+        return;
+    }
+    case ast::NodeKind::EnumPat: {
+        const auto& ep = static_cast<const ast::EnumPat&>(p);
+        if (resolution_ != nullptr && resolution_->is_optional_pattern(&p)) {
+            if (!ep.children.empty() && ep.children[0] != nullptr) {
+                emit_nested_pat_bindings(os, *ep.children[0], std::format("(*{})", base), indent);
+            }
+            return;
+        }
+        const auto t = resolution_ != nullptr ? resolution_->pattern_type(&p) : nullptr;
+        if (t == nullptr || t->nominal_decl() == nullptr) {
+            return;
+        }
+        const auto& d = static_cast<const ast::EnumDecl&>(*t->nominal_decl());
+        const auto* c = find_case(d, ep.case_name);
+        if (c == nullptr || c->payload.empty()) {
+            return;
+        }
+        const auto alt = enum_alt_type(t, d, ep.case_name);
+        for (std::size_t i = 0; i < ep.children.size() && i < c->payload.size(); ++i) {
+            if (ep.children[i] != nullptr) {
+                emit_nested_pat_bindings(
+                    os,
+                    *ep.children[i],
+                    std::format("std::get<{}>({}.value).{}", alt, base, payload_field(*c, i)),
+                    indent);
+            }
+        }
+        return;
+    }
+    default:
+        return;
+    }
 }
 
 // §17.7 pattern predicate. Writes a C++ expression that evaluates to
@@ -740,7 +973,9 @@ void CppEmitter::emit_pat_predicate(std::ostream& os,
             os << ")";
             return;
         }
-        os << "true";
+        // A user enum nested in a tuple or an optional.
+        auto pred = payload_pred(p, std::string{base});
+        os << (pred.empty() ? "true" : pred);
         return;
     }
     default:
@@ -784,10 +1019,13 @@ void CppEmitter::emit_pat_bindings(std::ostream& os,
     }
     case ast::NodeKind::EnumPat: {
         const auto& ep = static_cast<const ast::EnumPat&>(p);
-        if (resolution_ != nullptr && resolution_->is_optional_pattern(&p) && !ep.children.empty()
-            && ep.children[0] != nullptr) {
-            emit_pat_bindings(os, *ep.children[0], std::format("(*{})", base), indent);
+        if (resolution_ != nullptr && resolution_->is_optional_pattern(&p)) {
+            if (!ep.children.empty() && ep.children[0] != nullptr) {
+                emit_pat_bindings(os, *ep.children[0], std::format("(*{})", base), indent);
+            }
+            return;
         }
+        emit_nested_pat_bindings(os, p, std::string{base}, indent);
         return;
     }
     default:

@@ -64,6 +64,9 @@ public:
     // §17.6 a bare name in a match pattern that compares against a value.
     [[nodiscard]] bool is_value_pattern(const ast::Pattern* p) const;
     void mark_value_pattern(const ast::Pattern* p);
+    // §17.7 the user enum type an enum pattern matches against.
+    [[nodiscard]] TypePtr pattern_type(const ast::Pattern* p) const;
+    void set_pattern_type(const ast::Pattern* p, TypePtr t);
     void mark_optional_pattern(const ast::Pattern* p);
 
     void set_type(const ast::Expr* e, TypePtr t);
@@ -107,6 +110,7 @@ private:
     std::unordered_set<const ast::CallExpr*> cas_guarded_;
     std::unordered_set<const ast::Pattern*> optional_patterns_;
     std::unordered_set<const ast::Pattern*> value_patterns_;
+    std::unordered_map<const ast::Pattern*, TypePtr> pattern_types_;
     std::unordered_map<const ast::Expr*, ComptimeValue> folded_;
     std::unordered_set<const ast::Decl*> gated_decls_;
     std::unordered_map<const ast::DoCatchExpr*, TypePtr> do_catch_error_;
@@ -615,7 +619,6 @@ private:
     void reject_bare_name_pattern(std::string_view name, diag::SourceRange range);
     void check_bare_name_pattern(const ast::IdentPat& ip, TypePtr scrutinee);
     void bind_pattern_name(const ast::IdentPat& ip, TypePtr type);
-    int in_enum_payload_ = 0;
     // §12.4 — nesting depth of `quote { … }`. A `$`-splice is only legal
     // when this is > 0.
     int quote_depth_ = 0;

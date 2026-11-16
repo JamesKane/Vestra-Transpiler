@@ -118,6 +118,15 @@ void Resolution::mark_value_pattern(const ast::Pattern* p) {
     value_patterns_.insert(p);
 }
 
+TypePtr Resolution::pattern_type(const ast::Pattern* p) const {
+    auto it = pattern_types_.find(p);
+    return it == pattern_types_.end() ? nullptr : it->second;
+}
+
+void Resolution::set_pattern_type(const ast::Pattern* p, TypePtr t) {
+    pattern_types_[p] = std::move(t);
+}
+
 bool Resolution::needs_string_coercion(const ast::Expr* e) const {
     return string_coercions_.contains(e);
 }
