@@ -1,0 +1,22 @@
+// §18 Optional is `enum Optional[T] { case some(T); case none }`: `.some(x)`
+// builds a present value where an optional is expected, and `.some(p)` /
+// `.none` match one.
+
+func pick(_ b: Bool) -> Int32? {
+    if b { return .some(5) }
+    return .none
+}
+
+func describe(_ o: Int32?) using Alloc -> String {
+    return match o {
+        case .some(let v) where v > 4: "big \(v)"
+        case .some(let v): "small \(v)"
+        case .none: "none \(0)"
+    }
+}
+
+func main() using Log, Alloc -> Int32 {
+    let a: Int32? = .some(3)
+    print("\(describe(pick(true))) \(describe(a)) \(describe(pick(false)))")
+    return 0
+}

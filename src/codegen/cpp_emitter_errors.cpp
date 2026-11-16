@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <format>
 #include <ostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -419,6 +420,26 @@ void CppEmitter::emit_match_in_lambda(std::ostream& os, const ast::MatchExpr& m,
             write_indent(os, indent);
             os << (first ? "if (" : "else if (");
             emit_pat_predicate(os, *arm.pattern, "__vstr_mh");
+            // A guard that reads the bindings is tested after them, inside the
+            // arm; the next arm then opens a fresh `if` (see
+            // emit_match_value_scrutinee).
+            std::ostringstream binds;
+            emit_pat_bindings(binds, *arm.pattern, "__vstr_mh", indent + 1);
+            if (arm.guard && !binds.str().empty()) {
+                os << ") {\n" << binds.str();
+                write_indent(os, indent + 1);
+                os << "if (";
+                emit_expr(os, *arm.guard);
+                os << ") {\n";
+                write_indent(os, indent + 2);
+                emit_stmt_expr(os, *arm.body, /*return_value=*/true);
+                write_indent(os, indent + 1);
+                os << "}\n";
+                write_indent(os, indent);
+                os << "}\n";
+                first = true;
+                continue;
+            }
             if (arm.guard) {
                 os << " && (";
                 emit_expr(os, *arm.guard);

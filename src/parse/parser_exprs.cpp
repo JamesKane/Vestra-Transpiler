@@ -385,7 +385,10 @@ ast::ExprPtr Parser::parse_primary() {
         // Leading-dot inference: `.foo`
         advance();
         auto l = std::make_unique<ast::LeadingDotExpr>();
-        if (!check(TokenKind::Identifier)) {
+        // §18 `.some` is Optional's case even though `some` is a keyword.
+        if (check(TokenKind::KwSome)) {
+            l->name = std::string{advance().lexeme};
+        } else if (!check(TokenKind::Identifier)) {
             emit_error(peek().range, "expected identifier after leading '.'");
         } else {
             l->name = std::string{advance().lexeme};

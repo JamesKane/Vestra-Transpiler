@@ -58,6 +58,10 @@ public:
     void set_ordering_guard(const ast::Expr* e, OrderingGuard g);
     [[nodiscard]] bool cas_guarded(const ast::CallExpr* c) const;
     void mark_cas_guarded(const ast::CallExpr* c);
+    // §18 an enum pattern tested against an optional: `.some(p)` matches a
+    // present value (its child against the wrapped value), `.none` an empty one.
+    [[nodiscard]] bool is_optional_pattern(const ast::Pattern* p) const;
+    void mark_optional_pattern(const ast::Pattern* p);
 
     void set_type(const ast::Expr* e, TypePtr t);
     void set_symbol(const ast::Expr* e, const Symbol* s);
@@ -98,6 +102,7 @@ private:
     std::unordered_set<const ast::Expr*> string_coercions_;
     std::unordered_map<const ast::Expr*, OrderingGuard> ordering_guards_;
     std::unordered_set<const ast::CallExpr*> cas_guarded_;
+    std::unordered_set<const ast::Pattern*> optional_patterns_;
     std::unordered_map<const ast::Expr*, ComptimeValue> folded_;
     std::unordered_set<const ast::Decl*> gated_decls_;
     std::unordered_map<const ast::DoCatchExpr*, TypePtr> do_catch_error_;

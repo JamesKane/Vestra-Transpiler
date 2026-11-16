@@ -3454,6 +3454,18 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
     }
     case ast::NodeKind::CallExpr: {
         const auto& c = static_cast<const ast::CallExpr&>(e);
+        // §18 `.some(x)` against an optional: `std::optional<T>(x)`.
+        if (resolution_ != nullptr && c.callee->kind == ast::NodeKind::LeadingDotExpr
+            && static_cast<const ast::LeadingDotExpr&>(*c.callee).name == "some" && c.args.size() == 1) {
+            auto t = resolution_->type_of(&e);
+            if (t != nullptr && t->kind() == sema::TypeKind::Optional) {
+                emit_sema_type(os, t);
+                os << "(";
+                emit_expr(os, *c.args[0].value);
+                os << ")";
+                break;
+            }
+        }
         // §4 `x.to[T]()` traps when the value doesn't fit T; `x.toWrapping[T]()`
         // truncates, which a C++ integer conversion already does (modulo 2^N).
         if (const auto* conv = sema::Resolver::numeric_conversion_call(c);

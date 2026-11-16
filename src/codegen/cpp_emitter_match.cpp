@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <format>
 #include <ostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -698,6 +699,25 @@ void CppEmitter::emit_pat_predicate(std::ostream& os,
         os << ")";
         return;
     }
+    case ast::NodeKind::EnumPat: {
+        // §18 `.some(p)` / `.none` against an optional.
+        const auto& ep = static_cast<const ast::EnumPat&>(p);
+        if (resolution_ != nullptr && resolution_->is_optional_pattern(&p)) {
+            if (ep.case_name == "none") {
+                os << "!" << base << ".has_value()";
+                return;
+            }
+            os << "(" << base << ".has_value()";
+            if (!ep.children.empty() && ep.children[0] != nullptr) {
+                os << " && ";
+                emit_pat_predicate(os, *ep.children[0], std::format("(*{})", base));
+            }
+            os << ")";
+            return;
+        }
+        os << "true";
+        return;
+    }
     default:
         // Unrecognized — return true so the arm is always taken (and
         // the caller's `unsupported` diagnostic surfaces the real
@@ -731,6 +751,14 @@ void CppEmitter::emit_pat_bindings(std::ostream& os,
                 std::string sub_base = std::format("std::get<{}>({})", i, base);
                 emit_pat_bindings(os, *tp.elements[i], sub_base, indent);
             }
+        }
+        return;
+    }
+    case ast::NodeKind::EnumPat: {
+        const auto& ep = static_cast<const ast::EnumPat&>(p);
+        if (resolution_ != nullptr && resolution_->is_optional_pattern(&p) && !ep.children.empty()
+            && ep.children[0] != nullptr) {
+            emit_pat_bindings(os, *ep.children[0], std::format("(*{})", base), indent);
         }
         return;
     }
@@ -776,6 +804,30 @@ void CppEmitter::emit_match_value_scrutinee(std::ostream& os, const ast::MatchEx
         write_indent(os, 2);
         os << (first ? "if (" : "else if (");
         emit_pat_predicate(os, *arm.pattern, "__vstr_m");
+        // A guard that reads the pattern's bindings is tested inside the arm,
+        // after them. A failed guard must then fall through to the next arm,
+        // so that arm opens a fresh `if` (every taken arm returns).
+        std::ostringstream binds;
+        emit_pat_bindings(binds, *arm.pattern, "__vstr_m", 3);
+        if (arm.guard && !binds.str().empty()) {
+            os << ") {\n" << binds.str();
+            write_indent(os, 3);
+            os << "if (";
+            emit_expr(os, *arm.guard);
+            os << ") {\n";
+            write_indent(os, 4);
+            os << "return ";
+            if (arm.body) {
+                emit_expr(os, *arm.body);
+            }
+            os << ";\n";
+            write_indent(os, 3);
+            os << "}\n";
+            write_indent(os, 2);
+            os << "}\n";
+            first = true;
+            continue;
+        }
         if (arm.guard) {
             os << " && (";
             emit_expr(os, *arm.guard);

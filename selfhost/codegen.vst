@@ -3119,6 +3119,7 @@ struct TyEnv {
     var condUse: String         // per-statement: the cond-hoist name the statement's use-site reads via `(*name)` ("" if none)
     var condTy: Vec[Nd]         // per-statement: the cond-hoist lambda's success-type node (empty box = void)
     var condTyStr: String       // per-statement: C++ success-type SPELLING when no node exists (a statement-position match types as its arms)
+    var valOpt: Bool            // per value-match: the scrutinee is an optional, so `.some(p)` / `.none` test presence
     var armTo: String           // per-match: Vestra type SPELLING an arm body flows into ("" if none) — resolves a leading-dot case in an arm
     var curThrowsNode: Vec[Nd]  // per-function: the `throws(E)` type node (empty when the function does not throw)
     var curAsync: Bool          // per-function: enclosing function is `async` (returns lower to co_return)
@@ -5578,7 +5579,7 @@ func buildTyEnv(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc -> TyEnv
                     curRet: own(""), curRetNode: Vec.new(), curAttrs: Vec.new(),
                     tryN: 0, hoistName: Vec.new(), hoistExpr: Vec.new(),
                     hoistKind: Vec.new(), hoistNext: 0,
-                    condUse: own(""), condTy: Vec.new(), condTyStr: own(""), armTo: own(""),
+                    condUse: own(""), condTy: Vec.new(), condTyStr: own(""), armTo: own(""), valOpt: false,
                     curThrowsNode: Vec.new(),
                     curAsync: false,
                     curUnitThrows: false,
@@ -10628,6 +10629,9 @@ func emitValueMatch(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyStr: S
     emitBoxed(env, scrut)
     print(";\n")
     let i12 = deeper(i8)
+    let prevOpt = env.valOpt
+    let st = tyInferBoxed(env, scrut)
+    env.valOpt = st.len() > 1 && (st.charAt(st.len() - 1) ?? ' ') == '?'
     // A default / wildcard arm is pulled out to the tail wherever it sits; the
     // arms after it still join the chain, matching the bootstrap's walk.
     var di: Int = 0 - 1
@@ -10637,11 +10641,13 @@ func emitValueMatch(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyStr: S
         if armIsDefault(arms.get(j) ?? Nd.wildcard) {
             di = j
         } else {
-            emitValueArm(env, i8, i12, arms.get(j) ?? Nd.wildcard, k)
-            k = k + 1
+            // A guarded arm that binds closes the chain: the next arm opens a
+            // fresh `if`, since a failed guard must fall through to it.
+            if emitValueArm(env, i8, i12, arms.get(j) ?? Nd.wildcard, k) { k = 0 } else { k = k + 1 }
         }
         j = j + 1
     }
+    env.valOpt = prevOpt
     if di >= 0 {
         emitValueDefault(env, i8, arms.get(di) ?? Nd.wildcard, k)
     } else {
@@ -10652,17 +10658,37 @@ func emitValueMatch(_ env: inout TyEnv, _ indent: Str, _ ty: Vec[Nd], _ tyStr: S
     print("}()")
 }
 
-func emitValueArm(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ arm: Nd, _ k: Int) using Alloc, Log {
-    match arm {
+func emitValueArm(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ arm: Nd, _ k: Int) using Alloc, Log -> Bool {
+    return match arm {
         case .matchArm(let isDef, let pat, let guard, let body): emitValueArmParts(env, i8, i12, pat, guard, body, k)
-        default: noop()
+        default: false
     }
 }
 
-func emitValueArmParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd], _ k: Int) using Alloc, Log {
+// Returns whether the arm closed the chain (a guarded arm whose pattern binds:
+// the guard reads the bindings, so it is tested inside the arm's brace).
+func emitValueArmParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd], _ k: Int) using Alloc, Log -> Bool {
     print(i8)
     if k == 0 { print("if (") } else { print("else if (") }
     emitPatPredicate(env, pat, "__vstr_m")
+    if guard.len() > 0 && patBinds(env, pat) {
+        print(") {\n")
+        emitPatBindings(env, pat, "__vstr_m", i12)
+        print(i12)
+        print("if (")
+        emitBoxed(env, guard)
+        print(") {\n")
+        let i16 = deeper(i12)
+        print(i16)
+        print("return ")
+        emitArmBody(env, body)
+        print(";\n")
+        print(i12)
+        print("}\n")
+        print(i8)
+        print("}\n")
+        return true
+    }
     if guard.len() > 0 {
         print(" && (")
         emitBoxed(env, guard)
@@ -10676,6 +10702,32 @@ func emitValueArmParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ pat: Vec[Nd]
     print(";\n")
     print(i8)
     print("}\n")
+    return false
+}
+
+// Whether the pattern introduces any binding (what emitPatBindings would write).
+func patBinds(_ env: inout TyEnv, _ pat: Vec[Nd]) using Alloc -> Bool {
+    if pat.len() == 0 { return false }
+    return patNodeBinds(env, pat.get(0) ?? Nd.wildcard)
+}
+
+func patNodeBinds(_ env: inout TyEnv, _ p: Nd) using Alloc -> Bool {
+    return match p {
+        case .identP(let n): true
+        case .bindP(let n): true
+        case .tupleP(let elems): patListBinds(env, elems)
+        case .enumP(let cn, let children): env.valOpt && streq(cn, "some") && patListBinds(env, children)
+        default: false
+    }
+}
+
+func patListBinds(_ env: inout TyEnv, _ ps: Vec[Nd]) using Alloc -> Bool {
+    var i: Int = 0
+    while i < ps.len() {
+        if patNodeBinds(env, ps.get(i) ?? Nd.wildcard) { return true }
+        i = i + 1
+    }
+    return false
 }
 
 // The trailing default. With no predicate arm ahead of it the chain never
@@ -10709,8 +10761,42 @@ func emitPatPredicateNode(_ env: inout TyEnv, _ p: Nd, _ base: Str) using Alloc,
         case .rangeP(let lo, let hi, let incl): emitRangePred(env, base, lo, hi, incl)
         case .orP(let alts): emitOrPred(env, base, alts)
         case .tupleP(let elems): emitTuplePred(env, base, elems)
+        case .enumP(let cn, let children): emitOptCasePred(env, base, cn, children)
         default: print("true")
     }
+}
+
+// §18 `.some(p)` / `.none` against an optional scrutinee: a presence test, and
+// the child pattern against the wrapped value. Below the top level the
+// pattern's type isn't known here, so it stays always-match.
+func emitOptCasePred(_ env: inout TyEnv, _ base: Str, _ cn: Str, _ children: Vec[Nd]) using Alloc, Log {
+    if !env.valOpt || !streq(base, "__vstr_m") || !(streq(cn, "some") || streq(cn, "none")) {
+        print("true")
+        return
+    }
+    if streq(cn, "none") {
+        print("!")
+        print(base)
+        print(".has_value()")
+        return
+    }
+    print("(")
+    print(base)
+    print(".has_value()")
+    if children.len() > 0 {
+        print(" && ")
+        env.valOpt = false
+        emitPatPredicateNode(env, children.get(0) ?? Nd.wildcard, optInnerBase(base))
+        env.valOpt = true
+    }
+    print(")")
+}
+
+func optInnerBase(_ base: Str) using Alloc -> String {
+    var s: String = "(*"
+    s.append(base)
+    s.append(")")
+    return s
 }
 
 func emitLitPred(_ env: inout TyEnv, _ base: Str, _ lit: Vec[Nd]) using Alloc, Log {
@@ -10781,8 +10867,16 @@ func emitPatBindingsNode(_ env: inout TyEnv, _ p: Nd, _ base: Str, _ ind: Str) u
         case .identP(let n): emitOnePatBinding(ind, n, base)
         case .bindP(let n): emitOnePatBinding(ind, n, base)
         case .tupleP(let elems): emitTupleBindings(env, elems, base, ind)
+        case .enumP(let cn, let children): emitOptCaseBindings(env, base, cn, children, ind)
         default: noop()
     }
+}
+
+func emitOptCaseBindings(_ env: inout TyEnv, _ base: Str, _ cn: Str, _ children: Vec[Nd], _ ind: Str) using Alloc, Log {
+    if !env.valOpt || !streq(base, "__vstr_m") || !streq(cn, "some") || children.len() == 0 { return }
+    env.valOpt = false
+    emitPatBindingsNode(env, children.get(0) ?? Nd.wildcard, optInnerBase(base), ind)
+    env.valOpt = true
 }
 
 func emitTupleBindings(_ env: inout TyEnv, _ elems: Vec[Nd], _ base: Str, _ ind: Str) using Alloc, Log {
@@ -12057,6 +12151,14 @@ func tryEmitLeadingDotCase(_ env: inout TyEnv, _ to: Str, _ n: Str, _ args: Vec[
     // belongs to the optional's enum.
     if to.len() > 1 && (to.charAt(to.len() - 1) ?? ' ') == '?' {
         if streq(n, "none") && args.len() == 0 { print("std::nullopt"); return true }
+        // §18 `.some(x)` -> `std::optional<T>(x)`.
+        if streq(n, "some") && args.len() == 1 {
+            print(cppOfSpelling(own(to)))
+            print("(")
+            emitBoxed(env, argValue(args.get(0) ?? Nd.wildcard))
+            print(")")
+            return true
+        }
         return tryEmitLeadingDotCase(env, to.slice(0, to.len() - 1), n, args)
     }
     let base = genBaseOf(to)

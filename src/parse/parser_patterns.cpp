@@ -78,7 +78,10 @@ ast::PatternPtr Parser::parse_pattern_alt() {
     }
     if (match(TokenKind::Dot)) {
         auto e = std::make_unique<ast::EnumPat>();
-        if (!check(TokenKind::Identifier)) {
+        // §18 `.some(p)` is Optional's case even though `some` is a keyword.
+        if (check(TokenKind::KwSome)) {
+            e->case_name = std::string{advance().lexeme};
+        } else if (!check(TokenKind::Identifier)) {
             emit_error(peek().range, "expected case name after '.' in pattern");
         } else {
             e->case_name = std::string{advance().lexeme};

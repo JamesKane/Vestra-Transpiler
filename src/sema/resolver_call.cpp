@@ -311,6 +311,28 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
+    // §18 `.some(x)` is Optional's case: with an optional expected, `x` is
+    // checked against the wrapped type and the call is that optional.
+    if (c.callee->kind == ast::NodeKind::LeadingDotExpr
+        && static_cast<const ast::LeadingDotExpr&>(*c.callee).name == "some" && expected != nullptr
+        && expected->kind() == TypeKind::Optional && expected->inner() != nullptr) {
+        if (c.args.size() != 1 || !c.args[0].label.empty()) {
+            for (const auto& a : c.args) {
+                (void)check_expr(*a.value);
+            }
+            error_at(c.range, "'.some' takes exactly one unlabeled argument");
+            return expected;
+        }
+        auto at = check_expr(*c.args[0].value, expected->inner());
+        if (at != nullptr && !TypeArena::assignable(at, expected->inner())) {
+            error_at(c.args[0].value->range,
+                     std::format("'.some' expects {}, got {}",
+                                 expected->inner()->describe(),
+                                 at->describe()));
+        }
+        return expected;
+    }
+
     // §11 Duration factories — Swift-like `.seconds(n)` / `.milliseconds(n)` /
     // `.microseconds(n)` / `.nanoseconds(n)`, each taking one integer (a count
     // in that unit) and yielding a Duration. Both the explicit

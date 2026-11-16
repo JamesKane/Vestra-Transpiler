@@ -749,6 +749,25 @@ void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
     }
     case ast::NodeKind::EnumPat: {
         const auto& ep = static_cast<const ast::EnumPat&>(p);
+        // §18 Optional is `enum Optional[T] { case some(T); case none }`: its
+        // two cases match an optional scrutinee.
+        if (scrutinee != nullptr && scrutinee->kind() == TypeKind::Optional
+            && (ep.case_name == "some" || ep.case_name == "none")) {
+            resolution_.mark_optional_pattern(&p);
+            const std::size_t arity = ep.case_name == "some" ? 1 : 0;
+            if (!ep.children.empty() && ep.children.size() != arity) {
+                error_at(p.range,
+                         std::format("case '{}' has {} payload field(s), pattern binds {}",
+                                     ep.case_name,
+                                     arity,
+                                     ep.children.size()));
+                return;
+            }
+            if (!ep.children.empty()) {
+                check_pattern(*ep.children[0], scrutinee->inner());
+            }
+            break;
+        }
         if (scrutinee == nullptr || scrutinee->kind() != TypeKind::Enum
             || scrutinee->nominal_decl() == nullptr) {
             error_at(p.range,
