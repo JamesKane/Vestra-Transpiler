@@ -1,0 +1,41 @@
+// §19.5 / §19.6 a panic is an immediate, terminal stop that runs no
+// destructors, so a path ending in one owes no linear value a consumer.
+
+linear struct H {
+    var id: Int32
+}
+
+func close(_ h: sink H) { }
+func die() -> Never { panic("stop") }
+
+func inBranch(_ c: Bool) {
+    let h: H = H(id: 1)
+    if c { panic("x") }
+    close(h)
+}
+
+func atEnd() {
+    let h: H = H(id: 1)
+    panic("x")
+}
+
+func throughNever(_ c: Bool) {
+    let h: H = H(id: 1)
+    if c { die() }
+    close(h)
+}
+
+func inArm(_ c: Int32) {
+    let h: H = H(id: 1)
+    match c {
+        case 0: close(h)
+        default: panic("no")
+    }
+}
+
+func bothBranches(_ c: Bool) {
+    let h: H = H(id: 1)
+    if c { panic("a") } else { die() }
+}
+
+func main() -> Int32 { return 0 }

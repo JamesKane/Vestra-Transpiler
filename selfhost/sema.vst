@@ -5910,7 +5910,7 @@ func ownCheckFunc(_ env: inout OwnEnv, _ params: Vec[Nd], _ body: Vec[Nd]) using
     ownResetBindings(env)
     ownRegisterParams(env, params)
     ownBoxed(env, body)
-    ownReportLeaks(env)
+    if !ownStops(env, body) { ownReportLeaks(env) }   // a body ending in a panic owes nothing
 }
 
 func ownResetBindings(_ env: inout OwnEnv) using Alloc {
@@ -6979,6 +6979,40 @@ func ownNeverCallee(_ env: inout OwnEnv, _ callee: Vec[Nd]) -> Bool {
     return false
 }
 
+// §19.5 does the path end in a `Never` call (`panic`), which stops the program
+// and owes no linear value a consumer? (The bootstrap's OwnershipChecker::stops.)
+func ownStops(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc -> Bool {
+    if let n = v.get(0) {
+        return match n {
+            case .paren(let x): ownStops(env, x)
+            case .call(let callee, let args): ownNeverCallee(env, callee)
+            case .block(let stmts): ownLastStops(env, stmts)
+            case .ifE(let ln, let li, let c, let t, let e): e.len() > 0 && ownStops(env, t) && ownStops(env, e)
+            case .matchE(let scr, let arms): ownArmsStop(env, arms)
+            default: false
+        }
+    }
+    return false
+}
+
+func ownLastStops(_ env: inout OwnEnv, _ stmts: Vec[Nd]) using Alloc -> Bool {
+    if stmts.len() == 0 { return false }
+    return match stmts.get(stmts.len() - 1) ?? Nd.wildcard {
+        case .exprS(let e): ownStops(env, e)
+        default: false
+    }
+}
+
+func ownArmsStop(_ env: inout OwnEnv, _ arms: Vec[Nd]) using Alloc -> Bool {
+    if arms.len() == 0 { return false }
+    var i: Int = 0
+    while i < arms.len() {
+        if !ownStops(env, ownArmBody(arms.get(i) ?? Nd.wildcard)) { return false }
+        i = i + 1
+    }
+    return true
+}
+
 // Does a diverging branch leave the function (rather than break / continue)?
 func ownLeavesFn(_ env: inout OwnEnv, _ v: Vec[Nd]) -> Bool {
     if let n = v.get(0) {
@@ -7046,8 +7080,8 @@ func ownIf(_ env: inout OwnEnv, _ ln: String, _ li: Vec[Nd], _ cond: Vec[Nd], _ 
     let elseOut = els.len() > 0 && ownDiverges(env, els)
     if elseOut && !thenOut { ownFactsLoad(env, thenExitF) }
     else if !thenOut { ownFactsMeet(env, thenExitF) }
-    if thenOut && ownLeavesFn(env, thenB) { ownPathLeaks(env, thenSt) }
-    if elseOut && ownLeavesFn(env, els) { ownPathLeaks(env, elseSt) }
+    if thenOut && ownLeavesFn(env, thenB) && !ownStops(env, thenB) { ownPathLeaks(env, thenSt) }
+    if elseOut && ownLeavesFn(env, els) && !ownStops(env, els) { ownPathLeaks(env, elseSt) }
     if !thenOut && !elseOut {
         var brs: Vec[OwnSt] = Vec.new()
         brs.push(ownSnapOf(thenSt))
@@ -7123,9 +7157,11 @@ func ownMatch(_ env: inout OwnEnv, _ scr: Vec[Nd], _ arms: Vec[Nd]) using Alloc 
         if body.len() > 0 {
             ownLoad(env, pre)
             ownBoxed(env, body)
-            let st = ownSnap(env)
-            ownMergeSt(merged, st)
-            states.push(st)
+            if !ownStops(env, body) {   // §19.5 an arm that panics never reaches the join
+                let st = ownSnap(env)
+                ownMergeSt(merged, st)
+                states.push(st)
+            }
         }
         a = a + 1
     }

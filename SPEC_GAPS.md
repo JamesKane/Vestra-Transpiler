@@ -287,7 +287,7 @@ fails in clang.
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
 | §19.6 | Consumed only by the type's consumer or a destructure | divergent | Any `sink` param counts, so an empty `func dropit(_ h: sink H)` drops anything. No destructure form exists. |
-| §19.6 | Panic paths need not consume linear values | divergent (over-strict) | `let h = H(...); panic("x")` reports "never consumed". |
+| §19.6 | Panic paths need not consume linear values | weaker | A path that ends in a call returning `Never` (`panic`, or a function declared `-> Never`) owes its linear values nothing: a branch, a match arm or a whole body ending in one is not a leak, and a match arm that panics doesn't take part in the join. Only a path whose last expression is such a call (or an `if` / `match` whose every branch is) counts; code after a mid-block `panic` is still checked. The self-hosted checker recognizes only a named function call, not a method returning `Never`. |
 | §19.9 | Left-to-right evaluation of arguments and operands | unsound | Emitted as direct C++ calls and operators, so order is whatever the C++ compiler chooses. |
 
 Linear obligations do carry correctly through `Optional`, `Box` and generic

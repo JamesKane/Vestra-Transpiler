@@ -172,6 +172,9 @@ private:
     [[nodiscard]] bool block_diverges(const ast::Expr* e) const;
     // Does this diverging branch leave the function (vs break / continue)?
     [[nodiscard]] bool leaves_function(const ast::Expr* e) const;
+    // §19.5 a path that ends in a `Never` call (`panic`) stops the program:
+    // it runs no destructors and owes no linear value a consumer.
+    [[nodiscard]] bool stops(const ast::Expr* e) const;
     void report_path_leaks(const BindingMap& state, diag::SourceRange site);
     // §5 / §19.2 a binding from outside a loop, live on entry and still moved
     // at the end of the body, is moved again (or used) by the next iteration.

@@ -80,6 +80,9 @@ void OwnershipChecker::check_func(const ast::FuncDecl& f) {
     leak_reported_.clear();
     current_func_ = &f;
     check_expr(*f.body);
+    if (stops(f.body.get())) {
+        return;  // the body ends in a panic, which owes nothing
+    }
     // §5/§19.6 — any linear binding still live at the end of the function
     // body is a leak: a linear value must be consumed before its scope ends.
     for (const auto& [sym, info] : bindings_) {
@@ -374,10 +377,10 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
         const bool else_out = i.else_branch != nullptr && block_diverges(i.else_branch.get());
         // A branch that leaves the function with a linear value still live
         // leaks it on that path.
-        if (then_out && leaves_function(i.then_branch.get())) {
+        if (then_out && leaves_function(i.then_branch.get()) && !stops(i.then_branch.get())) {
             report_path_leaks(then_state, i.then_branch->range);
         }
-        if (else_out && leaves_function(i.else_branch.get())) {
+        if (else_out && leaves_function(i.else_branch.get()) && !stops(i.else_branch.get())) {
             report_path_leaks(else_state, i.else_branch->range);
         }
         if (then_out && !else_out) {
@@ -431,6 +434,10 @@ void OwnershipChecker::check_expr(const ast::Expr& e) {
             if (arm.body) {
                 bindings_ = pre;
                 check_expr(*arm.body);
+                // §19.5 an arm that panics never reaches the join.
+                if (stops(arm.body.get())) {
+                    continue;
+                }
                 merge_consumed(merged, bindings_);
                 arm_states.push_back(bindings_);
             }
@@ -1567,6 +1574,46 @@ bool OwnershipChecker::leaves_function(const ast::Expr* e) const {
     }
     const auto k = b.stmts.back()->kind;
     return k != ast::NodeKind::BreakStmt && k != ast::NodeKind::ContinueStmt;
+}
+
+bool OwnershipChecker::stops(const ast::Expr* e) const {
+    if (e == nullptr) {
+        return false;
+    }
+    switch (e->kind) {
+    case ast::NodeKind::ParenExpr:
+        return stops(static_cast<const ast::ParenExpr&>(*e).inner.get());
+    case ast::NodeKind::CallExpr: {
+        auto t = resolution_->type_of(e);
+        return t != nullptr && t->is_never();
+    }
+    case ast::NodeKind::BlockExpr: {
+        const auto& b = static_cast<const ast::BlockExpr&>(*e);
+        if (b.stmts.empty() || b.stmts.back()->kind != ast::NodeKind::ExprStmt) {
+            return false;
+        }
+        return stops(static_cast<const ast::ExprStmt&>(*b.stmts.back()).expr.get());
+    }
+    case ast::NodeKind::IfExpr: {
+        const auto& i = static_cast<const ast::IfExpr&>(*e);
+        return i.else_branch != nullptr && stops(i.then_branch.get())
+               && stops(i.else_branch.get());
+    }
+    case ast::NodeKind::MatchExpr: {
+        const auto& m = static_cast<const ast::MatchExpr&>(*e);
+        if (m.arms.empty()) {
+            return false;
+        }
+        for (const auto& arm : m.arms) {
+            if (!stops(arm.body.get())) {
+                return false;
+            }
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
 }
 
 std::string OwnershipChecker::non_copyable_reason(TypePtr t, int depth) const {

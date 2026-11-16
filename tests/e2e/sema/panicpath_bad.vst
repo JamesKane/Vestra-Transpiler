@@ -1,0 +1,31 @@
+// §19.6 a path that doesn't panic still owes its linear values a consumer.
+
+linear struct H {
+    var id: Int32
+}
+
+func close(_ h: sink H) { }
+
+func fallsThrough(_ c: Bool) {
+    let h: H = H(id: 1)
+    if c { panic("x") }
+}
+
+func returns(_ c: Bool) {
+    let h: H = H(id: 1)
+    if c { return }
+    close(h)
+}
+
+func oneArm(_ c: Int32) {
+    let h: H = H(id: 1)
+    match c {
+        case 0: close(h)
+        case 1: panic("no")
+        default: noop()
+    }
+}
+
+func noop() { }
+
+func main() -> Int32 { return 0 }
