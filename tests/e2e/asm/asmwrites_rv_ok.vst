@@ -1,0 +1,30 @@
+// Annex §14.4 rule 1 on riscv64: every write named, by a clobber in either
+// spelling (`x11` names `a1`) or an output pin. Stores, branches and the
+// rd-less CSR forms write nothing.
+
+func g(_ x: UInt64) using Asm -> UInt64 {
+    var r: UInt64 = 0
+    asm(in: [x], out: [r], clobbers: ["t0", "x11", "ra", "a2", "f10", "s1"]) {
+        "addi t0, {x}, 1"
+        "ld x11, 0(sp)"
+        "sd t1, 8(sp)"
+        "call helper"
+        "sc.d a2, a3, (a4)"
+        "fmv.d.x f10, {x}"
+        "csrrw s1, sscratch, {x}"
+        "csrw stvec, {x}"
+        "beqz t3, 1f"
+        "1: fence rw, rw"
+    }
+    return r
+}
+
+func pinned(_ x: UInt64) using Asm -> UInt64 {
+    var r: UInt64 = 0
+    asm(in: ["a0": x], out: ["a1": r]) {
+        "addi a1, a0, 7"
+    }
+    return r
+}
+
+func main() -> Int32 { return 0 }

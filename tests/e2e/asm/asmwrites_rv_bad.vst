@@ -1,0 +1,23 @@
+// Annex §14.4 rule 1 on riscv64 (destination first, ABI or x names): each
+// write the operand list doesn't name is an error. RISC-V has no flags.
+// Checked under --target=riscv64 (e2e_asm_implicit_clobber_rv).
+
+func f(_ x: UInt64) using Asm -> UInt64 {
+    var r: UInt64 = 0
+    asm(in: [x], out: [r]) {
+        "addi t0, {x}, 1"
+        "ld x11, 0(sp)"
+        "sd t1, 8(sp)"
+        "call helper"
+        "jalr x5, 0(t2)"
+        "sc.d a2, a3, (a4)"
+        "fmv.d.x f10, {x}"
+        "csrrw s1, sscratch, {x}"
+        "csrw stvec, {x}"
+        "beqz t3, 1f; li zero, 3"
+        "1: tail helper"
+    }
+    return r
+}
+
+func main() -> Int32 { return 0 }

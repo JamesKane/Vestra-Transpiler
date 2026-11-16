@@ -3027,6 +3027,22 @@ set_tests_properties(e2e_asm_implicit_clobber PROPERTIES
 add_test(
     NAME    e2e_asm_declared_writes
     COMMAND $<TARGET_FILE:vestra> check --target=aarch64 --no-libc ${CMAKE_SOURCE_DIR}/tests/e2e/asm/asmwrites_ok.vst)
+add_test(
+    NAME    e2e_asm_implicit_clobber_x86
+    COMMAND sh -c "$<TARGET_FILE:vestra> check --target=x86_64 --no-libc ${CMAKE_SOURCE_DIR}/tests/e2e/asm/asmwrites_x86_bad.vst 2>&1; true")
+set_tests_properties(e2e_asm_implicit_clobber_x86 PROPERTIES
+    PASS_REGULAR_EXPRESSION "asm writes r11 [(]'movq [{]x[}], %r11'[)].*asm sets the condition flags [(]'addq.*asm writes rax [(]'movl [$]7, %eax; cpuid'[)].*asm writes rbx.*asm writes rcx.*asm writes rdx.*asm writes rdi [(]'rep stosb'[)].*asm writes r8.*asm writes r9.*asm writes xmm2.*asm writes rbp [(]'leave'[)].*asm writes r13 [(]'pushq %r12; popq %r13'[)]")
+add_test(
+    NAME    e2e_asm_declared_writes_x86
+    COMMAND $<TARGET_FILE:vestra> check --target=x86_64 --no-libc ${CMAKE_SOURCE_DIR}/tests/e2e/asm/asmwrites_x86_ok.vst)
+add_test(
+    NAME    e2e_asm_implicit_clobber_rv
+    COMMAND sh -c "$<TARGET_FILE:vestra> check --target=riscv64 --no-libc ${CMAKE_SOURCE_DIR}/tests/e2e/asm/asmwrites_rv_bad.vst 2>&1; true")
+set_tests_properties(e2e_asm_implicit_clobber_rv PROPERTIES
+    PASS_REGULAR_EXPRESSION "asm writes t0 [(]'addi t0, [{]x[}], 1'[)].*asm writes a1 [(]'ld x11, 0[(]sp[)]'[)].*asm writes ra [(]'call helper'[)].*asm writes a2 [(]'sc.d.*asm writes fa0.*asm writes s1 [(]'csrrw.*asm writes t1 [(]'1: tail helper'[)]")
+add_test(
+    NAME    e2e_asm_declared_writes_rv
+    COMMAND $<TARGET_FILE:vestra> check --target=riscv64 --no-libc ${CMAKE_SOURCE_DIR}/tests/e2e/asm/asmwrites_rv_ok.vst)
 
 # §14.12 under a named --target, another architecture's register is a Vestra
 # error, not just a deleted function in the C++ (F4).

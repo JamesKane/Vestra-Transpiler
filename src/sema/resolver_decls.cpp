@@ -1386,8 +1386,8 @@ void Resolver::check_asm(const ast::AsmStmt& a) {
             }
         }
     }
-    if (arch == "aarch64") {
-        check_asm_writes(a);
+    if (arch == "aarch64" || arch == "x86_64" || arch == "riscv64") {
+        check_asm_writes(a, arch);
     }
     if (a.volatile_written && !a.is_volatile && a.outputs.empty() && a.inouts.empty()) {
         error_at(a.range,
@@ -1435,7 +1435,7 @@ void Resolver::check_asm(const ast::AsmStmt& a) {
 // sysreg must name it: an output or inout pin, or a clobber. Asm in a
 // `@naked` function is the whole function, so nothing is compiled around it
 // to protect and it is exempt.
-void Resolver::check_asm_writes(const ast::AsmStmt& a) {
+void Resolver::check_asm_writes(const ast::AsmStmt& a, std::string_view arch) {
     if (current_func_ != nullptr
         && std::ranges::any_of(current_func_->attributes,
                                [](const ast::Attribute& at) { return at.name == "naked"; })) {
@@ -1445,7 +1445,7 @@ void Resolver::check_asm_writes(const ast::AsmStmt& a) {
     for (const auto* ops : {&a.outputs, &a.inouts}) {
         for (const auto& op : *ops) {
             if (!op.reg.empty()) {
-                named.push_back(a64_reg_key(op.reg));
+                named.push_back(asm_reg_key(arch, op.reg));
             }
         }
     }
@@ -1454,11 +1454,11 @@ void Resolver::check_asm_writes(const ast::AsmStmt& a) {
     for (const auto& c : a.clobbers) {
         if (c == "cc") {
             flags_named = true;
-        } else if (is_a64_sysreg_name(c)) {
+        } else if (arch == "aarch64" && is_a64_sysreg_name(c)) {
             sysregs.push_back(a64_sysreg_key(c));
             flags_named = flags_named || a64_sysreg_key(c) == "nzcv";
         } else {
-            named.push_back(a64_reg_key(c));
+            named.push_back(asm_reg_key(arch, c));
         }
     }
     std::vector<std::string> reported;
@@ -1471,7 +1471,7 @@ void Resolver::check_asm_writes(const ast::AsmStmt& a) {
     };
     for (std::size_t li = 0; li < a.lines.size(); ++li) {
         const std::string_view line = a.lines[li];
-        for (const auto& w : a64_line_writes(line)) {
+        for (const auto& w : asm_line_writes(arch, line)) {
             switch (w.kind) {
             case AsmWrite::Kind::Register:
                 if (std::ranges::find(named, w.name) == named.end() && once(w.name)) {

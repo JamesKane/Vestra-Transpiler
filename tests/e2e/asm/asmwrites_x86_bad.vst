@@ -1,0 +1,24 @@
+// Annex §14.4 rule 1 on x86_64 (AT&T syntax, destination last): each
+// write the operand list doesn't name is an error. Checked under
+// --target=x86_64 (tests/CMakeLists.txt, e2e_asm_implicit_clobber_x86).
+
+func f(_ x: UInt64) using Asm -> UInt64 {
+    var r: UInt64 = 0
+    asm(in: [x], out: [r]) {
+        "movq {x}, %r11"
+        "addq $1, {r}"
+        "movl $7, %eax; cpuid"
+        "rdtsc"
+        "rep stosb"
+        "xchgq %r8, %r9"
+        "cmpxchgq %r10, ({x})"
+        "movq {x}, %xmm2   # a comment, not an operand"
+        "leave"
+        "syscall"
+        "pushq %r12; popq %r13"
+        "testq %r14, %r14"
+    }
+    return r
+}
+
+func main() -> Int32 { return 0 }

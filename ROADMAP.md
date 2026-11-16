@@ -263,8 +263,9 @@ Most of this is cheaper to do once, in the LLVM backend, than twice:
 - **`@boot`:** Vestra statements in the body under the seven rules, a checked
   hand-off to the kernel entry, and the spilled-argument rule.
 - **`@kernel_init`:** call-graph reachability and `Alloc`-init ordering.
-- **Inline asm:** the implicit-clobber rule (an instruction writing an
-  unnamed register is an error), which needs a per-ISA instruction model.
+- **Inline asm:** the implicit-clobber rule's remaining gaps: SIMD register
+  lists, control-register and CSR writes, and what a trap callee writes.
+  (~~aarch64, x86_64 and riscv64 instruction models~~ done.)
 - **Statement-level escapes:** the library `withRetry` combinator, which needs
   the `Primitive` bound. (~~`@no_auto_barrier` and `@allow_weak_cas` on a
   statement, the `@retry_loop` predicate~~ done.)

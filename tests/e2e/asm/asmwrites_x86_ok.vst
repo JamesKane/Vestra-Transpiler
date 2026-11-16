@@ -1,0 +1,31 @@
+// Annex §14.4 rule 1 on x86_64: every write named, by a clobber in any of
+// the register's widths (`eax` names `%rax`), an output pin, or "cc".
+
+func g(_ x: UInt64) using Asm -> UInt64 {
+    var r: UInt64 = 0
+    asm(in: [x], out: [r], clobbers: ["r11", "cc", "eax", "rbx", "rcx", "rdx", "rdi", "r8", "r9", "xmm2", "r12"]) {
+        "movq {x}, %r11"
+        "addq $1, {r}"
+        "movl $7, %eax; cpuid"
+        "rdtsc"
+        "rep stosb"
+        "xchgq %r8, %r9"
+        "movq {x}, %xmm2"
+        "pushq %r12; popq %r12"
+        "testq %r14, %r14"
+        "cmpq $0, ({x})"
+        "lfence; pause"
+    }
+    return r
+}
+
+func pinned(_ x: UInt64) using Asm -> UInt64 {
+    var r: UInt64 = 0
+    asm(in: ["rdi": x], out: ["rax": r], clobbers: ["cc"]) {
+        "leaq 7(%rdi), %rax"
+        "shlq $1, %rax"
+    }
+    return r
+}
+
+func main() -> Int32 { return 0 }
