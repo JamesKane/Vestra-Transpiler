@@ -221,6 +221,12 @@ add_test(
     COMMAND sh -c "mkdir -p ${ast_dumpdir} && $<TARGET_FILE:vestra> build ${CMAKE_CURRENT_SOURCE_DIR}/e2e/macro/xmod/main.vst --dump-ast -o ${ast_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${ast_dumpdir}/mm_c.txt && ${e2e_workdir}/vparse ${CMAKE_CURRENT_SOURCE_DIR}/e2e/macro/xmod/main.vst > ${ast_dumpdir}/mm_v.txt && diff ${ast_dumpdir}/mm_c.txt ${ast_dumpdir}/mm_v.txt")
 set_tests_properties(e2e_selfhost_parser_diff_macromod PROPERTIES DEPENDS e2e_selfhost_parser_compile)
 
+# `inout func` / `sink func` in an enum body print the same in both parsers (§6).
+add_test(
+    NAME    e2e_selfhost_parser_diff_enummethods
+    COMMAND sh -c "mkdir -p ${ast_dumpdir} && $<TARGET_FILE:vestra> build ${CMAKE_CURRENT_SOURCE_DIR}/e2e/codegen/cg_enummethods.vst --dump-ast -o ${ast_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${ast_dumpdir}/em_c.txt && ${e2e_workdir}/vparse ${CMAKE_CURRENT_SOURCE_DIR}/e2e/codegen/cg_enummethods.vst > ${ast_dumpdir}/em_v.txt && diff ${ast_dumpdir}/em_c.txt ${ast_dumpdir}/em_v.txt")
+set_tests_properties(e2e_selfhost_parser_diff_enummethods PROPERTIES DEPENDS e2e_selfhost_parser_compile)
+
 
 # ---------------------------------------------------------------------------
 # Dog-food compiler, phase 3: the Vestra semantic analyzer written in Vestra

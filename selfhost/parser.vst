@@ -1292,6 +1292,12 @@ func parseEnum(_ p: inout Ps, _ vis: String) using Alloc -> Nd {
             skipAttributes(&p)  // member attributes — printer drops them
         } else if isKind(p, TokKind.kwFunc) {
             methods.push(parseFunc(&p, "", ""))
+        } else if (isKind(p, TokKind.kwInout) || isKind(p, TokKind.kwSink)) && isKindAt(p, 1, TokKind.kwFunc) {
+            // §6 an `inout func` / `sink func` receiver mode, as in a struct.
+            var mods: String = "inout "
+            if isKind(p, TokKind.kwSink) { mods = "sink " }
+            advP(&p)
+            methods.push(parseFunc(&p, "", mods))
         } else {
             advP(&p)
         }

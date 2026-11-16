@@ -295,11 +295,20 @@ std::unique_ptr<ast::EnumDecl> Parser::parse_enum(std::vector<ast::Attribute> at
         } else {
             // Methods / fields on the enum (uncommon but allowed by §17.2).
             auto member_attrs = parse_attributes();
+            // §6 an `inout func` / `sink func` receiver mode, as in a struct.
+            auto recv = ast::FuncDecl::RecvMode::None;
+            if (check(TokenKind::KwInout) && peek(1).kind == TokenKind::KwFunc) {
+                advance();
+                recv = ast::FuncDecl::RecvMode::Inout;
+            } else if (check(TokenKind::KwSink) && peek(1).kind == TokenKind::KwFunc) {
+                advance();
+                recv = ast::FuncDecl::RecvMode::Sink;
+            }
             if (check(TokenKind::KwFunc)) {
                 auto m = parse_func(std::move(member_attrs),
                                     ast::Visibility::Internal,
                                     /*is_async=*/false,
-                                    ast::FuncDecl::RecvMode::None);
+                                    recv);
                 e->methods.push_back(std::move(m));
             } else {
                 emit_error(peek().range, "expected 'case' or member in enum body");

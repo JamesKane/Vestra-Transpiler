@@ -1,0 +1,45 @@
+// §6 an enum body takes `inout func` and `sink func` methods, as a struct
+// body does: on a bare enum and on one whose cases carry payloads.
+
+enum Light {
+    case red
+    case green
+    inout func flip() {
+        self = match self {
+            case .red: Light.green
+            case .green: Light.red
+        }
+    }
+    func code() -> Int32 {
+        return match self {
+            case .red: 1
+            case .green: 2
+        }
+    }
+}
+
+enum Shape {
+    case circle(Int32)
+    case square(Int32)
+    inout func grow() {
+        self = match self {
+            case .circle(let r): Shape.circle(r + 1)
+            case .square(let s): Shape.square(s * 2)
+        }
+    }
+    sink func size() -> Int32 {
+        return match self {
+            case .circle(let r): r
+            case .square(let s): s
+        }
+    }
+}
+
+func main() using Log, Alloc -> Int32 {
+    var l = Light.red
+    l.flip()
+    var s = Shape.square(3)
+    s.grow()
+    print("\(l.code()) \(s.size())")
+    return 0
+}
