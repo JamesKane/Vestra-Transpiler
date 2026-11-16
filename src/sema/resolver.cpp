@@ -78,6 +78,16 @@ const std::string* Resolution::qualified_name_of(const ast::Expr* e) const {
 void Resolution::set_qualified_name(const ast::Expr* e, std::string name) {
     qualified_names_[e] = std::move(name);
 }
+const std::vector<const Symbol*>* Resolution::view_captures_of(const ast::Expr* c) const {
+    auto it = view_captures_.find(c);
+    return it == view_captures_.end() ? nullptr : &it->second;
+}
+void Resolution::add_view_capture(const ast::Expr* c, const Symbol* sym) {
+    auto& v = view_captures_[c];
+    if (std::ranges::find(v, sym) == v.end()) {
+        v.push_back(sym);
+    }
+}
 Resolution::OrderingGuard Resolution::ordering_guard(const ast::Expr* e) const {
     auto it = ordering_guards_.find(e);
     return it == ordering_guards_.end() ? OrderingGuard::None : it->second;

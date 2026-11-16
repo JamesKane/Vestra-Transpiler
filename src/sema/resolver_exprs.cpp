@@ -1811,7 +1811,11 @@ void Resolver::check_view_capture(const Symbol& sym, diag::SourceRange at) {
         const auto& r = cx->range;
         const bool own = d.begin.file == r.begin.file && d.begin.offset >= r.begin.offset
                          && d.begin.offset + d.length <= r.begin.offset + r.length;
-        if (own || nonesc_ok_.contains(cx)) {
+        if (own) {
+            continue;
+        }
+        if (nonesc_ok_.contains(cx)) {
+            resolution_.add_view_capture(cx, &sym);  // a lazy iterator may hold it
             continue;
         }
         if (view_capture_reported_.emplace(cx, &sym).second) {

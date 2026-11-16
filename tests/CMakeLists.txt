@@ -2888,6 +2888,18 @@ set_tests_properties(e2e_multifile_demo_run PROPERTIES
     DEPENDS                e2e_multifile_demo_compile
     PASS_REGULAR_EXPRESSION "multifile_demo OK")
 
+# §10 a lazy iterator (map / filter / take / zip, chunks(of:)) built over a
+# view is a view: an escaping closure can't capture it. (vsema has no
+# iterator types, so this is not a differential fixture.)
+add_test(
+    NAME    e2e_lazy_iter_view_escape
+    COMMAND sh -c "$<TARGET_FILE:vestra> check ${CMAKE_SOURCE_DIR}/tests/e2e/views/lazyview_bad.vst 2>&1; true")
+set_tests_properties(e2e_lazy_iter_view_escape PROPERTIES
+    PASS_REGULAR_EXPRESSION "captures the view 'it' [(]MapIter.*captures the view 'it' [(]FilterIter.*captures the view 'it' [(]TakeIter.*captures the view 'ch' [(]ChunkIter")
+add_test(
+    NAME    e2e_lazy_iter_view_ok
+    COMMAND $<TARGET_FILE:vestra> check ${CMAKE_SOURCE_DIR}/tests/e2e/views/lazyview_ok.vst)
+
 # §12.4 the macro builder API: generated struct and functions run.
 set(e2e_builder_dir ${e2e_workdir}/_macro_builder)
 add_test(

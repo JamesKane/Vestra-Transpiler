@@ -215,6 +215,10 @@ public:
     // §7 generics phase 2 — the integer carried by a ConstValue.
     [[nodiscard]] std::int64_t const_value() const noexcept { return length_; }
     [[nodiscard]] const std::vector<TypePtr>& parts() const noexcept { return parts_; }
+    // §10 a lazy iterator combinator (zip / take / map / filter) that holds a
+    // view, through its source iterator or a closure that captured one, is
+    // itself a view: it may not outlive what it views.
+    [[nodiscard]] bool holds_view() const noexcept { return holds_view_; }
     // §8 a Function type's `using` row (capability names, Async included).
     [[nodiscard]] const std::vector<std::string>& caps() const noexcept { return caps_; }
     [[nodiscard]] TypePtr result() const noexcept { return result_; }
@@ -243,6 +247,7 @@ private:
     TypePtr result_ = nullptr;         // Function result
     const ast::Decl* decl_ = nullptr;  // Nominal target
     std::string name_;                 // GenericParam name
+    bool holds_view_ = false;          // lazy iterator over a view (see holds_view())
 };
 
 // Owns Type storage. Primitive types are interned (one canonical instance per
@@ -304,14 +309,14 @@ public:
     // §9 iterator-combinator types. ZipIter[A, B] tracks the *element*
     // types yielded by each side; TakeIter[A] tracks the inner
     // iterator's element type.
-    [[nodiscard]] TypePtr make_zip_iter(TypePtr elem_a, TypePtr elem_b);
-    [[nodiscard]] TypePtr make_take_iter(TypePtr elem);
+    [[nodiscard]] TypePtr make_zip_iter(TypePtr elem_a, TypePtr elem_b, bool holds_view = false);
+    [[nodiscard]] TypePtr make_take_iter(TypePtr elem, bool holds_view = false);
     // §9 map / filter combinators. MapIter tracks both the source
     // element type (parts[0]) and the post-transform type (parts[1]);
     // FilterIter just carries the source element (the predicate
     // produces Bool, which lookup_method synthesizes implicitly).
-    [[nodiscard]] TypePtr make_map_iter(TypePtr elem_in, TypePtr elem_out);
-    [[nodiscard]] TypePtr make_filter_iter(TypePtr elem);
+    [[nodiscard]] TypePtr make_map_iter(TypePtr elem_in, TypePtr elem_out, bool holds_view = false);
+    [[nodiscard]] TypePtr make_filter_iter(TypePtr elem, bool holds_view = false);
     // §5/§18.4 ChunkIter[Span[T]] — the iterator behind `s.chunks(of: n)`.
     // Carries the sub-view element type (Span[T] / MutSpan[T]) it yields; the
     // codegen runtime provides __vstr::Chunks<S> with a matching next().

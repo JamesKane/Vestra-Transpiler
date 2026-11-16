@@ -75,6 +75,11 @@ public:
     // instead of a member access. Empty/absent for ordinary member exprs.
     [[nodiscard]] const std::string* qualified_name_of(const ast::Expr* e) const;
     void set_qualified_name(const ast::Expr* e, std::string name);
+    // §10 the views a closure literal captured where it was admitted to (a
+    // `map` / `filter` closure the lazy iterator then holds): what an
+    // iterator built over it views.
+    [[nodiscard]] const std::vector<const Symbol*>* view_captures_of(const ast::Expr* c) const;
+    void add_view_capture(const ast::Expr* c, const Symbol* sym);
     // §9 the Local Symbol an `if let NAME = INIT` binds in its then-branch.
     [[nodiscard]] const Symbol* let_symbol(const ast::IfExpr* i) const;
     void set_let_symbol(const ast::IfExpr* i, const Symbol* sym);
@@ -89,6 +94,7 @@ private:
     std::unordered_map<const ast::Expr*, TypePtr> expr_types_;
     std::unordered_map<const ast::Expr*, const Symbol*> expr_symbols_;
     std::unordered_map<const ast::Expr*, std::string> qualified_names_;
+    std::unordered_map<const ast::Expr*, std::vector<const Symbol*>> view_captures_;
     std::unordered_set<const ast::Expr*> string_coercions_;
     std::unordered_map<const ast::Expr*, OrderingGuard> ordering_guards_;
     std::unordered_set<const ast::CallExpr*> cas_guarded_;

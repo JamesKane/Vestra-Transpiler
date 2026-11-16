@@ -489,32 +489,36 @@ TypePtr TypeArena::make_per_cpu(TypePtr inner) {
     return p;
 }
 
-TypePtr TypeArena::make_zip_iter(TypePtr elem_a, TypePtr elem_b) {
+TypePtr TypeArena::make_zip_iter(TypePtr elem_a, TypePtr elem_b, bool holds_view) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::ZipIter));
+    t->holds_view_ = holds_view;
     t->parts_ = {elem_a, elem_b};
     auto* p = t.get();
     owned_.push_back(std::move(t));
     return p;
 }
 
-TypePtr TypeArena::make_take_iter(TypePtr elem) {
+TypePtr TypeArena::make_take_iter(TypePtr elem, bool holds_view) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::TakeIter));
+    t->holds_view_ = holds_view;
     t->inner_ = elem;
     auto* p = t.get();
     owned_.push_back(std::move(t));
     return p;
 }
 
-TypePtr TypeArena::make_map_iter(TypePtr elem_in, TypePtr elem_out) {
+TypePtr TypeArena::make_map_iter(TypePtr elem_in, TypePtr elem_out, bool holds_view) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::MapIter));
+    t->holds_view_ = holds_view;
     t->parts_ = {elem_in, elem_out};
     auto* p = t.get();
     owned_.push_back(std::move(t));
     return p;
 }
 
-TypePtr TypeArena::make_filter_iter(TypePtr elem) {
+TypePtr TypeArena::make_filter_iter(TypePtr elem, bool holds_view) {
     auto t = std::unique_ptr<Type>(new Type(TypeKind::FilterIter));
+    t->holds_view_ = holds_view;
     t->inner_ = elem;
     auto* p = t.get();
     owned_.push_back(std::move(t));
@@ -1041,11 +1045,11 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
     }
     case TypeKind::TakeIter: {
         auto inner = substitute(t->inner(), bindings);
-        return inner == t->inner() ? t : make_take_iter(inner);
+        return inner == t->inner() ? t : make_take_iter(inner, t->holds_view());
     }
     case TypeKind::FilterIter: {
         auto inner = substitute(t->inner(), bindings);
-        return inner == t->inner() ? t : make_filter_iter(inner);
+        return inner == t->inner() ? t : make_filter_iter(inner, t->holds_view());
     }
     case TypeKind::ChunkIter: {
         auto inner = substitute(t->inner(), bindings);
@@ -1069,7 +1073,7 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
         }
         auto a = substitute(t->parts()[0], bindings);
         auto b = substitute(t->parts()[1], bindings);
-        return (a == t->parts()[0] && b == t->parts()[1]) ? t : make_zip_iter(a, b);
+        return (a == t->parts()[0] && b == t->parts()[1]) ? t : make_zip_iter(a, b, t->holds_view());
     }
     case TypeKind::MapIter: {
         if (t->parts().size() != 2) {
@@ -1077,7 +1081,7 @@ TypePtr TypeArena::substitute(TypePtr t, const std::unordered_map<std::string, T
         }
         auto a = substitute(t->parts()[0], bindings);
         auto b = substitute(t->parts()[1], bindings);
-        return (a == t->parts()[0] && b == t->parts()[1]) ? t : make_map_iter(a, b);
+        return (a == t->parts()[0] && b == t->parts()[1]) ? t : make_map_iter(a, b, t->holds_view());
     }
     case TypeKind::Result: {
         auto ok = substitute(t->inner(), bindings);

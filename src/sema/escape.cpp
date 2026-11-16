@@ -89,6 +89,15 @@ bool EscapeChecker::is_view(TypePtr t, int depth) const {
     case TypeKind::MmioView:    // Annex §10.5 / §14.11: bound by the Mmio discharge
     case TypeKind::MmioRegion:
         return true;
+    // §10 a lazy combinator over a view is a view; `chunks(of:)` yields
+    // sub-views of its span.
+    case TypeKind::ZipIter:
+    case TypeKind::TakeIter:
+    case TypeKind::MapIter:
+    case TypeKind::FilterIter:
+        return t->holds_view();
+    case TypeKind::ChunkIter:
+        return is_view(t->inner(), depth + 1);
     case TypeKind::Optional:
     case TypeKind::Vector:
     case TypeKind::Vec:  // an owned container of views carries their sources
@@ -767,6 +776,15 @@ EscapeChecker::Origins EscapeChecker::origins(const ast::Expr& e0) const {
             if (view_param || is_view(resolution_->type_of(a.value.get()))) {
                 auto o = origins(*a.value);
                 out.insert(out.end(), o.begin(), o.end());
+            }
+            // §10 a closure a lazy iterator holds (`map(xs) { … s … }`):
+            // the iterator views what the closure captured.
+            if (const auto* caps = resolution_->view_captures_of(&strip(*a.value))) {
+                for (const auto* sym : *caps) {
+                    if (auto it = locals_.find(sym); it != locals_.end()) {
+                        out.insert(out.end(), it->second.begin(), it->second.end());
+                    }
+                }
             }
         }
         return out;

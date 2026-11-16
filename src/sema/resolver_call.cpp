@@ -468,7 +468,8 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
                                          tb->describe()));
                 }
                 return types_->make_zip_iter(ea != nullptr ? ea : types_->error(),
-                                             eb != nullptr ? eb : types_->error());
+                                             eb != nullptr ? eb : types_->error(),
+                                             non_escapable(ta) || non_escapable(tb));
             }
             if (ci.name == "take") {
                 if (c.args.size() != 2) {
@@ -497,7 +498,8 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
                              std::format("take's second argument must be an integer count, got {}",
                                          tn->describe()));
                 }
-                return types_->make_take_iter(exs != nullptr ? exs : types_->error());
+                return types_->make_take_iter(exs != nullptr ? exs : types_->error(),
+                                              non_escapable(txs));
             }
             // §9 `map(xs, f)` / `filter(xs, p)` — both type-check the
             // closure against an expected function type derived from
@@ -528,6 +530,13 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
                 }
                 auto txs = check_expr(*c.args[0].value);
                 nonesc_ok_.insert(peel_parens(c.args[1].value.get()));
+                // §10 the iterator holds its source and the closure, so it
+                // views what either views.
+                auto lazy_holds_view = [&] {
+                    return non_escapable(txs)
+                           || resolution_.view_captures_of(peel_parens(c.args[1].value.get()))
+                                  != nullptr;
+                };
                 auto exs = iterator_element(txs);
                 if (exs == nullptr && txs != nullptr && !txs->is_error()) {
                     error_at(c.args[0].value->range,
@@ -561,7 +570,7 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
                                              tp->parts()[0]->describe(),
                                              exs->describe()));
                     }
-                    return types_->make_filter_iter(exs);
+                    return types_->make_filter_iter(exs, lazy_holds_view());
                 }
                 // map: shape (T) -> U. Flow only the param type into
                 // the closure context; the return type is whatever
@@ -583,8 +592,10 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
                                          tf->parts()[0]->describe(),
                                          exs->describe()));
                 }
-                return types_->make_map_iter(
-                    exs, tf->result() != nullptr ? tf->result() : types_->error());
+                return types_->make_map_iter(exs,
+                                             tf->result() != nullptr ? tf->result()
+                                                                     : types_->error(),
+                                             lazy_holds_view());
             }
         }
         // §11.2 `parallel(data, chunks, body)` — runs the non-escaping

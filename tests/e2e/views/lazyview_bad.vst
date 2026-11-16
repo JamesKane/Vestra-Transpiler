@@ -1,0 +1,40 @@
+// §10 a lazy iterator holds its source and its closure, so one built over a
+// view (a closure that captured a `Str`, or a span's `chunks(of:)`) is a
+// view too: an escaping closure can't capture it. These were admitted, since
+// the closure itself was passed straight to `map` / `filter`.
+
+struct Counter {
+    var n: Int32
+    inout func next() -> Int32? {
+        if self.n <= 0 { return nil }
+        let v = self.n
+        self.n = self.n - 1
+        return v
+    }
+}
+
+func viaMap(_ w: Str) -> () -> Int {
+    var c = Counter(n: 3)
+    var it = map(c, { x => w.len() })
+    return { => if let v = it.next() { v } else { 0 } }
+}
+
+func viaFilter(_ w: Str) -> () -> Int32 {
+    var c = Counter(n: 3)
+    var it = filter(c, { x => w.len() > 0 })
+    let f: () -> Int32 = { => if let v = it.next() { v } else { 0 } }
+    return f
+}
+
+func viaTake(_ w: Str) -> () -> Int {
+    var c = Counter(n: 3)
+    var it = take(map(c, { x => w.len() }), 2)
+    return { => if let v = it.next() { v } else { 0 } }
+}
+
+func chunky(_ sp: Span[Int32]) -> () -> Int {
+    let ch = sp.chunks(of: 2)
+    return { => ch.count }
+}
+
+func main() -> Int32 { return 0 }

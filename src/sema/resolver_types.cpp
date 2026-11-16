@@ -480,6 +480,15 @@ bool Resolver::non_escapable(TypePtr t, int depth) const {
     case TypeKind::MmioView:    // Annex §10.5 / §14.11: bound by the Mmio discharge
     case TypeKind::MmioRegion:
         return true;
+    // §10 a lazy combinator over a view is a view; `chunks(of:)` yields
+    // sub-views of its span.
+    case TypeKind::ZipIter:
+    case TypeKind::TakeIter:
+    case TypeKind::MapIter:
+    case TypeKind::FilterIter:
+        return t->holds_view();
+    case TypeKind::ChunkIter:
+        return non_escapable(t->inner(), depth + 1);
     case TypeKind::Optional:
     case TypeKind::Vector:
         return non_escapable(t->inner(), depth + 1);
