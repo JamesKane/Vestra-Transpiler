@@ -189,6 +189,7 @@ void Resolver::resolve() {
     register_builtin_sync();
     register_builtin_io();
     check_attribute_names();
+    synthesize_deinits();
     collect_top_level();
     check_bound_names();
     check_derive_names();
@@ -356,6 +357,29 @@ void Resolver::collect_top_level() {
             }
             collect_decl(*d);
         }
+    }
+}
+
+void Resolver::synthesize_deinits() {
+    for (const auto& d : unit_->decls) {
+        if (d->kind != ast::NodeKind::Struct) {
+            continue;
+        }
+        auto& s = const_cast<ast::StructDecl&>(static_cast<const ast::StructDecl&>(*d));
+        if (s.deinit_body == nullptr
+            || std::ranges::any_of(s.methods, [](const ast::DeclPtr& m) {
+                   return m->kind == ast::NodeKind::Func
+                          && static_cast<const ast::FuncDecl&>(*m).is_deinit;
+               })) {
+            continue;
+        }
+        auto fn = std::make_unique<ast::FuncDecl>();
+        fn->name = "deinit";
+        fn->is_deinit = true;
+        fn->recv_mode = ast::FuncDecl::RecvMode::Inout;
+        fn->body = ast::clone(*s.deinit_body);
+        fn->range = s.deinit_body->range;
+        s.methods.push_back(std::move(fn));
     }
 }
 

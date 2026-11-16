@@ -14013,10 +14013,27 @@ func dropDeclMacros(_ u: NUnit) using Alloc -> NUnit {
     var i: Int = 0
     while i < u.decls.len() {
         let d = u.decls.get(i) ?? Nd.wildcard
-        if !isDeclMacro(d) { out.decls.push(d) }
+        if !isDeclMacro(d) { out.decls.push(withDeinitMethod(d)) }
         i = i + 1
     }
     return out
+}
+
+// §6 a struct's `deinit { … }` checks as an `inout` method with no
+// capabilities, as the bootstrap's resolver synthesizes it.
+func withDeinitMethod(_ d: Nd) using Alloc -> Nd {
+    return match d {
+        case .structD(let vis, let name, let fl, let m, let dn, let lin, let g): structWithDeinit(vis, name, fl, m, dn, lin, g)
+        default: d
+    }
+}
+
+func structWithDeinit(_ vis: String, _ name: String, _ fl: Vec[Nd], _ m: Vec[Nd], _ dn: Vec[Nd], _ lin: Bool, _ g: Vec[Nd]) using Alloc -> Nd {
+    var ms = ndsCopyO(m)
+    if dn.len() > 0 {
+        ms.push(Nd.funcD(own(""), own("inout "), own("deinit"), Vec.new(), Vec.new(), Vec.new(), Vec.new(), Vec.new(), ndsCopyO(dn)))
+    }
+    return Nd.structD(own(vis), own(name), ndsCopyO(fl), ms, ndsCopyO(dn), lin, ndsCopyO(g))
 }
 
 func isDeclMacro(_ d: Nd) -> Bool {

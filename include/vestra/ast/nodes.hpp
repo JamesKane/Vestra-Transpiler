@@ -838,6 +838,10 @@ struct FuncDecl : Decl {
     // Method receivers from §17.2's recv-mode.
     enum class RecvMode { None, Inout, Sink };
     RecvMode recv_mode = RecvMode::None;
+    // §6 the method the resolver synthesizes from a struct's `deinit { … }`
+    // (an `inout` method with no capabilities), so every pass checks the body
+    // as it checks a method. Codegen runs it from the C++ destructor.
+    bool is_deinit = false;
     std::string name;
     // §12.4 a declaration macro may compose a generated function's name from a
     // comptime String splice: `func $(f.name + "_get")()`. When set, `name` is

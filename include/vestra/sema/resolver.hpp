@@ -582,6 +582,9 @@ private:
     int weak_cas_sites_ = 0;
     int weak_cas_loop_sites_ = 0;
     void check_retry_loop(const ast::FuncDecl& f, int sites, int loop_sites);
+    // §6 `deinit { … }` becomes an `inout` method with an empty `using` row
+    // (so a deinit has no capabilities), checked by every pass like a method.
+    void synthesize_deinits();
     // §17.2 default arguments. A default resolves where its function is
     // defined: every name in it is marked definition-site (and, for an
     // imported function, given its module), as a macro template's names are.

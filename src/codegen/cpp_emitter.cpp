@@ -18,6 +18,12 @@
 
 namespace vestra::codegen {
 
+// §6 the struct declares a `deinit`.
+bool struct_has_deinit(const ast::StructDecl& s) {
+    return s.deinit_body != nullptr;
+}
+
+
 // The broadly-shared emission helpers live in cpp_emitter_internal.hpp
 // so the file can be split by theme. Pull them into this TU's scope
 // unqualified so existing call sites and the extracted siblings keep
@@ -1765,6 +1771,90 @@ bool CppEmitter::is_unit_result(const ast::FuncDecl& f) {
     return nt.path.size() == 1 && nt.path[0] == "Unit" && !nt.has_generics;
 }
 
+// §6 a struct with a `deinit`: RAII in C++, guarded by a live flag that a move
+// clears, since a moved-from C++ object is still destroyed. Copies are
+// deleted (a deinit type moves only as a whole). The user-declared special
+// members make it a non-aggregate, so it gets a positional constructor over
+// its fields in order, which construction calls.
+void CppEmitter::emit_deinit_members(std::ostream& hdr, const ast::StructDecl& s) {
+    const std::string& n = s.name;
+    std::vector<const ast::StructDecl::Field*> fields;
+    for (const auto& f : s.fields) {
+        if (f.type != nullptr) {
+            fields.push_back(&f);
+        }
+    }
+    write_indent(hdr, 1);
+    hdr << "bool __vstr_live = true;\n";
+    write_indent(hdr, 1);
+    hdr << n << "() = default;\n";
+    if (!fields.empty()) {
+        write_indent(hdr, 1);
+        hdr << n << "(";
+        for (std::size_t i = 0; i < fields.size(); ++i) {
+            if (i != 0) {
+                hdr << ", ";
+            }
+            emit_type_with_name(hdr, *fields[i]->type, "__vstr_a" + std::to_string(i));
+        }
+        hdr << ") : ";
+        for (std::size_t i = 0; i < fields.size(); ++i) {
+            if (i != 0) {
+                hdr << ", ";
+            }
+            hdr << fields[i]->name << "(std::move(__vstr_a" << i << "))";
+        }
+        hdr << " {}\n";
+    }
+    write_indent(hdr, 1);
+    hdr << n << "(const " << n << "&) = delete;\n";
+    write_indent(hdr, 1);
+    hdr << n << "& operator=(const " << n << "&) = delete;\n";
+    write_indent(hdr, 1);
+    hdr << n << "(" << n << "&& __vstr_o) noexcept : ";
+    for (const auto* f : fields) {
+        hdr << f->name << "(std::move(__vstr_o." << f->name << ")), ";
+    }
+    hdr << "__vstr_live(__vstr_o.__vstr_live) { __vstr_o.__vstr_live = false; }\n";
+    // Assigning over a live value ends it first, as a scope exit would.
+    write_indent(hdr, 1);
+    hdr << n << "& operator=(" << n << "&& __vstr_o) noexcept {\n";
+    write_indent(hdr, 2);
+    hdr << "if (this == &__vstr_o) { return *this; }\n";
+    write_indent(hdr, 2);
+    hdr << "if (__vstr_live) { __vstr_deinit(); }\n";
+    for (const auto* f : fields) {
+        write_indent(hdr, 2);
+        hdr << f->name << " = std::move(__vstr_o." << f->name << ");\n";
+    }
+    write_indent(hdr, 2);
+    hdr << "__vstr_live = __vstr_o.__vstr_live;\n";
+    write_indent(hdr, 2);
+    hdr << "__vstr_o.__vstr_live = false;\n";
+    write_indent(hdr, 2);
+    hdr << "return *this;\n";
+    write_indent(hdr, 1);
+    hdr << "}\n";
+    write_indent(hdr, 1);
+    hdr << "~" << n << "() { if (__vstr_live) { __vstr_deinit(); } }\n";
+    // The body the resolver checked (its synthesized method), or the parsed
+    // one when checking was skipped.
+    const ast::Expr* body = s.deinit_body.get();
+    for (const auto& m : s.methods) {
+        if (m->kind == ast::NodeKind::Func && static_cast<const ast::FuncDecl&>(*m).is_deinit) {
+            body = static_cast<const ast::FuncDecl&>(*m).body.get();
+        }
+    }
+    write_indent(hdr, 1);
+    hdr << "void __vstr_deinit() ";
+    if (body != nullptr && body->kind == ast::NodeKind::BlockExpr) {
+        emit_block(hdr, static_cast<const ast::BlockExpr&>(*body), 1);
+    } else {
+        hdr << "{}";
+    }
+    hdr << "\n";
+}
+
 void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
     // §4 layout attributes on the struct itself: @repr(packed) +
     // @repr(align(N)) / @align(N) / @repr(union). C++ accepts
@@ -1866,6 +1956,9 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
             hdr << "[[nodiscard]] " << s.name << " clone() const { return *this; }\n";
         }
     }
+    if (struct_has_deinit(s)) {
+        emit_deinit_members(hdr, s);
+    }
     // §5: methods declared inside `struct { ... }` lower to inline C++
     // methods on the same struct. v0.5 is minimal: no const-qualification
     // (so an `inout` method works), no generics, no out-of-line bodies.
@@ -1876,6 +1969,9 @@ void CppEmitter::emit_struct(std::ostream& hdr, const ast::StructDecl& s) {
             continue;
         }
         const auto& fn = static_cast<const ast::FuncDecl&>(*m);
+        if (fn.is_deinit) {
+            continue;  // emitted as the destructor's body above
+        }
         // §7 a generic method is a member template.
         bool any_generic = false;
         for (const auto& g : fn.generics) {
@@ -2516,6 +2612,13 @@ void CppEmitter::compute_move_only_types() {
         changed = false;
         for (const auto& [name, sd] : structs_by_name_) {
             if (move_only_types_.contains(name)) {
+                continue;
+            }
+            // §6 a type with a `deinit` moves only as a whole (its copies are
+            // deleted in the C++).
+            if (struct_has_deinit(*sd)) {
+                move_only_types_.insert(name);
+                changed = true;
                 continue;
             }
             for (const auto& f : sd->fields) {
@@ -4286,17 +4389,22 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     }
                     os << ">";
                 }
-                os << "{";
+                // §6 a type with a `deinit` has user-declared special members,
+                // so it is no aggregate: it constructs through its positional
+                // constructor (the fields in order) instead.
+                const bool by_ctor = sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Struct
+                                     && struct_has_deinit(static_cast<const ast::StructDecl&>(*sym->decl));
+                os << (by_ctor ? "(" : "{");
                 for (std::size_t i = 0; i < c.args.size(); ++i) {
                     if (i != 0) {
                         os << ", ";
                     }
-                    if (!c.args[i].label.empty()) {
+                    if (!by_ctor && !c.args[i].label.empty()) {
                         os << "." << c.args[i].label << " = ";
                     }
                     emit_value(os, *c.args[i].value);  // §10 move move-only fields
                 }
-                os << "}";
+                os << (by_ctor ? ")" : "}");
                 break;
             }
         }
@@ -4323,17 +4431,21 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                     }
                     os << ">";
                 }
-                os << "{";
+                // §6 a type with a `deinit` has user-declared special members,
+                // so it is no aggregate: it constructs through its positional
+                // constructor (the fields in order) instead.
+                const bool by_ctor = struct_has_deinit(s_decl);
+                os << (by_ctor ? "(" : "{");
                 for (std::size_t i = 0; i < c.args.size(); ++i) {
                     if (i != 0) {
                         os << ", ";
                     }
-                    if (!c.args[i].label.empty()) {
+                    if (!by_ctor && !c.args[i].label.empty()) {
                         os << "." << c.args[i].label << " = ";
                     }
                     emit_value(os, *c.args[i].value);  // §10 move move-only fields
                 }
-                os << "}";
+                os << (by_ctor ? ")" : "}");
                 break;
             }
         }
@@ -4366,17 +4478,21 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                         os << ">";
                     }
                 }
-                os << "{";
+                // §6 a type with a `deinit` has user-declared special members,
+                // so it is no aggregate: it constructs through its positional
+                // constructor (the fields in order) instead.
+                const bool by_ctor = struct_has_deinit(s_decl);
+                os << (by_ctor ? "(" : "{");
                 for (std::size_t i = 0; i < c.args.size(); ++i) {
                     if (i != 0) {
                         os << ", ";
                     }
-                    if (!c.args[i].label.empty()) {
+                    if (!by_ctor && !c.args[i].label.empty()) {
                         os << "." << c.args[i].label << " = ";
                     }
                     emit_value(os, *c.args[i].value);  // §10 move move-only fields
                 }
-                os << "}";
+                os << (by_ctor ? ")" : "}");
                 break;
             }
             // §3 opaque-type construction: `Q(t)` lowers to a single

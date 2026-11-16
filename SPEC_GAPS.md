@@ -102,7 +102,7 @@ Each gap has one of four kinds:
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §6 | `deinit` | missing | Parsed (`parser_decls.cpp:57`) but never checked or emitted, so no C++ destructor is generated. Its no-capability rule goes unchecked (`print` in `deinit` passes). |
+| §6 | `deinit` | weaker | Checked as an `inout` method with no capabilities, so `print` in a `deinit` is "missing capability 'Log'". It runs from a C++ destructor guarded by a live flag that a move clears: once per value at scope exit, in the callee for a `sink`, and on the old value before an assignment. A `deinit` type's copies are deleted, and it constructs through a positional constructor, since it is no longer an aggregate. Stricter than the draft: a `deinit` gets no capabilities even when the type stores some. The self-hosted code generator doesn't lower `deinit`. |
 | §6 | `embed` fields | missing (partial) | Memberwise init rejects the embed label ("not constructible (yet)", `resolver_call.cpp:1223`). The explicit `e.t.p` path fails. Ambiguous promoted names are not diagnosed. |
 | §6 | `@repr(wire)` byte order | missing | "@repr(wire) is not supported yet". |
 | §6 | Exhaustiveness beyond enum scrutinees | weaker | Checked only when the scrutinee is an enum (through nested enum, `Bool` and wildcard payload patterns). A match on an integer, `Bool`, tuple or optional with no `default` is not checked, and a tuple sub-pattern counts only when all its elements are wildcards. |
@@ -408,8 +408,8 @@ These are problems in the spec itself, not in the compiler:
   exceptions).
 - Whether `@repr(C)` layout matches the platform ABI on every target.
 - How `--target-features` reaches the C++ compiler's `-march`.
-- Reverse-order destruction and `deinit` capability rules (moot while `deinit`
-  is not emitted).
+- Reverse-order destruction across every scope exit (`break`, `return`,
+  `throw`); it follows C++'s, which the run test covers only for a block's end.
 - Re-checking of macro output for exclusivity and capabilities. Type checking
   and the `Asm` gate are confirmed.
 - Cross-module capability enforcement.

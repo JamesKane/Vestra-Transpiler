@@ -95,6 +95,7 @@ private:
     static bool is_never_result(const ast::FuncDecl& f);
     bool is_unit_typed(const ast::Expr& e) const;
     void emit_struct(std::ostream& hdr, const ast::StructDecl& s);
+    void emit_deinit_members(std::ostream& hdr, const ast::StructDecl& s);
     void emit_enum(std::ostream& hdr, const ast::EnumDecl& e);
     // §12.3 derive(Hash): emit a `template <> struct std::hash<Q::T>`
     // specialization after the user's namespace closes. `qual_prefix`

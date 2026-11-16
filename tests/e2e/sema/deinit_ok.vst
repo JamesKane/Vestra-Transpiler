@@ -1,0 +1,19 @@
+// §6 a `deinit` body is checked as a method that may change `self`, with
+// no capabilities: reading and writing fields, and calling a function that
+// needs none, are fine.
+
+func bump(_ x: Int32) -> Int32 { return x + 1 }
+
+struct Res {
+    var id: Int32
+    var closed: Bool
+    deinit {
+        self.closed = true
+        let n = bump(self.id)
+    }
+}
+
+func main() -> Int32 {
+    let r = Res(id: 1, closed: false)
+    return r.id
+}

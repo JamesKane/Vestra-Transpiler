@@ -1,0 +1,35 @@
+// §6 `deinit` runs at scope exit (RAII), once per value: a moved-from value
+// isn't destroyed, a `sink` parameter is destroyed in the callee, and an
+// assignment destroys the value it replaces. The tally records each run.
+// (Bootstrap only: vgen does not lower deinit yet.)
+
+static tally: Atomic[Int32] = 0
+
+struct Res {
+    var id: Int32
+    var name: String
+    deinit {
+        let prev = tally.fetchAdd(self.id, .relaxed)
+    }
+}
+
+func make(_ i: Int32) using Alloc -> Res { return Res(id: i, name: "r") }
+
+func consume(_ r: sink Res) -> Int32 { return r.id }
+
+func main() using Log, Alloc -> Int32 {
+    do0()
+    print("after scope: \(tally.load(.relaxed))")
+    let n = consume(make(10))
+    print("after sink: \(tally.load(.relaxed)) n=\(n)")
+    var v = make(100)
+    v = make(1000)
+    print("after assign: \(tally.load(.relaxed))")
+    return 0
+}
+
+func do0() using Alloc {
+    let a = make(1)
+    let b = a
+    let c = make(2)
+}

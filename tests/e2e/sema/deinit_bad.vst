@@ -1,0 +1,11 @@
+// §6 a `deinit` runs with no capabilities, so it can't print or allocate
+// (the bootstrap checked nothing in a deinit body before).
+
+struct Res {
+    var id: Int32
+    deinit {
+        print("closing")
+    }
+}
+
+func main() -> Int32 { return 0 }
