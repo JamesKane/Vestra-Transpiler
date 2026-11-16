@@ -1,0 +1,28 @@
+// §12.4 a declaration macro (`comptime func … -> [Decl]`) is expanded and
+// then dropped, so its body is not checked as ordinary code, and `[Decl]` /
+// `Decl` / `Expr` are its types. The self-hosted parser misread `[Decl]`,
+// and everything after the macro was lost.
+
+comptime func seeded(_ d: Decl) -> [Decl] {
+    let h = gensym("helper")
+    var out: [Decl] = quote { $d }
+    out += quote {
+        func $(h)() -> Int32 { return 7 }
+    }
+    return out
+}
+
+comptime func twice(_ x: Expr) -> Expr {
+    return quote { $x + $x }
+}
+
+@seeded
+struct Marker {
+    var tag: Int32
+}
+
+func use(_ n: Int32) -> Int32 {
+    return @twice(n)
+}
+
+func main() -> Int32 { return 0 }

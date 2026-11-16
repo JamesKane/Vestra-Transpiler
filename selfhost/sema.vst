@@ -1567,6 +1567,14 @@ func parseTypeBase(_ p: inout Ps) using Alloc -> Nd {
 
 func parseVectorType(_ p: inout Ps) using Alloc -> Nd {
     advP(&p)  // '['
+    // §12.4 `[Decl]` / `[Expr]`, a macro's list of AST values, prints as the
+    // bootstrap's list marker `[-1]Decl`.
+    if isKind(p, TokKind.identifier) && (streq(curRaw(p), "Decl") || streq(curRaw(p), "Expr"))
+        && isKindAt(p, 1, TokKind.rbracket) {
+        let elem = bT(parseType(&p))
+        eat(p, TokKind.rbracket)
+        return Nd.vecT(own("-1"), elem)
+    }
     var lenStr: String = ""
     if isKind(p, TokKind.intLit) { lenStr = curText(p); advP(&p) }
     else if isKind(p, TokKind.identifier) { lenStr = curText(p); advP(&p) }
@@ -3594,6 +3602,7 @@ func tnSeedBuiltins(_ env: inout TnEnv) using Alloc {
     env.types.push("Padded"); env.types.push("PerCpu") // Annex §14.8
     env.types.push("MmioView"); env.types.push("MmioRegion")   // Annex §14.11
     env.types.push("Context")   // §14.14 a task's saved register set
+    env.types.push("Decl"); env.types.push("Expr")   // §12.4 a macro's AST values
 }
 
 func tnCollectType(_ env: inout TnEnv, _ d: Nd) using Alloc {
@@ -13953,6 +13962,41 @@ func hlNamed(_ path: String, _ args: Vec[Nd], _ out: inout Vec[String]) using Al
     hlV(args, out)
 }
 
+// §12.4 the unit without its declaration macros (`comptime func … -> [Decl]`),
+// as the bootstrap's expansion leaves it.
+func dropDeclMacros(_ u: NUnit) using Alloc -> NUnit {
+    var out = NUnit(hasMod: u.hasMod, modPath: own(u.modPath), imports: ndsCopyO(u.imports), decls: Vec.new())
+    var i: Int = 0
+    while i < u.decls.len() {
+        let d = u.decls.get(i) ?? Nd.wildcard
+        if !isDeclMacro(d) { out.decls.push(d) }
+        i = i + 1
+    }
+    return out
+}
+
+func isDeclMacro(_ d: Nd) -> Bool {
+    return match d {
+        case .funcD(let v, let mods, let name, let g, let ps, let cs, let th, let r, let b):
+            containsSub(mods, "comptime ") && b.len() > 0 && isDeclListType(r)
+        default: false
+    }
+}
+
+func isDeclListType(_ r: Vec[Nd]) -> Bool {
+    return match r.get(0) ?? Nd.wildcard {
+        case .vecT(let len, let elem): streq(len, "-1") && isNamedDecl(elem)
+        default: false
+    }
+}
+
+func isNamedDecl(_ t: Vec[Nd]) -> Bool {
+    return match t.get(0) ?? Nd.wildcard {
+        case .named(let path, let hg, let args): streq(path, "Decl")
+        default: false
+    }
+}
+
 // An attribute must be one the compiler acts on or a comptime function of this
 // unit (a declaration macro); the spec's unimplemented ones are rejected too.
 func attrCheck(_ u: NUnit, _ attrs: Vec[String], _ cfgBad: Vec[String], _ boundBad: Vec[String], _ protos: Vec[String]) using Alloc -> Vec[String] {
@@ -14235,9 +14279,12 @@ func main() -> Int32 {
                 if let src = readFile(path) {
                     let toks = tokenize(src)
                     var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false, kinit: Vec.new(), pendingKinit: false, retry: Vec.new(), retryAlways: Vec.new(), pendingRetry: false, pendingAlways: false)
-                    let u = parseUnit(&p)
+                    let parsed = parseUnit(&p)
                     let protos = unitProtocols(p.toks)
-                    let attrBad = attrCheck(u, p.attrs, p.cfgBad, boundCheck(protos, p.bounds), protos)
+                    let attrBad = attrCheck(parsed, p.attrs, p.cfgBad, boundCheck(protos, p.bounds), protos)
+                    // §12.4 a declaration macro runs at expansion and is then
+                    // gone: the bootstrap checks neither its body nor its name.
+                    let u = dropDeclMacros(parsed)
                     // §5 module loading: every `import a.b.c` must resolve to a
                     // file <dir>/a/b/c.vst; a missing one aborts before sema (as
                     // the driver does), reporting the searched path.

@@ -1540,6 +1540,14 @@ func parseTypeBase(_ p: inout Ps) using Alloc -> Nd {
 
 func parseVectorType(_ p: inout Ps) using Alloc -> Nd {
     advP(&p)  // '['
+    // §12.4 `[Decl]` / `[Expr]`, a macro's list of AST values, prints as the
+    // bootstrap's list marker `[-1]Decl`.
+    if isKind(p, TokKind.identifier) && (streq(curRaw(p), "Decl") || streq(curRaw(p), "Expr"))
+        && isKindAt(p, 1, TokKind.rbracket) {
+        let elem = bT(parseType(&p))
+        eat(p, TokKind.rbracket)
+        return Nd.vecT(own("-1"), elem)
+    }
     var lenStr: String = ""
     if isKind(p, TokKind.intLit) { lenStr = curText(p); advP(&p) }
     else if isKind(p, TokKind.identifier) { lenStr = curText(p); advP(&p) }

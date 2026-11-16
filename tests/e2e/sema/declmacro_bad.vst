@@ -1,0 +1,19 @@
+// §12.4 checking goes on past a declaration macro: the errors after it are
+// the same in both checkers.
+
+comptime func seeded(_ d: Decl) -> [Decl] {
+    var out: [Decl] = quote { $d }
+    return out
+}
+
+@seeded
+struct Marker {
+    var tag: Int32
+}
+
+func after(_ n: Int32) -> Int32 {
+    let b: Bool = n
+    return n
+}
+
+func main() -> Int32 { return 0 }
