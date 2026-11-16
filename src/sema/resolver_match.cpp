@@ -13,6 +13,7 @@
 
 #include "resolver_internal.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <format>
@@ -31,18 +32,20 @@ namespace {
 
 // A pattern that matches every value of its type: `_`, a binding, or a
 // tuple of such. (nullptr stands for an implied wildcard.)
-bool pattern_is_wild(const ast::Pattern* p) {
+// A bare name is wild unless it compares against a value (§17.6).
+bool pattern_is_wild(const ast::Pattern* p, const Resolution& r) {
     if (p == nullptr) {
         return true;
     }
     switch (p->kind) {
     case ast::NodeKind::WildcardPat:
     case ast::NodeKind::BindPat:
-    case ast::NodeKind::IdentPat:
         return true;
+    case ast::NodeKind::IdentPat:
+        return !r.is_value_pattern(p);
     case ast::NodeKind::TuplePat:
         for (const auto& e : static_cast<const ast::TuplePat&>(*p).elements) {
-            if (!pattern_is_wild(e.get())) {
+            if (!pattern_is_wild(e.get(), r)) {
                 return false;
             }
         }
@@ -147,7 +150,7 @@ Resolver::uncovered_patterns(std::vector<std::vector<const ast::Pattern*>> rows,
             std::vector<std::vector<const ast::Pattern*>> spec;
             for (const auto& r : rows) {
                 std::vector<const ast::Pattern*> nr;
-                if (pattern_is_wild(r[0])) {
+                if (pattern_is_wild(r[0], resolution_)) {
                     nr.assign(arity, nullptr);
                 } else if (r[0]->kind == ast::NodeKind::EnumPat
                            && static_cast<const ast::EnumPat&>(*r[0]).case_name == c.name) {
@@ -183,7 +186,7 @@ Resolver::uncovered_patterns(std::vector<std::vector<const ast::Pattern*>> rows,
             std::vector<std::vector<const ast::Pattern*>> spec;
             for (const auto& r : rows) {
                 auto b = bool_pattern(r[0]);
-                if (pattern_is_wild(r[0]) || (b.has_value() && *b == v)) {
+                if (pattern_is_wild(r[0], resolution_) || (b.has_value() && *b == v)) {
                     spec.push_back(tail(r));
                 }
             }
@@ -197,7 +200,7 @@ Resolver::uncovered_patterns(std::vector<std::vector<const ast::Pattern*>> rows,
     }
     std::vector<std::vector<const ast::Pattern*>> def;
     for (const auto& r : rows) {
-        if (pattern_is_wild(r[0])) {
+        if (pattern_is_wild(r[0], resolution_)) {
             def.push_back(tail(r));
         }
     }
@@ -236,7 +239,8 @@ void Resolver::bind_tuple_pattern(const ast::TuplePat& pat, TypePtr value_type, 
         if (sub->kind == ast::NodeKind::IdentPat) {
             name = static_cast<const ast::IdentPat&>(*sub).name;
             if (in_match_pattern_) {
-                reject_bare_name_pattern(name, sub->range);
+                check_bare_name_pattern(static_cast<const ast::IdentPat&>(*sub), parts[i]);
+                continue;
             }
         } else if (sub->kind == ast::NodeKind::BindPat) {
             name = static_cast<const ast::BindPat&>(*sub).name;
@@ -371,6 +375,14 @@ TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
     auto register_unguarded_cases = [&](const ast::Pattern& p, auto& self) -> void {
         if (p.kind == ast::NodeKind::EnumPat) {
             const auto& ep = static_cast<const ast::EnumPat&>(p);
+            // `.some(k)` or `.some(0)` over an optional can fail, so it
+            // closes nothing. (A user enum's payload sub-patterns aren't
+            // tested yet, so its case still closes.)
+            if (resolution_.is_optional_pattern(&p)
+                && !std::ranges::all_of(ep.children,
+                                        [this](const auto& c) { return pattern_is_wild(c.get(), resolution_); })) {
+                return;
+            }
             closed_cases.insert(ep.case_name);
             return;
         }
@@ -525,7 +537,7 @@ TypePtr Resolver::check_match(const ast::MatchExpr& m, TypePtr expected) {
                 heads = std::move(next);
             }
             for (const auto& r : heads) {
-                if (pattern_is_wild(r[0])) {
+                if (pattern_is_wild(r[0], resolution_)) {
                     rows.emplace_back(arity, nullptr);
                     named = true;
                 } else if (r[0]->kind == ast::NodeKind::EnumPat
@@ -649,6 +661,58 @@ void Resolver::reject_bare_name_pattern(std::string_view name, diag::SourceRange
                          name));
 }
 
+// §17.6 a bare name in a match pattern compares the value against an
+// existing one (`let x` binds). It lowers to `==`, so it stands where a
+// literal could: at the top of an arm, in a tuple, an or-pattern or
+// `.some(...)`. A user enum's payload doesn't test its sub-patterns yet, and a
+// payloaded enum has no `==`, so both keep the old rejection.
+// Binds a rejected bare name anyway, so its uses don't cascade.
+void Resolver::bind_pattern_name(const ast::IdentPat& ip, TypePtr type) {
+    Symbol sym;
+    sym.name = ip.name;
+    sym.kind = SymbolKind::Local;
+    sym.is_mutable = false;
+    sym.type = type;
+    sym.definition_range = ip.range;
+    (void)scopes_.current().insert(std::move(sym));
+}
+
+void Resolver::check_bare_name_pattern(const ast::IdentPat& ip, TypePtr scrutinee) {
+    if (in_enum_payload_ > 0
+        || (scrutinee != nullptr && scrutinee->kind() == TypeKind::Enum
+            && scrutinee->nominal_decl() != nullptr
+            && scrutinee->nominal_decl()->kind == ast::NodeKind::Enum
+            && std::ranges::any_of(
+                static_cast<const ast::EnumDecl&>(*scrutinee->nominal_decl()).cases,
+                [](const auto& c) { return !c.payload.empty(); }))) {
+        reject_bare_name_pattern(ip.name, ip.range);
+        bind_pattern_name(ip, scrutinee);
+        return;
+    }
+    const auto* sym = scopes_.current().lookup(ip.name);
+    if (sym == nullptr
+        || (sym->kind != SymbolKind::Local && sym->kind != SymbolKind::Parameter
+            && sym->kind != SymbolKind::Const && sym->kind != SymbolKind::Static)) {
+        error_at(ip.range,
+                 std::format("a bare name in a pattern matches an existing value, and '{}' is "
+                             "not one in scope; write 'let {}' to bind it",
+                             ip.name,
+                             ip.name));
+        bind_pattern_name(ip, scrutinee);
+        return;
+    }
+    resolution_.mark_value_pattern(&ip);
+    TypePtr vt = sym->type;
+    if (vt != nullptr && !vt->is_error() && scrutinee != nullptr && !scrutinee->is_error()
+        && !TypeArena::assignable(vt, scrutinee)) {
+        error_at(ip.range,
+                 std::format("pattern value '{}' of type {} does not match scrutinee of type {}",
+                             ip.name,
+                             vt->describe(),
+                             scrutinee->describe()));
+    }
+}
+
 void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
     switch (p.kind) {
     case ast::NodeKind::WildcardPat:
@@ -713,7 +777,8 @@ void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
         // treat them as a binding to the scrutinee's type.
         const auto& ip = static_cast<const ast::IdentPat&>(p);
         if (in_match_pattern_) {
-            reject_bare_name_pattern(ip.name, p.range);
+            check_bare_name_pattern(ip, scrutinee);
+            break;
         }
         Symbol sym;
         sym.name = ip.name;
@@ -802,7 +867,9 @@ void Resolver::check_pattern(const ast::Pattern& p, TypePtr scrutinee) {
                                                                            *c->payload[i].second,
                                                                            scrutinee->parts())
                                        : types_->error();
+            ++in_enum_payload_;
             check_pattern(*ep.children[i], payload_type);
+            --in_enum_payload_;
         }
         break;
     }

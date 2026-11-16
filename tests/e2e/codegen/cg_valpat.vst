@@ -1,0 +1,59 @@
+// §17.6 a bare name in a match pattern compares against an existing value;
+// `let x` binds a fresh one.
+enum Dir { case north  case south  case east }
+
+const LIMIT: Int32 = 9
+
+func pick(_ v: Int32, _ want: Int32) -> Int32 {
+    return match v {
+        case want: 1
+        case LIMIT: 2
+        case let other: other * 10
+    }
+}
+
+func same(_ d: Dir, _ cur: Dir) -> Int32 {
+    return match d {
+        case cur: 1
+        case .north | .south: 2
+        default: 3
+    }
+}
+
+func pair(_ p: (Int32, Int32), _ k: Int32) -> Int32 {
+    return match p {
+        case (k, let b): b
+        case (let a, k): a
+        default: 0
+    }
+}
+
+func opt(_ o: Int32?, _ k: Int32) -> Int32 {
+    return match o {
+        case .some(k) | .some(0): 1
+        case .some(let x): x
+        case .none: 0
+    }
+}
+
+func word(_ s: String, _ w: String) -> Int32 {
+    return match s {
+        case w: 1
+        default: 0
+    }
+}
+
+func main() using Log, Alloc -> Int32 {
+    let a = pick(4, 4)
+    let b = pick(9, 4)
+    let c = pick(5, 4)
+    let d = same(Dir.east, Dir.east)
+    let e = same(Dir.north, Dir.east)
+    let f = pair((3, 8), 3)
+    let g = pair((6, 3), 3)
+    let h = opt(7, 7)
+    let i = opt(5, 7)
+    let j = word("ab", "ab")
+    print("\(a) \(b) \(c) \(d) \(e) \(f) \(g) \(h) \(i) \(j)")
+    return 0
+}

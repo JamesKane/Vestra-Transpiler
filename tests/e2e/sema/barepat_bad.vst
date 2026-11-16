@@ -1,5 +1,7 @@
 // §17.6 a bare name in a match pattern matches an existing value; it used to
-// bind a fresh name instead, so the arm always matched.
+// bind a fresh name instead, so the arm always matched. A user enum's payload
+// doesn't test sub-patterns yet, so a bare name there is still rejected, and
+// one that names nothing in scope is an error.
 
 enum Key { case down(Int32)  case up(Int32)  case none }
 
@@ -12,8 +14,17 @@ func code(_ k: Key) -> Int32 {
 
 func pick(_ v: Int32, _ limit: Int32) -> Int32 {
     return match v {
-        case limit: 1
+        case limt: 1
         default: 0
+    }
+}
+
+enum Dir { case north  case south }
+
+func near(_ d: Dir, _ cur: Dir) -> Int32 {
+    return match d {
+        case cur: 1
+        case .north: 2
     }
 }
 

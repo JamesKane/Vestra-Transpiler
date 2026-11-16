@@ -3052,6 +3052,7 @@ struct Env {
     var modTypMod: Vec[String]  // type export rows: owning module path ...
     var modTypName: Vec[String] // ... -> public type name (struct/enum/opaque)
     var modBad: Vec[String]     // "module '<m>' has no public member '<x>'" messages
+    var bareMiss: Vec[String]   // §17.6 bare match-pattern names with no value in scope
 }
 
 func noop() {}
@@ -3400,6 +3401,7 @@ func resolveArm(_ env: inout Env, _ a: Nd) using Alloc {
 }
 
 func resolveArmParts(_ env: inout Env, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    bareScanList(env, pat, false)
     let save = env.names.len()
     scopeEnter(env)
     bindPatBoxed(env, pat)
@@ -3407,6 +3409,31 @@ func resolveArmParts(_ env: inout Env, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body:
     resolveBoxed(env, body)
     scopeLeave(env)
     popTo(env, save)
+}
+
+// §17.6 a bare name in a match pattern compares against an existing value:
+// note each one, outside a user enum's payload, that names nothing in scope
+// (the type pass reports it).
+func bareScanList(_ env: inout Env, _ ps: Vec[Nd], _ inPayload: Bool) using Alloc {
+    var i: Int = 0
+    while i < ps.len() {
+        bareScan(env, ps.get(i) ?? Nd.wildcard, inPayload)
+        i = i + 1
+    }
+}
+
+func bareNote(_ env: inout Env, _ n: String, _ inPayload: Bool) using Alloc {
+    if !inPayload && !inScope(env, n) { env.bareMiss.push(n) }
+}
+
+func bareScan(_ env: inout Env, _ p: Nd, _ inPayload: Bool) using Alloc {
+    match p {
+        case .identP(let n): bareNote(env, n, inPayload)
+        case .enumP(let cn, let ch): bareScanList(env, ch, inPayload || !streq(cn, "some"))
+        case .orP(let alts): bareScanList(env, alts, inPayload)
+        case .tupleP(let xs): bareScanList(env, xs, inPayload)
+        default: noop()
+    }
 }
 
 // §error-handling — `throw` resolves its operand and is legal only when the
@@ -7753,6 +7780,7 @@ struct TyEnv {
     var rlAlways: Vec[String]   // ... and those of them also `@inline(.always)`
     var dfFn: Vec[String]       // §17.2 functions with defaulted trailing parameters ...
     var dfN: Vec[Int]           // ... -> how many
+    var bareMiss: Vec[String]   // §17.6 bare pattern names that name no value in scope
 }
 
 
@@ -9989,9 +10017,10 @@ func tySpawnCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using A
 
 func tyMatch(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) using Alloc {
     tyBoxed(env, scrut)
+    let st = tyInferBoxed(env, scrut)
     var i: Int = 0
     while i < arms.len() {
-        tyArm(env, arms.get(i) ?? Nd.wildcard)
+        tyArm(env, st, arms.get(i) ?? Nd.wildcard)
         i = i + 1
     }
     tyCheckArmPatterns(env, scrut, arms)
@@ -10143,7 +10172,7 @@ func tyCheckExhaustive(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) us
     let st = tyInferBoxed(env, scrut)
     if !tyIsEnum(env, st) { return }
     if tyHasDefault(arms) { return }
-    let heads = tyExpandOr(tyCoverRows(arms))
+    let heads = tyValueHeads(env, st, tyExpandOr(tyCoverRows(arms)))
     var i: Int = 0
     while i < env.ecEnum.len() {
         if streq(env.ecEnum.get(i) ?? own(""), st) {
@@ -10151,6 +10180,37 @@ func tyCheckExhaustive(_ env: inout TyEnv, _ scrut: Vec[Nd], _ arms: Vec[Nd]) us
         }
         i = i + 1
     }
+}
+
+// §17.6 over a payload-free enum a bare name compares against a value, so it
+// covers nothing; elsewhere it is rejected and, like the bootstrap, stays wild.
+func tyValueHeads(_ env: inout TyEnv, _ st: String, _ rows: Vec[Nd]) using Alloc -> Vec[Nd] {
+    if tyEnumHasPayload(env, st) { return rows }
+    var out: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < rows.len() {
+        let r = rows.get(i) ?? Nd.wildcard
+        if tyIsIdentP(tyRowHead(r)) {
+            out.push(Nd.tupleP(tyOneLit()))
+        } else {
+            out.push(r)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+func tyIsIdentP(_ p: Nd) -> Bool {
+    return match p {
+        case .identP(let n): true
+        default: false
+    }
+}
+
+func tyOneLit() using Alloc -> Vec[Nd] {
+    var row: Vec[Nd] = Vec.new()
+    row.push(Nd.litP(Vec.new()))
+    return row
 }
 
 func tyCheckCaseCovered(_ env: inout TyEnv, _ st: String, _ cn: String, _ heads: Vec[Nd]) using Alloc {
@@ -10533,31 +10593,68 @@ func notExhaustiveMsg(_ caseName: String) using Alloc -> String {
     return s
 }
 
-func tyArm(_ env: inout TyEnv, _ a: Nd) using Alloc {
+func tyArm(_ env: inout TyEnv, _ st: String, _ a: Nd) using Alloc {
     match a {
-        case .matchArm(let isDefault, let pat, let guard, let body): tyArmMu(env, pat, guard, body)
+        case .matchArm(let isDefault, let pat, let guard, let body): tyArmMu(env, st, pat, guard, body)
         default: noop()
     }
 }
 
-// §17.6 in a match arm a bare identifier matches an existing value (`let x`
-// binds), which isn't lowered yet: each one is an error.
-func tyBareNames(_ env: inout TyEnv, _ pat: Vec[Nd]) using Alloc {
+// §17.6 in a match arm a bare identifier compares against an existing value
+// (`let x` binds). A user enum's payload doesn't test its sub-patterns yet,
+// and a payloaded enum has no `==`, so a bare name there is still an error.
+func tyBareNames(_ env: inout TyEnv, _ st: String, _ pat: Vec[Nd], _ inPayload: Bool) using Alloc {
     var i: Int = 0
     while i < pat.len() {
-        tyBareName(env, pat.get(i) ?? Nd.wildcard)
+        tyBareName(env, st, pat.get(i) ?? Nd.wildcard, inPayload)
         i = i + 1
     }
 }
 
-func tyBareName(_ env: inout TyEnv, _ p: Nd) using Alloc {
+func tyBareName(_ env: inout TyEnv, _ st: String, _ p: Nd, _ inPayload: Bool) using Alloc {
     match p {
-        case .identP(let n): env.bad.push(tyBareMsg(n))
-        case .enumP(let cn, let ch): tyBareNames(env, ch)
-        case .orP(let alts): tyBareNames(env, alts)
-        case .tupleP(let xs): tyBareNames(env, xs)
+        case .identP(let n): tyBareIdent(env, st, n, inPayload)
+        case .enumP(let cn, let ch): tyBareEnumKids(env, st, cn, ch, inPayload)
+        case .orP(let alts): tyBareNames(env, st, alts, inPayload)
+        case .tupleP(let xs): tyBareNames(env, "", xs, inPayload)
         default: noop()
     }
+}
+
+func tyBareEnumKids(_ env: inout TyEnv, _ st: String, _ cn: String, _ ch: Vec[Nd], _ inPayload: Bool) using Alloc {
+    let opt = st.len() > 1 && (st.charAt(st.len() - 1) ?? ' ') == '?' && streq(cn, "some")
+    if opt && !inPayload {
+        tyBareNames(env, tyUnwrapOpt(st), ch, false)
+        return
+    }
+    tyBareNames(env, "", ch, true)
+}
+
+func tyBareIdent(_ env: inout TyEnv, _ st: String, _ n: String, _ inPayload: Bool) using Alloc {
+    if inPayload || tyEnumHasPayload(env, tyBaseName(st)) {
+        env.bad.push(tyBareMsg(n))
+        return
+    }
+    if esInList(env.bareMiss, n) { env.bad.push(tyBareMissMsg(n)) }
+}
+
+// An enum any of whose cases carries a payload.
+func tyEnumHasPayload(_ env: inout TyEnv, _ name: String) using Alloc -> Bool {
+    var i: Int = 0
+    while i < env.ecEnum.len() {
+        if streq(env.ecEnum.get(i) ?? own(""), name) && (env.ecArity.get(i) ?? 0) > 0 { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func tyBareMissMsg(_ n: String) using Alloc -> String {
+    var s: String = "a bare name in a pattern matches an existing value, and '"
+    s.append(n)
+    s.append("' is not one in scope; write 'let ")
+    s.append(n)
+    s.append("' to bind it")
+    return s
 }
 
 func tyBareMsg(_ n: String) using Alloc -> String {
@@ -10570,8 +10667,8 @@ func tyBareMsg(_ n: String) using Alloc -> String {
 }
 
 // A match arm's pattern bindings are `let`s, scoped to the arm.
-func tyArmMu(_ env: inout TyEnv, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc {
-    tyBareNames(env, pat)
+func tyArmMu(_ env: inout TyEnv, _ st: String, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    tyBareNames(env, st, pat, false)
     muEnter(env)
     muPat(env, pat)
     tyArmParts(env, guard, body)
@@ -14464,7 +14561,7 @@ func main() -> Int32 {
                                   dups: Vec.new(), curThrows: false, throwBad: Vec.new(),
                                   modPaths: Vec.new(), modExpMod: Vec.new(),
                                   modExpName: Vec.new(), modTypMod: Vec.new(),
-                                  modTypName: Vec.new(), modBad: Vec.new())
+                                  modTypName: Vec.new(), modBad: Vec.new(), bareMiss: Vec.new())
                     let impErrs = loadModules(u, path, &env)
                     var ie: Int = 0
                     while ie < impErrs.len() {
@@ -14556,7 +14653,7 @@ func main() -> Int32 {
                                      pLabel: Vec.new(), mlOwner: Vec.new(), mlName: Vec.new(), mlLabel: Vec.new(), niName: Vec.new(),
                                      neKey: Vec.new(), neLocal: Vec.new(),
                                      opName: Vec.new(), opUnder: Vec.new(), drvType: Vec.new(), drvProto: Vec.new(),
-                                     tgOwner: Vec.new(), tgName: Vec.new(), wcStmt: -1, wcDepth: 0, wcOk: false, wcAllow: false, wcSites: 0, wcLoopSites: 0, rlName: Vec.new(), rlAlways: Vec.new(), dfFn: Vec.new(), dfN: Vec.new())
+                                     tgOwner: Vec.new(), tgName: Vec.new(), wcStmt: -1, wcDepth: 0, wcOk: false, wcAllow: false, wcSites: 0, wcLoopSites: 0, rlName: Vec.new(), rlAlways: Vec.new(), dfFn: Vec.new(), dfN: Vec.new(), bareMiss: env.bareMiss)
                     tyRefines(&tenv, p.toks)
                     tyCopyUnions(&tenv, p.unions)
                     tyCopyRetry(&tenv, p.retry, p.retryAlways)

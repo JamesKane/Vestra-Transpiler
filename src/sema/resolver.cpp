@@ -110,6 +110,14 @@ void Resolution::mark_optional_pattern(const ast::Pattern* p) {
     optional_patterns_.insert(p);
 }
 
+bool Resolution::is_value_pattern(const ast::Pattern* p) const {
+    return value_patterns_.contains(p);
+}
+
+void Resolution::mark_value_pattern(const ast::Pattern* p) {
+    value_patterns_.insert(p);
+}
+
 bool Resolution::needs_string_coercion(const ast::Expr* e) const {
     return string_coercions_.contains(e);
 }

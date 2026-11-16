@@ -268,6 +268,18 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
                     any_duplicate = true;
                 }
             }
+            // §17.6 a bare name compares against a value, which a switch
+            // label can't.
+            if (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::IdentPat) {
+                any_duplicate = true;
+            }
+            if (arm.pattern != nullptr && arm.pattern->kind == ast::NodeKind::OrPat) {
+                for (const auto& alt : static_cast<const ast::OrPat&>(*arm.pattern).alternatives) {
+                    if (alt != nullptr && alt->kind == ast::NodeKind::IdentPat) {
+                        any_duplicate = true;
+                    }
+                }
+            }
         }
         const bool use_if_chain = any_guard || any_duplicate;
 
@@ -289,7 +301,8 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
                 }
                 if (arm.pattern == nullptr
                     || (arm.pattern->kind != ast::NodeKind::EnumPat
-                        && arm.pattern->kind != ast::NodeKind::OrPat)) {
+                        && arm.pattern->kind != ast::NodeKind::OrPat
+                        && arm.pattern->kind != ast::NodeKind::IdentPat)) {
                     unsupported(os, "match arm pattern", m.range);
                     continue;
                 }
@@ -300,6 +313,8 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
                 if (arm.pattern->kind == ast::NodeKind::EnumPat) {
                     const auto& ep = static_cast<const ast::EnumPat&>(*arm.pattern);
                     os << "__vstr_m == " << nominal_prefix(&enum_decl) << enum_decl.name << "::" << ep.case_name;
+                } else if (arm.pattern->kind == ast::NodeKind::IdentPat) {
+                    emit_pat_predicate(os, *arm.pattern, "__vstr_m");
                 } else {
                     const auto& op = static_cast<const ast::OrPat&>(*arm.pattern);
                     os << "(";
@@ -311,6 +326,9 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
                             && op.alternatives[i]->kind == ast::NodeKind::EnumPat) {
                             const auto& ep = static_cast<const ast::EnumPat&>(*op.alternatives[i]);
                             os << "__vstr_m == " << nominal_prefix(&enum_decl) << enum_decl.name << "::" << ep.case_name;
+                        } else if (op.alternatives[i] != nullptr
+                                   && op.alternatives[i]->kind == ast::NodeKind::IdentPat) {
+                            emit_pat_predicate(os, *op.alternatives[i], "__vstr_m");
                         } else {
                             os << "false";
                         }
@@ -636,8 +654,15 @@ void CppEmitter::emit_pat_predicate(std::ostream& os,
                                     const ast::Pattern& p,
                                     std::string_view base) {
     switch (p.kind) {
-    case ast::NodeKind::WildcardPat:
     case ast::NodeKind::IdentPat:
+        // §17.6 a bare name in a match pattern compares against that value.
+        if (resolution_ != nullptr && resolution_->is_value_pattern(&p)) {
+            os << "(" << base << " == " << static_cast<const ast::IdentPat&>(p).name << ")";
+            return;
+        }
+        os << "true";
+        return;
+    case ast::NodeKind::WildcardPat:
     case ast::NodeKind::BindPat:
         // Always-match — the binding is emitted separately if any.
         os << "true";
@@ -737,6 +762,9 @@ void CppEmitter::emit_pat_bindings(std::ostream& os,
                                    int indent) {
     switch (p.kind) {
     case ast::NodeKind::IdentPat:
+        if (resolution_ != nullptr && resolution_->is_value_pattern(&p)) {
+            return;
+        }
         write_indent(os, indent);
         os << "auto&& " << static_cast<const ast::IdentPat&>(p).name << " = " << base << ";\n";
         return;

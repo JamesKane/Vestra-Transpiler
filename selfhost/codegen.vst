@@ -11037,7 +11037,6 @@ func patBinds(_ env: inout TyEnv, _ pat: Vec[Nd]) using Alloc -> Bool {
 
 func patNodeBinds(_ env: inout TyEnv, _ p: Nd) using Alloc -> Bool {
     return match p {
-        case .identP(let n): true
         case .bindP(let n): true
         case .tupleP(let elems): patListBinds(env, elems)
         case .enumP(let cn, let children): env.valOpt && streq(cn, "some") && patListBinds(env, children)
@@ -11086,8 +11085,18 @@ func emitPatPredicateNode(_ env: inout TyEnv, _ p: Nd, _ base: Str) using Alloc,
         case .orP(let alts): emitOrPred(env, base, alts)
         case .tupleP(let elems): emitTuplePred(env, base, elems)
         case .enumP(let cn, let children): emitOptCasePred(env, base, cn, children)
+        case .identP(let n): emitValuePatPred(base, n)
         default: print("true")
     }
+}
+
+// §17.6 a bare name in a match pattern compares against that value.
+func emitValuePatPred(_ base: Str, _ n: Str) using Log {
+    print("(")
+    print(base)
+    print(" == ")
+    print(n)
+    print(")")
 }
 
 // §18 `.some(p)` / `.none` against an optional scrutinee: a presence test, and
@@ -11188,7 +11197,6 @@ func emitPatBindings(_ env: inout TyEnv, _ pat: Vec[Nd], _ base: Str, _ ind: Str
 
 func emitPatBindingsNode(_ env: inout TyEnv, _ p: Nd, _ base: Str, _ ind: Str) using Alloc, Log {
     match p {
-        case .identP(let n): emitOnePatBinding(ind, n, base)
         case .bindP(let n): emitOnePatBinding(ind, n, base)
         case .tupleP(let elems): emitTupleBindings(env, elems, base, ind)
         case .enumP(let cn, let children): emitOptCaseBindings(env, base, cn, children, ind)
@@ -11232,7 +11240,7 @@ func emitMatchValueParts(_ env: inout TyEnv, _ callerIndent: Str, _ ty: Vec[Nd],
     }
     // A guarded payload-free match cannot be a switch (a guard is a runtime
     // condition); it lowers to an if/else-if chain over the scrutinee.
-    if !isPayloadEnum(env, enumName) && anyArmGuarded(arms) {
+    if !isPayloadEnum(env, enumName) && (anyArmGuarded(arms) || anyArmBareName(arms)) {
         emitGuardMatchValue(env, indent, ty, tyStr, enumName, scrut, arms)
         return
     }
@@ -11260,6 +11268,39 @@ func emitMatchRetTy(_ env: inout TyEnv, _ ty: Vec[Nd], _ tyStr: Str) using Alloc
     if ty.len() > 0 { emitTypeBoxed(ty); return }
     if !streq(tyStr, "") { print(tyStr); return }
     emitTypeBoxed(env.curRetNode)
+}
+
+// §17.6 a bare name compares against a value, which a switch label can't.
+func anyArmBareName(_ arms: Vec[Nd]) using Alloc -> Bool {
+    var i: Int = 0
+    while i < arms.len() {
+        if armBareName(arms.get(i) ?? Nd.wildcard) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func armBareName(_ arm: Nd) using Alloc -> Bool {
+    return match arm {
+        case .matchArm(let isDefault, let pat, let guard, let body): anyIdentP(patAltList(pat))
+        default: false
+    }
+}
+
+func anyIdentP(_ ps: Vec[Nd]) -> Bool {
+    var i: Int = 0
+    while i < ps.len() {
+        if isIdentPNode(ps.get(i) ?? Nd.wildcard) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func isIdentPNode(_ p: Nd) -> Bool {
+    return match p {
+        case .identP(let n): true
+        default: false
+    }
 }
 
 func anyArmGuarded(_ arms: Vec[Nd]) -> Bool {
@@ -11331,7 +11372,8 @@ func emitGuardArm(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ enumName: Str, _ 
 func emitGuardArmParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ enumName: Str, _ pat: Vec[Nd], _ guard: Vec[Nd], _ body: Vec[Nd], _ k: Int) using Alloc, Log {
     print(i8)
     if k == 0 { print("if (") } else { print("else if (") }
-    if isOrPat(pat) { emitGuardOrPred(enumName, pat) }
+    if isOrPat(pat) { emitGuardOrPred(env, enumName, pat) }
+    else if pat.len() > 0 && isIdentPNode(pat.get(0) ?? Nd.wildcard) { emitPatPredicate(env, pat, "__vstr_m") }
     else {
         print("__vstr_m == ")
         print(enumName)
@@ -11354,7 +11396,7 @@ func emitGuardArmParts(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ enumName: St
 
 // An or-pattern arm of the guard chain folds its alternatives into one `||`
 // predicate; a non-enum alternative contributes `false`, as in the bootstrap.
-func emitGuardOrPred(_ enumName: Str, _ pat: Vec[Nd]) using Alloc, Log {
+func emitGuardOrPred(_ env: inout TyEnv, _ enumName: Str, _ pat: Vec[Nd]) using Alloc, Log {
     let alts = patAltList(pat)
     print("(")
     var i: Int = 0
@@ -11366,6 +11408,8 @@ func emitGuardOrPred(_ enumName: Str, _ pat: Vec[Nd]) using Alloc, Log {
             print(enumName)
             print("::")
             print(altCaseName(a))
+        } else if isIdentPNode(a) {
+            emitPatPredicateNode(env, a, "__vstr_m")
         } else {
             print("false")
         }

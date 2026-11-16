@@ -3124,3 +3124,41 @@ TEST_CASE("a const-expression array length folds, and must be a constant") {
                                  "func f() -> [LEN - 5]UInt8 { return [1] }\n");
     CHECK(negative.first_message == "an array length must be a non-negative integer");
 }
+
+TEST_CASE("a bare name in a match pattern compares against an existing value") {
+    CHECK(check_detail("func f(_ v: Int32, _ k: Int32) -> Int32 {\n"
+                       "    return match v {\n"
+                       "        case k: 1\n"
+                       "        default: 0\n"
+                       "    }\n"
+                       "}\n")
+              .error_count
+          == 0);
+    auto wrong = check_detail("func f(_ v: Int32, _ k: Bool) -> Int32 {\n"
+                              "    return match v {\n"
+                              "        case k: 1\n"
+                              "        default: 0\n"
+                              "    }\n"
+                              "}\n");
+    CHECK(wrong.first_message
+          == "pattern value 'k' of type Bool does not match scrutinee of type Int32");
+    auto missing = check_detail("func f(_ v: Int32) -> Int32 {\n"
+                                "    return match v {\n"
+                                "        case k: 1\n"
+                                "        default: 0\n"
+                                "    }\n"
+                                "}\n");
+    CHECK(missing.error_count == 1);
+    CHECK(missing.first_message
+          == "a bare name in a pattern matches an existing value, and 'k' is not one in "
+             "scope; write 'let k' to bind it");
+    // A bare name covers nothing, so the match still needs a default.
+    auto open = check_detail("enum D { case a  case b }\n"
+                             "func f(_ d: D, _ c: D) -> Int32 {\n"
+                             "    return match d {\n"
+                             "        case c: 1\n"
+                             "        case .a: 2\n"
+                             "    }\n"
+                             "}\n");
+    CHECK(open.first_message == "match is not exhaustive: case 'b' is not covered");
+}

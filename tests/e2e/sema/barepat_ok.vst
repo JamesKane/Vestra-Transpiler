@@ -1,5 +1,6 @@
 // §17.6 match-arm patterns bind with `let`; a `let` destructuring and a
-// `for` loop variable bind with a bare name.
+// `for` loop variable bind with a bare name. In a match a bare name compares
+// against an existing value.
 
 enum Key { case down(Int32)  case up(Int32)  case none }
 
@@ -18,4 +19,25 @@ func pick(_ p: (Int32, Int32), _ q: (Int32, Int32)) -> Int32 {
     }
 }
 
-func main() -> Int32 { return code(Key.none) + pick((1, 2), (3, 4)) }
+enum Dir { case north  case south }
+
+const LIMIT: Int32 = 9
+
+func same(_ d: Dir, _ cur: Dir, _ v: Int32, _ o: Int32?) -> Int32 {
+    let a: Int32 = match d {
+        case cur: 1
+        default: 0
+    }
+    let b: Int32 = match (v, a) {
+        case (LIMIT, 1): 2
+        case (let x, a): x
+        default: 0
+    }
+    return match o {
+        case .some(v): b
+        case .some(let w): w
+        case .none: 0
+    }
+}
+
+func main() -> Int32 { return code(Key.none) + pick((1, 2), (3, 4)) + same(Dir.north, Dir.south, 9, 3) }
