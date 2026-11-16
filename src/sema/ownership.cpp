@@ -1018,9 +1018,9 @@ bool OwnershipChecker::is_trivial(TypePtr t) noexcept {
     if (t == nullptr) {
         return true;  // unresolved type — don't pile on
     }
-    // Phase 1 Trivial set: every fixed-width numeric, Bool, Char, Unit. Strings
-    // (String/Str/StrConst) are not Trivial: String owns a buffer and even
-    // Str/StrConst can carry borrow semantics worth tracking later.
+    // The Trivial set: every fixed-width numeric, Bool, Char, Unit, StrConst,
+    // raw pointers and small structs of those. String owns a buffer, and a
+    // Str is a view whose source the escape checker tracks.
     switch (t->kind()) {
     case TypeKind::Int8:
     case TypeKind::Int16:
@@ -1041,7 +1041,15 @@ bool OwnershipChecker::is_trivial(TypePtr t) noexcept {
     case TypeKind::Unit:
     case TypeKind::Never:
     case TypeKind::Error:
+    // Annex §4 a `StrConst` is a view into .rodata, and a raw pointer is bits.
+    case TypeKind::StrConst:
+    case TypeKind::Ptr:
+    case TypeKind::MutPtr:
         return true;
+    case TypeKind::Struct:
+        // §5 a small struct of Trivial fields (Resolver::mark_trivial_copy_structs).
+        return t->nominal_decl() != nullptr && t->nominal_decl()->kind == ast::NodeKind::Struct
+               && static_cast<const ast::StructDecl*>(t->nominal_decl())->trivial_copy;
     default:
         return false;
     }

@@ -1,0 +1,47 @@
+// §5 a small struct of Trivial fields copies implicitly, like a scalar: it
+// may go to two `sink` parameters. So may a `StrConst`.
+
+struct P {
+    var a: Int32
+    var b: Int32
+}
+
+struct Q {
+    var p: P
+    var tag: Int64
+}
+
+struct Label {
+    var text: StrConst
+}
+
+func eatP(_ p: sink P) -> Int32 { return p.a + p.b }
+func eatQ(_ q: sink Q) -> Int64 { return q.tag }
+func eatS(_ s: sink StrConst) -> Int { return s.len() }
+func eatL(_ l: sink Label) -> Int { return l.text.len() }
+
+func twiceP(_ p: sink P) -> Int32 {
+    let c: P = p
+    return eatP(p) + eatP(p) + c.a
+}
+
+func twiceQ(_ q: sink Q) -> Int64 {
+    return eatQ(q) + eatQ(q)
+}
+
+func twiceS(_ s: sink StrConst) -> Int {
+    return eatS(s) + eatS(s)
+}
+
+func twiceL(_ l: sink Label) -> Int {
+    return eatL(l) + eatL(l)
+}
+
+func main() using Log, Alloc -> Int32 {
+    let p: P = P(a: 1, b: 2)
+    let q: Q = Q(p: p, tag: 5)
+    let l: Label = Label(text: "hey")
+    let w: StrConst = "abcd"
+    print("\(twiceP(p)) \(twiceP(p)) \(twiceQ(q)) \(twiceS(w)) \(twiceL(l)) \(p.a)")
+    return 0
+}

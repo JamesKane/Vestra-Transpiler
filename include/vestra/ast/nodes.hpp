@@ -883,6 +883,9 @@ struct StructDecl : Decl {
     std::vector<Field> fields;
     std::vector<DeclPtr> methods;  // FuncDecl entries
     ExprPtr deinit_body;           // optional
+    // §5 set by the resolver of the struct's own unit: a small struct of
+    // Trivial fields copies implicitly, like a scalar. Importers read it.
+    mutable bool trivial_copy = false;
     StructDecl() : Decl(NodeKind::Struct) {}
 };
 

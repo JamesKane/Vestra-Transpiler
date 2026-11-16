@@ -303,6 +303,9 @@ private:
     void check_view_capture(const Symbol& sym, diag::SourceRange at);
     // §3 a name spelled as a C++ keyword can't be emitted yet.
     void check_cpp_keyword_names();
+    // §5 mark the small structs of Trivial fields that copy implicitly.
+    void mark_trivial_copy_structs();
+    [[nodiscard]] ByteLayout trivial_copy_layout(TypePtr t, int depth);
     [[nodiscard]] static bool is_cpp_keyword(std::string_view name);
     static const ast::Expr* peel_parens(const ast::Expr* e);
     diag::SourceRange neg_lit_range_{};

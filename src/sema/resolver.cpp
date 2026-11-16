@@ -233,6 +233,7 @@ void Resolver::resolve() {
     // guaranteed silent.
     if (!reporter_->has_errors()) {
         record_member_types();
+        mark_trivial_copy_structs();
     }
 }
 
@@ -1524,6 +1525,106 @@ void Resolver::check_cpp_keyword_names() {
                                  "they are, so it can't name anything yet; rename it",
                                  name));
         }
+    }
+}
+
+// §5 implicit copies are inserted only for Trivial types: the scalars, and
+// "small fixed structs of Trivial fields". A struct qualifies when it is not
+// generic, not linear, has no `deinit`, and every field is a scalar, a
+// `StrConst`, a raw pointer or another such struct, in 16 bytes or less (two
+// registers). Anything else still moves.
+void Resolver::mark_trivial_copy_structs() {
+    std::vector<const ast::StructDecl*> cands;
+    for (const auto& d : unit_->decls) {
+        if (d->kind != ast::NodeKind::Struct || gated_out(*d)) {
+            continue;
+        }
+        const auto* sd = static_cast<const ast::StructDecl*>(d.get());
+        if (sd->generics.empty() && !sd->is_linear && sd->deinit_body == nullptr) {
+            cands.push_back(sd);
+        }
+    }
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto* sd : cands) {
+            if (sd->trivial_copy) {
+                continue;
+            }
+            std::int64_t size = 0;
+            std::int64_t align = 1;
+            bool ok = true;
+            for (const auto& f : sd->fields) {
+                const auto l = f.type != nullptr ? trivial_copy_layout(resolve_type(*f.type), 0)
+                                                 : ByteLayout{};
+                if (l.align == 0) {
+                    ok = false;
+                    break;
+                }
+                size = (size + l.align - 1) / l.align * l.align + l.size;
+                align = std::max(align, l.align);
+            }
+            size = (size + align - 1) / align * align;
+            if (ok && size <= 16) {
+                sd->trivial_copy = true;
+                changed = true;
+            }
+        }
+    }
+}
+
+// The layout of a field that keeps its struct implicitly copyable, or a zero
+// alignment when it doesn't. An empty struct is zero bytes, aligned to one.
+ByteLayout Resolver::trivial_copy_layout(TypePtr t, int depth) {
+    if (t == nullptr || depth > 32) {
+        return {};
+    }
+    switch (t->kind()) {
+    case TypeKind::Int8:
+    case TypeKind::Int16:
+    case TypeKind::Int32:
+    case TypeKind::Int64:
+    case TypeKind::Int:
+    case TypeKind::UInt8:
+    case TypeKind::UInt16:
+    case TypeKind::UInt32:
+    case TypeKind::UInt64:
+    case TypeKind::UInt:
+    case TypeKind::Int128:
+    case TypeKind::UInt128:
+    case TypeKind::Float32:
+    case TypeKind::Float64:
+    case TypeKind::Bool:
+    case TypeKind::Char:
+        return primitive_byte_layout(t->kind());
+    case TypeKind::StrConst:
+        return {16, 8};
+    case TypeKind::Ptr:
+    case TypeKind::MutPtr:
+        return {8, 8};
+    case TypeKind::Struct: {
+        const auto* d = t->nominal_decl();
+        if (d == nullptr || d->kind != ast::NodeKind::Struct) {
+            return {};
+        }
+        const auto& sd = static_cast<const ast::StructDecl&>(*d);
+        if (!sd.trivial_copy) {
+            return {};
+        }
+        std::int64_t size = 0;
+        std::int64_t align = 1;
+        for (const auto& f : sd.fields) {
+            const auto l = trivial_copy_layout(resolve_type(*f.type), depth + 1);
+            if (l.align == 0) {
+                return {};
+            }
+            size = (size + l.align - 1) / l.align * l.align + l.size;
+            align = std::max(align, l.align);
+        }
+        return {(size + align - 1) / align * align, align};
+    }
+    default:
+        return {};
     }
 }
 

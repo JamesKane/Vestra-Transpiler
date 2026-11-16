@@ -5498,6 +5498,8 @@ struct OwnEnv {
     var fKeys: Vec[String]      // per path: places known to be empty (encoded keys) ...
     var fIds: Vec[String]       // ... the locals their indices mention (" a b ") ...
     var fStatic: Vec[Bool]      // ... and whether the root is a static
+    var copyCand: Vec[String]   // global: non-generic, non-linear structs with no deinit ...
+    var copyStructs: Vec[String] // ... and those of them small and Trivial enough to copy (§5)
 }
 
 // §19.6 a storage place: a field / element path from a root this function
@@ -5533,6 +5535,7 @@ func ownCheck(_ env: inout OwnEnv, _ u: NUnit) using Alloc {
         i = i + 1
     }
     ownCloseLinears(env)
+    ownCloseCopies(env)
     var j: Int = 0
     while j < u.decls.len() {
         ownCheckDecl(env, u.decls.get(j) ?? Nd.wildcard)
@@ -5545,16 +5548,74 @@ func ownCollectDecl(_ env: inout OwnEnv, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let g, let params, let caps, let t, let r, let b):
             ownCollectFunc(env, name, params, r)
-        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): ownCollectStructD(env, name, isLinear, fl, dn)
+        case .structD(let vis, let name, let fl, let m, let dn, let isLinear, let generics): ownCollectStructD(env, name, isLinear, fl, dn, generics)
         case .enumD(let vis, let name, let cs, let m, let generics): ownCollectEnum(env, name, cs)
         case .staticD(let vis, let name, let ty, let v): ownCollectStatic(env, name, ty)
         default: noop()
     }
 }
 
-func ownCollectStructD(_ env: inout OwnEnv, _ name: String, _ isLinear: Bool, _ fl: Vec[Nd], _ dn: Vec[Nd]) using Alloc {
+func ownCollectStructD(_ env: inout OwnEnv, _ name: String, _ isLinear: Bool, _ fl: Vec[Nd], _ dn: Vec[Nd], _ g: Vec[Nd]) using Alloc {
     ownCollectStruct(env, name, isLinear, fl)
     if dn.len() > 0 { env.deinitTys.push(own(name)) }
+    if !isLinear && dn.len() == 0 && g.len() == 0 { env.copyCand.push(own(name)) }
+}
+
+// §5 a small struct of Trivial fields copies implicitly (the bootstrap's
+// Resolver::mark_trivial_copy_structs): every field a scalar, a `StrConst`,
+// a raw pointer or another such struct, in 16 bytes or less. A layout of
+// alignment 0 is a field that can't be copied; an empty struct copies.
+func ownCloseCopies(_ env: inout OwnEnv) using Alloc {
+    var changed: Bool = true
+    while changed {
+        changed = false
+        var i: Int = 0
+        while i < env.copyCand.len() {
+            let sn = env.copyCand.get(i) ?? own("")
+            if ownFindIn(env.copyStructs, sn) < 0 && !ownIsLinearName(env, sn) {
+                let l = ownCopyStructLay(env, sn, 0)
+                if l.align > 0 && l.size <= 16 {
+                    env.copyStructs.push(sn)
+                    changed = true
+                }
+            }
+            i = i + 1
+        }
+    }
+}
+
+func ownCopyStructLay(_ env: inout OwnEnv, _ sn: String, _ depth: Int) using Alloc -> TyLay {
+    var size: Int = 0
+    var align: Int = 1
+    var i: Int = 0
+    while i < env.fieldOwner.len() {
+        if streq(env.fieldOwner.get(i) ?? own(""), sn) {
+            let fl = ownCopyFieldLay(env, env.fieldTy.get(i) ?? Nd.wildcard, depth)
+            if fl.align == 0 { return TyLay(size: 0, align: 0) }
+            size = tyAlignUp(size, fl.align) + fl.size
+            if fl.align > align { align = fl.align }
+        }
+        i = i + 1
+    }
+    return TyLay(size: tyAlignUp(size, align), align: align)
+}
+
+func ownCopyFieldLay(_ env: inout OwnEnv, _ t: Nd, _ depth: Int) using Alloc -> TyLay {
+    if depth > 32 { return TyLay(size: 0, align: 0) }
+    return match t {
+        case .named(let path, let g, let a): ownCopyNamedLay(env, path, g, depth)
+        default: TyLay(size: 0, align: 0)
+    }
+}
+
+func ownCopyNamedLay(_ env: inout OwnEnv, _ path: String, _ g: Bool, _ depth: Int) using Alloc -> TyLay {
+    if streq(path, "Ptr") || streq(path, "MutPtr") { return TyLay(size: 8, align: 8) }
+    if g { return TyLay(size: 0, align: 0) }
+    if streq(path, "StrConst") { return TyLay(size: 16, align: 8) }
+    let p = tyPrimLay(path)
+    if p.align > 0 { return p }
+    if ownFindIn(env.copyStructs, path) >= 0 { return ownCopyStructLay(env, path, depth + 1) }
+    return TyLay(size: 0, align: 0)
 }
 
 func ownCollectEnum(_ env: inout OwnEnv, _ name: String, _ cs: Vec[Nd]) using Alloc {
@@ -5983,7 +6044,7 @@ func ownRegisterParam2(_ env: inout OwnEnv, _ name: String, _ md: String, _ ty: 
 }
 
 func ownRegister(_ env: inout OwnEnv, _ name: String, _ ty: Vec[Nd]) using Alloc {
-    if ownNonTrivialBoxed(ty) { ownPush(env, name, false, false) }
+    if ownNonTrivialBoxed(env, ty) { ownPush(env, name, false, false) }
 }
 
 func ownPush(_ env: inout OwnEnv, _ name: String, _ consumed: Bool, _ lin: Bool) using Alloc {
@@ -5998,7 +6059,7 @@ func ownRegisterLet(_ env: inout OwnEnv, _ name: String, _ ty: Vec[Nd], _ v: Vec
     env.locName.push(copy name)
     env.locTy.push(ownDeclTy(ty, v))
     if lin { ownPush(env, name, isNil, true) }
-    else if ownNonTrivialBoxed(ty) { ownPush(env, name, false, false) }
+    else if ownNonTrivialBoxed(env, ty) { ownPush(env, name, false, false) }
 }
 
 func ownFind(_ env: inout OwnEnv, _ name: String) -> Int {
@@ -6047,14 +6108,14 @@ func ownAlreadyMoved(_ name: String) using Alloc -> String {
     return s
 }
 
-func ownNonTrivialBoxed(_ ty: Vec[Nd]) -> Bool {
+func ownNonTrivialBoxed(_ env: inout OwnEnv, _ ty: Vec[Nd]) -> Bool {
     if ty.len() == 0 { return false }   // inferred / unknown type: treated as untracked
-    return ownNonTrivial(ty.get(0) ?? Nd.wildcard)
+    return ownNonTrivial(env, ty.get(0) ?? Nd.wildcard)
 }
 
-func ownNonTrivial(_ t: Nd) -> Bool {
+func ownNonTrivial(_ env: inout OwnEnv, _ t: Nd) -> Bool {
     return match t {
-        case .named(let path, let g, let a): !ownTrivialName(path)
+        case .named(let path, let g, let a): !ownTrivialName(path) && ownFindIn(env.copyStructs, path) < 0
         default: true
     }
 }
@@ -6064,7 +6125,7 @@ func ownTrivialName(_ p: String) -> Bool {
         || streq(p, "Int64") || streq(p, "Int128") || streq(p, "UInt") || streq(p, "UInt8")
         || streq(p, "UInt16") || streq(p, "UInt32") || streq(p, "UInt64") || streq(p, "UInt128")
         || streq(p, "Float32") || streq(p, "Float64") || streq(p, "Bool") || streq(p, "Char")
-        || streq(p, "Unit")
+        || streq(p, "Unit") || streq(p, "StrConst") || streq(p, "Ptr") || streq(p, "MutPtr")
 }
 
 func ownBoxed(_ env: inout OwnEnv, _ v: Vec[Nd]) using Alloc {
@@ -7518,7 +7579,7 @@ func ownCallee(_ env: inout OwnEnv, _ callee: Vec[Nd]) using Alloc {
 func ownConsumeField(_ env: inout OwnEnv, _ e: Nd) using Alloc {
     let fp = ownFieldPath(env, e)
     if !fp.ok || fp.ty.len() == 0 { return }
-    if !ownNonTrivialBoxed(fp.ty) || ownTyLinear(env, fp.ty) { return }
+    if !ownNonTrivialBoxed(env, fp.ty) || ownTyLinear(env, fp.ty) { return }
     let full = ownFull(fp)
     if ownIsBorrowed(env, fp.root) {
         var m: String = "can't move '"
@@ -14730,7 +14791,8 @@ func main() -> Int32 {
                                       locName: Vec.new(), locTy: Vec.new(), selfTy: "", borrows: Vec.new(),
                                       doMarks: Vec.new(), capMark: Vec.new(), capStart: Vec.new(), capNames: Vec.new(),
                                       deinitTys: Vec.new(), payOwner: Vec.new(), payTy: Vec.new(),
-                                      fKeys: Vec.new(), fIds: Vec.new(), fStatic: Vec.new())
+                                      fKeys: Vec.new(), fIds: Vec.new(), fStatic: Vec.new(),
+                                      copyCand: Vec.new(), copyStructs: Vec.new())
                     ownCheck(&oenv, u)
                     var o: Int = 0
                     while o < oenv.bad.len() {

@@ -1,0 +1,89 @@
+// §5 only a small struct of Trivial fields copies implicitly: one past two
+// registers (by one byte, or through a nested struct), one with a `deinit`,
+// one holding a `String` or an array, and a generic one still move.
+
+struct Edge17 {
+    var a: Int64
+    var b: Int32
+    var c: Char
+    var d: Bool
+}
+
+struct Small {
+    var a: Int64
+    var b: Int64
+}
+
+struct Nested {
+    var s: Small
+    var flag: Bool
+}
+
+struct Arr {
+    var xs: [2]Int32
+}
+
+func eatEdge(_ x: sink Edge17) { }
+func eatNested(_ x: sink Nested) { }
+func eatArr(_ x: sink Arr) { }
+
+func edge(_ x: sink Edge17) {
+    eatEdge(x)
+    eatEdge(x)
+}
+
+func nested(_ x: sink Nested) {
+    eatNested(x)
+    eatNested(x)
+}
+
+func arr(_ x: sink Arr) {
+    eatArr(x)
+    eatArr(x)
+}
+
+struct Big {
+    var a: Int64
+    var b: Int64
+    var c: Int32
+}
+
+struct Owned {
+    var n: Int32
+    deinit { }
+}
+
+struct Named {
+    var s: String
+}
+
+struct Cell[T] {
+    var v: T
+}
+
+func eatBig(_ x: sink Big) { }
+func eatOwned(_ x: sink Owned) { }
+func eatNamed(_ x: sink Named) { }
+func eatCell(_ x: sink Cell[Int32]) { }
+
+func big(_ x: sink Big) {
+    eatBig(x)
+    eatBig(x)
+}
+
+func owned(_ x: sink Owned) {
+    eatOwned(x)
+    eatOwned(x)
+}
+
+func named(_ x: sink Named) {
+    eatNamed(x)
+    eatNamed(x)
+}
+
+func cell(_ x: sink Cell[Int32]) {
+    eatCell(x)
+    eatCell(x)
+}
+
+func main() -> Int32 { return 0 }

@@ -41,7 +41,6 @@ namespace vestra::sema {
 //   * Field-level tracking — moving `s.field` is approximated as moving `s`.
 //   * Linearity (`linear` keyword) — there is no must-consume check yet.
 //   * Mutability enforcement on `let` — that belongs in a separate check.
-//   * Trivial detection beyond the built-in numeric / Bool / Char primitives.
 class OwnershipChecker {
 public:
     OwnershipChecker(const ast::CompilationUnit& unit,

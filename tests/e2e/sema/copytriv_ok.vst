@@ -1,0 +1,59 @@
+// §5 a small struct of Trivial fields copies implicitly, like a scalar: it
+// may go to two `sink` parameters.
+
+struct P {
+    var a: Int32
+    var b: Int32
+}
+
+struct Q {
+    var p: P
+    var tag: Int64
+}
+
+// Exactly 16 bytes, with a `Char`, and an empty struct inside one.
+struct Edge {
+    var a: Int64
+    var b: Int32
+    var c: Char
+}
+
+struct Empty {
+}
+
+struct HasEmpty {
+    var e: Empty
+    var k: Int64
+}
+
+func eatEdge(_ x: sink Edge) { }
+func eatHas(_ x: sink HasEmpty) { }
+
+func twiceEdge(_ x: sink Edge) {
+    eatEdge(x)
+    eatEdge(x)
+}
+
+func twiceHas(_ x: sink HasEmpty) {
+    eatHas(x)
+    eatHas(x)
+}
+
+func eatP(_ p: sink P) -> Int32 { return p.a + p.b }
+func eatQ(_ q: sink Q) -> Int64 { return q.tag }
+
+func twiceP(_ p: sink P) -> Int32 {
+    let c: P = p
+    return eatP(p) + eatP(p) + c.a
+}
+
+func twiceQ(_ q: sink Q) -> Int64 {
+    return eatQ(q) + eatQ(q)
+}
+
+func main() using Log, Alloc -> Int32 {
+    let p: P = P(a: 1, b: 2)
+    let q: Q = Q(p: p, tag: 5)
+    print("\(twiceP(p)) \(twiceP(p)) \(twiceQ(q)) \(p.a)")
+    return 0
+}

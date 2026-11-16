@@ -1,7 +1,9 @@
 // §5 / §19.2 a binding from outside a loop, moved in its body, is used after
 // the move by the next iteration.
 struct B {
-    var n: Int32
+    var n: Int64
+    var m: Int64
+    var k: Int64
 }
 linear struct T {
     let id: Int32
@@ -9,7 +11,7 @@ linear struct T {
 func eat(_ b: sink B) { }
 func close(_ t: sink T) { }
 func bad1(_ c: Int32) {
-    let b: B = B(n: 1)
+    let b: B = B(n: 1, m: 0, k: 0)
     var i: Int32 = 0
     while i < c {
         eat(b)

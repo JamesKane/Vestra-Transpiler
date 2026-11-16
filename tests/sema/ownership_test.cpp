@@ -53,11 +53,16 @@ CheckResult check(std::string source) {
 }  // namespace
 
 // A small helper Vestra prelude for these tests — defines a non-trivial type
-// `Buf` and a `take` function that consumes one. Each test embeds it.
+// `Buf` and a `take` function that consumes one. Each test embeds it. Buf is
+// 24 bytes, past the two registers a Trivial struct may fill (§5).
 constexpr std::string_view Prelude = R"(
-struct Buf { var n: Int32 }
+struct Buf {
+    var n: Int64
+    var m: Int64
+    var k: Int64
+}
 func take(_ b: sink Buf) {}
-func make_buf() -> Buf { return Buf(n: 0) }
+func make_buf() -> Buf { return Buf(n: 0, m: 0, k: 0) }
 )";
 
 namespace {
@@ -79,8 +84,8 @@ TEST_CASE("primitives are trivial and freely reusable") {
 }
 
 TEST_CASE("a non-trivial binding used only once via read is fine") {
-    CHECK(check(with_prelude("func use_once(_ b: Buf) -> Int32 { return b.n }\n"
-                             "func ok() -> Int32 {\n"
+    CHECK(check(with_prelude("func use_once(_ b: Buf) -> Int64 { return b.n }\n"
+                             "func ok() -> Int64 {\n"
                              "    let b = make_buf()\n"
                              "    return use_once(b)\n"
                              "}\n"))
@@ -159,8 +164,8 @@ TEST_CASE("`copy` of an already-moved binding is still an error") {
 // ---- read parameters don't consume -----------------------------------------
 
 TEST_CASE("read parameter passes don't burn the binding") {
-    CHECK(check(with_prelude("func peek(_ b: Buf) -> Int32 { return b.n }\n"
-                             "func ok() -> Int32 {\n"
+    CHECK(check(with_prelude("func peek(_ b: Buf) -> Int64 { return b.n }\n"
+                             "func ok() -> Int64 {\n"
                              "    let b = make_buf()\n"
                              "    let a = peek(b)\n"
                              "    let c = peek(b)\n"
