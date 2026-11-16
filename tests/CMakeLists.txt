@@ -525,6 +525,14 @@ add_test(
 set_tests_properties(e2e_compare_run PROPERTIES
     PASS_REGULAR_EXPRESSION "^-1 0 1 -1 1 1 1 -1 -1")
 
+# §4 an interpolation in a const folds to a StrConst (no Alloc).
+set(e2e_interpconst_dir ${e2e_workdir}/_interpconst)
+add_test(
+    NAME    e2e_interp_const_fold
+    COMMAND sh -c "rm -rf ${e2e_interpconst_dir} && $<TARGET_FILE:vestra> build ${CMAKE_CURRENT_SOURCE_DIR}/e2e/codegen/interp_const.vst -o ${e2e_interpconst_dir} >/dev/null && grep -q 'constexpr std::string_view S = std::string_view' ${e2e_interpconst_dir}/interp_const.hpp && ${CMAKE_CXX_COMPILER} -std=c++26 -Wall -Wextra -O0 -I${e2e_interpconst_dir} ${e2e_interpconst_dir}/interp_const.cpp -o ${e2e_interpconst_dir}/app && ${e2e_interpconst_dir}/app")
+set_tests_properties(e2e_interp_const_fold PROPERTIES
+    PASS_REGULAR_EXPRESSION "^n=4 big=4000000000 on=true half=0.5 dev=uart sum=9[|]tab\there \"q\"[|]again: n=4")
+
 # §4 `E.from(raw)`: the case at declaration index `raw`, or none.
 set(e2e_enumfrom_dir ${e2e_workdir}/_enumfrom)
 add_test(

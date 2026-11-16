@@ -41,6 +41,16 @@ void Resolver::check_decl(const ast::Decl& d) {
         TypePtr annotated = sym != nullptr ? sym->type : nullptr;
         if (c.value) {
             auto value_type = check_expr(*c.value, annotated);
+            // §4 a const is a comptime context: an interpolation whose every
+            // fragment and value is known there folds to a `StrConst`, so it
+            // allocates nothing.
+            if (c.value->kind == ast::NodeKind::InterpStringExpr) {
+                if (auto folded = folder_.fold(*c.value, comptime_env_, TypeKind::StrConst);
+                    folded && folded->kind == ComptimeValue::Kind::String) {
+                    value_type = types_->primitive(TypeKind::StrConst);
+                    resolution_.set_type(c.value.get(), value_type);
+                }
+            }
             if (annotated != nullptr && !TypeArena::assignable(value_type, annotated)) {
                 error_at(c.value->range,
                          std::format("const value of type {} does not match annotation {}",

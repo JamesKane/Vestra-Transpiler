@@ -816,7 +816,10 @@ void CapabilityChecker::check_expr(const ast::Expr& e) {
                 check_expr(*seg.expr);
             }
         }
-        require_row({std::string{"Alloc"}}, e.range);
+        // One that folded to a StrConst (a const's) allocates nothing.
+        if (resolution_ == nullptr || resolution_->folded_value(&e) == nullptr) {
+            require_row({std::string{"Alloc"}}, e.range);
+        }
         break;
     }
     default:

@@ -1,0 +1,22 @@
+// §4 a const is a comptime context: an interpolation whose every fragment
+// and value is known there folds to a `StrConst`, so it allocates nothing
+// and the program needs no `Alloc`. Each value renders as the runtime's
+// would. (Bootstrap only: the self-hosted compilers have no string folder.)
+
+const N: Int32 = 4
+const BIG: UInt64 = 4000000000
+const ON: Bool = true
+const HALF: Float64 = 0.5
+const NAME: StrConst = "uart"
+const S: StrConst = "n=\(N) big=\(BIG) on=\(ON) half=\(HALF) dev=\(NAME) sum=\(N * 2 + 1)"
+const T = "tab\there \"q\""
+const U = "again: \(S)"
+
+func main() using Log -> Int32 {
+    print(S)
+    print("|")
+    print(T)
+    print("|")
+    print(U)
+    return 0
+}

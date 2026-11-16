@@ -747,6 +747,45 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
     case ast::NodeKind::BoolLit:
         return make_bool(static_cast<const ast::BoolLit&>(e).value);
 
+    case ast::NodeKind::InterpStringExpr: {
+        // §4 an interpolation whose every value is known folds to its text,
+        // each value rendered as the runtime's `{}` format would (so the
+        // folded const reads exactly as the built String would have).
+        // Fragments stay raw, as a StringLit's text does.
+        std::string out;
+        for (const auto& seg : static_cast<const ast::InterpStringExpr&>(e).segments) {
+            if (seg.expr == nullptr) {
+                out += seg.literal;
+                continue;
+            }
+            auto v = fold_with(*seg.expr, env, frame, TypeKind::Unit, depth);
+            if (!v) {
+                return std::nullopt;
+            }
+            switch (v->kind) {
+            case ComptimeValue::Kind::Int:
+                out += std::format("{}", v->i);
+                break;
+            case ComptimeValue::Kind::UInt:
+                out += std::format("{}", v->u);
+                break;
+            case ComptimeValue::Kind::Bool:
+                out += v->b ? "true" : "false";
+                break;
+            case ComptimeValue::Kind::Float:
+                out += v->type == TypeKind::Float32 ? std::format("{}", static_cast<float>(v->f))
+                                                    : std::format("{}", v->f);
+                break;
+            case ComptimeValue::Kind::String:
+                out += v->s;
+                break;
+            default:
+                return std::nullopt;
+            }
+        }
+        return make_string(std::move(out));
+    }
+
     case ast::NodeKind::StringLit:
         // String literals fold to their raw inner text. Escape processing
         // stays the codegen's responsibility (it preserves backslashes
