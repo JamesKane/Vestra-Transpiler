@@ -433,10 +433,25 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
             return types_->make_function({}, types_->make_optional(owner_type->inner()));
         }
     }
+    // §18.1 `a.compare(b) -> Ordering` on the ordered builtins: numbers,
+    // `Char` and strings.
+    if (name == "compare"
+        && (owner_type->is_numeric() || owner_type->kind() == TypeKind::Char
+            || owner_type->kind() == TypeKind::String || owner_type->kind() == TypeKind::Str
+            || owner_type->kind() == TypeKind::StrConst)) {
+        return types_->make_function({owner_type}, comparison_type());
+    }
     const auto* decl = owner_type->nominal_decl();
     if (decl == nullptr) {
         return nullptr;
     }
+    // §18.1 and a type that derives Ord, unless it declares its own.
+    auto ord_compare = [&]() -> TypePtr {
+        if (name == "compare" && decl_derives(decl, "Ord")) {
+            return types_->make_function({owner_type}, comparison_type());
+        }
+        return nullptr;
+    };
     // §12.3 derive(Clone): surface a synthetic `clone() -> T` method on
     // any nominal that derives Clone, without materializing it in the
     // AST. The codegen injects the matching `T clone() const { return
@@ -491,11 +506,14 @@ TypePtr Resolver::lookup_method(TypePtr owner_type,
                 }
             }
         }
-        return nullptr;
+        return ord_compare();
     case ast::NodeKind::Enum:
-        return search(static_cast<const ast::EnumDecl&>(*decl).methods);
+        if (auto t = search(static_cast<const ast::EnumDecl&>(*decl).methods)) {
+            return t;
+        }
+        return ord_compare();
     default:
-        return nullptr;
+        return ord_compare();
     }
 }
 

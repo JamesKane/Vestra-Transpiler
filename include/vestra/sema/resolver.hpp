@@ -635,7 +635,9 @@ private:
     // §A4 (§14.9.1): Ordering carries the five memory-order cases.
     // Registered as a bare enum in global scope so `.relaxed` etc.
     // resolve through the existing leading-dot-case path.
-    std::unique_ptr<ast::EnumDecl> builtin_ordering_decl_;
+    std::unique_ptr<ast::EnumDecl> builtin_ordering_decl_;     // MemoryOrder (atomics)
+    std::unique_ptr<ast::EnumDecl> builtin_comparison_decl_;   // §18.1 Ordering
+    [[nodiscard]] TypePtr comparison_type();
     // §A5 (§14.10.2): BarrierScope + BarrierKind for the CPU
     // memoryBarrier surface. Registered the same way as Ordering.
     std::unique_ptr<ast::EnumDecl> builtin_barrier_scope_decl_;

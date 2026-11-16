@@ -1,0 +1,25 @@
+// §18.1 `compare()` on numbers, strings and a derive(Ord) type yields
+// `Ordering`; `MemoryOrder` is the atomic memory order.
+
+derive(Eq, Ord) for P
+
+struct P {
+    var a: Int32
+}
+
+static n: Atomic[UInt32] = 0
+
+func sign(_ o: Ordering) -> Int32 {
+    return match o {
+        case .less: -1
+        case .equal: 0
+        case .greater: 1
+    }
+}
+
+func main() -> Int32 {
+    let s: String = "b"
+    let order: MemoryOrder = .relaxed
+    let v = n.load(order)
+    return sign(P(a: 1).compare(P(a: 2))) + sign(s.compare("a")) + sign(v.compare(0))
+}

@@ -1,0 +1,41 @@
+// §18.1 `a.compare(b) -> Ordering` on numbers, `Char`, strings and a
+// derive(Ord) type, lowered to `__vstr::compare`; a type's own `compare`
+// wins. `Ordering` is the comparison result; the atomic memory order is
+// `MemoryOrder` (the draft gives both the one name; see SPEC_GAPS).
+
+derive(Eq, Ord) for P
+
+struct P {
+    var a: Int32
+    var b: Int32
+}
+
+struct Rev {
+    var k: Int32
+    func compare(_ o: Rev) -> Ordering {
+        if self.k > o.k { return .less }
+        if self.k < o.k { return .greater }
+        return .equal
+    }
+}
+
+func sign(_ o: Ordering) -> Int32 {
+    return match o {
+        case .less: -1
+        case .equal: 0
+        case .greater: 1
+    }
+}
+
+func main() using Log, Alloc -> Int32 {
+    let x: Int64 = 3
+    let s: String = "abc"
+    let p = P(a: 1, b: 2)
+    let q = P(a: 1, b: 5)
+    let r1 = Rev(k: 1)
+    let r2 = Rev(k: 2)
+    let o: Ordering = .greater
+    let y: UInt8 = 200
+    print("\(sign(x.compare(4))) \(sign(x.compare(3))) \(sign(s.compare("abb"))) \(sign(p.compare(q))) \(sign(q.compare(p))) \(sign(r1.compare(r2))) \(sign(o)) \(sign('a'.compare('b'))) \(sign(y.compare(250)))")
+    return 0
+}

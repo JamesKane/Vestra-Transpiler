@@ -3,7 +3,7 @@
 
 static counter: Atomic[UInt32] = 0
 
-func bump(_ o: Ordering) -> UInt32 {
+func bump(_ o: MemoryOrder) -> UInt32 {
     counter.store(1, .release)
     counter.store(2, o)
     let a = counter.load(.acquire)

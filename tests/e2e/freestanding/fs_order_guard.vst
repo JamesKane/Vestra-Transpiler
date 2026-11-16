@@ -6,14 +6,14 @@ struct Node { var next: UInt64 }
 @noinit static head: AtomicTaggedPointer[Node]
 static counter: Atomic[UInt32] = 0
 
-func bump(_ ld: Ordering, _ st: Ordering, _ s: Ordering, _ f: Ordering) -> UInt32 {
+func bump(_ ld: MemoryOrder, _ st: MemoryOrder, _ s: MemoryOrder, _ f: MemoryOrder) -> UInt32 {
     counter.store(5, st)
     let r = counter.compareExchange(5, 7, s, f)
     if !r.succeeded { return 0 }
     return counter.load(ld)
 }
 
-func push(_ top: MutPtr[Node], _ s: Ordering, _ f: Ordering) -> Bool {
+func push(_ top: MutPtr[Node], _ s: MemoryOrder, _ f: MemoryOrder) -> Bool {
     let (cur, tag) = head.load(f)
     let r = head.compareExchange(cur, tag, top, s, f)
     return r.succeeded

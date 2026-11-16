@@ -3620,7 +3620,7 @@ func tnSeedBuiltins(_ env: inout TnEnv) using Alloc {
     env.types.push("Soa"); env.types.push("Channel"); env.types.push("Future")
     env.types.push("Duration"); env.types.push("Self"); env.types.push("Never")
     env.types.push("Ptr"); env.types.push("MutPtr")   // §14.1 raw pointers
-    env.types.push("Ordering"); env.types.push("AtomicTaggedPointer")   // Annex §14.9
+    env.types.push("MemoryOrder"); env.types.push("Ordering"); env.types.push("AtomicTaggedPointer")   // Annex §14.9
     env.types.push("Padded"); env.types.push("PerCpu") // Annex §14.8
     env.types.push("MmioView"); env.types.push("MmioRegion")   // Annex §14.11
     env.types.push("Context")   // §14.14 a task's saved register set
@@ -9053,6 +9053,15 @@ func tyCheckFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ result
     tyCheckBodyProduces(env, name, body)
 }
 
+// §18.1 the builtin `enum Ordering { case less, equal, greater }`.
+func tySeedOrdering(_ env: inout TyEnv) using Alloc {
+    var cs: Vec[Nd] = Vec.new()
+    cs.push(Nd.enumCase(own("less"), Vec.new()))
+    cs.push(Nd.enumCase(own("equal"), Vec.new()))
+    cs.push(Nd.enumCase(own("greater"), Vec.new()))
+    tyRecordEnumDecl(env, own("Ordering"), cs, Vec.new())
+}
+
 func tyCopyDefaults(_ env: inout TyEnv, _ names: Vec[String], _ ns: Vec[Int]) using Alloc {
     var i: Int = 0
     while i < names.len() {
@@ -13219,6 +13228,10 @@ func tyMethodRet(_ env: inout TyEnv, _ owner: String, _ name: String) using Allo
 // The builtin projections whose results carry a view (§18.5): what the escape
 // pass needs to follow a `split` / `slice` / container read back to its source.
 func tyBuiltinMethodRet(_ owner: String, _ name: String) using Alloc -> String {
+    // §18.1 `a.compare(b)` on the ordered builtins.
+    if streq(name, "compare") && (tyIsNumeric(owner) || streq(owner, "Char") || streq(owner, "String") || streq(owner, "Str")) {
+        return own("Ordering")
+    }
     // §4 `addingChecked` and friends: the wrapped result and the overflow.
     if tyIsInt(owner) && (streq(name, "addingChecked") || streq(name, "subtractingChecked") || streq(name, "multipliedChecked")) {
         var t: String = "("
@@ -14450,6 +14463,7 @@ func main() -> Int32 {
                     tyCopyUnions(&tenv, p.unions)
                     tyCopyRetry(&tenv, p.retry, p.retryAlways)
                     tyCopyDefaults(&tenv, p.defFn, p.defN)
+                    tySeedOrdering(&tenv)
                     tyCheck(&tenv, u)
                     var ti: Int = 0
                     while ti < tenv.bad.len() {

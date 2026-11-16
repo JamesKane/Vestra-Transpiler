@@ -4,7 +4,7 @@
 // Covers the five coercion slots (return, annotated binding, assignment, call
 // argument, struct-construction field) plus match ARM BODIES, and all three
 // lowering shapes: plain scoped reference, sum-type variant wrap, and the
-// builtin `Ordering` whose cases ARE the std::memory_order_* literals.
+// builtin `MemoryOrder` whose cases ARE the std::memory_order_* literals.
 
 enum Color {
     case red
@@ -107,15 +107,15 @@ func describe(_ s: Shape) -> Color {
     return c
 }
 
-// §A4 the builtin Ordering: two of the five cases need snake_case.
-func seqOrder() -> Ordering {
+// §A4 the builtin MemoryOrder: two of the five cases need snake_case.
+func seqOrder() -> MemoryOrder {
     return .seqCst
 }
 
-func acqRelOrder() -> Ordering {
+func acqRelOrder() -> MemoryOrder {
     return .acqRel
 }
 
-func relaxedOrder() -> Ordering {
+func relaxedOrder() -> MemoryOrder {
     return .relaxed
 }

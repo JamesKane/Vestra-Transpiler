@@ -1,0 +1,11 @@
+// §18.1 `Ordering` is a builtin enum, so a match over one must cover
+// `less`, `equal` and `greater`.
+
+func sign(_ x: Int32, _ y: Int32) -> Int32 {
+    return match x.compare(y) {
+        case .less: -1
+        case .equal: 0
+    }
+}
+
+func main() -> Int32 { return 0 }

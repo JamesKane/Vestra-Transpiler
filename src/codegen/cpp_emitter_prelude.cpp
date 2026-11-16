@@ -21,7 +21,10 @@ namespace vestra::codegen::detail {
 namespace {
 
 void emit_prelude_never(std::ostream& hdr) {
-    hdr << "enum class Endianness { little, big, native };\n\n";
+    hdr << "enum class Endianness { little, big, native };\n";
+    // §18.1 the comparison result `compare()` returns. File scope, so `.less`
+    // lowers to `Ordering::less` as for any enum.
+    hdr << "enum class Ordering { less, equal, greater };\n\n";
 
     hdr << "namespace __vstr {\n\n";
     hdr << "struct Never {\n";
@@ -29,6 +32,11 @@ void emit_prelude_never(std::ostream& hdr) {
     hdr << "        std::unreachable();\n";
     hdr << "    }\n";
     hdr << "};\n\n";
+    // §18.1 `a.compare(b)` over a type with `<` (a number, a string, a
+    // derive(Ord) type).
+    hdr << "template <class T, class U> constexpr ::Ordering compare(const T& a, const U& b) {\n";
+    hdr << "    return a < b ? ::Ordering::less : (b < a ? ::Ordering::greater : ::Ordering::equal);\n";
+    hdr << "}\n\n";
     // §19.9 `a ?? b` evaluates `b` only when `a` is none. The default comes
     // from a callback given the payload type, so it converts (or diverges,
     // as a `Never`) exactly as `value_or`'s argument would.

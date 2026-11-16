@@ -5559,6 +5559,13 @@ func buildTyEnv(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc -> TyEnv
                     pCurName: Vec.new(),
                     modLabel: modLabelOf(u.hasMod, u.modPath),
                     bad: Vec.new())
+    // §18.1 the builtin `enum Ordering { case less, equal, greater }` (the
+    // prelude declares it), so a match over one lowers as over any bare enum.
+    var ordCases: Vec[Nd] = Vec.new()
+    ordCases.push(Nd.enumCase(own("less"), Vec.new()))
+    ordCases.push(Nd.enumCase(own("equal"), Vec.new()))
+    ordCases.push(Nd.enumCase(own("greater"), Vec.new()))
+    tyRecordEnumDecl(&env, own("Ordering"), ordCases, Vec.new(), Vec.new())
     // §5 imported modules' declarations first, under their qualified C++ names
     // (see loadImports), so a reference to one types and lowers like a local.
     var x: Int = 0
@@ -8029,7 +8036,7 @@ func cppNamed(_ path: Str) using Alloc -> String {
     // §A4 (§14.9.1) the atomics memory order — a builtin enum whose cases are
     // the `std::memory_order_*` literals (see emitMemoryOrder), so the type
     // itself is `std::memory_order`.
-    if streq(path, "Ordering") { return own("std::memory_order") }
+    if streq(path, "MemoryOrder") { return own("std::memory_order") }
     // §A10 `Never`, §A7 (§14.14) the builtin `Context`, §11 `Duration`: bare
     // runtime types.
     if streq(path, "Never") { return own("__vstr::Never") }
@@ -11468,7 +11475,7 @@ func tryEmitLeadingDotCall(_ env: inout TyEnv, _ to: Str, _ callee: Vec[Nd], _ a
 //   * a payload-free enum is a plain scoped reference off the DECLARED name.
 func tryEmitLeadingDotCase(_ env: inout TyEnv, _ to: Str, _ n: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
     let base = genBaseOf(to)
-    if streq(base, "Ordering") { emitMemoryOrder(n); return true }
+    if streq(base, "MemoryOrder") { emitMemoryOrder(n); return true }
     // §A5 the prelude's payload-free builtin enums (`enum class BarrierScope`
     // and friends): a plain scoped reference, with no unit declaration to find.
     if streq(base, "BarrierScope") || streq(base, "BarrierKind") || streq(base, "TlbScope")
@@ -11649,6 +11656,7 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     if tryEmitScalarCast(env, callee, args) { return }
     if tryEmitConv(env, callee) { return }
     if tryEmitOpaqueCtor(env, callee, args) { return }
+    if tryEmitCompare(env, callee, args) { return }
     let fname = identBaseName(callee)
     // §7 a call to a declared function carries labels too, so a leading
     // label alone doesn't make the call a construction.
@@ -12326,7 +12334,7 @@ func atomicCppName(_ name: Str) using Alloc -> String {
 }
 
 func emitOrderingArg(_ env: inout TyEnv, _ args: Vec[Nd], _ i: Int) using Alloc, Log {
-    emitSlotArg(env, "Ordering", args.get(i) ?? Nd.wildcard)
+    emitSlotArg(env, "MemoryOrder", args.get(i) ?? Nd.wildcard)
 }
 
 func tyIsNumericScalar(_ s: String) -> Bool {
@@ -12335,6 +12343,36 @@ func tyIsNumericScalar(_ s: String) -> Bool {
 
 // One argument, coerced against a String-typed slot when needed (HashMap keys
 // and values, Vec elements — the bootstrap's resolver marks these).
+// §18.1 `a.compare(b)` with no user `compare` -> `__vstr::compare(a, b)`, the
+// argument emitted against the receiver's type.
+func hasUserMethod(_ env: inout TyEnv, _ owner: Str, _ name: Str) using Alloc -> Bool {
+    var i: Int = 0
+    while i < env.mStruct.len() {
+        if streq(env.mStruct.get(i) ?? own(""), owner) && streq(env.mName.get(i) ?? own(""), name) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func tryEmitCompare(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if args.len() != 1 || !streq(calleeMemberName(callee), "compare") { return false }
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let n, let chain): emitCompareCall(env, base, args)
+        default: false
+    }
+}
+
+func emitCompareCall(_ env: inout TyEnv, _ base: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    let recv = tyInferBoxed(env, base)
+    if hasUserMethod(env, recv, "compare") { return false }
+    print("__vstr::compare(")
+    emitBoxed(env, base)
+    print(", ")
+    emitSlotArg(env, recv, args.get(0) ?? Nd.wildcard)
+    print(")")
+    return true
+}
+
 func emitSlotArg(_ env: inout TyEnv, _ to: Str, _ a: Nd) using Alloc, Log {
     match a {
         case .arg(let label, let isInout, let val): emitSlotArgVal(env, to, val)
@@ -12758,7 +12796,7 @@ func syncIntrinsicCpp(_ n: Str) using Alloc -> String {
 // The enum-typed parameters of the intrinsics; every other parameter (spans,
 // addresses, flags) emits its argument unchanged.
 func syncParamType(_ n: Str, _ i: Int) using Alloc -> String {
-    if streq(n, "compilerFence") && i == 0 { return own("Ordering") }
+    if streq(n, "compilerFence") && i == 0 { return own("MemoryOrder") }
     if streq(n, "memoryBarrier") && i == 0 { return own("BarrierScope") }
     if streq(n, "memoryBarrier") && i == 1 { return own("BarrierKind") }
     if streq(n, "syncBarrier") && i == 0 { return own("BarrierScope") }

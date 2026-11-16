@@ -188,7 +188,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 | §12.3 | Protocol `comptime` default implementations (`Self.fields`, `self[f]`) | missing | "expected expression, got Self". |
 | §12.3 | `derive` as adoption of a reflective default | divergent | Each derive is hand-written C++ emission (`cpp_emitter.cpp:260`, `:547`). |
 | §12.3 | `derive` over arrays, tuples and `Vec` | weaker | Each field and payload is checked against the derived protocol, but the check follows what the C++ lowering supports: `[N]T` and tuples have no `Hash` (no `std::hash` for `std::array` / `std::tuple`), and a `Vec` field conforms only to `Eq` and `Clone`. A field typed by the target's generic parameter is checked only by clang at instantiation. |
-| §12.3, §18.1 | `compare()` | missing | `derive(Ord)` gives a struct (fields in declaration order), an enum (case order, then payload) and an opaque type (its representation) the four ordering operators, and satisfies a `T: Ord` bound. It needs `derive(Eq)` beside it, and each field and payload must be Ord: numbers, `Char`, strings, or a type that derives Ord; `Bool`, optionals, arrays, tuples and `Vec` have no ordering yet. There is still no `compare()` method ("no field or method 'compare'"), because `Ordering` already names the atomic memory order (see "Spec holes"). A plain enum orders by case without any derive, as it compares for equality without one. |
+| §12.3, §18.1 | `compare()` | weaker | `a.compare(b) -> Ordering` works on numbers, `Char`, strings and any type that derives `Ord`, through `<`; a type's own `compare` method wins. `Ordering` is the §18.1 enum (`less`, `equal`, `greater`), and the atomic memory order is spelled `MemoryOrder` (see "Spec holes"). It is not yet a protocol requirement a user type can satisfy by hand for a `T: Ord` bound: only `derive(Ord)` does. `Bool`, optionals, arrays, tuples and `Vec` have no ordering. |
 | §12.4 | Hygiene across modules | weaker | A name in an expression macro's template resolves at the defining module's scope, past any use-site local, and is emitted module-qualified. An imported macro is called by its qualified name (`@mlib.addK(x)`, see "Spec holes"). Its template names resolve among that module's *public* declarations: naming a private one is an error, because the expansion may only name what the caller could write. Only expression macros can be imported; a declaration macro (`@bitField` on a struct) is still found in its own unit only. `gensym()` is still the way to make a fresh name. |
 | §12.4 | `.asType()`, splices in struct-name position | missing | "expected struct name". |
 | §12.4 | Builder API (`Decl.struct(...)`, `Expr.call(...)`) | weaker | In a declaration macro: `Expr.ident(name)`, `Expr.literal(v)`, `Expr.member(base, name)`, `Expr.call(callee, [args])`, `Expr.binary(op, l, r)`, `Decl.field(name, type)`, `Decl.struct(name, [Field])` and `Decl.func(name, [Field], result, body)`. Each builds what the matching `quote` would (see "Spec holes" for the signatures). A misuse fails the expansion and names the builder. There are no builders for statements, enums, methods or labelled arguments, and an expression macro is still a single `quote` template, so builders work only in declaration macros. |
@@ -260,11 +260,10 @@ fails in clang.
     `Sink`, `Matrix`, `Quat`.
   - The spelled-out `Optional[T]` and `Result[T, E]`. Only `T?` and `throws`
     exist.
-- **`Ordering` collision:** the builtin `Ordering` is the five-case atomic
-  memory order (`resolver_builtins.cpp:488`). The spec's comparison
-  `Ordering { less, equal, greater }` gives "no case 'less'", and a user
-  redefinition is a duplicate. One of the two needs renaming in the spec or
-  the compiler.
+- **`Ordering`:** the builtin `Ordering` is the §18.1 comparison result
+  (`less`, `equal`, `greater`), and the atomic memory order is
+  `MemoryOrder` (see "Spec holes"). A user type named either is a duplicate
+  definition.
 - **Protocols:** an `Iterator` with `type Element` does not parse.
   Iteration is structural, via a `next()` method. `Eq`, `Hash`, `Display`
   and the rest exist only as `derive` names, not as protocols.
@@ -357,7 +356,10 @@ These are problems in the spec itself, not in the compiler:
   conformance, although §7 relies on it.
 - The hashing protocol is named `Hash` in §18 and `Hashable` in §7.
 - `Ordering` names both the comparison result (§18.1) and the atomic memory
-  order (Annex §14.9.1).
+  order (Annex §14.9.1). The compiler keeps `Ordering` for the comparison
+  result and calls the atomic order `MemoryOrder`. Its cases (`.relaxed`
+  … `.seqCst`) are unchanged, so only code that writes the type name
+  differs from the annex.
 - §4 types `addingChecked` as `(T, overflow: Bool)`, but §17's tuple type
   is `'(' type (',' type)+ ')'`, with no element labels.
 - §4's `Command.from(raw)` "checks the discriminant", but nothing in the

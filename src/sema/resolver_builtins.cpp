@@ -485,7 +485,9 @@ void Resolver::register_builtin_reflection() {
         (void)scopes_.global().insert(std::move(s));
     }
 
-    // §A4 (§14.9.1) Ordering: a bare enum with five cases. `.relaxed`
+    // §A4 (§14.9.1) the memory order, `MemoryOrder` (the draft's `Ordering`,
+    // a name §18.1 also gives the comparison result; see SPEC_GAPS): a bare
+    // enum with five cases. `.relaxed`
     // etc. resolve through the existing leading-dot-case path; sema's
     // method synthesis on Atomic[T] uses Ordering as the param type so
     // `counter.fetchAdd(1, .release)` types automatically. Registered
@@ -493,7 +495,7 @@ void Resolver::register_builtin_reflection() {
     // to shadow it (and produce a duplicate-definition diagnostic).
     {
         auto decl = std::make_unique<ast::EnumDecl>();
-        decl->name = "Ordering";
+        decl->name = "MemoryOrder";
         decl->visibility = ast::Visibility::Public;
         for (const char* name : {"relaxed", "acquire", "release", "acqRel", "seqCst"}) {
             ast::EnumDecl::Case c;
@@ -503,7 +505,7 @@ void Resolver::register_builtin_reflection() {
         builtin_ordering_decl_ = std::move(decl);
 
         Symbol s;
-        s.name = "Ordering";
+        s.name = "MemoryOrder";
         s.kind = SymbolKind::Enum;
         s.decl = builtin_ordering_decl_.get();
         s.type = types_->make_nominal(TypeKind::Enum, builtin_ordering_decl_.get());
@@ -511,6 +513,34 @@ void Resolver::register_builtin_reflection() {
         s.visibility = ast::Visibility::Public;
         (void)scopes_.global().insert(std::move(s));
     }
+    // §18.1 `enum Ordering { case less, equal, greater }`, what `compare()`
+    // returns. The prelude declares the matching C++ enum at file scope.
+    {
+        auto decl = std::make_unique<ast::EnumDecl>();
+        decl->name = "Ordering";
+        decl->visibility = ast::Visibility::Public;
+        for (const char* name : {"less", "equal", "greater"}) {
+            ast::EnumDecl::Case c;
+            c.name = name;
+            decl->cases.push_back(std::move(c));
+        }
+        builtin_comparison_decl_ = std::move(decl);
+
+        Symbol s;
+        s.name = "Ordering";
+        s.kind = SymbolKind::Enum;
+        s.decl = builtin_comparison_decl_.get();
+        s.type = comparison_type();
+        s.definition_range = {};
+        s.visibility = ast::Visibility::Public;
+        (void)scopes_.global().insert(std::move(s));
+    }
+}
+
+TypePtr Resolver::comparison_type() {
+    return builtin_comparison_decl_ != nullptr
+               ? types_->make_nominal(TypeKind::Enum, builtin_comparison_decl_.get())
+               : types_->error();
 }
 
 }  // namespace vestra::sema

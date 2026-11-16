@@ -1,6 +1,6 @@
 // §A5 (§14.10) the sync, cache and TLB intrinsics lower to their __vstr
 // runtime shims, `nop` to `cpu_nop`. Each argument takes its builtin
-// parameter type, so a leading-dot `Ordering` becomes a std::memory_order
+// parameter type, so a leading-dot `MemoryOrder` becomes a std::memory_order
 // literal and a `BarrierScope` / `BarrierKind` / `TlbScope` case a scoped
 // enumerator; spans, addresses and flags pass through.
 static gate: Atomic[UInt32] = 0

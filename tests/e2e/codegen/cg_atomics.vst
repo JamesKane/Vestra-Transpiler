@@ -1,7 +1,7 @@
 // §A4 (§14.9) the atomic method surface over typed globals. A top-level
 // static types its uses in every function body (a local of the same name
 // shadows it). On an `Atomic[T]` receiver a leading-dot argument is an
-// `Ordering` (`std::memory_order_*`); fetchAdd / fetchSub / fetchAnd /
+// `MemoryOrder` (`std::memory_order_*`); fetchAdd / fetchSub / fetchAnd /
 // fetchOr / fetchXor take std::atomic's snake_case names; compareExchange /
 // compareExchangeWeak lower to a CASResult IIFE (spelled for the wide
 // UInt128 too). Through `Padded[T].value` and `PerCpu[T].mine()` the inner

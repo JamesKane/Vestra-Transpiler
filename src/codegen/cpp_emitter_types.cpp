@@ -347,7 +347,7 @@ void CppEmitter::emit_sema_type(std::ostream& os, sema::TypePtr t) {
                 // `std::memory_order` at the C++ layer; cases lower
                 // through the LeadingDotExpr special-case below.
                 const auto& ed = static_cast<const ast::EnumDecl&>(*decl);
-                if (ed.name == "Ordering") {
+                if (ed.name == "MemoryOrder") {
                     os << "std::memory_order";
                 } else {
                     emit_nominal_qualifier(os, decl);
@@ -593,7 +593,7 @@ void CppEmitter::emit_type(std::ostream& os, const ast::Type& t) {
             // The Vestra cases `.relaxed`, `.acquire`, etc. emit as
             // `std::memory_order_…` literals via the LeadingDotExpr
             // special-case (see emit_expr).
-            if (n.path[0] == "Ordering" && n.type_args.empty()) {
+            if (n.path[0] == "MemoryOrder" && n.type_args.empty()) {
                 os << "std::memory_order";
                 return;
             }

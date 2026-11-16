@@ -3877,6 +3877,23 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << ")";
                 break;
             }
+            // §18.1 `a.compare(b)` with no user `compare` → `__vstr::compare(a, b)`.
+            if (c.args.size() == 1 && mem.member == "compare" && callee_decl(c) == nullptr) {
+                if (auto rt = resolution_->type_of(&c); rt != nullptr
+                                                       && rt->kind() == sema::TypeKind::Enum
+                                                       && rt->nominal_decl() != nullptr
+                                                       && static_cast<const ast::EnumDecl*>(
+                                                              rt->nominal_decl())
+                                                                  ->name
+                                                              == "Ordering") {
+                    os << "__vstr::compare(";
+                    emit_expr(os, *mem.base);
+                    os << ", ";
+                    emit_expr(os, *c.args[0].value);
+                    os << ")";
+                    break;
+                }
+            }
             // §4 `a.addingChecked(b)` → `__vstr::add_checked(a, b)`, a
             // `std::tuple<T, bool>` of the wrapped result and the overflow.
             if (auto base_t = resolution_->type_of(mem.base.get());
@@ -4809,7 +4826,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 // `std::memory_order_<name>` literals. Two of the five
                 // need a snake-case conversion (acqRel → acq_rel,
                 // seqCst → seq_cst); the others spell identically.
-                if (enum_decl.name == "Ordering") {
+                if (enum_decl.name == "MemoryOrder") {
                     const std::string_view name = d.name;
                     os << "std::memory_order_";
                     if (name == "acqRel") {
