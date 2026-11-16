@@ -1,0 +1,41 @@
+// §19.9 a call's arguments, a binary operator's operands and an
+// interpolation's splices evaluate left to right. Each `note` prints its
+// digit as it runs, so the output shows the order.
+
+struct Acc {
+    var base: Int32
+
+    func sum3(_ a: Int32, _ b: Int32, _ c: Int32) -> Int32 {
+        return self.base + a + b + c
+    }
+}
+
+func note(_ d: Int32) using Log, Alloc -> Int32 {
+    print("\(d)")
+    return d
+}
+
+func three(_ a: Int32, _ b: Int32, _ c: Int32) -> Int32 {
+    return a * 100 + b * 10 + c
+}
+
+func bump(_ x: inout Int32, _ by: Int32) -> Int32 {
+    x = x + by
+    return x
+}
+
+func main() using Log, Alloc -> Int32 {
+    let r = three(note(1), note(2), note(3))
+    print(" \(r)\n")
+    var k: Int32 = 5
+    let s = bump(&k, note(4) * note(5))
+    print(" \(s)\n")
+    let acc = Acc(base: 1000)
+    let t = acc.sum3(note(6), note(7), note(8))
+    print(" \(t)\n")
+    let same = note(1) == note(2)
+    print(" \(same)\n")
+    let line = "\(note(3))-\(note(4))"
+    print(" \(line)\n")
+    return 0
+}

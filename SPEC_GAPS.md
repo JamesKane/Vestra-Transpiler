@@ -44,7 +44,6 @@ Each gap has one of four kinds:
      their scope.
 2. **Generated C++ can have undefined or reordered behaviour where Vestra
    defines it.**
-   - Argument evaluation order.
    - `??` evaluates its right side eagerly in a global's initializer, or
      when it holds a `try`, `await`, `if` or `match`.
 3. **Unfoldable comptime constructs degrade to a warning.** `build` prints
@@ -239,8 +238,8 @@ spec guarantees follow from that choice:
 
 - Tier V calling conventions and edition-stamped symbols cannot be expressed.
 - Reproducible builds depend on the host C++ compiler.
-- Evaluation order and FP-contract semantics are inherited from C++. Integer
-  overflow is the one the emitter overrides (§4 row above).
+- FP-contract semantics are inherited from C++. Integer overflow and most
+  evaluation order are overridden by the emitter (the §4 and §19.9 rows).
 
 ### §16: deliberate omissions
 
@@ -287,7 +286,7 @@ fails in clang.
 |---|---|---|---|
 | §19.6 | Consumed only by the type's consumer or a destructure | weaker | A linear value is dropped only by a function of the module that declares its type, which is this compiler's reading of "the type's consumer". Elsewhere a `sink` parameter of that type is owed a consumer like a local: an empty `func dropit(_ h: sink res.Handle) { }` in another module is "never consumed". Within the declaring module any `sink` function still drops it, and only a parameter whose type is the linear struct itself is checked, not one holding it (an `Optional`, a container or another struct). No destructure form exists. The self-hosted checker reads one file, so the rule never applies there. |
 | §19.6 | Panic paths need not consume linear values | weaker | A path that ends in a call returning `Never` (`panic`, or a function declared `-> Never`) owes its linear values nothing: a branch, a match arm or a whole body ending in one is not a leak, and a match arm that panics doesn't take part in the join. Only a path whose last expression is such a call (or an `if` / `match` whose every branch is) counts; code after a mid-block `panic` is still checked. The self-hosted checker recognizes only a named function call, not a method returning `Never`. |
-| §19.9 | Left-to-right evaluation of arguments and operands | unsound | Emitted as direct C++ calls and operators, so order is whatever the C++ compiler chooses. |
+| §19.9 | Left-to-right evaluation of arguments and operands | weaker | A call with two or more arguments that can do something (a call, an index, a division, or anything the emitter doesn't recognize as plain), a binary operator whose operands both can, and an interpolation with two or more such splices are built through the prelude's `lr`, whose braced list C++ evaluates in order. Struct construction is a braced list already. Not covered: a builtin lowered to its own C++ (a `Vec` method, `parallel`, a conversion), a call whose callee itself can do something (`a().f(b(), c())`), a struct with a `deinit` (constructed with parentheses), an assignment (C++ evaluates `a[i()] = f()` right side first), and a global's initializer. |
 
 Linear obligations do carry correctly through `Optional`, `Box` and generic
 structs, contrary to an older ROADMAP note.

@@ -2036,7 +2036,7 @@ TEST_CASE("mid-expression try hoists to a stmt-position let-binding") {
     CHECK(out.source.find("auto __vstr_t0 = *__vstr_t0_r;") != std::string::npos);
     CHECK(out.source.find("auto __vstr_t1_r = f(b);") != std::string::npos);
     CHECK(out.source.find("auto __vstr_t1 = *__vstr_t1_r;") != std::string::npos);
-    CHECK(out.source.find("__vstr::add((__vstr_t0), (__vstr_t1))") != std::string::npos);
+    CHECK(out.source.find("__vstr::lr{[&](auto&&... __a) -> decltype(auto) { return __vstr::add(static_cast<decltype(__a)&&>(__a)...); }, (__vstr_t0), (__vstr_t1)}.r()") != std::string::npos);
     // No panic fallback.
     CHECK(out.source.find("f(a).value()") == std::string::npos);
     CHECK(out.source.find("f(b).value()") == std::string::npos);
@@ -3477,4 +3477,23 @@ TEST_CASE("a Vestra memcpy replaces the builtin (Annex §15.4)") {
 TEST_CASE("without a Vestra memcpy, the builtin lowers to __builtin_memcpy") {
     SemaEmitFixture f("func use(_ d: MutPtr[UInt8], _ s: Ptr[UInt8]) using RawMemory { memcpy(d, s, 4) }\n");
     CHECK(f.out.source.find("__builtin_memcpy(d, s, static_cast<std::size_t>(4))") != std::string::npos);
+}
+
+TEST_CASE("§19.9 effectful arguments and operands evaluate left to right through lr") {
+    SemaEmitFixture f("func g(_ x: Int32) -> Int32 { return x }\n"
+                      "func three(_ a: Int32, _ b: Int32, _ c: Int32) -> Int32 { return a }\n"
+                      "func use(_ n: Int32) -> Int32 {\n"
+                      "    let a = three(g(1), g(2), n)\n"
+                      "    let b = three(g(1), n, n)\n"
+                      "    return a + g(n) * g(3)\n"
+                      "}\n");
+    CHECK(f.out.source.find("auto a = __vstr::lr{[&](auto&&... __a) -> decltype(auto) { return "
+                            "three(static_cast<decltype(__a)&&>(__a)...); }, g(1), g(2), n}.r();")
+          != std::string::npos);
+    // One argument that can do something needs no ordering.
+    CHECK(f.out.source.find("auto b = three(g(1), n, n);") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::add(a, __vstr::lr{[&](auto&&... __a) -> decltype(auto) { "
+                            "return __vstr::mul(static_cast<decltype(__a)&&>(__a)...); }, g(n), "
+                            "g(3)}.r())")
+          != std::string::npos);
 }

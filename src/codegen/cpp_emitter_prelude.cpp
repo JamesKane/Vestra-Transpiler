@@ -381,6 +381,24 @@ template <class A> constexpr auto neg(A a) {
 #endif
     } else { return -a; }
 }
+// §19.9 a call's arguments evaluate left to right, which C++ leaves
+// unspecified. A call with two or more arguments that can do something is
+// built as `lr{[&](auto&&... a) { return f(fwd(a)...); }, x, y}.r()`: a
+// braced list evaluates its clauses in order, and their temporaries live to
+// the end of the full expression, as in the plain call.
+template <class T> T&& lr_val() noexcept;
+template <class R> struct lr {
+    R v;
+    template <class F, class... A>
+    constexpr lr(F&& f, A&&... a) : v(static_cast<F&&>(f)(static_cast<A&&>(a)...)) {}
+    constexpr R r() && { return static_cast<R&&>(v); }
+};
+template <> struct lr<void> {
+    template <class F, class... A>
+    constexpr lr(F&& f, A&&... a) { static_cast<F&&>(f)(static_cast<A&&>(a)...); }
+    constexpr void r() && {}
+};
+template <class F, class... A> lr(F&&, A&&...) -> lr<decltype(lr_val<F>()(lr_val<A>()...))>;
 template <class A, class B> constexpr void add_assign(A& a, B b) {
     if constexpr (ar_int<A, B>::v) { a = add(a, b); } else { a += ar_lhs<B, A>(b); }
 }

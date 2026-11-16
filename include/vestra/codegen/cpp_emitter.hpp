@@ -354,6 +354,8 @@ private:
     // for a lazy `??` default to capture from.
     bool global_init_ = false;
     [[nodiscard]] static bool coalesce_is_lazy(const ast::Expr& e);
+    [[nodiscard]] static bool may_have_effect(const ast::Expr& e);
+    [[nodiscard]] static bool effect_scan(const ast::Expr& e, bool& effect);
     void emit_wrap_operand(std::ostream& os, const ast::Expr& e);
     [[nodiscard]] static bool divisor_is_safe(const ast::Expr& e);
 

@@ -3150,6 +3150,16 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // primitives. The result is a freshly-allocated std::string,
         // matching §4's "interpolation is an allocation."
         const auto& is_ = static_cast<const ast::InterpStringExpr&>(e);
+        // §19.9 two or more splices that can do something run left to right
+        // through the prelude's `lr`; the format string stays a literal.
+        std::size_t effectful = 0;
+        for (const auto& seg : is_.segments) {
+            effectful += seg.expr != nullptr && may_have_effect(*seg.expr) ? 1 : 0;
+        }
+        const bool ordered = !global_init_ && effectful >= 2;
+        if (ordered) {
+            os << "__vstr::lr{[&](auto&&... __a) -> decltype(auto) { return ";
+        }
         os << "std::format(\"";
         for (const auto& seg : is_.segments) {
             if (seg.expr == nullptr) {
@@ -3166,6 +3176,9 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             }
         }
         os << "\"";
+        if (ordered) {
+            os << ", static_cast<decltype(__a)&&>(__a)...); }";
+        }
         for (const auto& seg : is_.segments) {
             if (seg.expr != nullptr) {
                 os << ", ";
@@ -3181,7 +3194,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 }
             }
         }
-        os << ")";
+        os << (ordered ? "}.r()" : ")");
         break;
     }
     case ast::NodeKind::CharLit:
@@ -3525,6 +3538,48 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             os << ").value_or(";
             emit_expr(os, *b.rhs);
             os << ")";
+            break;
+        }
+        // §19.9 operands evaluate left to right: when both can do something,
+        // the operation runs on them through the prelude's `lr`, as a call's
+        // arguments do. `&&` and `||` already short-circuit in order.
+        if (!global_init_ && b.op != ast::BinaryOp::And && b.op != ast::BinaryOp::Or
+            && b.op != ast::BinaryOp::Range && b.op != ast::BinaryOp::RangeLt
+            && may_have_effect(*b.lhs) && may_have_effect(*b.rhs)) {
+            const char* fn = nullptr;
+            if (auto rt = resolution_ != nullptr ? resolution_->type_of(&e) : nullptr;
+                rt != nullptr && rt->kind() == sema::TypeKind::Vector
+                && (b.op == ast::BinaryOp::Add || b.op == ast::BinaryOp::Sub
+                    || b.op == ast::BinaryOp::Mul || b.op == ast::BinaryOp::Div)) {
+                fn = b.op == ast::BinaryOp::Add   ? "vec_add"
+                     : b.op == ast::BinaryOp::Sub ? "vec_sub"
+                     : b.op == ast::BinaryOp::Mul ? "vec_mul"
+                                                  : "vec_div";
+            } else {
+                switch (b.op) {
+                case ast::BinaryOp::Add: fn = "add"; break;
+                case ast::BinaryOp::Sub: fn = "sub"; break;
+                case ast::BinaryOp::Mul: fn = "mul"; break;
+                case ast::BinaryOp::Div: fn = "idiv"; break;
+                case ast::BinaryOp::Mod: fn = "irem"; break;
+                case ast::BinaryOp::WrappingAdd: fn = "wrap_add"; break;
+                case ast::BinaryOp::WrappingSub: fn = "wrap_sub"; break;
+                case ast::BinaryOp::WrappingMul: fn = "wrap_mul"; break;
+                default: break;
+                }
+            }
+            if (fn != nullptr) {
+                os << "__vstr::lr{[&](auto&&... __a) -> decltype(auto) { return __vstr::" << fn
+                   << "(static_cast<decltype(__a)&&>(__a)...); }, ";
+            } else {
+                os << "__vstr::lr{[&](auto&& __l, auto&& __r) -> decltype(auto) { return "
+                      "static_cast<decltype(__l)&&>(__l) "
+                   << binop_text(b.op) << " static_cast<decltype(__r)&&>(__r); }, ";
+            }
+            emit_expr(os, *b.lhs);
+            os << ", ";
+            emit_expr(os, *b.rhs);
+            os << "}.r()";
             break;
         }
         // §13 elementwise vector arithmetic: when sema typed the result as a
@@ -4964,6 +5019,18 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // in std::move(). If the callee resolves to a Vestra func declaration,
         // use its params; otherwise treat every param as `read` (the default).
         const ast::FuncDecl* fn = callee_decl(c);
+        // §19.9 two or more arguments that can do something evaluate left to
+        // right through the prelude's `lr` (a braced list is ordered). A
+        // callee that can do something keeps the plain call, so it still runs
+        // before the arguments.
+        std::size_t effectful = 0;
+        for (const auto& a : c.args) {
+            effectful += a.value != nullptr && may_have_effect(*a.value) ? 1 : 0;
+        }
+        const bool ordered = !global_init_ && effectful >= 2 && !may_have_effect(*c.callee);
+        if (ordered) {
+            os << "__vstr::lr{[&](auto&&... __a) -> decltype(auto) { return ";
+        }
         if (fn != nullptr && c.callee->kind == ast::NodeKind::IndexExpr) {
             // §17.5 `id[Int32](1)`: explicit type arguments are the C++
             // template arguments, in the generics' declaration order.
@@ -4980,9 +5047,13 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         } else {
             emit_expr(os, *c.callee);
         }
-        os << "(";
+        if (ordered) {
+            os << "(static_cast<decltype(__a)&&>(__a)...); }";
+        } else {
+            os << "(";
+        }
         for (std::size_t i = 0; i < c.args.size(); ++i) {
-            if (i != 0) {
+            if (i != 0 || ordered) {
                 os << ", ";
             }
             const bool is_sink = fn != nullptr && i < fn->params.size()
@@ -5004,7 +5075,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << ")";
             }
         }
-        os << ")";
+        os << (ordered ? "}.r()" : ")");
         break;
     }
     case ast::NodeKind::MemberExpr: {
@@ -5558,6 +5629,20 @@ namespace vestra::codegen {
 // mirrors this.
 bool CppEmitter::coalesce_is_lazy(const ast::Expr& e) {
     bool effect = false;
+    return effect_scan(e, effect) && effect;
+}
+
+// §19.9 can evaluating `e` do something another operand could observe (a
+// call, an index or a division, which can panic)? Anything the scan doesn't
+// know counts as yes.
+bool CppEmitter::may_have_effect(const ast::Expr& e) {
+    bool effect = false;
+    return !effect_scan(e, effect) || effect;
+}
+
+// Is `e` built only from names, literals, members, operators, indexing and
+// calls? `effect` is set when one of them can do something.
+bool CppEmitter::effect_scan(const ast::Expr& e, bool& effect) {
     auto walk = [&](auto& self, const ast::Expr& x) -> bool {
         switch (x.kind) {
         case ast::NodeKind::IntLit:
@@ -5572,6 +5657,12 @@ bool CppEmitter::coalesce_is_lazy(const ast::Expr& e) {
             return true;
         case ast::NodeKind::ParenExpr:
             return self(self, *static_cast<const ast::ParenExpr&>(x).inner);
+        case ast::NodeKind::SpliceExpr:
+            return self(self, *static_cast<const ast::SpliceExpr&>(x).inner);
+        case ast::NodeKind::MacroCallExpr: {
+            const auto& m = static_cast<const ast::MacroCallExpr&>(x);
+            return m.expansion != nullptr && self(self, *m.expansion);
+        }
         case ast::NodeKind::MemberExpr:
             return self(self, *static_cast<const ast::MemberExpr&>(x).base);
         case ast::NodeKind::UnaryExpr:
@@ -5611,7 +5702,7 @@ bool CppEmitter::coalesce_is_lazy(const ast::Expr& e) {
             return false;
         }
     };
-    return walk(walk, e) && effect;
+    return walk(walk, e);
 }
 
 }  // namespace vestra::codegen

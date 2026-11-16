@@ -12362,6 +12362,10 @@ func takeHoistName(_ env: inout TyEnv) using Alloc -> String {
 // fragment before, between, and after splices (possibly empty), so a `{}`
 // precedes every fragment but the first.
 func emitInterp(_ env: inout TyEnv, _ parts: Vec[String], _ exprs: Vec[Nd]) using Alloc, Log {
+    // §19.9 two or more splices that can do something run left to right
+    // through the prelude's `lr`; the format string stays a literal.
+    let ord = !env.inGlobal && countEffects(exprs) >= 2
+    if ord { print(lrOpen()) }
     print("std::format(\"")
     var i: Int = 0
     while i < parts.len() {
@@ -12370,6 +12374,7 @@ func emitInterp(_ env: inout TyEnv, _ parts: Vec[String], _ exprs: Vec[Nd]) usin
         i = i + 1
     }
     print("\"")
+    if ord { print(", static_cast<decltype(__a)&&>(__a)...); }") }
     var j: Int = 0
     while j < exprs.len() {
         print(", ")
@@ -12384,7 +12389,7 @@ func emitInterp(_ env: inout TyEnv, _ parts: Vec[String], _ exprs: Vec[Nd]) usin
         }
         j = j + 1
     }
-    print(")")
+    if ord { print("}.r()") } else { print(")") }
 }
 
 // A literal fragment with std::format's brace escaping applied.
@@ -13140,16 +13145,56 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     if tryEmitBuiltinMethod(env, callee, args) { return }
     let owner = calleeMethodOwner(env, callee)
     if !streq(owner, "") {
+        let ord = lrOrdered(env, callee, args)
+        if ord { print(lrOpen()) }
         emitBoxed(env, callee)
-        print("(")
+        if ord { print(lrPackMid()) } else { print("(") }
         emitCallArgList(env, owner, calleeMemberName(callee), args)
-        print(")")
+        if ord { print("}.r()") } else { print(")") }
         return
     }
+    let full = withDefaults(env, fname, args)
+    let ord = lrOrdered(env, callee, full)
+    if ord { print(lrOpen()) }
     emitBoxed(env, callee)
-    print("(")
-    emitCallArgList(env, "", fname, withDefaults(env, fname, args))
-    print(")")
+    if ord { print(lrPackMid()) } else { print("(") }
+    emitCallArgList(env, "", fname, full)
+    if ord { print("}.r()") } else { print(")") }
+}
+
+// §19.9 a call's arguments evaluate left to right (cpp_emitter.cpp's generic
+// call path): two or more that can do something go through the prelude's
+// `lr`, unless the callee itself can, or this is a global's initializer.
+func lrOrdered(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc -> Bool {
+    if env.inGlobal || mayEffectBoxed(callee) { return false }
+    return countEffects(args) >= 2
+}
+
+func lrOpen() -> Str { return "__vstr::lr{[&](auto&&... __a) -> decltype(auto) { return " }
+
+func lrPackMid() -> Str { return "(static_cast<decltype(__a)&&>(__a)...); }, " }
+
+func countEffects(_ xs: Vec[Nd]) using Alloc -> Int {
+    var n: Int = 0
+    var i: Int = 0
+    while i < xs.len() {
+        if mayEffect(xs.get(i) ?? Nd.wildcard) { n = n + 1 }
+        i = i + 1
+    }
+    return n
+}
+
+// Can evaluating it do something another operand could observe (the
+// bootstrap's may_have_effect)? Anything coalesceOk doesn't know counts.
+func mayEffect(_ n: Nd) using Alloc -> Bool {
+    var effect: Bool = false
+    let known = coalesceOk(n, effect)
+    return !known || effect
+}
+
+func mayEffectBoxed(_ v: Vec[Nd]) using Alloc -> Bool {
+    if v.len() == 0 { return false }
+    return mayEffect(v.get(0) ?? Nd.wildcard)
 }
 
 // ----- §A3 / §A6 raw memory (cpp_emitter.cpp, the CallExpr raw-mint block) --
@@ -14802,6 +14847,26 @@ func tyIsOptional(_ sp: Str) -> Bool {
 // `l ?? r` lowers to `(l).value_or(r)`.
 func emitBinary(_ env: inout TyEnv, _ op: Str, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc, Log {
     if streq(op, "??") { emitCoalesce(env, l, r); return }
+    // §19.9 operands evaluate left to right: when both can do something, the
+    // operation runs on them through the prelude's `lr`.
+    if !env.inGlobal && !streq(op, "&&") && !streq(op, "||") && !streq(op, "..") && !streq(op, "..<")
+        && mayEffectBoxed(l) && mayEffectBoxed(r) {
+        let fn = lrBinaryFn(env, op, l, r)
+        if streq(fn, "") {
+            print("__vstr::lr{[&](auto&& __l, auto&& __r) -> decltype(auto) { return static_cast<decltype(__l)&&>(__l) ")
+            print(op)
+            print(" static_cast<decltype(__r)&&>(__r); }, ")
+        } else {
+            print("__vstr::lr{[&](auto&&... __a) -> decltype(auto) { return __vstr::")
+            print(fn)
+            print("(static_cast<decltype(__a)&&>(__a)...); }, ")
+        }
+        emitBoxed(env, l)
+        print(", ")
+        emitBoxed(env, r)
+        print("}.r()")
+        return
+    }
     // §4 `&+ &- &*` wrap through a prelude helper (cpp_emitter.cpp's
     // emit_wrap_operand): an integer-literal operand goes in as a `wlit`.
     if streq(op, "&+") || streq(op, "&-") || streq(op, "&*") {
@@ -14948,6 +15013,20 @@ func precRegroups(_ c: Int, _ p: Int, _ isRhs: Bool) -> Bool {
     return c < p
 }
 
+// The prelude helper a binary operator lowers to, or "" for a C++ infix one.
+func lrBinaryFn(_ env: inout TyEnv, _ op: Str, _ l: Vec[Nd], _ r: Vec[Nd]) using Alloc -> String {
+    if isVecArithOp(op) && tyIsArray(tyInferBinary(env, op, l, r)) { return vecOpName(op) }
+    if streq(op, "+") { return own("add") }
+    if streq(op, "-") { return own("sub") }
+    if streq(op, "*") { return own("mul") }
+    if streq(op, "/") { return own("idiv") }
+    if streq(op, "%") { return own("irem") }
+    if streq(op, "&+") { return own("wrap_add") }
+    if streq(op, "&-") { return own("wrap_sub") }
+    if streq(op, "&*") { return own("wrap_mul") }
+    return own("")
+}
+
 func isVecArithOp(_ op: Str) -> Bool {
     return streq(op, "+") || streq(op, "-") || streq(op, "*") || streq(op, "/")
 }
@@ -14993,6 +15072,7 @@ func coalesceOk(_ n: Nd, _ effect: inout Bool) using Alloc -> Bool {
         case .selfE: true
         case .leadingDot(let x): true
         case .paren(let x): coalesceOkBoxed(x, effect)
+        case .spliceE(let bare, let x): coalesceOkBoxed(x, effect)
         case .member(let b, let nm, let c): coalesceOkBoxed(b, effect)
         case .unary(let op, let x): coalesceOkBoxed(x, effect)
         case .binary(let op, let a, let b): coalesceOkBinary(op, a, b, effect)
