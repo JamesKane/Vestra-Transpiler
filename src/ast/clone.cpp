@@ -379,6 +379,7 @@ StmtPtr clone(const Stmt& s) {
         const auto& w = static_cast<const WhileStmt&>(s);
         auto n = std::make_unique<WhileStmt>();
         n->label = w.label;
+        n->repeat = w.repeat;
         n->cond = cl(w.cond);
         n->body = cl(w.body);
         return with_range(std::move(n), s);

@@ -679,6 +679,10 @@ struct WhileStmt : Stmt {
     std::string label;
     ExprPtr cond;
     ExprPtr body;
+    // §A4 (§14.9.3) `repeat { BODY } while COND`: the body runs before the
+    // first test of COND, so a pass that walks the loop in order visits the
+    // body first. COND sees the enclosing scope, not the body's.
+    bool repeat = false;
     WhileStmt() : Stmt(NodeKind::WhileStmt) {}
 };
 

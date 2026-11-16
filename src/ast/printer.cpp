@@ -694,6 +694,14 @@ void Printer::print_stmt(std::ostream& os, const Stmt& s, int indent) {
     }
     case NodeKind::WhileStmt: {
         const auto& w = static_cast<const WhileStmt&>(s);
+        if (w.repeat) {
+            os << "repeat ";
+            print_expr(os, *w.body);
+            os << " while ";
+            print_expr(os, *w.cond);
+            os << "\n";
+            break;
+        }
         os << "while ";
         print_expr(os, *w.cond);
         os << " ";

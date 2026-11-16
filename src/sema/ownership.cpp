@@ -155,9 +155,15 @@ void OwnershipChecker::check_stmt(const ast::Stmt& s) {
         // crosses into it (or out of it).
         empty_places_.clear();
         BindingMap pre = bindings_;
-        check_expr(*w.cond);
+        // `repeat` runs its body before the first test.
+        if (!w.repeat) {
+            check_expr(*w.cond);
+        }
         if (w.body) {
             check_expr(*w.body);
+        }
+        if (w.repeat) {
+            check_expr(*w.cond);
         }
         report_loop_moves(pre, w.body.get());
         empty_places_.clear();

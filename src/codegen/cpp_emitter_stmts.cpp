@@ -300,6 +300,20 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
     }
     case ast::NodeKind::WhileStmt: {
         const auto& w = static_cast<const ast::WhileStmt&>(s);
+        if (w.repeat) {
+            // `repeat { B } while C` is C++'s do-while: `continue` jumps to
+            // the test, as in Vestra.
+            os << "do ";
+            if (w.body && w.body->kind == ast::NodeKind::BlockExpr) {
+                emit_block(os, static_cast<const ast::BlockExpr&>(*w.body), indent);
+            } else {
+                os << "{}";
+            }
+            os << " while (";
+            emit_expr(os, *w.cond);
+            os << ");\n";
+            break;
+        }
         os << "while (";
         emit_expr(os, *w.cond);
         os << ") ";

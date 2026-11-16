@@ -556,7 +556,8 @@ const ast::Expr* Resolver::weak_cas_of_loop(const ast::WhileStmt& w) {
         return nullptr;
     }
     // `while true { … let r = x.compareExchangeWeak(…) … if r.succeeded { break } … }`
-    if (w.cond->kind != ast::NodeKind::BoolLit || !static_cast<const ast::BoolLit&>(*w.cond).value) {
+    // (the `repeat` form admits only the `!r.succeeded` shape above).
+    if (w.repeat || w.cond->kind != ast::NodeKind::BoolLit || !static_cast<const ast::BoolLit&>(*w.cond).value) {
         return nullptr;
     }
     for (std::size_t k = 0; k < stmts.size(); ++k) {
@@ -1781,16 +1782,19 @@ void Resolver::check_stmt(const ast::Stmt& s) {
     }
     case ast::NodeKind::WhileStmt: {
         const auto& w = static_cast<const ast::WhileStmt&>(s);
+        // §A4 (§14.9.3) a retry loop admits its one weak CAS.
+        if (const auto* admitted = weak_cas_of_loop(w)) {
+            admitted_weak_cas_.insert(admitted);
+        }
+        if (w.repeat && w.body) {
+            check_expr(*w.body);
+        }
         auto cond_type = check_expr(*w.cond);
         if (cond_type != nullptr && cond_type->kind() != TypeKind::Bool && !cond_type->is_error()) {
             error_at(w.cond->range,
                      std::format("while condition must be Bool, got {}", cond_type->describe()));
         }
-        // §A4 (§14.9.3) a retry loop admits its one weak CAS.
-        if (const auto* admitted = weak_cas_of_loop(w)) {
-            admitted_weak_cas_.insert(admitted);
-        }
-        if (w.body) {
+        if (!w.repeat && w.body) {
             check_expr(*w.body);
         }
         break;

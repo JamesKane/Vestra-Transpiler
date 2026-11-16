@@ -1,0 +1,32 @@
+// §14.9.3 the `repeat` shape admits only the weak CAS that feeds its
+// `!r.succeeded` test: `repeat … while true` is not one of the shapes, and
+// the condition must be Bool like a `while`'s.
+
+static a: Atomic[UInt32] = 0
+
+func forever() -> UInt32 {
+    repeat {
+        let r = a.compareExchangeWeak(0, 1, .seqCst, .acquire)
+        if r.succeeded { break }
+    } while true
+    return 0
+}
+
+func wrongName() -> UInt32 {
+    var r = a.compareExchange(0, 1, .seqCst, .acquire)
+    var s = a.compareExchange(0, 1, .seqCst, .acquire)
+    repeat {
+        s = a.compareExchangeWeak(0, 1, .seqCst, .acquire)
+    } while !r.succeeded
+    return 0
+}
+
+func notBool() -> Int32 {
+    var i: Int32 = 0
+    repeat {
+        i = i + 1
+    } while i
+    return i
+}
+
+func main() -> Int32 { return 0 }

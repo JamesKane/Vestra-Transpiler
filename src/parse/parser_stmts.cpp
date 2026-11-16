@@ -101,6 +101,19 @@ ast::StmtPtr Parser::parse_statement() {
         && (peek(1).kind == TokenKind::LParen || peek(1).kind == TokenKind::LBrace)) {
         return parse_asm_stmt();
     }
+    // §A4 (§14.9.3) `repeat { BODY } while COND` is contextual the same way:
+    // an identifier `repeat` opening a statement and followed by `{`.
+    if (kind == TokenKind::Identifier && peek().lexeme == "repeat"
+        && peek(1).kind == TokenKind::LBrace) {
+        advance();
+        auto w = std::make_unique<ast::WhileStmt>();
+        w->repeat = true;
+        w->body = parse_block_expr();
+        expect(TokenKind::KwWhile, "`while` after a `repeat` block");
+        w->cond = parse_expr();
+        w->range = merge(start, last_range());
+        return w;
+    }
     switch (kind) {
     case TokenKind::KwLet: {
         advance();

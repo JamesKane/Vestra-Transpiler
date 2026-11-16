@@ -894,6 +894,7 @@ enum Nd {
     case retS(Vec[Nd])                       // value?
     case assignS(String, Vec[Nd], Vec[Nd])   // op, target, value
     case whileS(Vec[Nd], Vec[Nd])            // cond, body (block)
+    case repeatS(Vec[Nd], Vec[Nd])           // cond, body (block): `repeat { B } while C`
     case forS(Vec[Nd], Vec[Nd], Vec[Nd])     // pattern, iter, body (block)
     case breakS(String)                      // label ("" if none)
     case continueS(String)
@@ -1639,6 +1640,15 @@ func parseStmt(_ p: inout Ps) using Alloc -> Nd {
             v.push(parseExpr(&p))
         }
         return Nd.retS(v)
+    }
+    // §14.9.3 `repeat { B } while C`: `repeat` is contextual, an identifier
+    // opening a statement and followed by `{`, as the bootstrap reads it.
+    if isKind(p, TokKind.identifier) && streq(curRaw(p), "repeat") && isKindAt(p, 1, TokKind.lbrace) {
+        advP(&p)
+        let body = bE(parseBlock(&p))
+        eat(p, TokKind.kwWhile)
+        let cond = bE(parseExpr(&p))
+        return Nd.repeatS(cond, body)
     }
     if isKind(p, TokKind.kwWhile) {
         advP(&p)
@@ -2639,6 +2649,7 @@ func printStmt(_ s: Nd, _ indent: Int) using Alloc, Log {
         case .retS(let v): printReturn(v)
         case .assignS(let op, let t, let v): printAssign(op, t, v)
         case .whileS(let c, let b): printWhile(c, b)
+        case .repeatS(let c, let b): printRepeat(c, b)
         case .forS(let pat, let iter, let b): printFor(pat, iter, b)
         case .breakS(let label): printBreakContinue("break", label)
         case .continueS(let label): printBreakContinue("continue", label)
@@ -2697,6 +2708,14 @@ func printAssign(_ op: String, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc, Log {
     print(op)
     print(" ")
     printExpr(v.get(0) ?? errE())
+    print("\n")
+}
+
+func printRepeat(_ c: Vec[Nd], _ b: Vec[Nd]) using Alloc, Log {
+    print("repeat ")
+    printExpr(b.get(0) ?? errE())
+    print(" while ")
+    printExpr(c.get(0) ?? errE())
     print("\n")
 }
 
@@ -3416,6 +3435,7 @@ func resolveStmt(_ env: inout Env, _ s: Nd) using Alloc {
         case .retS(let v): resolveBoxed(env, v)
         case .assignS(let op, let t, let v): resolvePair(env, t, v)
         case .whileS(let c, let b): resolvePair(env, c, b)
+        case .repeatS(let c, let b): resolvePair(env, b, c)
         case .forS(let pat, let iter, let b): resolveFor(env, pat, iter, b)
         default: noop()
     }
@@ -3850,6 +3870,7 @@ func tnStmt(_ env: inout TnEnv, _ s: Nd) using Alloc {
         case .exprS(let e): tnNestedBoxed(env, e)
         case .retS(let v): tnNestedBoxed(env, v)
         case .whileS(let c, let b): tnNestedBoxed(env, b)
+        case .repeatS(let c, let b): tnNestedBoxed(env, b)
         case .forS(let pat, let it, let b): tnNestedBoxed(env, b)
         case .withS(let caps, let vals, let body): tnWith(env, caps, body)
         default: noop()
@@ -4558,6 +4579,7 @@ func checkCapStmt(_ env: inout CapEnv, _ s: Nd) using Alloc {
         case .retS(let v): capRet(env, v)
         case .assignS(let op, let t, let v): checkCapPair(env, t, v)
         case .whileS(let c, let b): checkCapPair(env, c, b)
+        case .repeatS(let c, let b): checkCapPair(env, c, b)
         case .forS(let pp, let it, let b): checkCapPair(env, it, b)
         case .withS(let caps, let vals, let body): checkWith(env, caps, vals, body)
         default: noop()
@@ -5038,6 +5060,7 @@ func exStmt(_ env: inout ExEnv, _ s: Nd) using Alloc {
         case .retS(let v): exBoxed(env, v)
         case .assignS(let op, let t, let v): exPair(env, t, v)
         case .whileS(let c, let b): exPair(env, c, b)
+        case .repeatS(let c, let b): exPair(env, c, b)
         case .forS(let pp, let it, let b): exPair(env, it, b)
         case .withS(let caps, let vals, let body): exWith(env, vals, body)
         default: noop()
@@ -6497,6 +6520,16 @@ func ownNilBin(_ env: inout OwnEnv, _ op: String, _ l: Vec[Nd], _ r: Vec[Nd], _ 
 
 // A loop body runs again after its own writes: no empty-place fact crosses into
 // it or out of it.
+// `repeat` runs its body before the first test of its condition.
+func ownRepeat(_ env: inout OwnEnv, _ cond: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    ownClearFacts(env)
+    let pre = ownSnap(env)
+    ownBoxed(env, body)
+    ownBoxed(env, cond)
+    ownLoopMoves(env, pre, body)
+    ownClearFacts(env)
+}
+
 func ownLoop(_ env: inout OwnEnv, _ head: Vec[Nd], _ body: Vec[Nd], _ isFor: Bool) using Alloc {
     ownClearFacts(env)
     // A `while` condition runs every iteration; a `for` iterable once.
@@ -6895,6 +6928,7 @@ func ownStmt(_ env: inout OwnEnv, _ s: Nd) using Alloc {
         case .retS(let v): ownRet(env, v)
         case .assignS(let op, let t, let v): ownAssign(env, t, v)
         case .whileS(let c, let b): ownLoop(env, c, b, false)
+        case .repeatS(let c, let b): ownRepeat(env, c, b)
         case .forS(let pp, let it, let b): ownLoop(env, it, b, true)
         case .withS(let caps, let vals, let body): ownWith(env, vals, body)
         default: noop()
@@ -9074,6 +9108,7 @@ func tyStmtDiverges(_ env: inout TyEnv, _ s: Nd) using Alloc -> Bool {
         case .letS(let p, let t, let v): v.len() > 0 && tyDiverges(env, v)
         case .varS(let p, let t, let v): v.len() > 0 && tyDiverges(env, v)
         case .whileS(let c, let b): tyIsTrueLit(c) && !tyBreaksOut(b, false)
+        case .repeatS(let c, let b): tyIsTrueLit(c) && !tyBreaksOut(b, false)
         case .withS(let caps, let vals, let b): tyDiverges(env, b)
         default: false
     }
@@ -9109,6 +9144,7 @@ func tyNodeBreaksOut(_ n: Nd, _ inLoop: Bool) -> Bool {
         case .matchE(let scr, let arms): tyBreaksOut(arms, inLoop)
         case .matchArm(let d, let pat, let g, let body): tyBreaksOut(body, inLoop)
         case .whileS(let c, let b): tyBreaksOut(b, true)
+        case .repeatS(let c, let b): tyBreaksOut(b, true)
         case .forS(let p, let it, let b): tyBreaksOut(b, true)
         case .withS(let caps, let vals, let b): tyBreaksOut(b, inLoop)
         default: false
@@ -9546,6 +9582,7 @@ func cvN(_ n: Nd, _ used: inout Vec[String], _ bound: inout Vec[String]) using A
         case .retS(let x): cvV(x, used, bound)
         case .assignS(let op, let t, let v): cvPair(t, v, used, bound)
         case .whileS(let c, let b): cvPair(c, b, used, bound)
+        case .repeatS(let c, let b): cvPair(b, c, used, bound)
         case .forS(let p, let it, let b): cvFor(p, it, b, used, bound)
         case .withS(let caps, let vals, let b): cvPair(vals, b, used, bound)
         case .ifE(let ln, let li, let c, let t, let e): cvIf(ln, li, c, t, e, used, bound)
@@ -10668,6 +10705,7 @@ func kwN(_ n: Nd, _ out: inout Vec[String]) using Alloc {
         case .retS(let x): kwV(x, out)
         case .assignS(let op, let t, let v): kwPair(t, v, out)
         case .whileS(let c, let b): kwPair(c, b, out)
+        case .repeatS(let c, let b): kwPair(b, c, out)
         case .forS(let p, let it, let b): kwFor(p, it, b, out)
         case .withS(let caps, let vals, let b): kwPair(vals, b, out)
         case .ifE(let ln, let li, let c, let t, let e): kwIf(ln, li, c, t, e, out)
@@ -11267,6 +11305,21 @@ func tyWhile(_ env: inout TyEnv, _ cond: Vec[Nd], _ body: Vec[Nd]) using Alloc {
     env.wcDepth = prevDepth
 }
 
+// `repeat { B } while C` admits only the `!r.succeeded` shape.
+func tyRepeat(_ env: inout TyEnv, _ cond: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    let prevStmt = env.wcStmt
+    let prevDepth = env.wcDepth
+    let r = wcNotSucceeded(cond)
+    env.wcStmt = -1
+    if !streq(r, "") { env.wcStmt = wcAssignIdx(wcBodyStmts(body), r) }
+    env.wcDepth = env.esDepth + 1
+    tyBoxed(env, body)
+    env.wcStmt = prevStmt
+    env.wcDepth = prevDepth
+    tyCheckCond(env, cond, "while")
+    tyBoxed(env, cond)
+}
+
 // The index of the statement holding the loop's admitted weak CAS, or -1:
 // `r = x.compareExchangeWeak(…)` in `while !r.succeeded`, or the
 // `let r = x.compareExchangeWeak(…)` of a `while true` body that later has
@@ -11287,7 +11340,7 @@ func wcBodyStmts(_ body: Vec[Nd]) using Alloc -> Vec[Nd] {
 }
 
 func wcMsg() -> Str {
-    return "compareExchangeWeak is admitted only as the CAS of a recognized retry loop (`while !r.succeeded { r = x.compareExchangeWeak(…) }` or `while true { let r = x.compareExchangeWeak(…); if r.succeeded { break } }`), one per loop. Use compareExchange for a one-shot CAS."
+    return "compareExchangeWeak is admitted only as the CAS of a recognized retry loop (`while !r.succeeded { r = x.compareExchangeWeak(…) }`, `repeat { r = x.compareExchangeWeak(…) } while !r.succeeded` or `while true { let r = x.compareExchangeWeak(…); if r.succeeded { break } }`), one per loop. Use compareExchange for a one-shot CAS."
 }
 
 func wcIsTrue(_ cond: Vec[Nd]) -> Bool {
@@ -11439,6 +11492,7 @@ func tyStmt(_ env: inout TyEnv, _ s: Nd) using Alloc {
         case .retS(let v): tyRet(env, v)
         case .assignS(let op, let t, let v): tyAssign(env, op, t, v)
         case .whileS(let c, let b): tyWhile(env, c, b)
+        case .repeatS(let c, let b): tyRepeat(env, c, b)
         case .forS(let pp, let it, let b): tyForMu(env, pp, it, b)
         case .withS(let caps, let vals, let body): tyWithEs(env, caps, vals, body)
         default: noop()
@@ -13740,6 +13794,7 @@ func hlN(_ n: Nd, _ out: inout Vec[String]) using Alloc {
         case .retS(let x): hlV(x, out)
         case .assignS(let op, let t, let v): hlPair(t, v, out)
         case .whileS(let c, let b): hlPair(c, b, out)
+        case .repeatS(let c, let b): hlPair(b, c, out)
         case .forS(let p, let it, let b): hlPair(it, b, out)
         case .withS(let caps, let vals, let b): hlWith(caps, vals, b, out)
         case .ifE(let ln, let li, let c, let t, let e): hlIf(li, c, t, e, out)

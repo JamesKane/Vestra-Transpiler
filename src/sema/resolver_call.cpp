@@ -1381,7 +1381,8 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
             if (base_t != nullptr && base_t->kind() == TypeKind::Atomic) {
                 error_at(c.range,
                          "compareExchangeWeak is admitted only as the CAS of a recognized "
-                         "retry loop (`while !r.succeeded { r = x.compareExchangeWeak(…) }` or "
+                         "retry loop (`while !r.succeeded { r = x.compareExchangeWeak(…) }`, "
+                         "`repeat { r = x.compareExchangeWeak(…) } while !r.succeeded` or "
                          "`while true { let r = x.compareExchangeWeak(…); if r.succeeded { "
                          "break } }`), one per loop. Use compareExchange for a one-shot CAS.");
             }

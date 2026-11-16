@@ -892,6 +892,7 @@ enum Nd {
     case retS(Vec[Nd])                       // value?
     case assignS(String, Vec[Nd], Vec[Nd])   // op, target, value
     case whileS(Vec[Nd], Vec[Nd])            // cond, body (block)
+    case repeatS(Vec[Nd], Vec[Nd])           // cond, body (block): `repeat { B } while C`
     case forS(Vec[Nd], Vec[Nd], Vec[Nd])     // pattern, iter, body (block)
     case breakS(String)                      // label ("" if none)
     case continueS(String)
@@ -1639,6 +1640,15 @@ func parseStmt(_ p: inout Ps) using Alloc -> Nd {
             v.push(parseExpr(&p))
         }
         return Nd.retS(v)
+    }
+    // §14.9.3 `repeat { B } while C`: `repeat` is contextual, an identifier
+    // opening a statement and followed by `{`, as the bootstrap reads it.
+    if isKind(p, TokKind.identifier) && streq(curRaw(p), "repeat") && isKindAt(p, 1, TokKind.lbrace) {
+        advP(&p)
+        let body = bE(parseBlock(&p))
+        eat(p, TokKind.kwWhile)
+        let cond = bE(parseExpr(&p))
+        return Nd.repeatS(cond, body)
     }
     if isKind(p, TokKind.kwWhile) {
         advP(&p)
@@ -2648,6 +2658,7 @@ func printStmt(_ s: Nd, _ indent: Int) using Alloc, Log {
         case .retS(let v): printReturn(v)
         case .assignS(let op, let t, let v): printAssign(op, t, v)
         case .whileS(let c, let b): printWhile(c, b)
+        case .repeatS(let c, let b): printRepeat(c, b)
         case .forS(let pat, let iter, let b): printFor(pat, iter, b)
         case .breakS(let label): printBreakContinue("break", label)
         case .continueS(let label): printBreakContinue("continue", label)
@@ -2706,6 +2717,14 @@ func printAssign(_ op: String, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc, Log {
     print(op)
     print(" ")
     printExpr(v.get(0) ?? errE())
+    print("\n")
+}
+
+func printRepeat(_ c: Vec[Nd], _ b: Vec[Nd]) using Alloc, Log {
+    print("repeat ")
+    printExpr(b.get(0) ?? errE())
+    print(" while ")
+    printExpr(c.get(0) ?? errE())
     print("\n")
 }
 
@@ -4302,6 +4321,12 @@ func tyWhile(_ env: inout TyEnv, _ cond: Vec[Nd], _ body: Vec[Nd]) using Alloc {
     tyBoxed(env, body)
 }
 
+func tyRepeat(_ env: inout TyEnv, _ cond: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    tyBoxed(env, body)
+    tyCheckCond(env, cond, "while")
+    tyBoxed(env, cond)
+}
+
 func tyBlock(_ env: inout TyEnv, _ stmts: Vec[Nd]) using Alloc {
     var i: Int = 0
     while i < stmts.len() {
@@ -4318,6 +4343,7 @@ func tyStmt(_ env: inout TyEnv, _ s: Nd) using Alloc {
         case .retS(let v): tyRet(env, v)
         case .assignS(let op, let t, let v): tyAssign(env, t, v)
         case .whileS(let c, let b): tyWhile(env, c, b)
+        case .repeatS(let c, let b): tyRepeat(env, c, b)
         case .forS(let pp, let it, let b): tyPair(env, it, b)
         case .withS(let caps, let names, let vals, let tys, let body): tyWith(env, vals, body)
         default: noop()
@@ -7914,6 +7940,7 @@ func collectStmtHoists(_ env: inout TyEnv, _ s: Nd) using Alloc {
         case .retS(let v): collectRetHoists(env, v)
         case .assignS(let op, let t, let v): collectAssignTries(env, t, v)
         case .whileS(let cond, let body): collectTryList(env, cond)
+        case .repeatS(let cond, let body): collectTryList(env, cond)
         case .forS(let pat, let iter, let body): collectTryList(env, iter)
         default: noop()
     }
@@ -8552,6 +8579,7 @@ func emitStmt(_ env: inout TyEnv, _ s: Nd, _ indent: Str) using Alloc, Log {
         case .varS(let pat, let ty, let value): emitBinding(env, indent, pat, ty, value)
         case .assignS(let op, let t, let v): emitAssign(env, indent, op, t, v)
         case .whileS(let cond, let body): emitWhile(env, indent, cond, body)
+        case .repeatS(let cond, let body): emitRepeat(env, indent, cond, body)
         case .forS(let pat, let iter, let body): emitFor(env, indent, pat, iter, body)
         case .exprS(let e): emitExprStmt(env, indent, e)
         case .retS(let v): emitReturn(env, indent, v)
@@ -9240,6 +9268,17 @@ func emitWhile(_ env: inout TyEnv, _ indent: Str, _ cond: Vec[Nd], _ body: Vec[N
     if body.len() > 0 { emitBlockStmts(env, body.get(0) ?? Nd.wildcard, deeper(indent)) }
     print(indent)
     print("}\n")
+}
+
+// `repeat { B } while C` is C++'s do-while: `continue` jumps to the test.
+func emitRepeat(_ env: inout TyEnv, _ indent: Str, _ cond: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    print(indent)
+    print("do {\n")
+    if body.len() > 0 { emitBlockStmts(env, body.get(0) ?? Nd.wildcard, deeper(indent)) }
+    print(indent)
+    print("} while (")
+    emitBoxed(env, cond)
+    print(");\n")
 }
 
 // An expression statement is `<expr>;`, EXCEPT a statement-position `if` (an
@@ -13486,6 +13525,7 @@ func rwNd(_ m: QMap, _ mode: Int, _ n: Nd) using Alloc -> Nd {
         case .retS(let x): Nd.retS(rwV(m, mode, x))
         case .assignS(let op, let t, let v): Nd.assignS(own(op), rwV(m, mode, t), rwV(m, mode, v))
         case .whileS(let c, let b): Nd.whileS(rwV(m, mode, c), rwV(m, mode, b))
+        case .repeatS(let c, let b): Nd.repeatS(rwV(m, mode, c), rwV(m, mode, b))
         case .forS(let pt, let it, let b): Nd.forS(rwV(m, mode, pt), rwV(m, mode, it), rwV(m, mode, b))
         case .withS(let cs, let ns, let vs, let ans, let b): Nd.withS(rwV(m, mode, cs), ndsCopy(ns), rwV(m, mode, vs), rwV(m, mode, ans), rwV(m, mode, b))
         case .litP(let x): Nd.litP(rwV(m, mode, x))

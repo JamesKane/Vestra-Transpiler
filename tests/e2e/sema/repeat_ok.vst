@@ -1,0 +1,25 @@
+// §14.9.3 `repeat { … r = x.compareExchangeWeak(…) } while !r.succeeded` is
+// the third admitted retry-loop shape. The condition sees the enclosing
+// scope, and the body runs before it.
+
+static a: Atomic[UInt32] = 0
+
+func good3() -> UInt32 {
+    var r = a.compareExchange(0, 1, .seqCst, .acquire)
+    repeat {
+        let next = r.actual + 1
+        r = a.compareExchangeWeak(r.actual, next, .seqCst, .acquire)
+    } while !r.succeeded
+    return r.actual
+}
+
+func count(_ n: Int32) -> Int32 {
+    var i: Int32 = 0
+    repeat {
+        i = i + 1
+        if i == 2 { continue }
+    } while i < n
+    return i
+}
+
+func main() -> Int32 { return count(3) }

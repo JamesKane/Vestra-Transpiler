@@ -895,6 +895,7 @@ enum Nd {
     case retS(Vec[Nd])                       // value?
     case assignS(String, Vec[Nd], Vec[Nd])   // op, target, value
     case whileS(Vec[Nd], Vec[Nd])            // cond, body (block)
+    case repeatS(Vec[Nd], Vec[Nd])           // cond, body (block): `repeat { B } while C`
     case forS(Vec[Nd], Vec[Nd], Vec[Nd])     // pattern, iter, body (block)
     case breakS(String)                      // label ("" if none)
     case continueS(String)
@@ -1588,6 +1589,15 @@ func parseStmt(_ p: inout Ps) using Alloc -> Nd {
             v.push(parseExpr(&p))
         }
         return Nd.retS(v)
+    }
+    // §14.9.3 `repeat { B } while C`: `repeat` is contextual, an identifier
+    // opening a statement and followed by `{`, as the bootstrap reads it.
+    if isKind(p, TokKind.identifier) && streq(curRaw(p), "repeat") && isKindAt(p, 1, TokKind.lbrace) {
+        advP(&p)
+        let body = bE(parseBlock(&p))
+        eat(p, TokKind.kwWhile)
+        let cond = bE(parseExpr(&p))
+        return Nd.repeatS(cond, body)
     }
     if isKind(p, TokKind.kwWhile) {
         advP(&p)
@@ -2585,6 +2595,7 @@ func printStmt(_ s: Nd, _ indent: Int) using Alloc, Log {
         case .retS(let v): printReturn(v)
         case .assignS(let op, let t, let v): printAssign(op, t, v)
         case .whileS(let c, let b): printWhile(c, b)
+        case .repeatS(let c, let b): printRepeat(c, b)
         case .forS(let pat, let iter, let b): printFor(pat, iter, b)
         case .breakS(let label): printBreakContinue("break", label)
         case .continueS(let label): printBreakContinue("continue", label)
@@ -2643,6 +2654,14 @@ func printAssign(_ op: String, _ t: Vec[Nd], _ v: Vec[Nd]) using Alloc, Log {
     print(op)
     print(" ")
     printExpr(v.get(0) ?? errE())
+    print("\n")
+}
+
+func printRepeat(_ c: Vec[Nd], _ b: Vec[Nd]) using Alloc, Log {
+    print("repeat ")
+    printExpr(b.get(0) ?? errE())
+    print(" while ")
+    printExpr(c.get(0) ?? errE())
     print("\n")
 }
 
