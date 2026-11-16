@@ -1,0 +1,16 @@
+// §17.1 source is UTF-8 and an identifier may hold any letter: a struct,
+// field, function, parameter and local named outside ASCII lower as the
+// same UTF-8 names in the C++.
+
+struct Café {
+    var größe: Int32
+}
+
+func naïve(_ δ: Int32) -> Int32 { return δ * 2 }
+
+func main() using Log, Alloc -> Int32 {
+    let c = Café(größe: 21)
+    let π: Int32 = 3
+    print("\(naïve(c.größe)) \(π)")
+    return 0
+}

@@ -430,7 +430,9 @@ func isHexC(_ c: Char) -> Bool {
 func isOctC(_ c: Char) -> Bool { return c >= '0' && c <= '7' }
 func isBinC(_ c: Char) -> Bool { return c == '0' || c == '1' }
 func isIdStartC(_ c: Char) -> Bool {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+    // §17.1 a non-ASCII UTF-8 byte is part of a name (`café`), as in the
+    // bootstrap lexer.
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= '\u{80}'
 }
 func isIdContC(_ c: Char) -> Bool { return isIdStartC(c) || isDigitC(c) }
 

@@ -69,7 +69,12 @@ Lexer::Lexer(const diag::SourceManager& sm, diag::FileId file, diag::DiagnosticR
     : file_(file), reporter_(&reporter), src_(sm.source(file)) {}
 
 bool Lexer::is_id_start(char c) noexcept {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+    // §17.1 source is UTF-8 and an identifier's LETTER is any letter: every
+    // byte of a non-ASCII UTF-8 sequence is taken as part of the name (`café`).
+    // The C++ compiler, which reads the same UTF-8, judges which scalars a
+    // name may hold.
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+           || static_cast<unsigned char>(c) >= 0x80;
 }
 bool Lexer::is_id_cont(char c) noexcept {
     return is_id_start(c) || is_digit(c);

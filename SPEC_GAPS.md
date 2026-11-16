@@ -88,7 +88,7 @@ Each gap has one of four kinds:
 | §3, §17.1 | `'\u{...}'` char escapes | weaker | `\u{HEX}` works in char and string literals (lowered to C++'s `\U`), and a char literal may be any one UTF-8 character (`'é'`). Escapes are otherwise C++'s and aren't validated. Interpolating a `Char` (`"\(c)"`) doesn't compile in the generated C++. |
 | §3 | Identifiers that are C++ keywords | missing | A declaration named with a C++ keyword (`mutable`, `class`, `signed`, `double`) is rejected with a diagnostic that asks for a rename, since the C++ backend writes names as they are. Words that are only contextual in C++ (`final`, `override`) and a payload enum's cases (lowered as `<case>_t`) are accepted. The backend does not rename them yet. |
 | §6, §17.1 | Byte-char literal `b'/'` | weaker | `b'/'` is the byte's value, a `UInt8` (an integer context may widen it), and works as a pattern. It must be one ASCII character or a byte escape (`\n`, `\t`, `\r`, `\0`, `\\`, `\'`, `\"`, `\u{..}` up to FF). The self-hosted lexers don't have it. |
-| §17.1 | Unicode identifiers | missing | `café` gives "unexpected character". |
+| §17.1 | Unicode identifiers | weaker | `café`, `größe`, `π` work in all four front ends and lower as the same UTF-8 names. Every non-ASCII byte is taken as part of a name, so which scalars a name may hold is judged by the C++ compiler, not by Vestra's lexer (an emoji is accepted here and rejected by clang). |
 
 ### §5: ownership and exclusivity
 
