@@ -382,6 +382,9 @@ struct IdentExpr : Expr {
     // spliced in from the call). It resolves where the macro is defined, at
     // module scope, so a use-site local of the same name can't capture it.
     bool definition_site = false;
+    // The dotted path of the module that defines the macro, when the macro
+    // was imported (`@mlib.addK(x)`); empty for one of this unit's own.
+    std::string definition_module;
     IdentExpr() : Expr(NodeKind::IdentExpr) {}
 };
 struct LeadingDotExpr : Expr {
@@ -562,6 +565,9 @@ struct SpliceExpr : Expr {
 // ordinary expression the macro stands for, type-checked and lowered in place.
 struct MacroCallExpr : Expr {
     std::string name;
+    // `@util.bits.mask(x)` calls the macro `mask` exported by the imported
+    // module `util.bits`: here ["util", "bits"]. Empty for a local macro.
+    std::vector<std::string> module_path;
     std::vector<ExprPtr> args;
     ExprPtr expansion;  // set during resolution; what sema/codegen actually use
     MacroCallExpr() : Expr(NodeKind::MacroCallExpr) {}

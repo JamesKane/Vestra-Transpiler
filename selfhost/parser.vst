@@ -1880,6 +1880,8 @@ func parsePrimary(_ p: inout Ps) using Alloc -> Nd {
         // @embed(...) / @macro(...) — both print /*?expr*/ in the C++ printer.
         advP(&p)  // '@'
         advP(&p)  // intrinsic / macro name
+        // `@mod.path.name(args)`: a macro an imported module exports.
+        while isKind(p, TokKind.dot) && isKindAt(p, 1, TokKind.identifier) { advP(&p); advP(&p) }
         if isKind(p, TokKind.lparen) { skipBalancedParens(&p) }
         return Nd.exoticE
     }

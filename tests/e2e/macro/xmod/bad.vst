@@ -1,0 +1,11 @@
+// §12.4 an imported macro whose template names a private declaration of
+// its module is rejected: its expansion could name only what the caller
+// could write by hand. An unknown macro or module is an error too.
+
+module macrobad
+
+import mlib
+
+public func use(_ n: Int32) -> Int32 {
+    return @mlib.leaky(n) + @mlib.nope(n) + @nomod.addK(n)
+}

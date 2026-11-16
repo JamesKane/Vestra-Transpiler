@@ -1,0 +1,13 @@
+// §12.4 an imported macro is called by its qualified name, like any other
+// import (`@mlib.addK(x)`). Its template's `scale` and `k` are mlib's, not
+// the locals at the use site that share their names.
+
+module macroapp
+
+import mlib
+
+public func use(_ n: Int32) -> Int32 {
+    let k: Int32 = 1000
+    let scale: Int32 = 7
+    return @mlib.addK(n) + @mlib.addK(k) + scale
+}

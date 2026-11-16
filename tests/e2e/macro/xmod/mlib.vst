@@ -1,0 +1,18 @@
+// §12.4 a macro another module imports. Its template names resolve here,
+// where it is defined, among this module's public declarations.
+
+module mlib
+
+public const k: Int32 = 10
+
+public func scale(_ v: Int32) -> Int32 { return v * 2 }
+
+public comptime func addK(_ x: Expr) -> Expr {
+    return quote { scale($x) + k }
+}
+
+const hidden: Int32 = 5
+
+public comptime func leaky(_ x: Expr) -> Expr {
+    return quote { $x + hidden }
+}

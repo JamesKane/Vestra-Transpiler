@@ -762,6 +762,12 @@ ast::ExprPtr Parser::parse_primary() {
         // `name` is a `comptime func(Expr, …) -> Expr` resolved + expanded by
         // sema. (Intrinsics like @embed are matched above first.)
         auto m = std::make_unique<ast::MacroCallExpr>();
+        // `@mod.path.name(args)` names a macro an imported module exports.
+        while (check(TokenKind::Dot) && peek(1).kind == TokenKind::Identifier) {
+            advance();  // '.'
+            m->module_path.push_back(std::move(intr_name));
+            intr_name = std::string{advance().lexeme};
+        }
         m->name = std::move(intr_name);
         expect(TokenKind::LParen, "'(' after macro name");
         if (!check(TokenKind::RParen)) {

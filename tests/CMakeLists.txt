@@ -209,6 +209,12 @@ add_test(
     COMMAND sh -c "mkdir -p ${ast_dumpdir} && $<TARGET_FILE:vestra> build ${CMAKE_CURRENT_SOURCE_DIR}/e2e/codegen/cg_stmtattr.vst --dump-ast -o ${ast_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${ast_dumpdir}/sa_c.txt && ${e2e_workdir}/vparse ${CMAKE_CURRENT_SOURCE_DIR}/e2e/codegen/cg_stmtattr.vst > ${ast_dumpdir}/sa_v.txt && diff ${ast_dumpdir}/sa_c.txt ${ast_dumpdir}/sa_v.txt")
 set_tests_properties(e2e_selfhost_parser_diff_stmtattr PROPERTIES DEPENDS e2e_selfhost_parser_compile)
 
+# `@mod.name(args)`, an imported macro, prints as the same tree in both parsers (§12.4).
+add_test(
+    NAME    e2e_selfhost_parser_diff_macromod
+    COMMAND sh -c "mkdir -p ${ast_dumpdir} && $<TARGET_FILE:vestra> build ${CMAKE_CURRENT_SOURCE_DIR}/e2e/macro/xmod/main.vst --dump-ast -o ${ast_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${ast_dumpdir}/mm_c.txt && ${e2e_workdir}/vparse ${CMAKE_CURRENT_SOURCE_DIR}/e2e/macro/xmod/main.vst > ${ast_dumpdir}/mm_v.txt && diff ${ast_dumpdir}/mm_c.txt ${ast_dumpdir}/mm_v.txt")
+set_tests_properties(e2e_selfhost_parser_diff_macromod PROPERTIES DEPENDS e2e_selfhost_parser_compile)
+
 # ---------------------------------------------------------------------------
 # Dog-food compiler, phase 3: the Vestra semantic analyzer written in Vestra
 # (selfhost/sema.vst). Slice 1 is name resolution (undefined identifiers); slice 2
@@ -2880,6 +2886,20 @@ add_test(
 set_tests_properties(e2e_multifile_demo_run PROPERTIES
     DEPENDS                e2e_multifile_demo_compile
     PASS_REGULAR_EXPRESSION "multifile_demo OK")
+
+# §12.4 an imported macro, called as `@mlib.addK(x)`: its template names
+# resolve in mlib (module-qualified in the C++), past use-site locals.
+set(e2e_mx_dir ${e2e_workdir}/_macro_xmod)
+add_test(
+    NAME    e2e_macro_imported_run
+    COMMAND sh -c "rm -rf ${e2e_mx_dir} && $<TARGET_FILE:vestra> build ${CMAKE_SOURCE_DIR}/tests/e2e/macro/xmod/main.vst -o ${e2e_mx_dir} >/dev/null && ${CMAKE_CXX_COMPILER} -std=c++26 -Wall -Wextra -O0 -I${e2e_mx_dir} ${CMAKE_SOURCE_DIR}/tests/e2e/main_macro_xmod.cpp ${e2e_mx_dir}/main.cpp ${e2e_mx_dir}/mlib.cpp -o ${e2e_mx_dir}/app && ${e2e_mx_dir}/app && grep -c '::mlib::scale' ${e2e_mx_dir}/main.cpp")
+set_tests_properties(e2e_macro_imported_run PROPERTIES
+    PASS_REGULAR_EXPRESSION "macro_xmod v=2029")
+add_test(
+    NAME    e2e_macro_imported_private
+    COMMAND sh -c "$<TARGET_FILE:vestra> check ${CMAKE_SOURCE_DIR}/tests/e2e/macro/xmod/bad.vst 2>&1; true")
+set_tests_properties(e2e_macro_imported_private PROPERTIES
+    PASS_REGULAR_EXPRESSION "'hidden' in a macro template from module 'mlib' isn't a public declaration there.*module 'mlib' has no public member 'nope'.*'nomod' is not an imported module")
 
 # §5 imported enums and struct fields (F19): `examples/modenum_demo` imports
 # `kern.ipc` and names its enum cases qualified and by leading dot, matches

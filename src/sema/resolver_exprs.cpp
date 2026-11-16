@@ -38,7 +38,10 @@ using SpliceSubs = std::unordered_map<std::string, const ast::Expr*>;
 // kinds a v0.5 macro template uses; an unsupported kind returns nullptr so the
 // caller can report it. Arguments are cloned with no further substitution (they
 // are final use-site expressions, never containing splices).
-ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs, bool tmpl = true) {
+ast::ExprPtr clone_macro_template(const ast::Expr& src,
+                                  const SpliceSubs& subs,
+                                  bool tmpl = true,
+                                  std::string_view mod = {}) {
     using namespace ast;
     switch (src.kind) {
     case NodeKind::SpliceExpr: {
@@ -100,6 +103,9 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs, 
         auto n = std::make_unique<IdentExpr>();
         n->name = static_cast<const IdentExpr&>(src).name;
         n->definition_site = tmpl;
+        if (tmpl) {
+            n->definition_module = std::string(mod);
+        }
         n->range = src.range;
         return n;
     }
@@ -108,7 +114,7 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs, 
         if (!p.inner) {
             return nullptr;
         }
-        auto inner = clone_macro_template(*p.inner, subs, tmpl);
+        auto inner = clone_macro_template(*p.inner, subs, tmpl, mod);
         if (!inner) {
             return nullptr;
         }
@@ -122,7 +128,7 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs, 
         if (!u.operand) {
             return nullptr;
         }
-        auto operand = clone_macro_template(*u.operand, subs, tmpl);
+        auto operand = clone_macro_template(*u.operand, subs, tmpl, mod);
         if (!operand) {
             return nullptr;
         }
@@ -137,8 +143,8 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs, 
         if (!b.lhs || !b.rhs) {
             return nullptr;
         }
-        auto lhs = clone_macro_template(*b.lhs, subs, tmpl);
-        auto rhs = clone_macro_template(*b.rhs, subs, tmpl);
+        auto lhs = clone_macro_template(*b.lhs, subs, tmpl, mod);
+        auto rhs = clone_macro_template(*b.rhs, subs, tmpl, mod);
         if (!lhs || !rhs) {
             return nullptr;
         }
@@ -154,7 +160,7 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs, 
         if (!m.base) {
             return nullptr;
         }
-        auto base = clone_macro_template(*m.base, subs, tmpl);
+        auto base = clone_macro_template(*m.base, subs, tmpl, mod);
         if (!base) {
             return nullptr;
         }
@@ -170,7 +176,7 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs, 
         if (!c.callee || !c.type_args.empty()) {
             return nullptr;  // explicit call type-args unsupported in a v0.5 template
         }
-        auto callee = clone_macro_template(*c.callee, subs, tmpl);
+        auto callee = clone_macro_template(*c.callee, subs, tmpl, mod);
         if (!callee) {
             return nullptr;
         }
@@ -180,7 +186,7 @@ ast::ExprPtr clone_macro_template(const ast::Expr& src, const SpliceSubs& subs, 
             if (!a.value) {
                 return nullptr;
             }
-            auto v = clone_macro_template(*a.value, subs, tmpl);
+            auto v = clone_macro_template(*a.value, subs, tmpl, mod);
             if (!v) {
                 return nullptr;
             }
@@ -280,6 +286,42 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
 
     case ast::NodeKind::IdentExpr: {
         const auto& ident = static_cast<const ast::IdentExpr&>(e);
+        // §12.4 a template name of an imported macro resolves in the module
+        // that defines it, among that module's public declarations: the
+        // expansion can only name what the caller could have written by hand.
+        if (ident.definition_site && !ident.definition_module.empty()) {
+            const auto mod = module_exports_.find(ident.definition_module);
+            const Symbol* exported = nullptr;
+            if (mod != module_exports_.end()) {
+                if (auto exp = mod->second.find(ident.name); exp != mod->second.end()) {
+                    exported = &exp->second;
+                }
+            }
+            if (exported == nullptr) {
+                error_at(e.range,
+                         std::format("'{}' in a macro template from module '{}' isn't a public "
+                                     "declaration there: a macro used from another module can "
+                                     "only name what its caller could (§12.4)",
+                                     ident.name,
+                                     ident.definition_module));
+                t = types_->error();
+                break;
+            }
+            std::string qualified;
+            for (char ch : ident.definition_module) {
+                if (ch == '.') {
+                    qualified += "::";
+                } else {
+                    qualified += ch;
+                }
+            }
+            qualified += "::";
+            qualified += ident.name;
+            resolution_.set_symbol(&e, exported);
+            resolution_.set_qualified_name(&e, std::move(qualified));
+            t = exported->type != nullptr ? exported->type : types_->error();
+            break;
+        }
         const auto* sym = ident.definition_site ? scopes_.global().lookup(ident.name)
                                                 : scopes_.current().lookup(ident.name);
         if (sym == nullptr && ident.definition_site) {
@@ -601,7 +643,26 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
                 check_expr(*a);
             }
         }
-        const Symbol* sym = scopes_.current().lookup(mc.name);
+        // `@mod.name(args)`: the macro an imported module exports.
+        std::string mod_dotted;
+        for (const auto& seg : mc.module_path) {
+            mod_dotted += mod_dotted.empty() ? seg : "." + seg;
+        }
+        const Symbol* sym = nullptr;
+        if (mod_dotted.empty()) {
+            sym = scopes_.current().lookup(mc.name);
+        } else if (auto mod = module_exports_.find(mod_dotted); mod == module_exports_.end()) {
+            error_at(e.range, std::format("'{}' is not an imported module", mod_dotted));
+            t = types_->error();
+            break;
+        } else if (auto exp = mod->second.find(mc.name); exp != mod->second.end()) {
+            sym = &exp->second;
+        } else {
+            error_at(e.range,
+                     std::format("module '{}' has no public member '{}'", mod_dotted, mc.name));
+            t = types_->error();
+            break;
+        }
         const ast::FuncDecl* fn =
             (sym != nullptr && sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Func)
                 ? static_cast<const ast::FuncDecl*>(sym->decl)
@@ -651,7 +712,7 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
         for (std::size_t i = 0; i < fn->params.size(); ++i) {
             subs[fn->params[i].name] = mc.args[i].get();
         }
-        ast::ExprPtr expansion = clone_macro_template(*tmpl->inner, subs);
+        ast::ExprPtr expansion = clone_macro_template(*tmpl->inner, subs, true, mod_dotted);
         if (!expansion) {
             error_at(e.range,
                      std::format("macro '{}' uses an expression form not supported in a v0.5 "

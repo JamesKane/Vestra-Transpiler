@@ -2723,6 +2723,13 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         const auto& id = static_cast<const ast::IdentExpr&>(e);
         // §12.4 a macro-template name is the unit's own declaration even where
         // a local of the same name is in scope: qualify it past the local.
+        if (id.definition_site && !id.definition_module.empty() && resolution_ != nullptr) {
+            // An imported macro's template name: `::mlib::k`.
+            if (const auto* qn = resolution_->qualified_name_of(&e); qn != nullptr) {
+                os << "::" << *qn;
+                break;
+            }
+        }
         if (id.definition_site && resolution_ != nullptr) {
             const auto* sym = resolution_->symbol_of(&e);
             if (sym != nullptr && sym->decl != nullptr

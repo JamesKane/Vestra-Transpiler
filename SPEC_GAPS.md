@@ -189,7 +189,7 @@ enclosing `throws`, `try?`/`try!`, `do`/`catch` and `mapError`.
 | §12.3 | `derive` as adoption of a reflective default | divergent | Each derive is hand-written C++ emission (`cpp_emitter.cpp:260`, `:547`). |
 | §12.3 | `derive` over arrays, tuples and `Vec` | weaker | Each field and payload is checked against the derived protocol, but the check follows what the C++ lowering supports: `[N]T` and tuples have no `Hash` (no `std::hash` for `std::array` / `std::tuple`), and a `Vec` field conforms only to `Eq` and `Clone`. A field typed by the target's generic parameter is checked only by clang at instantiation. |
 | §12.3, §18.1 | `compare()` | missing | `derive(Ord)` gives a struct (fields in declaration order), an enum (case order, then payload) and an opaque type (its representation) the four ordering operators, and satisfies a `T: Ord` bound. It needs `derive(Eq)` beside it, and each field and payload must be Ord: numbers, `Char`, strings, or a type that derives Ord; `Bool`, optionals, arrays, tuples and `Vec` have no ordering yet. There is still no `compare()` method ("no field or method 'compare'"), because `Ordering` already names the atomic memory order (see "Spec holes"). A plain enum orders by case without any derive, as it compares for equality without one. |
-| §12.4 | Hygiene across modules | weaker | A name in an expression macro's template resolves at module scope, past any use-site local, and is emitted module-qualified. The module is the one where the macro is used, so a macro imported from another module would resolve its template's names in the importer. `gensym()` is still the way to make a fresh name. |
+| §12.4 | Hygiene across modules | weaker | A name in an expression macro's template resolves at the defining module's scope, past any use-site local, and is emitted module-qualified. An imported macro is called by its qualified name (`@mlib.addK(x)`, see "Spec holes"). Its template names resolve among that module's *public* declarations: naming a private one is an error, because the expansion may only name what the caller could write. Only expression macros can be imported; a declaration macro (`@bitField` on a struct) is still found in its own unit only. `gensym()` is still the way to make a fresh name. |
 | §12.4 | `.asType()`, splices in struct-name position | missing | "expected struct name". |
 | §12.4 | Builder API (`Decl.struct(...)`, `Expr.call(...)`) | missing | Parse error. |
 | §12.4 | `error(at:, msg)` from a macro | missing | The macro fails with "did not expand to a declaration list". |
@@ -363,6 +363,12 @@ These are problems in the spec itself, not in the compiler:
 - §4's `Command.from(raw)` "checks the discriminant", but nothing in the
   draft gives an enum discriminants: no raw type, no `case go = 1`.
 - §15 does not say whether `internal` is module-scoped or package-scoped.
+- §12.4 says how a macro is invoked (`@name` where it is written) but not how
+  an imported one is named, and §5 keeps imports out of the unqualified
+  scope. The bootstrap calls it by its qualified path, `@mlib.addK(x)`. It
+  is also silent on whether an imported macro's template may name a private
+  declaration of its module. The bootstrap says no, by §12.4's rule that a
+  macro can only produce code the developer could have written by hand.
 - Annex §14.9.3 and §14.12.3 put `@allow_weak_cas` and `@no_auto_barrier`
   on a statement, but §17.4's `statement` has no attribute prefix, and a
   statement opening with `@name(...)` is already an expression (a macro or
