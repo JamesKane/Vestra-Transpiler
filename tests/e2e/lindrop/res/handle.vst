@@ -1,0 +1,14 @@
+// §19.6 the module that declares a linear type holds its consumers: an empty
+// `sink` function here may drop one.
+
+module res.handle
+
+public linear struct Handle {
+    var fd: Int32
+}
+
+public func open(_ fd: Int32) -> Handle {
+    return Handle(fd: fd)
+}
+
+public func close(_ h: sink Handle) { }

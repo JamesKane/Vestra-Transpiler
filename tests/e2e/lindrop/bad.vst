@@ -1,0 +1,22 @@
+// §19.6 outside its module, an empty `sink` function can't drop a linear
+// value: only the declaring module's consumers may.
+
+module lindrop.bad
+
+import res.handle
+
+func dropit(_ h: sink res.handle.Handle) { }
+
+func early(_ h: sink res.handle.Handle, _ c: Bool) {
+    if c { return }
+    res.handle.close(h)
+}
+
+func oneSide(_ h: sink res.handle.Handle, _ c: Bool) {
+    if c {
+        res.handle.close(h)
+    } else {
+    }
+}
+
+func main() -> Int32 { return 0 }

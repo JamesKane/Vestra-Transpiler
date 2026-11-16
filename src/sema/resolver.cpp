@@ -64,6 +64,18 @@ const Symbol* Resolution::binding_symbol(const ast::Stmt* s) const {
 void Resolution::set_binding_symbol(const ast::Stmt* s, const Symbol* sym) {
     binding_symbols_[s] = sym;
 }
+std::vector<const Symbol*> Resolution::param_symbols(const ast::FuncDecl* f) const {
+    auto it = param_symbols_.find(f);
+    return it == param_symbols_.end() ? std::vector<const Symbol*>{} : it->second;
+}
+
+void Resolution::add_param_symbol(const ast::FuncDecl* f, const Symbol* sym) {
+    auto& v = param_symbols_[f];
+    if (std::ranges::find(v, sym) == v.end()) {
+        v.push_back(sym);
+    }
+}
+
 const Symbol* Resolution::let_symbol(const ast::IfExpr* i) const {
     auto it = let_symbols_.find(i);
     return it == let_symbols_.end() ? nullptr : it->second;

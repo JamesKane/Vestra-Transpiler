@@ -3442,6 +3442,17 @@ add_test(
             ${CMAKE_SOURCE_DIR}/examples/multifile_demo/badimport.vst)
 set_tests_properties(e2e_multifile_visibility PROPERTIES WILL_FAIL TRUE)
 
+# §19.6 a linear value is dropped only by a function of the module that
+# declares its type: elsewhere a `sink` parameter of it must move on.
+add_test(
+    NAME    e2e_linear_drop_ok
+    COMMAND $<TARGET_FILE:vestra> check ${CMAKE_CURRENT_SOURCE_DIR}/e2e/lindrop/ok.vst)
+add_test(
+    NAME    e2e_linear_drop_bad
+    COMMAND sh -c "$<TARGET_FILE:vestra> check ${CMAKE_CURRENT_SOURCE_DIR}/e2e/lindrop/bad.vst 2>&1 | grep -E '^[^ ].*error:' | sed -E 's/.*error: //' | tr '\\n' '|'")
+set_tests_properties(e2e_linear_drop_bad PROPERTIES
+    PASS_REGULAR_EXPRESSION "^linear value 'h' is never consumed; 'Handle' is declared in another module, and only that module's functions may drop one, so move it on to one of its consumers[|]linear value 'h' leaks on this path, which leaves the function without consuming it[|]linear value 'h' is consumed on some branches but leaks on the path[(]s[)] that do not consume it[|]$")
+
 # §5 cyclic import: cycle_a <-> cycle_b import each other; the loader reports a
 # located cyclic-import error and `vestra check` exits non-zero.
 add_test(

@@ -1,0 +1,32 @@
+// §19.6 outside its module, a `sink` parameter of a linear type moves on to
+// one of that module's consumers, or is returned.
+
+module lindrop.ok
+
+import res.handle
+
+func forward(_ h: sink res.handle.Handle) {
+    res.handle.close(h)
+}
+
+func pass(_ h: sink res.handle.Handle) -> res.handle.Handle {
+    return h
+}
+
+func either(_ h: sink res.handle.Handle, _ c: Bool) {
+    if c {
+        res.handle.close(h)
+    } else {
+        forward(h)
+    }
+}
+
+func orStop(_ h: sink res.handle.Handle, _ c: Bool) {
+    if c { panic("stop") }
+    forward(h)
+}
+
+func main() -> Int32 {
+    either(pass(res.handle.open(3)), true)
+    return 0
+}

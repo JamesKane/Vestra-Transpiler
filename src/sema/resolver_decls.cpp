@@ -990,6 +990,8 @@ void Resolver::check_func(const ast::FuncDecl& f) {
         s.definition_range = p.range;
         if (auto* prev = g.scope().insert(std::move(s))) {
             duplicate_definition(*prev, p.name, p.range);
+        } else if (const auto* sym = g.scope().lookup_local(p.name)) {
+            resolution_.add_param_symbol(&f, sym);
         }
     }
 

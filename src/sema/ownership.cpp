@@ -78,7 +78,27 @@ void OwnershipChecker::check_func(const ast::FuncDecl& f) {
     empty_places_.clear();
     borrows_.clear();
     leak_reported_.clear();
+    owed_params_.clear();
     current_func_ = &f;
+    // §19.6 a linear value is destroyed only by its type's consumer: a
+    // function of the module that declares it. Elsewhere, a `sink` parameter
+    // of that type is owed a consumer like any local.
+    for (const auto* sym : resolution_->param_symbols(&f)) {
+        const auto* d = sym->type != nullptr && sym->type->kind() == TypeKind::Struct
+                            ? sym->type->nominal_decl()
+                            : nullptr;
+        if (d == nullptr || d->kind != ast::NodeKind::Struct
+            || !static_cast<const ast::StructDecl*>(d)->is_linear
+            || std::ranges::any_of(unit_->decls, [&](const auto& u) { return u.get() == d; })) {
+            continue;
+        }
+        for (const auto& p : f.params) {
+            if (p.name == sym->name && p.mode == ast::ParamMode::Sink) {
+                owed_params_.insert(sym);
+                bindings_[sym].state = State::Live;
+            }
+        }
+    }
     check_expr(*f.body);
     if (stops(f.body.get())) {
         return;  // the body ends in a panic, which owes nothing
@@ -86,9 +106,20 @@ void OwnershipChecker::check_func(const ast::FuncDecl& f) {
     // §5/§19.6 — any linear binding still live at the end of the function
     // body is a leak: a linear value must be consumed before its scope ends.
     for (const auto& [sym, info] : bindings_) {
-        if (info.state == State::Live && sym != nullptr && sym->kind != SymbolKind::Parameter
+        if (info.state == State::Live && sym != nullptr && owes(sym)
             && is_linear_type(sym->type)
             && !leak_reported_.contains(sym)) {
+            if (owed_params_.contains(sym)) {
+                reporter_->report(
+                    diag::Diagnostic::error(
+                        std::format("linear value '{}' is never consumed; '{}' is declared in "
+                                    "another module, and only that module's functions may drop "
+                                    "one, so move it on to one of its consumers",
+                                    sym->name,
+                                    sym->type->describe()))
+                        .at(sym->definition_range));
+                continue;
+            }
             reporter_->report(
                 diag::Diagnostic::error(
                     std::format("linear value '{}' is never consumed; a linear value must be moved "
@@ -994,7 +1025,7 @@ void OwnershipChecker::report_linear_divergence(const BindingMap& pre,
     for (const auto& [sym, info] : pre) {
         // Only bindings live going into the branch can leak on a path; one
         // already consumed before the branch is fine.
-        if (info.state == State::Consumed || sym == nullptr || sym->kind == SymbolKind::Parameter
+        if (info.state == State::Consumed || sym == nullptr || !owes(sym)
             || !is_linear_type(sym->type)) {
             continue;
         }
@@ -1576,6 +1607,10 @@ bool OwnershipChecker::leaves_function(const ast::Expr* e) const {
     return k != ast::NodeKind::BreakStmt && k != ast::NodeKind::ContinueStmt;
 }
 
+bool OwnershipChecker::owes(const Symbol* sym) const {
+    return sym->kind != SymbolKind::Parameter || owed_params_.contains(sym);
+}
+
 bool OwnershipChecker::stops(const ast::Expr* e) const {
     if (e == nullptr) {
         return false;
@@ -1684,7 +1719,7 @@ std::string OwnershipChecker::non_copyable_reason(TypePtr t, int depth) const {
 void OwnershipChecker::report_try_leaks(diag::SourceRange site) {
     const bool in_do = !do_bodies_.empty();
     for (const auto& [sym, info] : bindings_) {
-        if (info.state != State::Live || sym == nullptr || sym->kind == SymbolKind::Parameter
+        if (info.state != State::Live || sym == nullptr || !owes(sym)
             || !is_linear_type(sym->type) || borrows_.contains(sym) || leak_reported_.contains(sym)) {
             continue;
         }
@@ -1778,7 +1813,7 @@ void OwnershipChecker::report_loop_moves(const BindingMap& pre, const ast::Expr*
 
 void OwnershipChecker::report_path_leaks(const BindingMap& state, diag::SourceRange site) {
     for (const auto& [sym, info] : state) {
-        if (info.state == State::Live && sym != nullptr && sym->kind != SymbolKind::Parameter
+        if (info.state == State::Live && sym != nullptr && owes(sym)
             && is_linear_type(sym->type)
             && !borrows_.contains(sym) && leak_reported_.insert(sym).second) {
             reporter_->report(

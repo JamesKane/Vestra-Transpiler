@@ -286,7 +286,7 @@ fails in clang.
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §19.6 | Consumed only by the type's consumer or a destructure | divergent | Any `sink` param counts, so an empty `func dropit(_ h: sink H)` drops anything. No destructure form exists. |
+| §19.6 | Consumed only by the type's consumer or a destructure | weaker | A linear value is dropped only by a function of the module that declares its type, which is this compiler's reading of "the type's consumer". Elsewhere a `sink` parameter of that type is owed a consumer like a local: an empty `func dropit(_ h: sink res.Handle) { }` in another module is "never consumed". Within the declaring module any `sink` function still drops it, and only a parameter whose type is the linear struct itself is checked, not one holding it (an `Optional`, a container or another struct). No destructure form exists. The self-hosted checker reads one file, so the rule never applies there. |
 | §19.6 | Panic paths need not consume linear values | weaker | A path that ends in a call returning `Never` (`panic`, or a function declared `-> Never`) owes its linear values nothing: a branch, a match arm or a whole body ending in one is not a leak, and a match arm that panics doesn't take part in the join. Only a path whose last expression is such a call (or an `if` / `match` whose every branch is) counts; code after a mid-block `panic` is still checked. The self-hosted checker recognizes only a named function call, not a method returning `Never`. |
 | §19.9 | Left-to-right evaluation of arguments and operands | unsound | Emitted as direct C++ calls and operators, so order is whatever the C++ compiler chooses. |
 

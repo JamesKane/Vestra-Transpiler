@@ -210,6 +210,10 @@ private:
     std::unordered_set<const Symbol*> borrows_;
     // Bindings already reported as leaking, so one leak is one error.
     std::unordered_set<const Symbol*> leak_reported_;
+    // §19.6 `sink` parameters of a linear struct declared in another module:
+    // only that module's functions may drop one, so here it must move on.
+    std::unordered_set<const Symbol*> owed_params_;
+    [[nodiscard]] bool owes(const Symbol* sym) const;
     // The current function's parameters, for `read` / `inout` mode lookups.
     const ast::FuncDecl* current_func_ = nullptr;
     mutable std::optional<Linearity> linearity_;
