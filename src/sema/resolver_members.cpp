@@ -969,6 +969,15 @@ TypePtr Resolver::check_leading_dot(const ast::LeadingDotExpr& d, TypePtr expect
     if (expected != nullptr && expected->kind() == TypeKind::Vector && d.name == "zero") {
         return expected;
     }
+    // §7, §9, §18 `.none` is the empty optional, `nil` by its case name.
+    if (expected != nullptr && expected->kind() == TypeKind::Optional && d.name == "none") {
+        return expected;
+    }
+    // Any other case fills an optional of its enum (`let c: Color? = .red`).
+    if (expected != nullptr && expected->kind() == TypeKind::Optional
+        && expected->inner() != nullptr) {
+        expected = expected->inner();
+    }
     if (expected == nullptr || expected->kind() != TypeKind::Enum
         || expected->nominal_decl() == nullptr) {
         error_at(d.range, std::format("'.{}' has no contextual type to resolve against", d.name));

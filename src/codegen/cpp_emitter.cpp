@@ -4822,9 +4822,14 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // enum. We need the enum's name to emit `Enum::red`.
         if (resolution_ != nullptr) {
             auto t = resolution_->type_of(&e);
+            // `.none` against an optional is `nil`.
+            if (t != nullptr && t->kind() == sema::TypeKind::Optional && d.name == "none") {
+                os << "std::nullopt";
+                break;
+            }
             if (t != nullptr && t->kind() == sema::TypeKind::Enum && t->nominal_decl() != nullptr) {
                 const auto& enum_decl = static_cast<const ast::EnumDecl&>(*t->nominal_decl());
-                // §A4 (§14.9.1) Vestra's `Ordering` cases lower to
+                // §A4 (§14.9.1) Vestra's `MemoryOrder` cases lower to
                 // `std::memory_order_<name>` literals. Two of the five
                 // need a snake-case conversion (acqRel → acq_rel,
                 // seqCst → seq_cst); the others spell identically.

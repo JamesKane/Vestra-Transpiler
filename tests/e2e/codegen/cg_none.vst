@@ -1,0 +1,31 @@
+// §7, §9, §18 `.none` is the empty optional (as `nil` is), and any other
+// leading-dot case fills an optional of its enum (`let c: Color? = .red`).
+
+enum Color {
+    case red
+    case green
+}
+
+func f(_ x: Int32) -> Int32? {
+    if x > 0 { return x }
+    return .none
+}
+
+func pick(_ b: Bool) -> Color? {
+    if b { return .green }
+    return .none
+}
+
+func main() using Log, Alloc -> Int32 {
+    var a: Int32? = 5
+    a = .none
+    let c: Color? = .red
+    var n: Int32 = 0
+    if let v = f(2) { n = n + v }
+    if let v = f(-1) { n = n + 100 }
+    if let x = a { n = n + 1000 }
+    if let k = c { n = n + 10 }
+    if let k = pick(false) { n = n + 10000 }
+    print("n=\(n)")
+    return 0
+}

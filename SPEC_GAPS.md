@@ -109,7 +109,7 @@ Each gap has one of four kinds:
 | §6, §17.2 | `inout func` and `sink func` in an enum body | missing | "expected 'case' or member in enum body". A struct body takes both; an enum body takes only a plain `func`. |
 | §6, §17.6 | Slice patterns and struct patterns | missing | "expected pattern". |
 | §17.6 | A bare identifier pattern matches an existing value | missing | `case k:` (or `.a(k)`) in a match arm is "a bare name in a pattern matches an existing value, which is not supported yet". It used to bind a fresh `k`, which always matched. `let k` binds. |
-| §7, §9, §18 | `.none` as the empty optional | missing | "'.none' has no contextual type". Only `nil` works. |
+| §7, §9, §18 | `.none` as the empty optional | weaker | `.none` is `nil` wherever an optional is expected, and any other leading-dot case fills an optional of its enum (`let c: Color? = .red`). For an optional of an enum that has its own `none` case, `.none` means the empty optional. `.some(x)` doesn't parse, since `some` is a keyword (`some P`). |
 
 ### §7: functions, generics, protocols
 

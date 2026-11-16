@@ -11488,6 +11488,12 @@ func tryEmitLeadingDotCall(_ env: inout TyEnv, _ to: Str, _ callee: Vec[Nd], _ a
 //     the INSTANTIATED name when the slot carries generic arguments.
 //   * a payload-free enum is a plain scoped reference off the DECLARED name.
 func tryEmitLeadingDotCase(_ env: inout TyEnv, _ to: Str, _ n: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    // §9 against an optional slot: `.none` is `nil`, and any other case
+    // belongs to the optional's enum.
+    if to.len() > 1 && (to.charAt(to.len() - 1) ?? ' ') == '?' {
+        if streq(n, "none") && args.len() == 0 { print("std::nullopt"); return true }
+        return tryEmitLeadingDotCase(env, to.slice(0, to.len() - 1), n, args)
+    }
     let base = genBaseOf(to)
     if streq(base, "MemoryOrder") { emitMemoryOrder(n); return true }
     // §A5 the prelude's payload-free builtin enums (`enum class BarrierScope`
