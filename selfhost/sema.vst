@@ -10319,6 +10319,11 @@ func tyExprCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Al
         tyConvCall(env, callee, args)
         return
     }
+    let ef = enumFromName(env, callee)
+    if !streq(ef, "") {
+        tyEnumFromCall(env, ef, args)
+        return
+    }
     // §7 calling a `nonescaping` parameter, or handing it on to another one,
     // doesn't let it escape.
     let cn = tyNeIdent(callee)
@@ -10382,6 +10387,57 @@ func convReceiverOf(_ b: Vec[Nd]) using Alloc -> Vec[Nd] {
     return match b.get(0) ?? Nd.wildcard {
         case .member(let r, let nm, let c): ndsCopyO(r)
         default: Vec.new()
+    }
+}
+
+// §4 `E.from(raw)`: E when the callee is `E.from` on an enum type with no
+// case named `from`, else "".
+func enumFromName(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let b, let nm, let c): enumFromOf(env, b, nm)
+        default: own("")
+    }
+}
+
+func enumFromOf(_ env: inout TyEnv, _ b: Vec[Nd], _ nm: String) using Alloc -> String {
+    if !streq(nm, "from") { return own("") }
+    let bn = exCalleeNameBoxed(b)
+    if streq(bn, "") || !streq(tySymType(env, bn), "") || !tyIsEnum(env, bn) { return own("") }
+    if tyEnumHasCase(env, bn, "from") { return own("") }
+    return bn
+}
+
+// A case's discriminant is its declaration index, so only an enum whose cases
+// carry no payload has them; the raw value is one unlabelled integer.
+func tyEnumFromCall(_ env: inout TyEnv, _ e: String, _ args: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < args.len() {
+        tyExpr(env, args.get(i) ?? Nd.wildcard)
+        i = i + 1
+    }
+    if esInList(env.ecpEnum, e) || esInList(env.tgOwner, e) {
+        env.bad.push("`\(e).from(raw)` needs an enum whose cases carry no payload")
+        return
+    }
+    let a = args.get(0) ?? Nd.wildcard
+    if args.len() != 1 || !streq(enumFromLabel(a), "") {
+        env.bad.push("`\(e).from(raw)` takes one unlabelled integer")
+        return
+    }
+    let at = tyArgType(env, a)
+    if !streq(at, "") && !tyIsInt(at) {
+        var m: String = "`"
+        m.append(e)
+        m.append(".from(raw)` takes an integer, got ")
+        m.append(at)
+        env.bad.push(m)
+    }
+}
+
+func enumFromLabel(_ a: Nd) using Alloc -> String {
+    return match a {
+        case .arg(let label, let isInout, let val): own(label)
+        default: own("")
     }
 }
 
@@ -12894,6 +12950,12 @@ func tyCtorLabelMsg(_ n: Int) using Alloc -> String {
 
 func tyInferCall(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
     if !streq(convMember(callee), "") { return convTarget(callee) }
+    let ef = enumFromName(env, callee)
+    if !streq(ef, "") {
+        var o: String = copy ef
+        o.append("?")
+        return o
+    }
     return match (callee.get(0) ?? Nd.wildcard) {
         case .member(let base, let name, let chain): tyInferMethodCall(env, base, name, chain)
         default: tyInferPlainCall(env, callee)

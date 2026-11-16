@@ -269,6 +269,16 @@ template <class T, class U> constexpr std::tuple<T, bool> mul_checked(T a, U b) 
 }
 
 )__chk";
+    // §4 `E.from(raw)`: the case whose declaration index is `raw`, or none.
+    // Widening through `__builtin_add_overflow` compares any integer type
+    // against the case count without a signedness warning.
+    hdr << R"__from(template <class E, class I> constexpr std::optional<E> enum_from(I raw, long long n) {
+    long long w{};
+    if (__builtin_add_overflow(raw, 0, &w) || w < 0 || w >= n) { return {}; }
+    return static_cast<E>(w);
+}
+
+)__from";
     // §4 integer division or remainder by zero traps. `MIN / -1` overflows,
     // which is undefined in C++; it wraps here as `&-` would (0 &- MIN is
     // MIN), and `MIN % -1` is 0. A non-integer operand (a float) divides

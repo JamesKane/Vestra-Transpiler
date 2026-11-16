@@ -15,6 +15,7 @@
 
 #include "resolver_internal.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <format>
@@ -67,6 +68,27 @@ TypePtr Resolver::type_from_index_expr(const ast::Expr* e) {
     default:
         return nullptr;
     }
+}
+
+const ast::EnumDecl* Resolver::enum_from_call(const ast::CallExpr& c) {
+    if (c.callee == nullptr || c.callee->kind != ast::NodeKind::MemberExpr) {
+        return nullptr;
+    }
+    const auto& m = static_cast<const ast::MemberExpr&>(*c.callee);
+    if (m.member != "from" || m.base == nullptr || m.base->kind != ast::NodeKind::IdentExpr) {
+        return nullptr;
+    }
+    const auto* sym = scopes_.current().lookup(static_cast<const ast::IdentExpr&>(*m.base).name);
+    if (sym == nullptr || sym->kind != SymbolKind::Enum || sym->decl == nullptr
+        || sym->decl->kind != ast::NodeKind::Enum) {
+        return nullptr;
+    }
+    const auto& ed = static_cast<const ast::EnumDecl&>(*sym->decl);
+    if (lookup_enum_case(ed, "from") != nullptr) {
+        return nullptr;  // a case named `from` is just that case
+    }
+    resolution_.set_symbol(m.base.get(), sym);
+    return &ed;
 }
 
 const ast::Expr* Resolver::numeric_conversion_call(const ast::CallExpr& c) {
@@ -197,6 +219,38 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
                                  to->describe()));
         }
         return to;
+    }
+    // §4 `E.from(raw)` checks an integer against E's discriminants and
+    // yields `E?`. The draft gives an enum no explicit discriminants, so a
+    // case's is its declaration index (what the `enum class` lowering
+    // assigns), and only an enum whose cases carry no payload has them.
+    if (const auto* ed = enum_from_call(c)) {
+        auto opt = types_->make_optional(scopes_.current().lookup(ed->name)->type);
+        const bool bare = ed->generics.empty()
+                          && std::ranges::all_of(ed->cases,
+                                                 [](const auto& k) { return k.payload.empty(); });
+        TypePtr arg = nullptr;
+        for (const auto& a : c.args) {
+            arg = check_expr(*a.value);
+        }
+        if (!bare) {
+            error_at(c.range,
+                     std::format("`{}.from(raw)` needs an enum whose cases carry no payload",
+                                 ed->name));
+            return opt;
+        }
+        if (c.args.size() != 1 || !c.args[0].label.empty()) {
+            error_at(c.range,
+                     std::format("`{}.from(raw)` takes one unlabelled integer", ed->name));
+            return opt;
+        }
+        if (arg != nullptr && !arg->is_error() && !arg->is_integer()) {
+            error_at(c.args[0].value->range,
+                     std::format("`{}.from(raw)` takes an integer, got {}",
+                                 ed->name,
+                                 arg->describe()));
+        }
+        return opt;
     }
     // §17.x conversion-call syntax: `Float64(i)` / `Int32(x)` — a bare
     // primitive numeric type name in callee position is an explicit

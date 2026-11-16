@@ -1,0 +1,11 @@
+// §4 `E.from(raw)` under --no-libc: the prelude's enum_from needs only the
+// freestanding std::optional and `__builtin_add_overflow`.
+
+enum Cmd {
+    case go
+    case stop
+}
+
+func decode(_ raw: UInt32) -> Cmd? {
+    return Cmd.from(raw)
+}

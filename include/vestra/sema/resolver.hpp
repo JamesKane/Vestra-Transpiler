@@ -320,6 +320,8 @@ private:
     // nominal/generic-param); returns nullptr for anything else, so nested
     // generics fall back to inference rather than erroring.
     [[nodiscard]] TypePtr type_from_index_expr(const ast::Expr* e);
+    // §4 `E.from(raw)` on an enum type with no case named `from`: E's decl.
+    [[nodiscard]] const ast::EnumDecl* enum_from_call(const ast::CallExpr& c);
 
     // §7 generics phase 2 — build the interleaved type + const generic
     // arguments for a use-site `Name[...]`, in declaration order, against a

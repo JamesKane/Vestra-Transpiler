@@ -4905,6 +4905,12 @@ func tyInferCallArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) usi
 }
 
 func tyInferCall(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
+    let ef = enumFromName(env, callee)
+    if !streq(ef, "") {
+        var o: String = copy ef
+        o.append("?")
+        return o
+    }
     return match (callee.get(0) ?? Nd.wildcard) {
         case .member(let base, let name, let chain): tyInferMethodCall(env, base, name, chain)
         default: tyInferPlainCall(env, callee)
@@ -11431,6 +11437,7 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     if tryEmitSysStatic(env, callee, args) { return }
     if tryEmitBoxNew(env, callee, args) { return }
     if tryEmitDeriveDefault(env, callee, args) { return }
+    if tryEmitEnumFrom(env, callee, args) { return }
     if tryEmitPayloadCase(env, callee, args) { return }
     if tryEmitImportCall(env, callee, args) { return }
     if tryEmitMapError(env, callee, args) { return }
@@ -11740,6 +11747,44 @@ func tryEmitScalarCast(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) u
     print(cppNamed(nm))
     print(">(")
     emitArgList(env, args)
+    print(")")
+    return true
+}
+
+// §4 `E.from(raw)`: E when the callee is `E.from` on an enum type with no
+// case named `from`, else "".
+func enumFromName(_ env: inout TyEnv, _ callee: Vec[Nd]) using Alloc -> String {
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let b, let nm, let c): enumFromOf(env, b, nm)
+        default: own("")
+    }
+}
+
+func enumFromOf(_ env: inout TyEnv, _ b: Vec[Nd], _ nm: String) using Alloc -> String {
+    if !streq(nm, "from") { return own("") }
+    let bn = exCalleeNameBoxed(b)
+    if streq(bn, "") || !streq(tySymType(env, bn), "") || !tyIsEnum(env, bn) { return own("") }
+    if tyEnumHasCase(env, bn, "from") { return own("") }
+    return bn
+}
+
+// `E.from(raw)` -> `__vstr::enum_from<E>(raw, <case count>)`.
+func tryEmitEnumFrom(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    if args.len() != 1 { return false }
+    let e = enumFromName(env, callee)
+    if streq(e, "") { return false }
+    var n: Int = 0
+    var i: Int = 0
+    while i < env.ecEnum.len() {
+        if streq(env.ecEnum.get(i) ?? own(""), e) { n = n + 1 }
+        i = i + 1
+    }
+    print("__vstr::enum_from<")
+    print(e)
+    print(">(")
+    emitArg(env, args.get(0) ?? Nd.wildcard)
+    print(", ")
+    print(intToStr(n))
     print(")")
     return true
 }

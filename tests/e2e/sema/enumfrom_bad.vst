@@ -1,0 +1,25 @@
+// §4 `E.from(raw)` reads a case from its discriminant, which only an enum
+// whose cases carry no payload has (a case's is its declaration index), and
+// the raw value is one unlabelled integer. Each of these used to be "has no
+// case 'from'".
+
+enum Cmd {
+    case go
+    case stop
+}
+
+enum Shape {
+    case dot
+    case circle(r: Int32)
+}
+
+func f(x: UInt8, y: Float64) -> Int32 {
+    let a = Shape.from(x)
+    let b = Cmd.from(raw: x)
+    let c = Cmd.from(x, x)
+    let d = Cmd.from(y)
+    let e: Cmd = Cmd.from(x)
+    return 0
+}
+
+func main() -> Int32 { return 0 }

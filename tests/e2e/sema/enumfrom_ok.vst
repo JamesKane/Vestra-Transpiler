@@ -1,0 +1,21 @@
+// §4 `E.from(raw)` takes any integer type and yields `E?`; an enum with a
+// case named `from` keeps that case.
+
+enum Cmd {
+    case go
+    case stop
+}
+
+enum Dir {
+    case from
+    case to
+}
+
+func f(x: UInt8, y: Int64) -> Int32 {
+    let a: Cmd? = Cmd.from(x)
+    let b: Cmd? = Cmd.from(y)
+    let c: Dir = Dir.from
+    return 0
+}
+
+func main() -> Int32 { return 0 }

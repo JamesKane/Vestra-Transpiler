@@ -3088,6 +3088,25 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             os << ")";
             break;
         }
+        // §4 `E.from(raw)` → `__vstr::enum_from<E>(raw, <case count>)`: the
+        // case at declaration index `raw`, or `.none`.
+        if (resolution_ != nullptr && c.callee->kind == ast::NodeKind::MemberExpr
+            && c.args.size() == 1) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            const auto* sym = mem.member == "from" ? resolution_->symbol_of(mem.base.get()) : nullptr;
+            auto rt = resolution_->type_of(&e);
+            if (sym != nullptr && sym->kind == sema::SymbolKind::Enum && sym->decl != nullptr
+                && sym->decl->kind == ast::NodeKind::Enum && rt != nullptr
+                && rt->kind() == sema::TypeKind::Optional) {
+                const auto& ed = static_cast<const ast::EnumDecl&>(*sym->decl);
+                os << "__vstr::enum_from<";
+                emit_sema_type(os, rt->inner());
+                os << ">(";
+                emit_expr(os, *c.args[0].value);
+                os << ", " << ed.cases.size() << ")";
+                break;
+            }
+        }
         // §18 `opt.take()` / `opt.put(v)` on an Optional place (F17).
         if (resolution_ != nullptr && c.callee->kind == ast::NodeKind::MemberExpr) {
             const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);

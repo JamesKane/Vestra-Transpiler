@@ -1,0 +1,35 @@
+// §4 `E.from(raw)` checks an integer against an enum's discriminants and
+// yields `E?`. The draft gives enums no explicit discriminants, so a case's is
+// its declaration index (what the `enum class` lowering already assigns), and
+// only an enum whose cases carry no payload has them. Lowers to the prelude's
+// `enum_from<E>(raw, <case count>)`.
+
+enum Cmd {
+    case go
+    case stop
+    case reset
+}
+
+func code(_ raw: UInt8) -> Int32 {
+    if let c = Cmd.from(raw) {
+        return match c {
+            case .go: 10
+            case .stop: 20
+            case .reset: 30
+        }
+    }
+    return -1
+}
+
+func wide(_ raw: Int64) -> Int32 {
+    if let c = Cmd.from(raw) {
+        if c == Cmd.reset { return 2 }
+        return 1
+    }
+    return 0
+}
+
+func main() using Log, Alloc -> Int32 {
+    print("a=\(code(0)) b=\(code(1)) c=\(code(2)) d=\(code(3)) e=\(wide(-1)) f=\(wide(2)) g=\(wide(1))")
+    return 0
+}
