@@ -804,17 +804,18 @@ void Resolver::check_unselected_branches() {
 namespace {
 
 // The attributes the compiler acts on.
-constexpr std::array<std::string_view, 19> kKnownAttributes{
+constexpr std::array<std::string_view, 20> kKnownAttributes{
     "when",     "repr",      "inline",    "visibility",      "stack_protector",
     "section",  "symbol",    "weak",      "alias",           "extern",
     "naked",    "boot",      "interrupt", "kernel_init",     "panic_handler",
-    "no_auto_barrier",       "noinit",    "align",           "bits"};
+    "no_auto_barrier",       "noinit",    "align",           "bits",
+    "retry_loop"};
 
 // Attributes the spec defines that this compiler does not implement yet. They
 // are rejected rather than ignored, so code written against them doesn't
 // silently lose its meaning.
-constexpr std::array<std::string_view, 6> kUnimplementedAttributes{
-    "deterministic", "retry_loop", "allow_weak_cas", "retroactive", "volatile", "padding"};
+constexpr std::array<std::string_view, 5> kUnimplementedAttributes{
+    "deterministic", "allow_weak_cas", "retroactive", "volatile", "padding"};
 
 void collect_attributes(const ast::Decl& d, std::vector<const ast::Attribute*>& out) {
     auto add = [&](const std::vector<ast::Attribute>& as) {

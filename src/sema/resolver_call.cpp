@@ -1374,19 +1374,21 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
     // the user at the strong form. Doing the check here — after
     // callee resolution — keeps the test simple: we know the
     // synthesized method type and the call's range.
-    if (c.callee->kind == ast::NodeKind::MemberExpr && !admitted_weak_cas_.contains(&c)
-        && allow_weak_cas_depth_ == 0) {
+    if (c.callee->kind == ast::NodeKind::MemberExpr) {
         const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
-        if (mem.member == "compareExchangeWeak") {
-            auto base_t = resolution_.type_of(mem.base.get());
-            if (base_t != nullptr && base_t->kind() == TypeKind::Atomic) {
-                error_at(c.range,
-                         "compareExchangeWeak is admitted only as the CAS of a recognized "
-                         "retry loop (`while !r.succeeded { r = x.compareExchangeWeak(…) }`, "
-                         "`repeat { r = x.compareExchangeWeak(…) } while !r.succeeded` or "
-                         "`while true { let r = x.compareExchangeWeak(…); if r.succeeded { "
-                         "break } }`), one per loop. Use compareExchange for a one-shot CAS.");
-            }
+        auto base_t = mem.member == "compareExchangeWeak" ? resolution_.type_of(mem.base.get())
+                                                           : nullptr;
+        const bool weak = base_t != nullptr && base_t->kind() == TypeKind::Atomic;
+        const bool loop_admitted = weak && admitted_weak_cas_.contains(&c);
+        weak_cas_sites_ += weak ? 1 : 0;
+        weak_cas_loop_sites_ += loop_admitted ? 1 : 0;
+        if (weak && !loop_admitted && allow_weak_cas_depth_ == 0) {
+            error_at(c.range,
+                     "compareExchangeWeak is admitted only as the CAS of a recognized "
+                     "retry loop (`while !r.succeeded { r = x.compareExchangeWeak(…) }`, "
+                     "`repeat { r = x.compareExchangeWeak(…) } while !r.succeeded` or "
+                     "`while true { let r = x.compareExchangeWeak(…); if r.succeeded { "
+                     "break } }`), one per loop. Use compareExchange for a one-shot CAS.");
         }
     }
 

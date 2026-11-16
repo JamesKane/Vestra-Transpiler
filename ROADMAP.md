@@ -265,8 +265,9 @@ Most of this is cheaper to do once, in the LLVM backend, than twice:
 - **`@kernel_init`:** call-graph reachability and `Alloc`-init ordering.
 - **Inline asm:** the implicit-clobber rule (an instruction writing an
   unnamed register is an error), which needs a per-ISA instruction model.
-- **Statement-level escapes:** the `@retry_loop` predicate. (~~`@no_auto_barrier`
-  and `@allow_weak_cas` on a statement~~ done.)
+- **Statement-level escapes:** the library `withRetry` combinator, which needs
+  the `Primitive` bound. (~~`@no_auto_barrier` and `@allow_weak_cas` on a
+  statement, the `@retry_loop` predicate~~ done.)
 - **Atomics:** default orderings, `fetchSet` / `fetchClear` on
   `Atomic[Bool]`, the `+lse` / `+cx16` gates checked at link time.
 - **Cache and barriers:** `cleanDataRounding` / `invalidateDataRounding`,

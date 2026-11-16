@@ -330,7 +330,7 @@ The table below describes the `--no-libc` build unless it says otherwise.
 | §14.9.2 | Orderings default to `.seqCst` | divergent | The ordering argument is mandatory. |
 | §14.9.3 | CAS argument labels | divergent | Labels are optional: positional `compareExchange(0, 1, .seqCst, .acquire)` is accepted. A label that is given must be the one for its position, so reordered labels are an error rather than a silent swap. |
 | §14.9.2 | `fetchSet` / `fetchClear` on `Atomic[Bool]` | missing | |
-| §14.9.3 | `@retry_loop` predicate | missing | `@retry_loop` is "not supported yet". (`@allow_weak_cas` on a statement admits every weak CAS in that statement; on a declaration it is still "not supported yet".) |
+| §14.9.3 | `@retry_loop` and `withRetry` | weaker | The three-clause predicate is checked in both front ends, naming the failing clause. A site counts toward clause 2 only on an `Atomic` the checker can type. The annex's generic `withRetry[T: Primitive]` can't be written yet, because the `Primitive` bound is missing (§7 row), and the standard library has no `withRetry`. (`@allow_weak_cas` on a statement admits every weak CAS in that statement. On a declaration it is still "not supported yet".) |
 | §14.9.4 | Wide-atomic gate on `aarch64 +lse` / `x86_64 +cx16` | divergent | It requires `lse2` and rejects plain `+lse`. A host or unset target bypasses the gate (`resolver.cpp:203`), so a lock-based libatomic fallback is possible. It is checked at compile time, not at link time. |
 | §14.10 | `Cpu.` / `Cache.` / `Tlb.` namespaces, labeled `range:` / `scope:` | divergent | Free functions only. "undefined name 'Cpu'". |
 | §14.10.3 | `cleanDataRounding` / `invalidateDataRounding` | missing | |

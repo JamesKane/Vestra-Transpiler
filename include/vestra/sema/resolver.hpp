@@ -570,6 +570,12 @@ private:
     // audit-visible escape), counted by allow_weak_cas_depth_.
     std::unordered_set<const ast::Expr*> admitted_weak_cas_;
     int allow_weak_cas_depth_ = 0;
+    // Annex §14.9.3 the weak CAS sites checked so far, and those a retry-loop
+    // shape admitted: a `@retry_loop` body needs exactly one, and that one
+    // admitted (clauses 2 and 3).
+    int weak_cas_sites_ = 0;
+    int weak_cas_loop_sites_ = 0;
+    void check_retry_loop(const ast::FuncDecl& f, int sites, int loop_sites);
     bool enter_stmt_attributes(const ast::Stmt& s);
     static const ast::Expr* weak_cas_of_loop(const ast::WhileStmt& w);
     // §17.6 set while a match arm's pattern is checked: there a bare

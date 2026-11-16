@@ -1,0 +1,44 @@
+// Annex §14.9.3 a `@retry_loop` function is `@inline(.always)` and holds
+// exactly one compareExchangeWeak, the CAS of an admitted retry loop. Any of
+// the three loop shapes will do.
+
+static a: Atomic[UInt32] = 0
+
+@retry_loop
+@inline(.always)
+func bumpTrue(_ update: (UInt32) -> UInt32) -> UInt32 {
+    while true {
+        let observed = a.load(.acquire)
+        let desired = update(observed)
+        let r = a.compareExchangeWeak(observed, desired, .seqCst, .acquire)
+        if r.succeeded { return desired }
+    }
+    return 0
+}
+
+@inline(.always)
+@retry_loop
+func bumpNot() -> UInt32 {
+    var r = a.compareExchange(0, 1, .seqCst, .acquire)
+    while !r.succeeded {
+        r = a.compareExchangeWeak(r.actual, r.actual + 1, .seqCst, .acquire)
+    }
+    return r.actual
+}
+
+@retry_loop
+@inline(.always)
+func bumpRepeat() -> UInt32 {
+    var r = a.compareExchange(0, 1, .seqCst, .acquire)
+    repeat {
+        r = a.compareExchangeWeak(r.actual, r.actual + 1, .seqCst, .acquire)
+    } while !r.succeeded
+    return r.actual
+}
+
+func twice(_ x: UInt32) -> UInt32 { return x * 2 }
+
+func main() -> Int32 {
+    let v = bumpTrue(twice) + bumpNot() + bumpRepeat()
+    return 0
+}

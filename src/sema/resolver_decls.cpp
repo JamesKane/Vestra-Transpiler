@@ -522,6 +522,45 @@ bool is_exit_on_success(const ast::Stmt& s, std::string_view name) {
 
 }  // namespace
 
+// Annex §14.9.3 a function may carry `@retry_loop` iff (1) it is
+// `@inline(.always)`, (2) its body holds exactly one compareExchangeWeak
+// site, and (3) that site is the weak CAS of an admitted retry-loop shape.
+// A violation is rejected at the definition, naming the clause.
+void Resolver::check_retry_loop(const ast::FuncDecl& f, int sites, int loop_sites) {
+    const auto* attr = static_cast<const ast::Attribute*>(nullptr);
+    for (const auto& a : f.attributes) {
+        if (a.name == "retry_loop") {
+            attr = &a;
+        }
+    }
+    if (attr == nullptr) {
+        return;
+    }
+    const bool always = std::ranges::any_of(f.attributes, [](const ast::Attribute& a) {
+        return a.name == "inline" && a.predicate != nullptr
+               && a.predicate->kind == ast::NodeKind::LeadingDotExpr
+               && static_cast<const ast::LeadingDotExpr&>(*a.predicate).name == "always";
+    });
+    if (!always) {
+        error_at(attr->range,
+                 std::format("@retry_loop function '{}' must be @inline(.always) (Annex §14.9.3 "
+                             "clause 1): its body has to reach the call site",
+                             f.name));
+    }
+    if (sites != 1) {
+        error_at(attr->range,
+                 std::format("@retry_loop function '{}' has {} compareExchangeWeak sites, not "
+                             "exactly one (Annex §14.9.3 clause 2)",
+                             f.name,
+                             sites));
+    } else if (loop_sites != 1) {
+        error_at(attr->range,
+                 std::format("@retry_loop function '{}': its compareExchangeWeak is not the CAS "
+                             "of an admitted retry loop (Annex §14.9.3 clause 3)",
+                             f.name));
+    }
+}
+
 const ast::Expr* Resolver::weak_cas_of_loop(const ast::WhileStmt& w) {
     if (w.cond == nullptr || w.body == nullptr || w.body->kind != ast::NodeKind::BlockExpr) {
         return nullptr;
@@ -998,9 +1037,12 @@ void Resolver::check_func(const ast::FuncDecl& f) {
 
     // The body is always a BlockExpr; pass the expected result as the context.
     TypePtr body_type = types_->unit();
+    const int sites_before = weak_cas_sites_;
+    const int loop_sites_before = weak_cas_loop_sites_;
     if (f.body->kind == ast::NodeKind::BlockExpr) {
         body_type = check_block_expr(static_cast<const ast::BlockExpr&>(*f.body), expected_result);
     }
+    check_retry_loop(f, weak_cas_sites_ - sites_before, weak_cas_loop_sites_ - loop_sites_before);
 
     // A void-returning function may have a non-Unit body — the final value is
     // dropped. A value-returning function must end with an expression of the

@@ -955,6 +955,10 @@ struct Ps {
     var pendingUnion: Bool  // the attributes just skipped include `@repr(union)`
     var kinit: Vec[String]  // Annex §14.7.1 the `@kernel_init` function names
     var pendingKinit: Bool  // the attributes just skipped include `@kernel_init`
+    var retry: Vec[String]  // Annex §14.9.3 the `@retry_loop` function names ...
+    var retryAlways: Vec[String] // ... and those of them also `@inline(.always)`
+    var pendingRetry: Bool  // the attributes just skipped include `@retry_loop` ...
+    var pendingAlways: Bool // ... and `@inline(.always)`
 }
 
 struct BP {
@@ -1145,10 +1149,14 @@ func skipAttrsNaked(_ p: inout Ps) using Alloc -> Bool {
     var naked: Bool = false
     p.pendingUnion = false
     p.pendingKinit = false
+    p.pendingRetry = false
+    p.pendingAlways = false
     while isKind(p, TokKind.at) {
         advP(&p)  // '@'
         p.attrs.push(curText(p))
         if streq(curRaw(p), "kernel_init") { p.pendingKinit = true }
+        if streq(curRaw(p), "retry_loop") { p.pendingRetry = true }
+        let isInline = streq(curRaw(p), "inline")
         if streq(curRaw(p), "naked") || streq(curRaw(p), "boot") { naked = true }
         let isWhen = streq(curRaw(p), "when")
         let isRepr = streq(curRaw(p), "repr")
@@ -1166,6 +1174,10 @@ func skipAttrsNaked(_ p: inout Ps) using Alloc -> Bool {
                 if go { args.push(curT(p)); advP(&p) }
             }
             if isWhen { cfgScan(p.cfgBad, args) }
+            if isInline && args.len() == 3 {
+                let t = args.get(2) ?? eofTok()
+                if streq(t.text, "always") { p.pendingAlways = true }
+            }
             if isRepr { reprScan(p.cfgBad, args) }
             if isRepr && reprHasUnion(args) { p.pendingUnion = true }
         }
@@ -1197,9 +1209,24 @@ func parseDecl(_ p: inout Ps) using Alloc -> Nd {
     if eat(p, TokKind.kwInout) { mods.append("inout ") }
     else if eat(p, TokKind.kwSink) { mods.append("sink ") }
     let kinit = p.pendingKinit
+    let retry = p.pendingRetry
+    let always = p.pendingAlways
     let d = parseFunc(&p, vis, mods)
     if kinit { recordKinit(&p, d) }
+    if retry { recordRetry(&p, d, always) }
     return d
+}
+
+func recordRetry(_ p: inout Ps, _ d: Nd, _ always: Bool) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let pp, let caps, let t, let r, let b): recordRetryName(&p, name, always)
+        default: noop()
+    }
+}
+
+func recordRetryName(_ p: inout Ps, _ name: String, _ always: Bool) using Alloc {
+    p.retry.push(own(name))
+    if always { p.retryAlways.push(own(name)) }
 }
 
 func recordKinit(_ p: inout Ps, _ d: Nd) using Alloc {
@@ -7617,6 +7644,10 @@ struct TyEnv {
     var wcDepth: Int            // ... in the block at this depth ...
     var wcOk: Bool              // ... set while that statement is checked: its weak CAS is admitted
     var wcAllow: Bool           // Annex §14.9.3 set while an `@allow_weak_cas` statement is checked
+    var wcSites: Int            // Annex §14.9.3 the weak CAS sites checked so far ...
+    var wcLoopSites: Int        // ... and those a retry-loop shape admitted
+    var rlName: Vec[String]     // Annex §14.9.3 the `@retry_loop` functions ...
+    var rlAlways: Vec[String]   // ... and those of them also `@inline(.always)`
 }
 
 
@@ -8980,8 +9011,43 @@ func tyCheckFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ result
     env.curRet = tyRetSpelling(result)
     tyResetSyms(env)
     tyRegisterParams(env, params)
+    let sites = env.wcSites
+    let loopSites = env.wcLoopSites
     tyBoxed(env, body)
+    tyCheckRetry(env, name, env.wcSites - sites, env.wcLoopSites - loopSites)
     tyCheckBodyProduces(env, name, body)
+}
+
+func tyCopyRetry(_ env: inout TyEnv, _ names: Vec[String], _ always: Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < names.len() { env.rlName.push(own(names.get(i) ?? own(""))); i = i + 1 }
+    var k: Int = 0
+    while k < always.len() { env.rlAlways.push(own(always.get(k) ?? own(""))); k = k + 1 }
+}
+
+// Annex §14.9.3 a `@retry_loop` function is (1) `@inline(.always)`, (2) holds
+// exactly one compareExchangeWeak site, (3) which a retry-loop shape admits.
+func tyCheckRetry(_ env: inout TyEnv, _ name: String, _ sites: Int, _ loopSites: Int) using Alloc {
+    if !esInList(env.rlName, name) { return }
+    if !esInList(env.rlAlways, name) {
+        var m: String = "@retry_loop function '"
+        m.append(name)
+        m.append("' must be @inline(.always) (Annex §14.9.3 clause 1): its body has to reach the call site")
+        env.bad.push(m)
+    }
+    if sites != 1 {
+        var m: String = "@retry_loop function '"
+        m.append(name)
+        m.append("' has ")
+        m.append(intToStr(sites))
+        m.append(" compareExchangeWeak sites, not exactly one (Annex §14.9.3 clause 2)")
+        env.bad.push(m)
+    } else if loopSites != 1 {
+        var m: String = "@retry_loop function '"
+        m.append(name)
+        m.append("': its compareExchangeWeak is not the CAS of an admitted retry loop (Annex §14.9.3 clause 3)")
+        env.bad.push(m)
+    }
 }
 
 // §4 / §19 the bootstrap's two body-completion rules (F9, F22): a `-> Never`
@@ -10857,7 +10923,9 @@ func tyAtomicMember(_ env: inout TyEnv, _ base: Vec[Nd], _ op: String, _ args: V
         return
     }
     if kind == 1 && streq(op, "compareExchangeWeak") {
-        if env.wcAllow { } else if env.wcOk { env.wcOk = false } else { env.bad.push(own(wcMsg())) }
+        env.wcSites = env.wcSites + 1
+        if env.wcOk { env.wcOk = false; env.wcLoopSites = env.wcLoopSites + 1 }
+        else if !env.wcAllow { env.bad.push(own(wcMsg())) }
     }
     let cas = streq(op, "compareExchange") || (kind == 1 && streq(op, "compareExchangeWeak"))
     if !cas { return }
@@ -13644,7 +13712,7 @@ func loadImportPath(_ isC: Bool, _ dotted: String, _ dir: Str, _ errs: inout Vec
 // module path. A file with no `module` line exports nothing addressable.
 func harvestModule(_ env: inout Env, _ contents: Str) using Alloc {
     let toks = tokenize(contents)
-    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false, kinit: Vec.new(), pendingKinit: false)
+    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false, kinit: Vec.new(), pendingKinit: false, retry: Vec.new(), retryAlways: Vec.new(), pendingRetry: false, pendingAlways: false)
     let mu = parseUnit(&p)
     if !mu.hasMod { return }
     env.modPaths.push(own(mu.modPath))
@@ -14136,11 +14204,11 @@ func attrKnown(_ n: String) -> Bool {
         || streq(n, "weak") || streq(n, "alias") || streq(n, "extern") || streq(n, "naked")
         || streq(n, "boot") || streq(n, "interrupt") || streq(n, "kernel_init")
         || streq(n, "panic_handler") || streq(n, "no_auto_barrier") || streq(n, "noinit")
-        || streq(n, "align") || streq(n, "bits")
+        || streq(n, "align") || streq(n, "bits") || streq(n, "retry_loop")
 }
 
 func attrUnimplemented(_ n: String) -> Bool {
-    return streq(n, "deterministic") || streq(n, "retry_loop") || streq(n, "allow_weak_cas")
+    return streq(n, "deterministic") || streq(n, "allow_weak_cas")
         || streq(n, "retroactive") || streq(n, "volatile") || streq(n, "padding")
 }
 
@@ -14164,7 +14232,7 @@ func main() -> Int32 {
                 }
                 if let src = readFile(path) {
                     let toks = tokenize(src)
-                    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false, kinit: Vec.new(), pendingKinit: false)
+                    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false, kinit: Vec.new(), pendingKinit: false, retry: Vec.new(), retryAlways: Vec.new(), pendingRetry: false, pendingAlways: false)
                     let u = parseUnit(&p)
                     let protos = unitProtocols(p.toks)
                     let attrBad = attrCheck(u, p.attrs, p.cfgBad, boundCheck(protos, p.bounds), protos)
@@ -14267,9 +14335,10 @@ func main() -> Int32 {
                                      pLabel: Vec.new(), mlOwner: Vec.new(), mlName: Vec.new(), mlLabel: Vec.new(), niName: Vec.new(),
                                      neKey: Vec.new(), neLocal: Vec.new(),
                                      opName: Vec.new(), opUnder: Vec.new(), drvType: Vec.new(), drvProto: Vec.new(),
-                                     tgOwner: Vec.new(), tgName: Vec.new(), wcStmt: -1, wcDepth: 0, wcOk: false, wcAllow: false)
+                                     tgOwner: Vec.new(), tgName: Vec.new(), wcStmt: -1, wcDepth: 0, wcOk: false, wcAllow: false, wcSites: 0, wcLoopSites: 0, rlName: Vec.new(), rlAlways: Vec.new())
                     tyRefines(&tenv, p.toks)
                     tyCopyUnions(&tenv, p.unions)
+                    tyCopyRetry(&tenv, p.retry, p.retryAlways)
                     tyCheck(&tenv, u)
                     var ti: Int = 0
                     while ti < tenv.bad.len() {

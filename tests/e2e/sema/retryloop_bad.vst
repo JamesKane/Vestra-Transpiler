@@ -1,0 +1,61 @@
+// Annex §14.9.3 a `@retry_loop` function that breaks a clause of the
+// predicate is rejected at its definition, naming the clause: not
+// `@inline(.always)` (1), not exactly one weak CAS site (2), or a site that
+// no retry-loop shape admits (3).
+
+static a: Atomic[UInt32] = 0
+
+@retry_loop
+func notInline() -> UInt32 {
+    var r = a.compareExchange(0, 1, .seqCst, .acquire)
+    while !r.succeeded {
+        r = a.compareExchangeWeak(r.actual, 1, .seqCst, .acquire)
+    }
+    return r.actual
+}
+
+@retry_loop
+@inline(.never)
+func neverInline() -> UInt32 {
+    var r = a.compareExchange(0, 1, .seqCst, .acquire)
+    while !r.succeeded {
+        r = a.compareExchangeWeak(r.actual, 1, .seqCst, .acquire)
+    }
+    return r.actual
+}
+
+@retry_loop
+@inline(.always)
+func noSite() -> UInt32 {
+    return a.load(.acquire)
+}
+
+@retry_loop
+@inline(.always)
+func twoLoops() -> UInt32 {
+    var r = a.compareExchange(0, 1, .seqCst, .acquire)
+    while !r.succeeded {
+        r = a.compareExchangeWeak(r.actual, 1, .seqCst, .acquire)
+    }
+    repeat {
+        r = a.compareExchangeWeak(r.actual, 2, .seqCst, .acquire)
+    } while !r.succeeded
+    return r.actual
+}
+
+@retry_loop
+@inline(.always)
+func loose() -> Bool {
+    let r = a.compareExchangeWeak(0, 1, .seqCst, .acquire)
+    return r.succeeded
+}
+
+@retry_loop
+@inline(.always)
+func allowed() -> Bool {
+    @allow_weak_cas
+    let r = a.compareExchangeWeak(0, 1, .seqCst, .acquire)
+    return r.succeeded
+}
+
+func main() -> Int32 { return 0 }
