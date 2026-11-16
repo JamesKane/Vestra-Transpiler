@@ -1,0 +1,29 @@
+// §7 a const generic used as a value: in a generic function (returned, as a
+// loop bound) and in a generic struct's method. It lowers to the template
+// parameter cast to its declared type.
+
+func count[const N: Int](_ a: [N]Int32) -> Int {
+    return N
+}
+
+func sum[const N: Int](_ a: [N]Int32) -> Int32 {
+    var s: Int32 = 0
+    var i: Int = 0
+    while i < N {
+        s = s + a[i]
+        i = i + 1
+    }
+    return s
+}
+
+struct Buf[const N: Int] {
+    var data: [N]UInt8
+    func cap() -> Int { return N }
+}
+
+func main() using Log, Alloc -> Int32 {
+    let a: [4]Int32 = [1, 2, 3, 4]
+    let b: Buf[4] = Buf(data: [0, 0, 0, 0])
+    print("\(count(a)) \(sum(a)) \(b.cap())")
+    return 0
+}

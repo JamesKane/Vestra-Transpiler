@@ -3061,6 +3061,18 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         break;
     case ast::NodeKind::IdentExpr: {
         const auto& id = static_cast<const ast::IdentExpr&>(e);
+        // §7 a const generic used as a value: the C++ template parameter is a
+        // std::size_t, so it is cast to the generic's declared type.
+        if (resolution_ != nullptr) {
+            if (const auto* gs = resolution_->symbol_of(&e);
+                gs != nullptr && gs->kind == sema::SymbolKind::GenericParam && gs->generic != nullptr
+                && gs->generic->is_const) {
+                os << "static_cast<";
+                emit_sema_type(os, resolution_->type_of(&e));
+                os << ">(" << id.name << ")";
+                break;
+            }
+        }
         // §12.4 a macro-template name is the unit's own declaration even where
         // a local of the same name is in scope: qualify it past the local.
         if (id.definition_site && !id.definition_module.empty() && resolution_ != nullptr) {

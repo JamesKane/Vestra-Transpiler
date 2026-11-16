@@ -3135,6 +3135,8 @@ struct TyEnv {
     var pCurName: Vec[String]   // per-function: its parameter names (a storage place for if-let)
     var modLabel: String        // global: the module path `_`-joined, plus `_` (symbol prefixes)
     var inEnumMethod: Bool      // §6 emitting an enum method's free function: `self` is a parameter
+    var cgName: Vec[String]     // §7 the const generics of the template being emitted ...
+    var cgType: Vec[String]     // ... and their declared type spellings (a use is cast to it)
     var emEnum: Vec[String]     // §6 per enum-method rows — the enum ...
     var emName: Vec[String]     // ... method name ...
     var emSink: Vec[Bool]       // ... whether it is a `sink func` ...
@@ -5588,7 +5590,7 @@ func buildTyEnv(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc -> TyEnv
                     cfName: Vec.new(), cfVal: Vec.new(),
                     pCurName: Vec.new(),
                     modLabel: modLabelOf(u.hasMod, u.modPath),
-                    inEnumMethod: false, emEnum: Vec.new(), emName: Vec.new(), emSink: Vec.new(), emPSink: Vec.new(),
+                    inEnumMethod: false, cgName: Vec.new(), cgType: Vec.new(), emEnum: Vec.new(), emName: Vec.new(), emSink: Vec.new(), emPSink: Vec.new(),
                     bad: Vec.new())
     // §18.1 the builtin `enum Ordering { case less, equal, greater }` (the
     // prelude declares it), so a match over one lowers as over any bare enum.
@@ -7538,7 +7540,10 @@ func emitCaseEnumerator(_ n: Str) using Alloc, Log {
 // types inside).
 func emitGenStructDef(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ fields: Vec[Nd], _ methods: Vec[Nd]) using Alloc, Log {
     if gens.len() > 0 { emitTemplateHead(gens) }
+    let mark = env.cgName.len()
+    pushConstGens(&env, gens)
     emitStructDef(env, name, fields, methods)
+    popConstGens(&env, mark)
 }
 
 func emitGenEnumDecl(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ cases: Vec[Nd], _ methods: Vec[Nd]) using Alloc, Log {
@@ -7815,6 +7820,56 @@ func emitHppFunc(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, 
 // .cpp function, with [[nodiscard]] under the forward-declaration rule (an
 // explicitly written result type or a throws clause).
 func emitTemplateFunc(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
+    let mark = env.cgName.len()
+    pushConstGens(&env, gens)
+    emitTemplateFunc2(env, mods, gens, name, params, thr, res, body)
+    popConstGens(&env, mark)
+}
+
+// §7 a const generic named in the body is its value, cast from the
+// template's std::size_t to its declared type, as the bootstrap emits it.
+func pushConstGens(_ env: inout TyEnv, _ gens: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < gens.len() {
+        match gens.get(i) ?? Nd.wildcard {
+            case .genConst(let n, let t): pushConstGen(env, n, t)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func pushConstGen(_ env: inout TyEnv, _ n: String, _ t: Vec[Nd]) using Alloc {
+    env.cgName.push(own(n))
+    var sp = tyAnnSpelling(t)
+    if streq(sp, "") { sp = own("Int") }
+    env.cgType.push(sp)
+}
+
+func popConstGens(_ env: inout TyEnv, _ mark: Int) {
+    while env.cgName.len() > mark {
+        let _ = env.cgName.pop()
+        let _ = env.cgType.pop()
+    }
+}
+
+func emitIdentE(_ env: inout TyEnv, _ n: Str) using Alloc, Log {
+    var i: Int = 0
+    while i < env.cgName.len() {
+        if streq(env.cgName.get(i) ?? own(""), n) {
+            print("static_cast<")
+            print(cppOfSpelling(own(env.cgType.get(i) ?? own("Int"))))
+            print(">(")
+            print(n)
+            print(")")
+            return
+        }
+        i = i + 1
+    }
+    print(n)
+}
+
+func emitTemplateFunc2(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
     emitTemplateHead(gens)
     emitRequiresClause(gens)
     let attrs = ndsCopy(env.curAttrs)
@@ -11262,7 +11317,7 @@ func emitAs(_ env: inout TyEnv, _ v: Vec[Nd], _ t: Vec[Nd], _ isOpt: Bool) using
 
 func emitExpr(_ env: inout TyEnv, _ e: Nd) using Alloc, Log {
     match e {
-        case .ident(let n): print(n)
+        case .ident(let n): emitIdentE(env, n)
         case .nilLit: print("std::nullopt")
         case .selfE: emitSelfE(env)
         case .intLit(let s): emitIntText(s)

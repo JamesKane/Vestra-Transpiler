@@ -341,6 +341,13 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
             resolution_.set_symbol(&e, sym);
             check_visibility(*sym, e.range);
             t = sym->type != nullptr ? sym->type : types_->error();
+            // §7 a const generic `N` named in an expression is its value, of
+            // its declared type (an `Int` when none is written).
+            if (sym->kind == SymbolKind::GenericParam && sym->generic != nullptr
+                && sym->generic->is_const) {
+                t = sym->generic->const_type != nullptr ? resolve_type(*sym->generic->const_type)
+                                                        : types_->primitive(TypeKind::Int);
+            }
             check_noinit_value_use(*sym, ident.name, e.range);
             check_view_capture(*sym, e.range);
             if (sym->nonescaping && sym->kind == SymbolKind::Parameter

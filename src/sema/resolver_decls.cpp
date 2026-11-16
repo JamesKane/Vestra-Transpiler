@@ -949,8 +949,8 @@ void Resolver::check_func(const ast::FuncDecl& f) {
 
     // Bind generic parameters as opaque types in the function's scope.
     for (const auto& gp : f.generics) {
-        if (gp.name.empty() || gp.is_const) {
-            continue;  // const generics live in the value namespace; v0.5 skips them
+        if (gp.name.empty()) {
+            continue;  // a const generic is a value in the body (see IdentExpr)
         }
         Symbol s;
         s.name = gp.name;

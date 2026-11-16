@@ -3208,13 +3208,44 @@ func resolve(_ env: inout Env, _ u: NUnit) using Alloc {
 func resolveDecl(_ env: inout Env, _ d: Nd) using Alloc {
     match d {
         case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body):
-            resolveFunc(env, thr, params, body)
+            resolveFuncG(env, gens, thr, params, body)
         case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics):
-            resolveMethods(env, methods)
+            resolveMethodsG(env, generics, methods)
         case .enumD(let vis, let name, let cases, let methods, let generics):
             resolveMethods(env, methods)
         case .constD(let vis, let name, let ty, let v): resolveBoxed(env, v)
         default: noop()
+    }
+}
+
+// §7 a const generic `N` is a value in the body (and in a generic struct's
+// methods).
+func resolveFuncG(_ env: inout Env, _ gens: Vec[Nd], _ thr: Vec[Nd], _ params: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    let save = env.names.len()
+    scopeEnter(env)
+    bindConstGens(env, gens)
+    resolveFunc(env, thr, params, body)
+    scopeLeave(env)
+    popTo(env, save)
+}
+
+func resolveMethodsG(_ env: inout Env, _ gens: Vec[Nd], _ methods: Vec[Nd]) using Alloc {
+    let save = env.names.len()
+    scopeEnter(env)
+    bindConstGens(env, gens)
+    resolveMethods(env, methods)
+    scopeLeave(env)
+    popTo(env, save)
+}
+
+func bindConstGens(_ env: inout Env, _ gens: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < gens.len() {
+        match gens.get(i) ?? Nd.wildcard {
+            case .genConst(let n, let t): bindIfName(env, n)
+            default: noop()
+        }
+        i = i + 1
     }
 }
 
@@ -3932,6 +3963,8 @@ func tnTypeList(_ env: inout TnEnv, _ ts: Vec[Nd]) using Alloc {
 }
 
 func tnKnown(_ env: inout TnEnv, _ path: String) -> Bool {
+    // A const generic argument (`Buf[4]`) is a number, not a type name.
+    if path.len() > 0 && isDigitC(path.charAt(0) ?? 'x') { return true }
     var i: Int = 0
     while i < env.tparams.len() {
         if let s = env.tparams.get(i) { if streq(s, path) { return true } }
@@ -13571,8 +13604,10 @@ func tyIsArray(_ s: String) -> Bool {
 }
 
 func tyArrayAssignable(_ from: String, _ to: String) using Alloc -> Bool {
-    return streq(tyArrayCount(from), tyArrayCount(to))
-        && tyAssignable(tyArrayElem(from), tyArrayElem(to))
+    // §7 a const generic length (`[N]T`) takes any length; the call binds N.
+    let tc = tyArrayCount(to)
+    let lenOk = streq(tyArrayCount(from), tc) || (tc.len() > 0 && !isDigitC(tc.charAt(0) ?? '0'))
+    return lenOk && tyAssignable(tyArrayElem(from), tyArrayElem(to))
 }
 
 // "[3]Int32" -> "3" (between '[' and the first ']').
