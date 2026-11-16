@@ -1,0 +1,26 @@
+// §4, §19.9 integer `+ - *` (and `+= -= *=`, and `-x`) trap on overflow, a trap being
+// a panic; built with VESTRA_RELEASE they wrap. The operation happens in the
+// operands' Vestra type, so an Int8 overflows past 127. Floats keep their
+// own operators.
+
+func bump(_ x: Int8, _ by: Int8) -> Int8 {
+    return x + by
+}
+
+func flip(_ x: Int32) -> Int32 {
+    return -x
+}
+
+func main() using Log, Alloc -> Int32 {
+    var n: Int32 = 2147483600
+    n += 40
+    let f: Float64 = 1.5 * 2.0 + 1.0
+    var m: UInt8 = 250
+    m -= 7
+    let p: Int64 = 3000000000 * 3
+    print("\(n) \(f) \(m) \(p) \(bump(100, 20)) ")
+    print("\(bump(100, 27)) ")
+    print("\(bump(100, 28)) ")
+    print("\(flip(-2147483647 - 1)) \(flip(5))\n")
+    return 0
+}

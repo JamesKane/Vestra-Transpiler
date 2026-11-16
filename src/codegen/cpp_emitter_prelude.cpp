@@ -288,8 +288,8 @@ template <class T, class U> constexpr std::tuple<T, bool> mul_checked(T a, U b) 
 
 )__from";
     // §4 integer division or remainder by zero traps. `MIN / -1` overflows,
-    // which is undefined in C++; it wraps here as `&-` would (0 &- MIN is
-    // MIN), and `MIN % -1` is 0. A non-integer operand (a float) divides
+    // which is undefined in C++: it traps as `+` does, and under
+    // VESTRA_RELEASE wraps as `&-` would (0 &- MIN is MIN). `MIN % -1` is 0. A non-integer operand (a float) divides
     // as before. No <type_traits>: the freestanding profile has none.
     hdr << R"__div(template <class T> struct div_int { static constexpr bool v = false; };
 template <> struct div_int<signed char> { static constexpr bool v = true; };
@@ -311,6 +311,11 @@ constexpr auto idiv(A a, B b) -> decltype(a / b) {
         if constexpr (R(-1) < R(0) && B(-1) < B(0)) {
             if (b == B(-1)) {
                 using W = typename wrap_uw<R>::type;
+#ifndef VESTRA_RELEASE
+                if (a < A(0) && static_cast<R>(W(0) - static_cast<W>(a)) < R(0)) {
+                    panic("integer overflow in /");
+                }
+#endif
                 return static_cast<R>(W(0) - static_cast<W>(a));
             }
         }
@@ -330,6 +335,61 @@ constexpr auto irem(A a, B b) -> decltype(a % b) {
 }
 template <class A, class B> constexpr void idiv_assign(A& a, B b) { a = static_cast<A>(idiv(a, b)); }
 template <class A, class B> constexpr void irem_assign(A& a, B b) { a = static_cast<A>(irem(a, b)); }
+// §4, §19.9 integer `+ - *` trap on overflow (a trap is a panic), and wrap
+// when the C++ is built with VESTRA_RELEASE. The result has wrap_ty's type:
+// an integer literal operand (a `wlit`) takes the other side's. Any other
+// operand (a float, a String, a Duration) uses its own operator.
+template <class A> struct ar_lit { static constexpr bool v = false; };
+template <> struct ar_lit<wlit> { static constexpr bool v = true; };
+template <class A, class B> struct ar_int {
+    static constexpr bool v = (div_int<A>::v || ar_lit<A>::v) && (div_int<B>::v || ar_lit<B>::v);
+};
+template <class A, class B> constexpr auto ar_lhs(A a) {
+    if constexpr (!ar_lit<A>::v) { return a; }
+    else if constexpr (div_int<B>::v || wrap_fp<B>::v) { return wrap_in<B>(a); }
+    else { return static_cast<long long>(a.v); }
+}
+#ifdef VESTRA_RELEASE
+#define VESTRA_AR_OP(name, op, wrapfn, bi, msg) \
+template <class A, class B> constexpr auto name(A a, B b) { \
+    if constexpr (ar_int<A, B>::v) { return wrapfn(a, b); } \
+    else { return ar_lhs<A, B>(a) op ar_lhs<B, A>(b); } \
+}
+#else
+#define VESTRA_AR_OP(name, op, wrapfn, bi, msg) \
+template <class A, class B> constexpr auto name(A a, B b) { \
+    if constexpr (ar_int<A, B>::v) { \
+        using T = typename wrap_ty<A, B>::type; \
+        T r{}; \
+        if (bi(wrap_in<T>(a), wrap_in<T>(b), &r)) { panic(msg); } \
+        return r; \
+    } else { return ar_lhs<A, B>(a) op ar_lhs<B, A>(b); } \
+}
+#endif
+VESTRA_AR_OP(add, +, wrap_add, __builtin_add_overflow, "integer overflow in +")
+VESTRA_AR_OP(sub, -, wrap_sub, __builtin_sub_overflow, "integer overflow in -")
+VESTRA_AR_OP(mul, *, wrap_mul, __builtin_mul_overflow, "integer overflow in *")
+#undef VESTRA_AR_OP
+template <class A> constexpr auto neg(A a) {
+    if constexpr (div_int<A>::v) {
+#ifdef VESTRA_RELEASE
+        return wrap_sub(A(0), a);
+#else
+        A r{};
+        if (__builtin_sub_overflow(A(0), a, &r)) { panic("integer overflow in -"); }
+        return r;
+#endif
+    } else { return -a; }
+}
+template <class A, class B> constexpr void add_assign(A& a, B b) {
+    if constexpr (ar_int<A, B>::v) { a = add(a, b); } else { a += ar_lhs<B, A>(b); }
+}
+template <class A, class B> constexpr void sub_assign(A& a, B b) {
+    if constexpr (ar_int<A, B>::v) { a = sub(a, b); } else { a -= ar_lhs<B, A>(b); }
+}
+template <class A, class B> constexpr void mul_assign(A& a, B b) {
+    if constexpr (ar_int<A, B>::v) { a = mul(a, b); } else { a *= ar_lhs<B, A>(b); }
+}
 // §19.10 indexing is bounds-checked: `a[i]` on a `[N]T`, Span, MutSpan,
 // Vec or chunk iterator panics unless 0 <= i < the base's length. It
 // returns what the subscript does (a reference, or a chunk's sub-view), so

@@ -314,6 +314,9 @@ private:
     static const ast::Expr* peel_parens(const ast::Expr* e);
     diag::SourceRange neg_lit_range_{};
     std::unordered_set<const ast::IntLit*> lit_range_reported_;
+    // §4 constant arithmetic that overflows its type, by source offset.
+    std::unordered_set<std::size_t> overflow_reported_;
+    void check_constant_overflow(const ast::Expr& e, TypePtr t);
     TypePtr check_call(const ast::CallExpr& c, TypePtr expected = nullptr);
     TypePtr check_call_inner(const ast::CallExpr& c, TypePtr expected);
     // §4 the writes a typed call makes: `&` arguments and a mutating receiver.

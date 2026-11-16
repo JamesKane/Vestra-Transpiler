@@ -427,9 +427,11 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
     }
     case ast::NodeKind::UnaryExpr:
         t = check_unary(static_cast<const ast::UnaryExpr&>(e), expected);
+        check_constant_overflow(e, t);
         break;
     case ast::NodeKind::BinaryExpr:
         t = check_binary(static_cast<const ast::BinaryExpr&>(e), expected);
+        check_constant_overflow(e, t);
         break;
     case ast::NodeKind::CallExpr:
         t = check_call(static_cast<const ast::CallExpr&>(e), expected);
@@ -1346,6 +1348,32 @@ void Resolver::check_int_literal_range(const ast::IntLit& lit, TypePtr t) {
     if (!fits && lit_range_reported_.insert(&lit).second) {
         error_at(negated ? neg_lit_range_ : lit.range, std::format("integer literal {}{} doesn't fit in {} (range {} to {})",
                                         negated ? "-" : "", lit.text, t->describe(), lo, hi));
+    }
+}
+
+// §4, §19.9 integer `+ - *` and `-x` trap on overflow at run time; over
+// constants the folder sees it now, and it is an error here, once per
+// expression (an enclosing expression meets the same overflow again).
+void Resolver::check_constant_overflow(const ast::Expr& e, TypePtr t) {
+    if (t == nullptr || !t->is_integer()) {
+        return;
+    }
+    if (e.kind == ast::NodeKind::BinaryExpr) {
+        const auto op = static_cast<const ast::BinaryExpr&>(e).op;
+        if (op != ast::BinaryOp::Add && op != ast::BinaryOp::Sub && op != ast::BinaryOp::Mul) {
+            return;
+        }
+    } else if (static_cast<const ast::UnaryExpr&>(e).op != ast::UnaryOp::Neg) {
+        return;
+    }
+    (void)folder_.fold(e, comptime_env_, t->kind());
+    for (const auto& o : folder_.take_overflows()) {
+        if (overflow_reported_.insert(o.range.begin.offset).second) {
+            error_at(o.range,
+                     std::format("this arithmetic on constants overflows {}, so it would trap "
+                                 "at run time",
+                                 types_->primitive(o.type)->describe()));
+        }
     }
 }
 

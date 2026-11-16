@@ -268,6 +268,19 @@ void CppEmitter::emit_stmt(std::ostream& os, const ast::Stmt& s, int indent) {
             os << ");\n";
             break;
         }
+        // §4 `x += y`, `x -= y` and `x *= y` trap on integer overflow as
+        // `+`, `-` and `*` do.
+        if (a.op == ast::AssignOp::AddAssign || a.op == ast::AssignOp::SubAssign
+            || a.op == ast::AssignOp::MulAssign) {
+            os << (a.op == ast::AssignOp::AddAssign   ? "__vstr::add_assign("
+                   : a.op == ast::AssignOp::SubAssign ? "__vstr::sub_assign("
+                                                      : "__vstr::mul_assign(");
+            emit_expr(os, *a.target);
+            os << ", ";
+            emit_wrap_operand(os, *a.value);
+            os << ");\n";
+            break;
+        }
         emit_expr(os, *a.target);
         switch (a.op) {
         case ast::AssignOp::Assign:

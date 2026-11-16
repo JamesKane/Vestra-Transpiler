@@ -216,6 +216,26 @@ ComptimeValue make_int(std::int64_t v, TypeKind hint) {
     return cv;
 }
 
+// Does a folded integer fit its Vestra type? The folder holds 64 bits, so
+// the 128-bit types (and Int / UInt) are only checked to that width.
+bool int_fits(TypeKind k, std::int64_t v) {
+    switch (k) {
+    case TypeKind::Int8: return v >= -128 && v <= 127;
+    case TypeKind::Int16: return v >= -32768 && v <= 32767;
+    case TypeKind::Int32: return v >= -2147483648LL && v <= 2147483647LL;
+    default: return true;
+    }
+}
+
+bool uint_fits(TypeKind k, std::uint64_t v) {
+    switch (k) {
+    case TypeKind::UInt8: return v <= 0xffU;
+    case TypeKind::UInt16: return v <= 0xffffU;
+    case TypeKind::UInt32: return v <= 0xffffffffU;
+    default: return true;
+    }
+}
+
 ComptimeValue make_uint(std::uint64_t v, TypeKind hint) {
     ComptimeValue cv;
     cv.kind = ComptimeValue::Kind::UInt;
@@ -1357,7 +1377,15 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
         switch (u.op) {
         case ast::UnaryOp::Neg:
             if (op->kind == ComptimeValue::Kind::Int) {
-                return make_int(-op->i, op->type);
+                // A literal operand is its own range check's (`-128` is an
+                // Int8); a value that fits but whose negation doesn't is `-MIN`.
+                std::int64_t r{};
+                if (__builtin_sub_overflow(std::int64_t{0}, op->i, &r)
+                    || (int_fits(op->type, op->i) && !int_fits(op->type, r))) {
+                    overflows_.push_back({u.range, op->type});
+                    return std::nullopt;
+                }
+                return make_int(r, op->type);
             }
             if (op->kind == ComptimeValue::Kind::Float) {
                 return make_float(-op->f, op->type);
@@ -1435,6 +1463,24 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
         auto fold_uint = [&](auto op) -> std::optional<ComptimeValue> {
             return make_uint(op(lhs->u, rhs->u), lhs->type);
         };
+        // §4 `+ - *` that leave their type would trap at run time: no value,
+        // and an overflow the resolver reports.
+        auto checked = [&](auto bi) -> std::optional<ComptimeValue> {
+            if (lhs->kind == ComptimeValue::Kind::Int) {
+                std::int64_t r{};
+                if (bi(lhs->i, rhs->i, &r) || !int_fits(lhs->type, r)) {
+                    overflows_.push_back({bin.range, lhs->type});
+                    return std::nullopt;
+                }
+                return make_int(r, lhs->type);
+            }
+            std::uint64_t r{};
+            if (bi(lhs->u, rhs->u, &r) || !uint_fits(lhs->type, r)) {
+                overflows_.push_back({bin.range, lhs->type});
+                return std::nullopt;
+            }
+            return make_uint(r, lhs->type);
+        };
         auto fold_float = [&](auto op) -> std::optional<ComptimeValue> {
             return make_float(op(lhs->f, rhs->f), lhs->type);
         };
@@ -1461,11 +1507,8 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
 
         switch (bin.op) {
         case ast::BinaryOp::Add:
-            if (lhs->kind == ComptimeValue::Kind::Int) {
-                return fold_int([](auto a, auto b) { return a + b; });
-            }
-            if (lhs->kind == ComptimeValue::Kind::UInt) {
-                return fold_uint([](auto a, auto b) { return a + b; });
+            if (lhs->kind == ComptimeValue::Kind::Int || lhs->kind == ComptimeValue::Kind::UInt) {
+                return checked([](auto a, auto b, auto* r) { return __builtin_add_overflow(a, b, r); });
             }
             if (lhs->kind == ComptimeValue::Kind::Float) {
                 return fold_float([](auto a, auto b) { return a + b; });
@@ -1478,22 +1521,16 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
             }
             return std::nullopt;
         case ast::BinaryOp::Sub:
-            if (lhs->kind == ComptimeValue::Kind::Int) {
-                return fold_int([](auto a, auto b) { return a - b; });
-            }
-            if (lhs->kind == ComptimeValue::Kind::UInt) {
-                return fold_uint([](auto a, auto b) { return a - b; });
+            if (lhs->kind == ComptimeValue::Kind::Int || lhs->kind == ComptimeValue::Kind::UInt) {
+                return checked([](auto a, auto b, auto* r) { return __builtin_sub_overflow(a, b, r); });
             }
             if (lhs->kind == ComptimeValue::Kind::Float) {
                 return fold_float([](auto a, auto b) { return a - b; });
             }
             return std::nullopt;
         case ast::BinaryOp::Mul:
-            if (lhs->kind == ComptimeValue::Kind::Int) {
-                return fold_int([](auto a, auto b) { return a * b; });
-            }
-            if (lhs->kind == ComptimeValue::Kind::UInt) {
-                return fold_uint([](auto a, auto b) { return a * b; });
+            if (lhs->kind == ComptimeValue::Kind::Int || lhs->kind == ComptimeValue::Kind::UInt) {
+                return checked([](auto a, auto b, auto* r) { return __builtin_mul_overflow(a, b, r); });
             }
             if (lhs->kind == ComptimeValue::Kind::Float) {
                 return fold_float([](auto a, auto b) { return a * b; });

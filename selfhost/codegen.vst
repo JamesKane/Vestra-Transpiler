@@ -10322,6 +10322,19 @@ func emitAssign(_ env: inout TyEnv, _ indent: Str, _ op: Str, _ t: Vec[Nd], _ v:
         print(");\n")
         return
     }
+    // §4 `x += y`, `x -= y` and `x *= y` trap on integer overflow as `+`,
+    // `-` and `*` do.
+    if streq(op, "+=") || streq(op, "-=") || streq(op, "*=") {
+        if streq(op, "+=") { print("__vstr::add_assign(") }
+        else if streq(op, "-=") { print("__vstr::sub_assign(") }
+        else { print("__vstr::mul_assign(") }
+        emitBoxed(env, t)
+        print(", ")
+        if wrapIsLit(v) { emitWrapOperand(env, v) }
+        else { emitMaybeCoerced(env, needsStrCoercion(tyInferBoxed(env, v), tyInferBoxed(env, t)), v) }
+        print(");\n")
+        return
+    }
     emitBoxed(env, t)
     print(" ")
     print(op)
@@ -14759,8 +14772,25 @@ func emitUnary(_ env: inout TyEnv, _ op: Str, _ x: Vec[Nd]) using Alloc, Log {
         print(")")
         return
     }
+    // §4 `-MIN` overflows: negating anything but a literal goes through the
+    // prelude's checked `neg`.
+    if streq(op, "-") && !negIsLit(x) {
+        print("__vstr::neg(")
+        emitBoxed(env, x)
+        print(")")
+        return
+    }
     print(op)
     emitBoxed(env, x)
+}
+
+func negIsLit(_ x: Vec[Nd]) -> Bool {
+    if x.len() == 0 { return false }
+    return match x.get(0) ?? Nd.wildcard {
+        case .intLit(let t): true
+        case .floatLit(let t): true
+        default: false
+    }
 }
 
 func tyIsOptional(_ sp: Str) -> Bool {
@@ -14794,6 +14824,18 @@ func emitBinary(_ env: inout TyEnv, _ op: Str, _ l: Vec[Nd], _ r: Vec[Nd]) using
         emitBoxed(env, l)
         print(", ")
         emitBoxed(env, r)
+        print(")")
+        return
+    }
+    // §4, §19.9 integer `+ - *` trap on overflow (and wrap under
+    // VESTRA_RELEASE) through a prelude helper; a literal operand is a `wlit`.
+    if streq(op, "+") || streq(op, "-") || streq(op, "*") {
+        if streq(op, "+") { print("__vstr::add(") }
+        else if streq(op, "-") { print("__vstr::sub(") }
+        else { print("__vstr::mul(") }
+        emitWrapOperand(env, l)
+        print(", ")
+        emitWrapOperand(env, r)
         print(")")
         return
     }

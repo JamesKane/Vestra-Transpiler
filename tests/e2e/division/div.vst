@@ -1,7 +1,8 @@
-// §4 integer division or remainder by zero traps. `MIN / -1` wraps instead
-// of reaching C++'s undefined behaviour, and `MIN % -1` is 0. The divisor
-// comes from argv, so the C++ compiler can't see it: with no arguments,
-// the last division is by zero and panics.
+// §4 integer division or remainder by zero traps. `MIN / -1` overflows: it
+// traps, or wraps when built with VESTRA_RELEASE, and never reaches C++'s
+// undefined behaviour. `MIN % -1` is 0. The divisor comes from argv, so the
+// C++ compiler can't see it: with no arguments, the last division is by zero
+// and panics.
 
 func ratio(_ a: Int32, _ b: Int32) -> Int32 { return a / b }
 

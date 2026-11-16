@@ -217,8 +217,20 @@ public:
         return std::exchange(macro_errors_, {});
     }
 
+    // §4, §19.9 integer `+ - *` or `-x` whose folded result doesn't fit its
+    // type (a run would trap): each such expression's range and type, from
+    // the folds since the last take. The fold itself gives no value.
+    struct Overflow {
+        diag::SourceRange range;
+        TypeKind type;
+    };
+    [[nodiscard]] std::vector<Overflow> take_overflows() const {
+        return std::exchange(overflows_, {});
+    }
+
 private:
     mutable std::vector<MacroError> macro_errors_;
+    mutable std::vector<Overflow> overflows_;
 
     // Per-call mutable state. A new Frame is built at the entry of every
     // comptime function call (so callees can't see the caller's locals)

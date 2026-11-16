@@ -1676,7 +1676,7 @@ TEST_CASE("map(xs, closure) lowers to __vstr::Map{xs, [&](T x){ return ... }}") 
     CHECK(f.out.header.find("struct Map {") != std::string::npos);
     CHECK(f.out.header.find("Map(A, F) -> Map<A, F>") != std::string::npos);
     // Closure lowers with the param typed from sema and `[&]` capture.
-    CHECK(f.out.source.find("__vstr::Map{a, [&](std::int32_t x) { return x * 2; }}")
+    CHECK(f.out.source.find("__vstr::Map{a, [&](std::int32_t x) { return __vstr::mul(x, __vstr::wlit(2)); }}")
           != std::string::npos);
 }
 
@@ -2036,7 +2036,7 @@ TEST_CASE("mid-expression try hoists to a stmt-position let-binding") {
     CHECK(out.source.find("auto __vstr_t0 = *__vstr_t0_r;") != std::string::npos);
     CHECK(out.source.find("auto __vstr_t1_r = f(b);") != std::string::npos);
     CHECK(out.source.find("auto __vstr_t1 = *__vstr_t1_r;") != std::string::npos);
-    CHECK(out.source.find("(__vstr_t0) + (__vstr_t1)") != std::string::npos);
+    CHECK(out.source.find("__vstr::add((__vstr_t0), (__vstr_t1))") != std::string::npos);
     // No panic fallback.
     CHECK(out.source.find("f(a).value()") == std::string::npos);
     CHECK(out.source.find("f(b).value()") == std::string::npos);
@@ -2096,7 +2096,7 @@ TEST_CASE("if-expr as a sub-expression of a larger expr hoists") {
     CHECK(f.out.source.find("auto __vstr_c0 = [&]() -> std::expected<std::int32_t, E>")
           != std::string::npos);
     // The substituted IfExpr appears inside the outer BinaryExpr.
-    CHECK(f.out.source.find("((*__vstr_c0)) + 1") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::add(((*__vstr_c0)), __vstr::wlit(1))") != std::string::npos);
 }
 
 TEST_CASE("match-expr with try-in-arms hoists like an if-expr does") {
@@ -2233,7 +2233,7 @@ TEST_CASE("try inside a sub-expression of an if branch fires the branch-local ho
     // local hoist via the canonical 3-line escape.
     CHECK(f.out.source.find("auto __vstr_t1 = *__vstr_t1_r;") != std::string::npos);
     // The trailing expression substitutes the hoisted name.
-    CHECK(f.out.source.find("return (__vstr_t1) + 1;") != std::string::npos);
+    CHECK(f.out.source.find("return __vstr::add((__vstr_t1), __vstr::wlit(1));") != std::string::npos);
     // No .value() panic fallback.
     CHECK(f.out.source.find("g().value()") == std::string::npos);
 }
@@ -2452,7 +2452,7 @@ TEST_CASE("async func lowers to a Task<T> coroutine with co_return / co_await") 
     // to a caller temporary would dangle across a suspension.
     CHECK(f.out.source.find("__vstr::Task<std::int32_t> leaf(std::int32_t x)")
           != std::string::npos);
-    CHECK(f.out.source.find("co_return x + 1;") != std::string::npos);
+    CHECK(f.out.source.find("co_return __vstr::add(x, __vstr::wlit(1));") != std::string::npos);
     CHECK(f.out.source.find("co_return co_await (leaf(1));") != std::string::npos);
 }
 
@@ -2494,7 +2494,7 @@ TEST_CASE("an async throws func lowers to Task<expected<T, E>> with co_return es
     // throw is a coroutine return, not a plain return.
     CHECK(f.out.source.find("co_return std::unexpected{E::bad}") != std::string::npos);
     // return v co_returns through the expected converting ctor.
-    CHECK(f.out.source.find("co_return x + 1;") != std::string::npos);
+    CHECK(f.out.source.find("co_return __vstr::add(x, __vstr::wlit(1));") != std::string::npos);
     // A propagating `try await` co_awaits the call and co_returns the error.
     CHECK(f.out.source.find("co_await (f(x))") != std::string::npos);
     CHECK(f.out.source.find("co_return std::unexpected{") != std::string::npos);
@@ -2637,7 +2637,7 @@ TEST_CASE("Duration factories lower to __vstr::Duration static constructors") {
     CHECK(f.out.header.find("in_milliseconds()") != std::string::npos);
 }
 
-TEST_CASE("Duration scalar scaling lowers to straight operators") {
+TEST_CASE("Duration scalar scaling lowers through the arithmetic helpers") {
     SemaEmitFixture f("func s() -> Float64 {\n"
                       "    let q: Duration = .milliseconds(250)\n"
                       "    let up = q * 4\n"
@@ -2648,8 +2648,8 @@ TEST_CASE("Duration scalar scaling lowers to straight operators") {
     // Scalar ops are emitted as straight C++ — the runtime operator overloads
     // do the work (Duration*Int, Int*Duration, Duration/Int → Duration). A
     // divisor that isn't a nonzero literal goes through __vstr::idiv (§4).
-    CHECK(f.out.source.find("q * 4") != std::string::npos);
-    CHECK(f.out.source.find("2 * up") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::mul(q, __vstr::wlit(4))") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::mul(__vstr::wlit(2), up)") != std::string::npos);
     CHECK(f.out.source.find("up2 / 8") != std::string::npos);
     CHECK(f.out.source.find("__vstr::idiv(up2, down)") != std::string::npos);
     CHECK(f.out.header.find("Duration{idiv(nanos_, ") != std::string::npos);
@@ -2662,7 +2662,7 @@ TEST_CASE("Duration scalar scaling lowers to straight operators") {
           != std::string::npos);
 }
 
-TEST_CASE("Duration fractional scaling lowers to straight operators") {
+TEST_CASE("Duration fractional scaling lowers through the arithmetic helpers") {
     SemaEmitFixture f("func s() -> Int {\n"
                       "    let one: Duration = .seconds(1)\n"
                       "    let up = one * 1.5\n"
@@ -2672,8 +2672,8 @@ TEST_CASE("Duration fractional scaling lowers to straight operators") {
                       "}\n");
     // Float scaling is also a straight `a <op> b`; the floating_point operator
     // overloads resolve it.
-    CHECK(f.out.source.find("one * 1.5") != std::string::npos);
-    CHECK(f.out.source.find("2.0 * up") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::mul(one, 1.5)") != std::string::npos);
+    CHECK(f.out.source.find("__vstr::mul(2.0, up)") != std::string::npos);
     CHECK(f.out.source.find("up2 / 1.5") != std::string::npos);
     CHECK(f.out.header.find("friend constexpr Duration operator*(F f, Duration d)")
           != std::string::npos);
@@ -2777,8 +2777,8 @@ TEST_CASE("an expression-context quote materializes its body with splices substi
                       "func axpy(_ a: Int32, _ x: Int32, _ y: Int32) -> Int32 {\n"
                       "    return quote { $a * $x + $y }\n"
                       "}\n");
-    CHECK(f.out.source.find("return (x) * (x);") != std::string::npos);
-    CHECK(f.out.source.find("return (a) * (x) + (y);") != std::string::npos);
+    CHECK(f.out.source.find("return __vstr::mul((x), (x));") != std::string::npos);
+    CHECK(f.out.source.find("return __vstr::add(__vstr::mul((a), (x)), (y));") != std::string::npos);
 }
 
 TEST_CASE("an expression macro expands to its quote template with args substituted") {
@@ -2789,9 +2789,9 @@ TEST_CASE("an expression macro expands to its quote template with args substitut
                       "func useT(_ n: Int32) -> Int32 { return @twice(n) }\n"
                       "func useSb(_ p: Int32, _ k: Int32) -> Int32 { return @sb(p + 1, k) }\n");
     // @twice(n) -> (n + n); the call lowers to its expansion (parenthesized).
-    CHECK(f.out.source.find("return ((n) + (n));") != std::string::npos);
+    CHECK(f.out.source.find("return (__vstr::add((n), (n)));") != std::string::npos);
     // spliced compound arg keeps grouping: @sb(p+1, k) -> (p+1)*(p+1) + k.
-    CHECK(f.out.source.find("return ((p + 1) * (p + 1) + (k));") != std::string::npos);
+    CHECK(f.out.source.find("return (__vstr::add(__vstr::mul((__vstr::add(p, __vstr::wlit(1))), (__vstr::add(p, __vstr::wlit(1)))), (k)));") != std::string::npos);
     // The comptime macro funcs are not emitted.
     CHECK(f.out.source.find("twice(") == std::string::npos);
     CHECK(f.out.source.find(" sb(") == std::string::npos);
@@ -3336,7 +3336,7 @@ TEST_CASE("binary operands are parenthesized where C++ precedence would regroup 
                       "}\n");
     CHECK(f.out.source.find("return (x & m) != 0 || (x ^ m) == m;") != std::string::npos);
     CHECK(f.out.source.find("return a == (b | 1);") != std::string::npos);
-    CHECK(f.out.source.find("return a + b * 2 << 1;") != std::string::npos);
+    CHECK(f.out.source.find("return __vstr::add(a, __vstr::mul(b, __vstr::wlit(2))) << 1;") != std::string::npos);
 }
 
 TEST_CASE("@extern functions pass read parameters by value (Tier C)") {

@@ -44,7 +44,6 @@ Each gap has one of four kinds:
      their scope.
 2. **Generated C++ can have undefined or reordered behaviour where Vestra
    defines it.**
-   - Signed overflow, which Vestra traps.
    - Argument evaluation order.
    - `??` evaluates its right side eagerly in a global's initializer, or
      when it holds a `try`, `await`, `if` or `match`.
@@ -78,7 +77,7 @@ Each gap has one of four kinds:
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §4 | Integer overflow does not trap in debug | unsound | `a + b` lowers to plain C++ `+` on `int32_t`. No checked arithmetic exists anywhere in `src/`. `MIN / -1` wraps (the prelude's `idiv`) rather than trapping. |
+| §4 | Integer overflow traps in debug and wraps in release | weaker | Integer `+ - *`, `+= -= *=`, unary `-` and `MIN / -1` lower to prelude helpers that panic on overflow ("integer overflow in +"), computed in the operands' Vestra type, so an `Int8` overflows past 127. `--profile=release` defines `VESTRA_RELEASE` in the header, and they wrap there instead (never C++'s undefined signed overflow). Arithmetic on constants that overflows (`let y: Int8 = 100 + 28`, `-M` for `M` = `Int32` MIN) is a compile error. The 128-bit integers aren't checked at run time, and the folder checks constants only to 64 bits. The self-hosted code generator emits the same helpers; the self-hosted checker doesn't report constant overflow. |
 | §4 | `as` byte reinterpretation | missing (partial) | `as` is checked (both sides `Trivial`, one size and alignment, never into an enum) and lowers to `__builtin_bit_cast`. Sizes come from the `T.size` folder, so only primitives, vectors of them and structs of those can be reinterpreted. Nothing checks that the bytes are a valid value of the target, so `b as Bool` from a `UInt8` of 2 is accepted. `as?` is rejected, since the draft gives it no meaning (see [spec holes](#spec-holes-found-along-the-way)). |
 | §4 | `addingChecked` result type | weaker | `addingChecked`, `subtractingChecked` and `multipliedChecked` exist on every integer type, but they return a plain `(T, Bool)`, not the draft's `(T, overflow: Bool)`: §17 gives tuples no element labels (see "Spec holes"). The other two names are this compiler's; the draft names only `addingChecked`. |
 | §4 | `Enum.from(raw)` discriminants | weaker | `E.from(raw)` takes any integer and yields `E?`, but a case's discriminant is just its declaration index, and an enum whose cases carry payloads has none: the draft gives enums no explicit discriminants or raw type (see "Spec holes"). |
@@ -240,8 +239,8 @@ spec guarantees follow from that choice:
 
 - Tier V calling conventions and edition-stamped symbols cannot be expressed.
 - Reproducible builds depend on the host C++ compiler.
-- Evaluation order, overflow and FP-contract semantics are inherited from C++
-  unless the emitter overrides them, which today it does not.
+- Evaluation order and FP-contract semantics are inherited from C++. Integer
+  overflow is the one the emitter overrides (§4 row above).
 
 ### §16: deliberate omissions
 

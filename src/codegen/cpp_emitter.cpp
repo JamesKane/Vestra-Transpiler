@@ -419,6 +419,9 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
     // distinct headers.
     hdr << "#ifndef VESTRA_RUNTIME_PRELUDE\n";
     hdr << "#define VESTRA_RUNTIME_PRELUDE\n\n";
+    if (release_) {
+        hdr << "#ifndef VESTRA_RELEASE\n#define VESTRA_RELEASE\n#endif\n\n";
+    }
 
     if (no_libc_) {
         detail::emit_freestanding_prelude(hdr);
@@ -3320,6 +3323,15 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             os << ")";
             break;
         }
+        // §4 `-MIN` overflows: negating anything but a literal goes through
+        // the prelude's checked `neg`.
+        if (u.op == ast::UnaryOp::Neg && u.operand->kind != ast::NodeKind::IntLit
+            && u.operand->kind != ast::NodeKind::FloatLit) {
+            os << "__vstr::neg(";
+            emit_expr(os, *u.operand);
+            os << ")";
+            break;
+        }
         os << unop_text(u.op);
         emit_expr(os, *u.operand);
         break;
@@ -3544,6 +3556,21 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
             os << (b.op == ast::BinaryOp::WrappingAdd   ? "__vstr::wrap_add("
                    : b.op == ast::BinaryOp::WrappingSub ? "__vstr::wrap_sub("
                                                         : "__vstr::wrap_mul(");
+            emit_wrap_operand(os, *b.lhs);
+            os << ", ";
+            emit_wrap_operand(os, *b.rhs);
+            os << ")";
+            break;
+        }
+        // §4, §19.9 integer `+ - *` trap on overflow (and wrap under
+        // VESTRA_RELEASE): a prelude helper checks them. An integer literal
+        // operand goes in as a `wlit`, so the result takes the other side's
+        // type; any other operand type uses its own operator.
+        if (b.op == ast::BinaryOp::Add || b.op == ast::BinaryOp::Sub
+            || b.op == ast::BinaryOp::Mul) {
+            os << (b.op == ast::BinaryOp::Add   ? "__vstr::add("
+                   : b.op == ast::BinaryOp::Sub ? "__vstr::sub("
+                                                : "__vstr::mul(");
             emit_wrap_operand(os, *b.lhs);
             os << ", ";
             emit_wrap_operand(os, *b.rhs);

@@ -67,7 +67,8 @@ Subcommands:
         The target also sets `cfg` (§12.6): cfg.arch and cfg.pointerBits
         follow --target, cfg.os is freestanding under --no-libc (else the
         host's), cfg.has("f") is true for each --target-features entry,
-        and cfg.profile is --profile (default debug).
+        and cfg.profile is --profile (default debug). Under
+        --profile=release, integer `+ - *` wrap instead of trapping (§4).
   check <file.vst> [-I DIR ...] [--target=ARCH] [--target-features=LIST] [--no-libc]
                    [--profile=NAME]
         Parse and run name resolution + type checking; print any diagnostics.
@@ -739,6 +740,7 @@ int run_build(const BuildOptions& opts, std::ostream& out, std::ostream& err) {
 
         codegen::CppEmitter emitter(rep, opts.skip_check ? nullptr : &resolver.resolution());
         emitter.set_no_libc(opts.no_libc);
+        emitter.set_release(opts.profile == "release");
         emitter.set_imported_qualifiers(imported_qualifiers_for(graph, i));
         // The output relpath (entry = stem; dependency = import path) is also the
         // emitter's `output_basename`, so a unit's `#include "<self>.hpp"` and an

@@ -3162,3 +3162,34 @@ TEST_CASE("a bare name in a match pattern compares against an existing value") {
                              "}\n");
     CHECK(open.first_message == "match is not exhaustive: case 'b' is not covered");
 }
+
+TEST_CASE("§4 integer arithmetic on constants that overflows its type is an error") {
+    const std::string msg =
+        "this arithmetic on constants overflows Int8, so it would trap at run time";
+    auto lit = check_detail("func f() -> Int8 {\n"
+                            "    let y: Int8 = 100 + 28\n"
+                            "    return y\n"
+                            "}\n");
+    CHECK(lit.error_count == 1);
+    CHECK(lit.first_message == msg);
+    // Through consts, reported once at the inner expression.
+    auto viaConst = check_detail("const Y: Int8 = 100 + 27\n"
+                                 "const Z: Int8 = Y * 2 + 1\n");
+    CHECK(viaConst.error_count == 1);
+    CHECK(viaConst.first_message == msg);
+    // `-MIN`, and an unsigned subtraction below zero.
+    auto neg = check_detail("const M: Int32 = -2147483647 - 1\n"
+                            "const N: Int32 = -M\n");
+    CHECK(neg.error_count == 1);
+    CHECK(neg.first_message
+          == "this arithmetic on constants overflows Int32, so it would trap at run time");
+    auto under = check_detail("const U: UInt8 = 3 - 4\n");
+    CHECK(under.first_message
+          == "this arithmetic on constants overflows UInt8, so it would trap at run time");
+    // In range, and at the edge, is fine; so is arithmetic on a runtime value.
+    CHECK(check_detail("const A: Int8 = 120 + 7\n"
+                       "const B: Int8 = -128\n"
+                       "func f(_ a: Int8) -> Int8 { return a + 100 + A }\n")
+              .error_count
+          == 0);
+}

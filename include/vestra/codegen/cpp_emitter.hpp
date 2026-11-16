@@ -44,6 +44,9 @@ public:
     // comment so downstream link checkers (and the v0.6
     // `vestra audit --no-libc` enumerator) can see the contract.
     void set_no_libc(bool v) { no_libc_ = v; }
+    // §4 `--profile=release`: integer `+ - *` wrap instead of trapping, so
+    // the prelude is built with VESTRA_RELEASE.
+    void set_release(bool v) { release_ = v; }
 
     // §5 multi-file: hand the emitter a map from each *imported* module's
     // public nominal decl (struct/enum/protocol/opaque) to its C++ namespace
@@ -337,6 +340,7 @@ private:
     // The unit's module path, for qualifying §12.4 macro-template names.
     std::vector<std::string> module_path_;
     bool no_libc_ = false;
+    bool release_ = false;
     // §14.12.3 — true while emitting a function attributed
     // `@no_auto_barrier`. Per-call-site lowering of
     // `Sysreg.X.write(v)` reads this to decide whether to route
