@@ -498,14 +498,39 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
         src << " {\n\n";
     }
 
+    // §15 declarations may come in any order, but C++ wants a name declared
+    // before it is used. So the header opens with a forward declaration of
+    // every type and the prototype of every non-generic function, ahead of
+    // the definitions (which follow in source order, prototypes included):
+    // a signature may then name a later type, and a method body call a later
+    // function. A prototype using a const as an array length stays in place,
+    // since the const isn't declared that early.
+    std::ostringstream fwd;
+    std::ostringstream body;
     for (const auto& d : unit.decls) {
         // §12.6: skip @when-gated-out decls. The Resolver populated the
         // Resolution's gated set during its own pass.
         if (resolution_ != nullptr && resolution_->is_gated_out(d.get())) {
             continue;
         }
-        emit_decl(hdr, src, *d);
+        emit_forward_type(fwd, *d);
     }
+    for (const auto& d : unit.decls) {
+        if (resolution_ != nullptr && resolution_->is_gated_out(d.get())) {
+            continue;
+        }
+        std::ostringstream chunk;
+        emit_decl(chunk, src, *d);
+        if (d->kind == ast::NodeKind::Func
+            && hoists_prototype(static_cast<const ast::FuncDecl&>(*d))) {
+            fwd << chunk.str();
+        }
+        body << chunk.str();
+    }
+    if (fwd.tellp() > 0) {
+        hdr << fwd.str() << "\n";
+    }
+    hdr << body.str();
 
     // §A10 (§15.5) — if the unit declares a @panic_handler, emit a
     // static-init block that registers it with the runtime
@@ -809,6 +834,114 @@ const char* CppEmitter::unop_text(ast::UnaryOp op) {
 }
 
 // ----------------------------------------------------------------------------
+
+namespace {
+
+// `template <class T, std::size_t N>\n` for a generic type, else nothing:
+// the head emit_struct / emit_enum write.
+std::string template_head_of(const std::vector<ast::GenericParam>& gens) {
+    std::string out;
+    for (const auto& g : gens) {
+        if (g.name.empty()) {
+            continue;
+        }
+        out += out.empty() ? "template <" : ", ";
+        out += g.is_const ? "std::size_t " : "class ";
+        out += g.name;
+    }
+    return out.empty() ? out : out + ">\n";
+}
+
+// A type spelled with a const array length (`[N]T`, N a name).
+bool names_const_length(const ast::Type* t) {
+    if (t == nullptr) {
+        return false;
+    }
+    switch (t->kind) {
+    case ast::NodeKind::VectorType: {
+        const auto& v = static_cast<const ast::VectorType&>(*t);
+        return !v.length_ident.empty() || names_const_length(v.element.get());
+    }
+    case ast::NodeKind::OptionalType:
+        return names_const_length(static_cast<const ast::OptionalType&>(*t).inner.get());
+    case ast::NodeKind::TupleType:
+        for (const auto& el : static_cast<const ast::TupleType&>(*t).elements) {
+            if (names_const_length(el.get())) {
+                return true;
+            }
+        }
+        return false;
+    case ast::NodeKind::NamedType:
+        for (const auto& a : static_cast<const ast::NamedType&>(*t).type_args) {
+            if (names_const_length(a.get())) {
+                return true;
+            }
+        }
+        return false;
+    case ast::NodeKind::FunctionType: {
+        const auto& f = static_cast<const ast::FunctionType&>(*t);
+        for (const auto& p : f.params) {
+            if (names_const_length(p.get())) {
+                return true;
+            }
+        }
+        return names_const_length(f.result.get());
+    }
+    default:
+        return false;
+    }
+}
+
+}  // namespace
+
+// §15 a non-generic, runtime function's prototype is repeated ahead of the
+// type definitions (see emit()).
+bool CppEmitter::hoists_prototype(const ast::FuncDecl& f) {
+    if (f.is_comptime || !template_head_of(f.generics).empty()) {
+        return false;
+    }
+    for (const auto& p : f.params) {
+        if (names_const_length(p.type.get())) {
+            return false;
+        }
+    }
+    return !names_const_length(f.result.get());
+}
+
+// §15 the forward declaration of a type decl, matching its definition's
+// class-key and template head; nothing for any other decl.
+void CppEmitter::emit_forward_type(std::ostream& os, const ast::Decl& d) {
+    switch (d.kind) {
+    case ast::NodeKind::Struct: {
+        const auto& s = static_cast<const ast::StructDecl&>(d);
+        os << template_head_of(s.generics)
+           << (read_layout_attrs(s.attributes).is_union ? "union " : "struct ") << s.name
+           << ";\n";
+        break;
+    }
+    case ast::NodeKind::Enum: {
+        const auto& e = static_cast<const ast::EnumDecl&>(d);
+        const std::string head = template_head_of(e.generics);
+        bool bare = head.empty();
+        for (const auto& c : e.cases) {
+            if (!c.payload.empty()) {
+                bare = false;
+            }
+        }
+        os << (bare ? "enum class " : head + "struct ") << e.name << ";\n";
+        break;
+    }
+    case ast::NodeKind::Opaque: {
+        const auto& o = static_cast<const ast::OpaqueDecl&>(d);
+        os << "enum class " << o.name << " : ";
+        emit_type(os, *o.underlying);
+        os << ";\n";
+        break;
+    }
+    default:
+        break;
+    }
+}
 
 void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl& d) {
     switch (d.kind) {

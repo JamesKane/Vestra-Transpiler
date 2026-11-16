@@ -6253,6 +6253,36 @@ func emitHpp(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc, Log {
     print("\n")
     emitHppImports(u.imports)
     emitNsOpen(u.hasMod, u.modPath)
+    // §15 a forward declaration of every type and the prototype of every
+    // non-generic function first, so declarations may come in any order.
+    var f: Int = 0
+    var anyFwd: Bool = false
+    var seenT: Vec[String] = Vec.new()
+    while f < u.decls.len() {
+        let d = u.decls.get(f) ?? Nd.wildcard
+        let dn = declNameOf(d)
+        if !tnContainsC(seenT, dn) && emitFwdType(&env, d) {
+            seenT.push(dn)
+            anyFwd = true
+        }
+        f = f + 1
+    }
+    // vgen doesn't evaluate `@when`, so every branch of a gated function is
+    // here; they share one signature, and the bootstrap declares only the
+    // selected one, so a name is declared once.
+    var g: Int = 0
+    var seen: Vec[String] = Vec.new()
+    while g < u.decls.len() {
+        let d = u.decls.get(g) ?? Nd.wildcard
+        let dn = declNameOf(d)
+        if hoistsProto(d) && !tnContainsC(seen, dn) {
+            emitHppDecl(&env, d)
+            seen.push(dn)
+            anyFwd = true
+        }
+        g = g + 1
+    }
+    if anyFwd { print("\n") }
     var i: Int = 0
     while i < u.decls.len() {
         emitHppDecl(&env, u.decls.get(i) ?? Nd.wildcard)
@@ -6712,6 +6742,100 @@ func printPayArgParts(_ label: Str, _ idx: Int) using Alloc, Log {
 // module's header by its path as a directory path (`util/math.hpp`). Each
 // group is followed by one blank line when non-empty; the `#include` alone
 // suffices (cross-module references emit fully qualified).
+// §15 the forward declaration of a type decl (its definition's class-key
+// and template head), as the bootstrap's emit_forward_type writes it.
+func emitFwdType(_ env: inout TyEnv, _ d: Nd) using Alloc, Log -> Bool {
+    return match d {
+        case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics, let attrs): emitFwdStruct(generics, name, attrs)
+        case .enumD(let vis, let name, let cases, let methods, let generics): emitFwdEnum(generics, name, cases)
+        case .opaqueD(let vis, let name, let under): emitFwdOpaque(name, under)
+        default: false
+    }
+}
+
+func emitFwdStruct(_ gens: Vec[Nd], _ name: Str, _ attrs: Vec[Nd]) using Alloc, Log -> Bool {
+    if gens.len() > 0 { emitTemplateHead(gens) }
+    if layoutRepr(attrs, "union") { print("union ") } else { print("struct ") }
+    print(name)
+    print(";\n")
+    return true
+}
+
+func emitFwdEnum(_ gens: Vec[Nd], _ name: Str, _ cases: Vec[Nd]) using Alloc, Log -> Bool {
+    if gens.len() == 0 && !casesHavePayload(cases) {
+        print("enum class ")
+    } else {
+        if gens.len() > 0 { emitTemplateHead(gens) }
+        print("struct ")
+    }
+    print(name)
+    print(";\n")
+    return true
+}
+
+func casesHavePayload(_ cases: Vec[Nd]) using Alloc -> Bool {
+    var i: Int = 0
+    while i < cases.len() {
+        match cases.get(i) ?? Nd.wildcard {
+            case .enumCase(let n, let pay): if pay.len() > 0 { return true }
+            default: noop()
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func emitFwdOpaque(_ name: Str, _ under: Vec[Nd]) using Alloc, Log -> Bool {
+    print("enum class ")
+    print(name)
+    print(" : ")
+    emitTypeBoxed(under)
+    print(";\n")
+    return true
+}
+
+// A non-generic, runtime function whose signature names no const array
+// length (that const isn't declared yet ahead of the definitions).
+func hoistsProto(_ d: Nd) using Alloc -> Bool {
+    return match d {
+        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body, let attrs):
+            gens.len() == 0 && !containsSub(mods, "comptime ") && !paramsNameConstLen(params) && !namesConstLen(res)
+        default: false
+    }
+}
+
+func paramsNameConstLen(_ ps: Vec[Nd]) using Alloc -> Bool {
+    var i: Int = 0
+    while i < ps.len() {
+        match ps.get(i) ?? Nd.wildcard {
+            case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat, let pdv): if namesConstLen(ty) { return true }
+            default: noop()
+        }
+        i = i + 1
+    }
+    return false
+}
+
+func namesConstLen(_ ts: Vec[Nd]) using Alloc -> Bool {
+    var i: Int = 0
+    while i < ts.len() {
+        if namesConstLenNd(ts.get(i) ?? Nd.wildcard) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func namesConstLenNd(_ t: Nd) using Alloc -> Bool {
+    return match t {
+        case .vecT(let len, let el): (len.len() > 0 && !isDigitC(len.charAt(0) ?? '0')) || namesConstLen(el)
+        case .opt(let x): namesConstLen(x)
+        case .tupleT(let xs): namesConstLen(xs)
+        case .named(let path, let g, let args): namesConstLen(args)
+        case .fnT(let ps, let cs, let th, let r): namesConstLen(ps) || namesConstLen(r)
+        default: false
+    }
+}
+
 func emitHppImports(_ imports: Vec[Nd]) using Alloc, Log {
     var anyC: Bool = false
     var i: Int = 0

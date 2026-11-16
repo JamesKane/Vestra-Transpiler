@@ -1,0 +1,34 @@
+// §15 declarations come in any order. A function's signature names a struct
+// declared after it, a struct method calls a function declared after it,
+// and an enum is used before its declaration. The header forward-declares
+// every type and repeats every non-generic prototype ahead of the
+// definitions.
+
+func make(_ v: Int32) -> Box2 { return Box2(x: v, tag: .hot) }
+
+func use(_ b: Box2) -> Int32 { return b.doubled() + temp(b.tag) }
+
+struct Box2 {
+    var x: Int32
+    var tag: Temp
+    func doubled() -> Int32 { return helper(self.x) * 2 }
+}
+
+func helper(_ v: Int32) -> Int32 { return v + 1 }
+
+func temp(_ t: Temp) -> Int32 {
+    return match t {
+        case .hot: 100
+        case .cold: 0
+    }
+}
+
+enum Temp {
+    case hot
+    case cold
+}
+
+func main() using Log, Alloc -> Int32 {
+    print("v=\(use(make(4)))")
+    return 0
+}
