@@ -1,5 +1,7 @@
-// §6 an enum body takes `inout func` and `sink func` methods, as a struct
-// body does: on a bare enum and on one whose cases carry payloads.
+// §6 an enum body takes `func`, `inout func` and `sink func` methods, as a
+// struct body does, on a bare enum and on one whose cases carry payloads.
+// Each lowers to a free function `__vstr_<Enum>_<m>` taking the receiver as
+// `self`: `const E&`, `E&` (inout) or a moved-in `E&&` (sink).
 
 enum Light {
     case red

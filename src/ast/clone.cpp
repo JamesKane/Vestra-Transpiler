@@ -636,4 +636,11 @@ DeclPtr clone(const Decl& d) {
     }
 }
 
+Param clone_parameter(const Param& p) {
+    return clone_param(p);
+}
+GenericParam clone_generic_param(const GenericParam& g) {
+    return clone_generic(g);
+}
+
 }  // namespace vestra::ast

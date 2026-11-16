@@ -3134,6 +3134,11 @@ struct TyEnv {
     var cfVal: Vec[Int]         // ... and their integer values
     var pCurName: Vec[String]   // per-function: its parameter names (a storage place for if-let)
     var modLabel: String        // global: the module path `_`-joined, plus `_` (symbol prefixes)
+    var inEnumMethod: Bool      // §6 emitting an enum method's free function: `self` is a parameter
+    var emEnum: Vec[String]     // §6 per enum-method rows — the enum ...
+    var emName: Vec[String]     // ... method name ...
+    var emSink: Vec[Bool]       // ... whether it is a `sink func` ...
+    var emPSink: Vec[String]    // ... and which parameters are `sink` ("s" / "r" per parameter)
     var bad: Vec[String]
 }
 
@@ -5088,6 +5093,11 @@ func tyInferArgAt(_ env: inout TyEnv, _ args: Vec[Nd], _ i: Int) using Alloc -> 
 // result resolves to the receiver type so a chained / stored result types right.
 func tyInferMethodCall(_ env: inout TyEnv, _ base: Vec[Nd], _ name: String, _ chain: Bool) using Alloc -> String {
     if chain { return own("") }
+    // `Shape.circle(r)` constructs the (non-generic) enum Shape.
+    let en = dottedOf(base.get(0) ?? Nd.wildcard)
+    if !streq(en, "") && tyIsEnumName(env, en) && !tnContainsC(env.genTypes, en) && enumHasCaseNamed(env, en, name) {
+        return en
+    }
     let bt = tyInferBoxed(env, base)
     if streq(bt, "") { return own("") }
     // `o.take()` on an Optional yields the same Optional.
@@ -5578,6 +5588,7 @@ func buildTyEnv(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc -> TyEnv
                     cfName: Vec.new(), cfVal: Vec.new(),
                     pCurName: Vec.new(),
                     modLabel: modLabelOf(u.hasMod, u.modPath),
+                    inEnumMethod: false, emEnum: Vec.new(), emName: Vec.new(), emSink: Vec.new(), emPSink: Vec.new(),
                     bad: Vec.new())
     // §18.1 the builtin `enum Ordering { case less, equal, greater }` (the
     // prelude declares it), so a match over one lowers as over any bare enum.
@@ -5597,6 +5608,7 @@ func buildTyEnv(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc -> TyEnv
     while i < u.decls.len() {
         tyCollectDecl(&env, u.decls.get(i) ?? Nd.wildcard)
         tyNoteTopName(&env, u.decls.get(i) ?? Nd.wildcard)
+        tyNoteEnumMethods(&env, u.decls.get(i) ?? Nd.wildcard)
         i = i + 1
     }
     var m: Int = 0
@@ -5992,8 +6004,178 @@ func emitDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
             emitFuncOrSkip(env, mods, gens, name, params, thr, res, body)
         case .staticD(let vis, let name, let ty, let value, let attrs):
             if env.noLibc && vtFrame(ty).len() > 0 { emitVectorTableSrc(env, name, ty, value, attrs) }
+        case .enumD(let vis, let name, let cases, let methods, let generics):
+            emitEnumMethodsCpp(env, name, generics, methods)
         default: noop()
     }
+}
+
+// §6 an enum method lowers to a free function `__vstr_<Enum>_<m>(self, ...)`
+// (a bare enum's `enum class` holds no members), as the bootstrap's
+// emit_enum_method does: `self` is `const E&`, `E&` for an `inout func`, a
+// moved-in `E` for a `sink func`.
+func enumMethodFunc(_ ename: Str, _ gens: Vec[Nd], _ m: Nd) using Alloc -> Nd {
+    return match m {
+        case .funcD(let vis, let mods, let name, let g, let params, let caps, let thr, let res, let body, let attrs):
+            enumMethodFunc2(ename, gens, mods, name, params, caps, thr, res, body)
+        default: m
+    }
+}
+
+func enumMethodFunc2(_ ename: Str, _ gens: Vec[Nd], _ mods: Str, _ name: Str, _ params: Vec[Nd], _ caps: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc -> Nd {
+    var fname: String = "__vstr_"
+    fname.append(ename)
+    fname.append("_")
+    fname.append(name)
+    var mode: String = ""
+    if containsSub(mods, "inout ") { mode = own("inout ") }
+    if containsSub(mods, "sink ") { mode = own("sink ") }
+    var plain: String = ""
+    if containsSub(mods, "async ") { plain = own("async ") }
+    var targs: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < gens.len() {
+        match gens.get(i) ?? Nd.wildcard {
+            case .genType(let gn, let bs): targs.push(Nd.named(own(gn), false, Vec.new()))
+            case .genConst(let gn, let t): targs.push(Nd.named(own(gn), false, Vec.new()))
+            default: noop()
+        }
+        i = i + 1
+    }
+    let selfT = Nd.named(own(ename), targs.len() > 0, targs)
+    var ps: Vec[Nd] = Vec.new()
+    ps.push(Nd.param(true, own(""), own("self"), false, mode, bT(selfT), Vec.new(), Vec.new()))
+    var k: Int = 0
+    while k < params.len() {
+        ps.push(params.get(k) ?? Nd.wildcard)
+        k = k + 1
+    }
+    return Nd.funcD(own(""), plain, fname, ndsCopy(gens), ps, ndsCopy(caps), ndsCopy(thr), ndsCopy(res), ndsCopy(body), Vec.new())
+}
+
+func emitEnumWithMethodsHpp(_ env: inout TyEnv, _ gens: Vec[Nd], _ name: Str, _ cases: Vec[Nd], _ methods: Vec[Nd]) using Alloc, Log {
+    emitGenEnumDecl(env, gens, name, cases, methods)
+    emitEnumMethodsHpp(env, name, gens, methods)
+}
+
+func emitEnumMethodsHpp(_ env: inout TyEnv, _ ename: Str, _ gens: Vec[Nd], _ methods: Vec[Nd]) using Alloc, Log {
+    let prev = env.inEnumMethod
+    env.inEnumMethod = true
+    var i: Int = 0
+    while i < methods.len() {
+        emitHppDecl(&env, enumMethodFunc(ename, gens, methods.get(i) ?? Nd.wildcard))
+        i = i + 1
+    }
+    env.inEnumMethod = prev
+}
+
+func emitEnumMethodsCpp(_ env: inout TyEnv, _ ename: Str, _ gens: Vec[Nd], _ methods: Vec[Nd]) using Alloc, Log {
+    let prev = env.inEnumMethod
+    env.inEnumMethod = true
+    var i: Int = 0
+    while i < methods.len() {
+        emitDecl(&env, enumMethodFunc(ename, gens, methods.get(i) ?? Nd.wildcard))
+        i = i + 1
+    }
+    env.inEnumMethod = prev
+}
+
+func tyNoteEnumMethods(_ env: inout TyEnv, _ d: Nd) using Alloc {
+    match d {
+        case .enumD(let vis, let name, let cases, let methods, let generics): tyNoteEnumMethodRows(env, name, methods)
+        default: noop()
+    }
+}
+
+func tyNoteEnumMethodRows(_ env: inout TyEnv, _ ename: String, _ methods: Vec[Nd]) using Alloc {
+    var i: Int = 0
+    while i < methods.len() {
+        match methods.get(i) ?? Nd.wildcard {
+            case .funcD(let vis, let mods, let name, let g, let params, let caps, let thr, let res, let body, let attrs): tyNoteEnumMethodRow(env, ename, mods, name, params)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func tyNoteEnumMethodRow(_ env: inout TyEnv, _ ename: String, _ mods: String, _ name: String, _ params: Vec[Nd]) using Alloc {
+    env.emEnum.push(copy ename)
+    env.emName.push(copy name)
+    env.emSink.push(containsSub(mods, "sink "))
+    var ps: String = ""
+    var i: Int = 0
+    while i < params.len() {
+        match params.get(i) ?? Nd.wildcard {
+            case .param(let lo, let lbl, let nm, let ne, let md, let ty, let pp, let dv): pushSinkMark(&ps, md)
+            default: noop()
+        }
+        i = i + 1
+    }
+    env.emPSink.push(ps)
+}
+
+// §6 `x.m(args)` on an enum value with a method `m`: the free function, the
+// receiver first (moved in for a `sink func`).
+func emitSelfE(_ env: inout TyEnv) using Alloc, Log {
+    if env.inEnumMethod { print("self") } else { print("(*this)") }
+}
+
+func enumHasCaseNamed(_ env: inout TyEnv, _ en: Str, _ cn: Str) using Alloc -> Bool {
+    var i: Int = 0
+    while i < env.ecEnum.len() {
+        if streq(env.ecEnum.get(i) ?? own(""), en) && streq(env.ecName.get(i) ?? own(""), cn) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func pushSinkMark(_ s: inout String, _ md: Str) using Alloc { s.append(paramSinkMark(md)) }
+
+func paramSinkMark(_ md: Str) -> Str {
+    if containsSub(md, "sink") { return "s" }
+    return "r"
+}
+
+func tryEmitEnumMethodCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    return match callee.get(0) ?? Nd.wildcard {
+        case .member(let base, let n, let chain): emitEnumMethodCall(env, base, n, args)
+        default: false
+    }
+}
+
+func emitEnumMethodCall(_ env: inout TyEnv, _ base: Vec[Nd], _ n: Str, _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    let bt = genBaseOf(tyInferBoxed(env, base))
+    var row: Int = -1
+    var i: Int = 0
+    while i < env.emEnum.len() {
+        if streq(env.emEnum.get(i) ?? own(""), bt) && streq(env.emName.get(i) ?? own(""), n) { row = i }
+        i = i + 1
+    }
+    if row < 0 { return false }
+    print("__vstr_")
+    print(bt)
+    print("_")
+    print(n)
+    print("(")
+    let byMove = env.emSink.get(row) ?? false
+    if byMove { print("std::move(") }
+    emitBoxed(env, base)
+    if byMove { print(")") }
+    let ps = env.emPSink.get(row) ?? own("")
+    var k: Int = 0
+    while k < args.len() {
+        print(", ")
+        let s = k < ps.len() && (ps.charAt(k) ?? 'r') == 's'
+        if s { print("std::move(") }
+        match args.get(k) ?? Nd.wildcard {
+            case .arg(let l, let io, let v): emitBoxed(env, v)
+            default: noop()
+        }
+        if s { print(")") }
+        k = k + 1
+    }
+    print(")")
+    return true
 }
 
 // ----- §14.5.3 compiler-emitted vector table (--no-libc, aarch64) ------------
@@ -6776,13 +6958,17 @@ func emitFwdEnum(_ gens: Vec[Nd], _ name: Str, _ cases: Vec[Nd]) using Alloc, Lo
 func casesHavePayload(_ cases: Vec[Nd]) using Alloc -> Bool {
     var i: Int = 0
     while i < cases.len() {
-        match cases.get(i) ?? Nd.wildcard {
-            case .enumCase(let n, let pay): if pay.len() > 0 { return true }
-            default: noop()
-        }
+        if caseHasPayload(cases.get(i) ?? Nd.wildcard) { return true }
         i = i + 1
     }
     return false
+}
+
+func caseHasPayload(_ c: Nd) -> Bool {
+    return match c {
+        case .enumCase(let n, let pay): pay.len() > 0
+        default: false
+    }
 }
 
 func emitFwdOpaque(_ name: Str, _ under: Vec[Nd]) using Alloc, Log -> Bool {
@@ -6902,7 +7088,7 @@ func emitHppDecl(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
         case .structD(let vis, let name, let fields, let methods, let deinitB, let isLinear, let generics, let attrs):
             emitGenStructDef(env, generics, name, fields, methods)
         case .enumD(let vis, let name, let cases, let methods, let generics):
-            emitGenEnumDecl(env, generics, name, cases, methods)
+            emitEnumWithMethodsHpp(env, generics, name, cases, methods)
         case .constD(let vis, let name, let ty, let value):
             emitConstDef(env, name, ty, value)
         case .staticD(let vis, let name, let ty, let value, let attrs):
@@ -10715,6 +10901,9 @@ func emitVisitGroup(_ env: inout TyEnv, _ i8: Str, _ i12: Str, _ i16: Str, _ enu
     print(i8)
     if idx == 0 { print("if constexpr (std::is_same_v<__vstr_alt_t, ") }
     else { print("} else if constexpr (std::is_same_v<__vstr_alt_t, ") }
+    // §6 in a generic enum's method (a free function template) the
+    // alternative is a dependent name.
+    if env.inEnumMethod && containsSub(enumName, "[") { print("typename ") }
     print(cppOfSpelling(own(enumName)))
     print("::")
     print(cn)
@@ -11028,7 +11217,7 @@ func emitExpr(_ env: inout TyEnv, _ e: Nd) using Alloc, Log {
     match e {
         case .ident(let n): print(n)
         case .nilLit: print("std::nullopt")
-        case .selfE: print("(*this)")
+        case .selfE: emitSelfE(env)
         case .intLit(let s): emitIntText(s)
         case .floatLit(let s): print(s)
         case .boolLit(let b): emitBool(b)
@@ -11806,6 +11995,7 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     if tryEmitScalarCast(env, callee, args) { return }
     if tryEmitConv(env, callee) { return }
     if tryEmitOpaqueCtor(env, callee, args) { return }
+    if tryEmitEnumMethodCall(env, callee, args) { return }
     if tryEmitCompare(env, callee, args) { return }
     let fname = identBaseName(callee)
     // §7 a call to a declared function carries labels too, so a leading

@@ -541,6 +541,11 @@ void CppEmitter::emit_match(std::ostream& os, const ast::MatchExpr& m) {
         // type arguments rather than the bare decl name.
         os << " constexpr (std::is_same_v<__vstr_alt_t, ";
         if (!scrutinee_type->parts().empty()) {
+            // §6 in a generic enum's method (a free function template) the
+            // alternative is a dependent name.
+            if (in_enum_method_) {
+                os << "typename ";
+            }
             emit_sema_type(os, scrutinee_type);
         } else {
             os << nominal_prefix(&enum_decl) << enum_decl.name;

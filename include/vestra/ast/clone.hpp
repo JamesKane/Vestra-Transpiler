@@ -20,5 +20,7 @@ namespace vestra::ast {
 [[nodiscard]] DeclPtr clone(const Decl& d);
 [[nodiscard]] TypePtr clone(const Type& t);
 [[nodiscard]] PatternPtr clone(const Pattern& p);
+[[nodiscard]] Param clone_parameter(const Param& p);
+[[nodiscard]] GenericParam clone_generic_param(const GenericParam& g);
 
 }  // namespace vestra::ast

@@ -4,6 +4,7 @@
 #include "vestra/codegen/cpp_emitter.hpp"
 
 #include "cpp_emitter_internal.hpp"
+#include "vestra/ast/clone.hpp"
 #include "vestra/ast/escapes.hpp"
 #include "vestra/sema/linearity.hpp"
 #include "vestra/sema/resolver.hpp"
@@ -943,6 +944,99 @@ void CppEmitter::emit_forward_type(std::ostream& os, const ast::Decl& d) {
     }
 }
 
+// §6 the C++ name of an enum method: a free function, since a bare enum's
+// `enum class` holds no members.
+std::string enum_method_name(const ast::EnumDecl& e, const ast::FuncDecl& m) {
+    return "__vstr_" + e.name + "_" + m.name;
+}
+
+// §6 an enum method lowers to a free function `__vstr_<Enum>_<m>` whose first
+// parameter is the receiver `self`: `const E&` for a plain method, `E&` for an
+// `inout func`, and a moved-in `E` for a `sink func`. It is emitted through
+// emit_func over a stand-in declaration that borrows the method's own body
+// for the duration, so every expression keeps its resolution.
+void CppEmitter::emit_enum_method(std::ostream& hdr,
+                                  std::ostream& src,
+                                  const ast::EnumDecl& e,
+                                  const ast::FuncDecl& m) {
+    ast::FuncDecl fn;
+    fn.name = enum_method_name(e, m);
+    fn.visibility = m.visibility;
+    fn.is_async = m.is_async;
+    fn.range = m.range;
+    for (const auto& g : e.generics) {
+        fn.generics.push_back(ast::clone_generic_param(g));
+    }
+    ast::Param self;
+    self.label_omitted = true;
+    self.name = "self";
+    self.mode = m.recv_mode == ast::FuncDecl::RecvMode::Inout ? ast::ParamMode::Inout
+                : m.recv_mode == ast::FuncDecl::RecvMode::Sink ? ast::ParamMode::Sink
+                                                               : ast::ParamMode::Read;
+    auto self_type = std::make_unique<ast::NamedType>();
+    self_type->path = {e.name};
+    for (const auto& g : e.generics) {
+        if (!g.name.empty()) {
+            auto arg = std::make_unique<ast::NamedType>();
+            arg->path = {g.name};
+            self_type->type_args.push_back(std::move(arg));
+            self_type->has_generics = true;
+        }
+    }
+    self.type = std::move(self_type);
+    fn.params.push_back(std::move(self));
+    for (const auto& p : m.params) {
+        fn.params.push_back(ast::clone_parameter(p));
+    }
+    fn.result = m.result ? ast::clone(*m.result) : nullptr;
+    fn.effects.throws_type = m.effects.throws_type ? ast::clone(*m.effects.throws_type) : nullptr;
+    auto& body = const_cast<ast::ExprPtr&>(m.body);
+    fn.body = std::move(body);
+    const bool prev = in_enum_method_;
+    in_enum_method_ = true;
+    emit_func(hdr, src, fn);
+    in_enum_method_ = prev;
+    body = std::move(fn.body);
+}
+
+// §6 `x.m(args)` on an enum value with a method `m`: the free function, the
+// receiver first (moved in for a `sink func`).
+bool CppEmitter::emit_enum_method_call(std::ostream& os, const ast::CallExpr& c) {
+    if (resolution_ == nullptr || c.callee->kind != ast::NodeKind::MemberExpr) {
+        return false;
+    }
+    const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+    auto bt = resolution_->type_of(mem.base.get());
+    if (bt == nullptr || bt->kind() != sema::TypeKind::Enum || bt->nominal_decl() == nullptr
+        || bt->nominal_decl()->kind != ast::NodeKind::Enum) {
+        return false;
+    }
+    const auto& e = static_cast<const ast::EnumDecl&>(*bt->nominal_decl());
+    const ast::FuncDecl* m = nullptr;
+    for (const auto& d : e.methods) {
+        if (d->kind == ast::NodeKind::Func && static_cast<const ast::FuncDecl&>(*d).name == mem.member) {
+            m = static_cast<const ast::FuncDecl*>(d.get());
+        }
+    }
+    if (m == nullptr) {
+        return false;
+    }
+    os << enum_method_name(e, *m) << "(";
+    const bool sink = m->recv_mode == ast::FuncDecl::RecvMode::Sink;
+    os << (sink ? "std::move(" : "");
+    emit_expr(os, *mem.base);
+    os << (sink ? ")" : "");
+    for (std::size_t i = 0; i < c.args.size(); ++i) {
+        os << ", ";
+        const bool arg_sink = i < m->params.size() && m->params[i].mode == ast::ParamMode::Sink;
+        os << (arg_sink ? "std::move(" : "");
+        emit_expr(os, *c.args[i].value);
+        os << (arg_sink ? ")" : "");
+    }
+    os << ")";
+    return true;
+}
+
 void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl& d) {
     switch (d.kind) {
     case ast::NodeKind::Func: {
@@ -965,6 +1059,14 @@ void CppEmitter::emit_decl(std::ostream& hdr, std::ostream& src, const ast::Decl
         break;
     case ast::NodeKind::Enum:
         emit_enum(hdr, static_cast<const ast::EnumDecl&>(d));
+        for (const auto& m : static_cast<const ast::EnumDecl&>(d).methods) {
+            if (m->kind == ast::NodeKind::Func) {
+                emit_enum_method(hdr,
+                                 src,
+                                 static_cast<const ast::EnumDecl&>(d),
+                                 static_cast<const ast::FuncDecl&>(*m));
+            }
+        }
         break;
     case ast::NodeKind::Const: {
         const auto& c = static_cast<const ast::ConstDecl&>(d);
@@ -2983,7 +3085,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         break;
     }
     case ast::NodeKind::SelfExpr:
-        os << "(*this)";
+        os << (in_enum_method_ ? "self" : "(*this)");
         break;
     case ast::NodeKind::ParenExpr:
         os << "(";
@@ -4010,6 +4112,10 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << "__vstr::to_string(";
                 emit_expr(os, *mem.base);
                 os << ")";
+                break;
+            }
+            // §6 a method on an enum value is a free function.
+            if (emit_enum_method_call(os, c)) {
                 break;
             }
             // §18.1 `a.compare(b)` with no user `compare` → `__vstr::compare(a, b)`.

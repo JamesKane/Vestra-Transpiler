@@ -1,0 +1,33 @@
+// §6 enum methods lower to free functions `__vstr_<Enum>_<m>(self, ...)`,
+// generic ones to templates: a method on a generic enum, and a method calling
+// another through `self`.
+
+enum Maybe[T] {
+    case just(T)
+    case nothing
+    func isJust() -> Bool {
+        return match self {
+            case .just(let v): true
+            case .nothing: false
+        }
+    }
+}
+
+enum Dir {
+    case up
+    case down
+    func sign() -> Int32 {
+        return match self {
+            case .up: 1
+            case .down: -1
+        }
+    }
+    func twice() -> Int32 { return self.sign() * 2 }
+}
+
+func main() using Log, Alloc -> Int32 {
+    let a: Maybe[Int32] = Maybe.just(5)
+    let b: Maybe[Int32] = Maybe.nothing
+    print("\(a.isJust()) \(b.isJust()) \(Dir.down.twice())")
+    return 0
+}

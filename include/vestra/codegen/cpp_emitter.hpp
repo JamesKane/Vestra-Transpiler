@@ -95,6 +95,10 @@ private:
     static bool is_never_result(const ast::FuncDecl& f);
     bool is_unit_typed(const ast::Expr& e) const;
     void emit_forward_type(std::ostream& os, const ast::Decl& d);
+    void emit_enum_method(std::ostream& hdr, std::ostream& src, const ast::EnumDecl& e,
+                          const ast::FuncDecl& m);
+    bool emit_enum_method_call(std::ostream& os, const ast::CallExpr& c);
+    bool in_enum_method_ = false;  // §6 `self` is a parameter, not `*this`
     [[nodiscard]] static bool hoists_prototype(const ast::FuncDecl& f);
     void emit_struct(std::ostream& hdr, const ast::StructDecl& s);
     void emit_deinit_members(std::ostream& hdr, const ast::StructDecl& s);
