@@ -1,0 +1,37 @@
+// §15 a struct or enum holding a later type by value: that type's definition
+// moves up ahead of it (C++ needs it complete). One reached through a
+// pointer-like wrapper stays where it is.
+
+struct Outer {
+    var inner: Inner
+    var tag: Kind
+    var pair: (Int32, Leaf)
+    var later: Vec[Late]
+    func total() -> Int32 { return self.inner.a + self.inner.b }
+}
+
+enum Kind {
+    case x(Inner)
+    case y
+}
+
+struct Inner {
+    var a: Int32
+    var b: Int32
+    var leaf: Leaf?
+}
+
+struct Leaf {
+    var v: UInt8
+}
+
+struct Late {
+    var n: Int32
+}
+
+func main() using Log, Alloc -> Int32 {
+    let none: Vec[Late] = Vec.new()
+    let o = Outer(inner: Inner(a: 2, b: 3, leaf: nil), tag: Kind.y, pair: (1, Leaf(v: 4)), later: none)
+    print("\(o.total()) \(o.later.len())")
+    return 0
+}

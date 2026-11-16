@@ -13,10 +13,12 @@
 #include <algorithm>
 #include <format>
 #include <ostream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace vestra::codegen {
 
@@ -516,17 +518,103 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
         }
         emit_forward_type(fwd, *d);
     }
+    // A type's definition needs every type it holds by value complete, so a
+    // struct or enum holding a LATER one has that one's definition moved up
+    // ahead of it (depth first, otherwise source order). A type reached only
+    // through a pointer-like wrapper needs no definition; a cycle keeps
+    // source order where it closes.
+    std::unordered_map<std::string, const ast::Decl*> type_decls;
     for (const auto& d : unit.decls) {
         if (resolution_ != nullptr && resolution_->is_gated_out(d.get())) {
             continue;
         }
+        if (d->kind == ast::NodeKind::Struct) {
+            type_decls.emplace(static_cast<const ast::StructDecl&>(*d).name, d.get());
+        } else if (d->kind == ast::NodeKind::Enum) {
+            type_decls.emplace(static_cast<const ast::EnumDecl&>(*d).name, d.get());
+        }
+    }
+    auto value_deps = [&](const ast::Decl& d) {
+        std::vector<const ast::Decl*> deps;
+        auto walk = [&](auto& self, const ast::Type* t) -> void {
+            if (t == nullptr) {
+                return;
+            }
+            switch (t->kind) {
+            case ast::NodeKind::NamedType: {
+                const auto& n = static_cast<const ast::NamedType&>(*t);
+                if (n.path.size() == 1) {
+                    static const std::set<std::string> indirect{
+                        "Ptr", "MutPtr", "RawPtr", "Box", "Vec", "Span", "MutSpan", "Arc", "Str",
+                        "Channel", "Future"};
+                    if (indirect.contains(n.path[0])) {
+                        return;
+                    }
+                    if (auto it = type_decls.find(n.path[0]);
+                        it != type_decls.end() && it->second != &d) {
+                        deps.push_back(it->second);
+                    }
+                }
+                for (const auto& a : n.type_args) {
+                    self(self, a.get());
+                }
+                return;
+            }
+            case ast::NodeKind::VectorType:
+                self(self, static_cast<const ast::VectorType&>(*t).element.get());
+                return;
+            case ast::NodeKind::OptionalType:
+                self(self, static_cast<const ast::OptionalType&>(*t).inner.get());
+                return;
+            case ast::NodeKind::TupleType:
+                for (const auto& e : static_cast<const ast::TupleType&>(*t).elements) {
+                    self(self, e.get());
+                }
+                return;
+            default:
+                return;
+            }
+        };
+        if (d.kind == ast::NodeKind::Struct) {
+            for (const auto& f : static_cast<const ast::StructDecl&>(d).fields) {
+                walk(walk, f.type.get());
+            }
+        } else if (d.kind == ast::NodeKind::Enum) {
+            for (const auto& c : static_cast<const ast::EnumDecl&>(d).cases) {
+                for (const auto& pl : c.payload) {
+                    walk(walk, pl.second.get());
+                }
+            }
+        }
+        return deps;
+    };
+    std::unordered_set<const ast::Decl*> emitted;
+    std::unordered_set<const ast::Decl*> visiting;
+    auto emit_one = [&](auto& self, const ast::Decl& d) -> void {
+        if (emitted.contains(&d) || visiting.contains(&d)) {
+            return;
+        }
+        visiting.insert(&d);
+        if (d.kind == ast::NodeKind::Struct || d.kind == ast::NodeKind::Enum) {
+            for (const auto* dep : value_deps(d)) {
+                self(self, *dep);
+            }
+        }
+        visiting.erase(&d);
+        emitted.insert(&d);
         std::ostringstream chunk;
-        emit_decl(chunk, src, *d);
-        if (d->kind == ast::NodeKind::Func
-            && hoists_prototype(static_cast<const ast::FuncDecl&>(*d))) {
+        emit_decl(chunk, src, d);
+        if (d.kind == ast::NodeKind::Func
+            && hoists_prototype(static_cast<const ast::FuncDecl&>(d))) {
             fwd << chunk.str();
         }
         body << chunk.str();
+    };
+    for (const auto& d : unit.decls) {
+        if (resolution_ != nullptr && resolution_->is_gated_out(d.get())) {
+            continue;
+        }
+        emit_one(emit_one, *d);
     }
     if (fwd.tellp() > 0) {
         hdr << fwd.str() << "\n";

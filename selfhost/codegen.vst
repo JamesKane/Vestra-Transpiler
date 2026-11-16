@@ -6573,15 +6573,130 @@ func emitHpp(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc, Log {
         g = g + 1
     }
     if anyFwd { print("\n") }
+    // A type holding a LATER type by value has that type's definition moved up
+    // ahead of it (depth first, otherwise source order), as the bootstrap does.
+    let order = hppDefOrder(u.decls)
     var i: Int = 0
-    while i < u.decls.len() {
-        emitHppDecl(&env, u.decls.get(i) ?? Nd.wildcard)
+    while i < order.len() {
+        emitHppDecl(&env, u.decls.get(order.get(i) ?? 0) ?? Nd.wildcard)
         i = i + 1
     }
     emitNsClose(u.hasMod, u.modPath)
     let qp = nsQualPrefix(u.hasMod, u.modPath)
     emitHashSpecs(&env, u, qp)
     emitDebugSpecs(&env, u, qp)
+}
+
+func hppDefOrder(_ decls: Vec[Nd]) using Alloc -> Vec[Int] {
+    var done: Vec[Bool] = Vec.new()
+    var busy: Vec[Bool] = Vec.new()
+    var k: Int = 0
+    while k < decls.len() { done.push(false); busy.push(false); k = k + 1 }
+    var order: Vec[Int] = Vec.new()
+    var i: Int = 0
+    while i < decls.len() {
+        hppVisit(decls, i, &done, &busy, &order)
+        i = i + 1
+    }
+    return order
+}
+
+func hppVisit(_ decls: Vec[Nd], _ i: Int, _ done: inout Vec[Bool], _ busy: inout Vec[Bool], _ order: inout Vec[Int]) using Alloc {
+    if (done.get(i) ?? true) || (busy.get(i) ?? true) { return }
+    busy.set(i, true)
+    var deps: Vec[String] = Vec.new()
+    hppValueDeps(decls.get(i) ?? Nd.wildcard, &deps)
+    var j: Int = 0
+    while j < deps.len() {
+        let t = hppTypeDeclIndex(decls, deps.get(j) ?? own(""))
+        if t >= 0 && t != i { hppVisit(decls, t, &done, &busy, &order) }
+        j = j + 1
+    }
+    busy.set(i, false)
+    done.set(i, true)
+    order.push(i)
+}
+
+// The first struct / enum declared with <name>, or -1.
+func hppTypeDeclIndex(_ decls: Vec[Nd], _ name: Str) using Alloc -> Int {
+    var i: Int = 0
+    while i < decls.len() {
+        let d = decls.get(i) ?? Nd.wildcard
+        let isType = match d {
+            case .structD(let vis, let n, let f, let m, let dn, let lin, let g, let a): true
+            case .enumD(let vis, let n, let c, let m, let g): true
+            default: false
+        }
+        if isType && streq(declNameOf(d), name) { return i }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// The type names a struct's fields / an enum's payloads hold by value.
+func hppValueDeps(_ d: Nd, _ out: inout Vec[String]) using Alloc {
+    match d {
+        case .structD(let vis, let n, let fields, let m, let dn, let lin, let g, let a): hppFieldDeps(fields, &out)
+        case .enumD(let vis, let n, let cases, let m, let g): hppCaseDeps(cases, &out)
+        default: noop()
+    }
+}
+
+func hppFieldDeps(_ fields: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < fields.len() {
+        match fields.get(i) ?? Nd.wildcard {
+            case .field(let kind, let fname, let ty, let attrs): hppTypeDeps(ty, &out)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func hppCaseDeps(_ cases: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < cases.len() {
+        match cases.get(i) ?? Nd.wildcard {
+            case .enumCase(let cn, let pay): hppPayDeps(pay, &out)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func hppPayDeps(_ pay: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < pay.len() {
+        match pay.get(i) ?? Nd.wildcard {
+            case .payElem(let label, let ty): hppTypeDeps(ty, &out)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+// Walk a (boxed) type: a named type is a dependency unless it is reached
+// through a pointer-like wrapper, whose argument needs no definition.
+func hppTypeDeps(_ ty: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    var i: Int = 0
+    while i < ty.len() {
+        match ty.get(i) ?? Nd.wildcard {
+            case .named(let path, let hasG, let args): hppNamedDeps(path, args, &out)
+            case .vecT(let len, let elem): hppTypeDeps(elem, &out)
+            case .opt(let inner): hppTypeDeps(inner, &out)
+            case .tupleT(let elems): hppTypeDeps(elems, &out)
+            default: noop()
+        }
+        i = i + 1
+    }
+}
+
+func hppNamedDeps(_ path: Str, _ args: Vec[Nd], _ out: inout Vec[String]) using Alloc {
+    if streq(path, "Ptr") || streq(path, "MutPtr") || streq(path, "RawPtr") || streq(path, "Box")
+        || streq(path, "Vec") || streq(path, "Span") || streq(path, "MutSpan") || streq(path, "Arc")
+        || streq(path, "Str") || streq(path, "Channel") || streq(path, "Future") { return }
+    out.push(own(path))
+    hppTypeDeps(args, &out)
 }
 
 // The `a::b::` prefix the library specializations qualify their target with —
