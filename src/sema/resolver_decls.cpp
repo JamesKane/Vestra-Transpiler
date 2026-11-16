@@ -953,6 +953,7 @@ void Resolver::check_func(const ast::FuncDecl& f) {
         }
     }
 
+    check_param_defaults(f);
     // Bind parameters.
     for (const auto& p : f.params) {
         TypePtr param_type = p.type ? resolve_type(*p.type) : types_->error();

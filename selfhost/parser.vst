@@ -1437,6 +1437,8 @@ func parseParam(_ p: inout Ps) using Alloc -> Nd {
     else if isKind(p, TokKind.kwSink) { advP(&p); mode = "sink " }
     else if isKind(p, TokKind.kwRead) { advP(&p) }
     let ty = bT(parseType(&p))
+    // §17.2 a default value: the C++ printer drops it.
+    if eat(p, TokKind.assign) { let dv = parseExpr(&p) }
     return Nd.param(labelOmitted, label, name, nonesc, mode, ty)
 }
 

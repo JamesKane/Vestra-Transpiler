@@ -1,0 +1,13 @@
+// §17.2 a method's trailing defaults are filled in at the call too.
+// (Bootstrap only: vgen fills defaults for free functions.)
+
+struct S {
+    var k: Int32
+    func scaled(by: Int32 = 3) -> Int32 { return self.k * by }
+}
+
+func main() using Log, Alloc -> Int32 {
+    let s = S(k: 5)
+    print("\(s.scaled()) \(s.scaled(by: 2))")
+    return 0
+}

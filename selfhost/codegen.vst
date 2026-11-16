@@ -919,7 +919,7 @@ enum Nd {
     case genConst(String, Vec[Nd])           // name, const type
     case genType(String, Vec[Nd])            // name, bounds (types joined by " & ")
     // a function parameter
-    case param(Bool, String, String, Bool, String, Vec[Nd], Vec[Nd]) // labelOmitted, label, name, nonesc, mode, type, tuple pattern (empty unless `(a, b): T`)
+    case param(Bool, String, String, Bool, String, Vec[Nd], Vec[Nd], Vec[Nd]) // labelOmitted, label, name, nonesc, mode, type, tuple pattern (empty unless `(a, b): T`), §17.2 default (empty if none)
     // struct / enum members
     case field(String, String, Vec[Nd], Vec[Nd])  // kind ("let "/"var "/"embed "), name, type, attributes (attrN)
     case enumCase(String, Vec[Nd])           // name, payload (payElem list)
@@ -1484,7 +1484,9 @@ func parseParam(_ p: inout Ps, _ idx: Int) using Alloc -> Nd {
     else if isKind(p, TokKind.kwSink) { advP(&p); mode = "sink " }
     else if isKind(p, TokKind.kwRead) { advP(&p) }
     let ty = bT(parseType(&p))
-    return Nd.param(labelOmitted, label, name, nonesc, mode, ty, pat)
+    var dv: Vec[Nd] = Vec.new()
+    if eat(p, TokKind.assign) { dv.push(parseExpr(&p)) }   // §17.2 a default
+    return Nd.param(labelOmitted, label, name, nonesc, mode, ty, pat, dv)
 }
 
 func parseType(_ p: inout Ps) using Alloc -> Nd {
@@ -2575,12 +2577,12 @@ func printGenType(_ name: String, _ bounds: Vec[Nd]) using Alloc, Log {
 }
 
 func errParam() using Alloc -> Nd {
-    return Nd.param(false, "", "?", false, "", noT(), emptyNdBox())
+    return Nd.param(false, "", "?", false, "", noT(), emptyNdBox(), emptyNdBox())
 }
 
 func printParam(_ pm: Nd) using Alloc, Log {
     match pm {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): printParamBody(lo, lbl, nm, ne, md, ty)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat, let pdv): printParamBody(lo, lbl, nm, ne, md, ty)
         default: print("")
     }
 }
@@ -3046,6 +3048,12 @@ struct TyEnv {
     var pType: Vec[String]      // ... -> parameter type spelling
     var pTyNode: Vec[Nd]        // ... -> parameter type NODE (wildcard if unannotated; for closure-arg lowering)
     var pMode: Vec[String]      // ... -> parameter mode ("", "inout ", "sink " — parser spelling)
+    var dfFn: Vec[String]       // §17.2 per-default rows — function name ...
+    var dfIdx: Vec[Int]         // ... parameter index ...
+    var dfExpr: Vec[Nd]         // ... -> the default expression ...
+    var dfLabel: Vec[String]    // ... and the label its argument carries
+    var topNames: Vec[String]   // the unit's top-level functions, consts and statics ...
+    var nsPrefix: String        // ... which a default names as `::a::b::name`
     var structs: Vec[String]    // global: struct names (construction yields that type)
     var genTypes: Vec[String]   // global: GENERIC struct/enum names (construction needs the instantiated C++ name)
     var gpOwner: Vec[String]    // global: generic-parameter rows — owning struct / function name ...
@@ -3478,7 +3486,7 @@ func tyPushMethod(_ env: inout TyEnv, _ owner: String, _ name: String, _ gens: V
 
 func tyPushMethodParam(_ env: inout TyEnv, _ owner: String, _ name: String, _ idx: Int, _ p: Nd) using Alloc {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): tyPushMethodParamRow(env, owner, name, idx, tyAnnNode(ty))
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat, let pdv): tyPushMethodParamRow(env, owner, name, idx, tyAnnNode(ty))
         default: noop()
     }
 }
@@ -3661,9 +3669,23 @@ func tyRecordFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ thr: 
 
 func tyRecordParam(_ env: inout TyEnv, _ name: String, _ idx: Int, _ p: Nd) using Alloc {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): tyPushParam(env, name, idx, tyAnnSpelling(ty), tyAnnNode(ty), md)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat, let pdv): tyRecordParamRow(env, name, idx, ty, md, lo, lbl, nm, pdv)
         default: noop()
     }
+}
+
+func tyRecordParamRow(_ env: inout TyEnv, _ name: String, _ idx: Int, _ ty: Vec[Nd], _ md: String,
+                      _ lo: Bool, _ lbl: String, _ nm: String, _ dv: Vec[Nd]) using Alloc {
+    tyPushParam(env, name, idx, tyAnnSpelling(ty), tyAnnNode(ty), md)
+    if dv.len() == 0 { return }
+    // §17.2 the default, keyed by function and index, with the argument
+    // label a call would give it.
+    env.dfFn.push(copy name)
+    env.dfIdx.push(idx)
+    env.dfExpr.push(dv.get(0) ?? Nd.wildcard)
+    if lo { env.dfLabel.push(own("")) }
+    else if streq(lbl, "") { env.dfLabel.push(copy nm) }
+    else { env.dfLabel.push(copy lbl) }
 }
 
 func tyAnnNode(_ ty: Vec[Nd]) using Alloc -> Nd {
@@ -3828,7 +3850,7 @@ func tyRegisterParams(_ env: inout TyEnv, _ params: Vec[Nd]) using Alloc {
 
 func tyRegisterParam(_ env: inout TyEnv, _ p: Nd) using Alloc {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): tyAddParamSym(env, nm, ty)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat, let pdv): tyAddParamSym(env, nm, ty)
         default: noop()
     }
 }
@@ -5415,10 +5437,100 @@ func modLabelOf(_ hasMod: Bool, _ modPath: Str) using Alloc -> String {
     return out
 }
 
+// `::a::b::` for `module a.b`, `::` for a unit with no module.
+func nsPrefixOf(_ hasMod: Bool, _ path: Str) using Alloc -> String {
+    var s: String = "::"
+    if hasMod {
+        s.append(dotsToColons(path))
+        s.append("::")
+    }
+    return s
+}
+
+func tyNoteTopName(_ env: inout TyEnv, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let ps, let c, let t, let r, let b, let at): env.topNames.push(own(name))
+        case .constD(let vis, let name, let ty, let v): env.topNames.push(own(name))
+        case .staticD(let vis, let name, let ty, let v, let at): env.topNames.push(own(name))
+        default: noop()
+    }
+}
+
+// §17.2 a call that leaves out trailing defaulted arguments gets each
+// default appended, as the bootstrap's resolver does. A name in a default
+// resolves where the function is defined: one of the unit's top-level
+// functions, consts or statics is spelled module-qualified.
+func withDefaults(_ env: inout TyEnv, _ fname: Str, _ args: Vec[Nd]) using Alloc -> Vec[Nd] {
+    let arity = tyArity(env, own(fname))
+    var out = ndsCopy(args)
+    if arity < 0 || args.len() >= arity { return out }
+    var k: Int = args.len()
+    while k < arity {
+        let row = dfRow(env, fname, k)
+        if row < 0 { return ndsCopy(args) }
+        let lbl = env.dfLabel.get(row) ?? own("")
+        out.push(Nd.arg(lbl, false, bE(dfQualify(env, env.dfExpr.get(row) ?? Nd.wildcard))))
+        k = k + 1
+    }
+    return out
+}
+
+func dfRow(_ env: inout TyEnv, _ fname: Str, _ idx: Int) using Alloc -> Int {
+    var i: Int = 0
+    while i < env.dfFn.len() {
+        if streq(env.dfFn.get(i) ?? own(""), fname) && (env.dfIdx.get(i) ?? -1) == idx { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+func dfQualify(_ env: inout TyEnv, _ n: Nd) using Alloc -> Nd {
+    return match n {
+        case .ident(let x): dfQualIdent(env, x)
+        case .paren(let x): Nd.paren(dfQualV(env, x))
+        case .unary(let op, let x): Nd.unary(own(op), dfQualV(env, x))
+        case .binary(let op, let a, let b): Nd.binary(own(op), dfQualV(env, a), dfQualV(env, b))
+        case .call(let c, let a): Nd.call(dfQualV(env, c), dfQualV(env, a))
+        case .arg(let l, let io, let v): Nd.arg(own(l), io, dfQualV(env, v))
+        case .member(let base, let name, let chain): Nd.member(dfQualV(env, base), own(name), chain)
+        case .vecLit(let xs): Nd.vecLit(dfQualV(env, xs))
+        case .tupleLit(let xs): Nd.tupleLit(dfQualV(env, xs))
+        default: n
+    }
+}
+
+func dfQualV(_ env: inout TyEnv, _ xs: Vec[Nd]) using Alloc -> Vec[Nd] {
+    var out: Vec[Nd] = Vec.new()
+    var i: Int = 0
+    while i < xs.len() {
+        out.push(dfQualify(env, xs.get(i) ?? Nd.wildcard))
+        i = i + 1
+    }
+    return out
+}
+
+func dfQualIdent(_ env: inout TyEnv, _ x: Str) using Alloc -> Nd {
+    if !tnContainsC(env.topNames, x) { return Nd.ident(own(x)) }
+    var q = copy env.nsPrefix
+    q.append(x)
+    return Nd.ident(q)
+}
+
+func tnContainsC(_ xs: Vec[String], _ x: Str) using Alloc -> Bool {
+    var i: Int = 0
+    while i < xs.len() {
+        if streq(xs.get(i) ?? own(""), x) { return true }
+        i = i + 1
+    }
+    return false
+}
+
 func buildTyEnv(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc -> TyEnv {
     var env = TyEnv(funcName: Vec.new(), funcRet: Vec.new(), funcArity: Vec.new(), funcThr: Vec.new(),
                     pFn: Vec.new(), pIdx: Vec.new(), pType: Vec.new(), pTyNode: Vec.new(),
                     pMode: Vec.new(),
+                    dfFn: Vec.new(), dfIdx: Vec.new(), dfExpr: Vec.new(), dfLabel: Vec.new(),
+                    topNames: Vec.new(), nsPrefix: nsPrefixOf(u.hasMod, u.modPath),
                     structs: Vec.new(), genTypes: Vec.new(), gpOwner: Vec.new(), gpName: Vec.new(), bindFn: own(""), bindName: Vec.new(), bindVal: Vec.new(),
                     sFldStruct: Vec.new(), sFldName: Vec.new(),
                     sFldType: Vec.new(), mStruct: Vec.new(), mName: Vec.new(),
@@ -5457,6 +5569,7 @@ func buildTyEnv(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc -> TyEnv
     var i: Int = 0
     while i < u.decls.len() {
         tyCollectDecl(&env, u.decls.get(i) ?? Nd.wildcard)
+        tyNoteTopName(&env, u.decls.get(i) ?? Nd.wildcard)
         i = i + 1
     }
     var m: Int = 0
@@ -7508,7 +7621,7 @@ func emitTupleParamPrologue(_ env: inout TyEnv, _ params: Vec[Nd]) using Alloc, 
 
 func emitParamPrologue(_ env: inout TyEnv, _ p: Nd) using Alloc, Log {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): emitParamPrologueParts(env, nm, ppat)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat, let pdv): emitParamPrologueParts(env, nm, ppat)
         default: noop()
     }
 }
@@ -7640,7 +7753,7 @@ func emitParamsMode(_ params: Vec[Nd], _ isAsync: Bool, _ ptrByVal: Bool) using 
 
 func emitValueParam(_ p: Nd) using Alloc, Log {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): emitValueModeParam(md, nm, ty)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat, let pdv): emitValueModeParam(md, nm, ty)
         default: noop()
     }
 }
@@ -7672,7 +7785,7 @@ func emitValueParamParts(_ nm: Str, _ ty: Vec[Nd]) using Alloc, Log {
 
 func emitParam(_ p: Nd, _ ptrByVal: Bool) using Alloc, Log {
     match p {
-        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat): emitModeParam(md, nm, ty, ptrByVal)
+        case .param(let lo, let lbl, let nm, let ne, let md, let ty, let ppat, let pdv): emitModeParam(md, nm, ty, ptrByVal)
         default: noop()
     }
 }
@@ -11554,7 +11667,7 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     }
     emitBoxed(env, callee)
     print("(")
-    emitCallArgList(env, "", fname, args)
+    emitCallArgList(env, "", fname, withDefaults(env, fname, args))
     print(")")
 }
 
@@ -13594,7 +13707,7 @@ func rwNd(_ m: QMap, _ mode: Int, _ n: Nd) using Alloc -> Nd {
         case .fnT(let ps, let cs, let t, let r): Nd.fnT(rwV(m, mode, ps), rwV(m, mode, cs), rwV(m, mode, t), rwV(m, mode, r))
         case .genConst(let nm, let t): Nd.genConst(own(nm), rwV(m, mode, t))
         case .genType(let nm, let bs): Nd.genType(own(nm), rwV(m, mode, bs))
-        case .param(let lo, let l, let nm, let ne, let md, let t, let tp): Nd.param(lo, own(l), own(nm), ne, own(md), rwV(m, mode, t), rwV(m, mode, tp))
+        case .param(let lo, let l, let nm, let ne, let md, let t, let tp, let dv): Nd.param(lo, own(l), own(nm), ne, own(md), rwV(m, mode, t), rwV(m, mode, tp), rwV(m, mode, dv))
         case .field(let k, let nm, let t, let at): Nd.field(own(k), own(nm), rwV(m, mode, t), ndsCopy(at))
         case .enumCase(let nm, let ps): Nd.enumCase(own(nm), rwV(m, mode, ps))
         case .payElem(let l, let t): Nd.payElem(own(l), rwV(m, mode, t))

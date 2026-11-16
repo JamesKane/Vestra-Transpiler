@@ -116,7 +116,7 @@ Each gap has one of four kinds:
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
 | §7 | Argument labels on every call | weaker | Calls to a declared function or method must supply exactly each parameter's label. A call through a function value isn't checked (function types carry no labels), and enum-case payload labels are optional: `Shape.rect(3, 4)` is accepted, though a label that is given must be the payload field's. |
-| §17.2 | Default arguments `= expr` | missing | "call expects 2 argument(s), got 1". |
+| §17.2 | Default arguments `= expr` | weaker | A call may leave out trailing parameters that have a default. Each default is checked once against its parameter type and filled in at the call. A name in it resolves where the function is defined, as a macro template's does: an imported function's default may name only public declarations of its module. Arguments are positional, so a defaulted parameter must not come before one without a default. Defaults are evaluated at each call. The self-hosted code generator fills them for free functions only, not for methods. |
 | §17.5 | Explicit type arguments on a function call, `id[Int32](1)` | missing | They work only on struct and enum construction. |
 | §7 | A const generic `N` as a value in the body | missing | "undefined name 'N'". |
 | §17.3 | Const-expression array lengths `[N + 1]T` | missing | Parse error. |

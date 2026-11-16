@@ -7,6 +7,7 @@
 // Split out of resolver.cpp; see resolver_internal.hpp for the shared
 // free helpers.
 
+#include "vestra/ast/clone.hpp"
 #include "vestra/ast/nodes.hpp"
 #include "vestra/sema/builtins.hpp"
 #include "vestra/sema/resolver.hpp"
@@ -1583,6 +1584,19 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
     }
 
     const auto& params = callee_type->parts();
+    // §17.2 trailing arguments left out take their parameters' defaults.
+    if (c.args.size() < params.size()) {
+        const ast::FuncDecl* dfn = fn;
+        if (dfn == nullptr && c.callee->kind == ast::NodeKind::MemberExpr) {
+            const auto& mem = static_cast<const ast::MemberExpr&>(*c.callee);
+            if (auto bt = resolution_.type_of(mem.base.get())) {
+                (void)lookup_method(bt, mem.member, &dfn);
+            }
+        }
+        if (dfn != nullptr && dfn->params.size() == params.size()) {
+            fill_default_arguments(c, *dfn, params.size());
+        }
+    }
     if (params.size() != c.args.size()) {
         for (const auto& a : c.args) {
             (void)check_expr(*a.value);
@@ -1885,6 +1899,126 @@ void Resolver::check_comptime_call(const ast::CallExpr& c, TypePtr callee_type) 
                  std::format("comptime code can't call '{}': it needs the capability '{}'",
                              name,
                              callee_type->caps().front()));
+    }
+}
+
+void Resolver::mark_definition_site(ast::Expr& e, const std::string& module) {
+    switch (e.kind) {
+    case ast::NodeKind::IdentExpr: {
+        auto& id = static_cast<ast::IdentExpr&>(e);
+        id.definition_site = true;
+        id.definition_module = module;
+        break;
+    }
+    case ast::NodeKind::ParenExpr:
+        mark_definition_site(*static_cast<ast::ParenExpr&>(e).inner, module);
+        break;
+    case ast::NodeKind::UnaryExpr:
+        mark_definition_site(*static_cast<ast::UnaryExpr&>(e).operand, module);
+        break;
+    case ast::NodeKind::BinaryExpr: {
+        auto& b = static_cast<ast::BinaryExpr&>(e);
+        mark_definition_site(*b.lhs, module);
+        mark_definition_site(*b.rhs, module);
+        break;
+    }
+    case ast::NodeKind::MemberExpr: {
+        auto& m = static_cast<ast::MemberExpr&>(e);
+        if (m.base) {
+            mark_definition_site(*m.base, module);
+        }
+        break;
+    }
+    case ast::NodeKind::CallExpr: {
+        auto& c = static_cast<ast::CallExpr&>(e);
+        mark_definition_site(*c.callee, module);
+        for (auto& a : c.args) {
+            mark_definition_site(*a.value, module);
+        }
+        break;
+    }
+    case ast::NodeKind::VectorLitExpr:
+        for (auto& el : static_cast<ast::VectorLitExpr&>(e).elements) {
+            mark_definition_site(*el, module);
+        }
+        break;
+    case ast::NodeKind::TupleLitExpr:
+        for (auto& el : static_cast<ast::TupleLitExpr&>(e).elements) {
+            mark_definition_site(*el, module);
+        }
+        break;
+    default:
+        break;  // a literal or a leading-dot case names nothing
+    }
+}
+
+// §17.2 a default is checked once, at the definition, against its
+// parameter's type, among the names in scope there. Arguments are
+// positional, so only trailing ones can be left out: a defaulted parameter
+// must not come before one without a default.
+void Resolver::check_param_defaults(const ast::FuncDecl& f) {
+    for (std::size_t i = 0; i < f.params.size(); ++i) {
+        const auto& p = f.params[i];
+        if (p.default_value == nullptr) {
+            continue;
+        }
+        for (std::size_t j = i + 1; j < f.params.size(); ++j) {
+            if (f.params[j].default_value == nullptr) {
+                error_at(p.default_value->range,
+                         std::format("parameter '{}' has a default but '{}' after it doesn't: "
+                                     "arguments are positional, so only trailing ones can be "
+                                     "left out",
+                                     p.name,
+                                     f.params[j].name));
+                break;
+            }
+        }
+        mark_definition_site(const_cast<ast::Expr&>(*p.default_value), {});
+        TypePtr pt = p.type ? resolve_type(*p.type) : nullptr;
+        TypePtr dt = check_expr(*p.default_value, pt);
+        if (pt != nullptr && dt != nullptr && !pt->is_error() && !dt->is_error()
+            && !TypeArena::assignable(dt, pt)) {
+            error_at(p.default_value->range,
+                     std::format("default value of type {} does not match parameter type {}",
+                                 dt->describe(),
+                                 pt->describe()));
+        }
+    }
+}
+
+void Resolver::fill_default_arguments(const ast::CallExpr& c,
+                                      const ast::FuncDecl& fn,
+                                      std::size_t nparams) {
+    std::size_t first = c.args.size();
+    for (std::size_t i = first; i < nparams; ++i) {
+        if (fn.params[i].default_value == nullptr) {
+            return;  // a required argument is missing: the arity error says so
+        }
+    }
+    // An imported function's defaults resolve in its module.
+    std::string module;
+    if (const auto* qn = resolution_.qualified_name_of(c.callee.get())) {
+        const auto cut = qn->rfind("::");
+        if (cut != std::string::npos) {
+            const std::string path = qn->substr(0, cut);
+            for (std::size_t k = 0; k < path.size(); ++k) {
+                if (path.compare(k, 2, "::") == 0) {
+                    module += '.';
+                    ++k;
+                } else {
+                    module += path[k];
+                }
+            }
+        }
+    }
+    auto& call = const_cast<ast::CallExpr&>(c);
+    for (std::size_t i = first; i < nparams; ++i) {
+        const auto& p = fn.params[i];
+        ast::CallExpr::Arg a;
+        a.label = p.label_omitted ? std::string{} : p.label.empty() ? p.name : p.label;
+        a.value = ast::clone(*p.default_value);
+        mark_definition_site(*a.value, module);
+        call.args.push_back(std::move(a));
     }
 }
 

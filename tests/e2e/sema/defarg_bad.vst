@@ -1,0 +1,13 @@
+// §17.2 a default is checked at its definition: against its parameter's
+// type, and only trailing parameters may have one, since arguments are
+// positional. A call still needs every argument without a default.
+
+func early(a: Int32 = 1, _ b: Int32) -> Int32 { return a + b }
+
+func wrong(_ a: Int32, flag: Bool = 3) -> Int32 { return a }
+
+func needs(_ a: Int32, _ b: Int32, c: Int32 = 0) -> Int32 { return a + b + c }
+
+func main() -> Int32 {
+    return needs(1)
+}

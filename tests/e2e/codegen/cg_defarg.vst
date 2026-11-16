@@ -1,0 +1,29 @@
+// §17.2 default arguments. A call may leave out trailing parameters that
+// have a default; each is filled in at the call, as if written there. A
+// name in a default resolves where the function is defined, so the local
+// `base` in main doesn't capture the default's `base`, which is spelled
+// module-qualified in the C++.
+
+const base: Int32 = 100
+
+enum Mode {
+    case fast
+    case slow
+}
+
+func modeVal(_ m: Mode) -> Int32 {
+    return match m {
+        case .fast: 1
+        case .slow: 2
+    }
+}
+
+func f(_ a: Int32, b: Int32 = 2, mode: Mode = .slow, c: Int32 = base + 1) -> Int32 {
+    return a * 1000 + b * 100 + modeVal(mode) * 10 + c
+}
+
+func main() using Log, Alloc -> Int32 {
+    let base: Int32 = 7
+    print("\(f(1)) \(f(1, b: 4)) \(f(1, b: 4, mode: .fast)) \(f(1, b: 4, mode: .fast, c: base))")
+    return 0
+}

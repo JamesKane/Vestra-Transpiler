@@ -582,6 +582,15 @@ private:
     int weak_cas_sites_ = 0;
     int weak_cas_loop_sites_ = 0;
     void check_retry_loop(const ast::FuncDecl& f, int sites, int loop_sites);
+    // §17.2 default arguments. A default resolves where its function is
+    // defined: every name in it is marked definition-site (and, for an
+    // imported function, given its module), as a macro template's names are.
+    static void mark_definition_site(ast::Expr& e, const std::string& module);
+    void check_param_defaults(const ast::FuncDecl& f);
+    // A call that leaves out trailing defaulted arguments gets a clone of
+    // each default appended, so every later pass sees a complete call.
+    void fill_default_arguments(const ast::CallExpr& c, const ast::FuncDecl& fn,
+                                std::size_t nparams);
     bool enter_stmt_attributes(const ast::Stmt& s);
     static const ast::Expr* weak_cas_of_loop(const ast::WhileStmt& w);
     // §17.6 set while a match arm's pattern is checked: there a bare

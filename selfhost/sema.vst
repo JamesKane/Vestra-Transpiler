@@ -959,6 +959,9 @@ struct Ps {
     var retryAlways: Vec[String] // ... and those of them also `@inline(.always)`
     var pendingRetry: Bool  // the attributes just skipped include `@retry_loop` ...
     var pendingAlways: Bool // ... and `@inline(.always)`
+    var pendingDefaults: Int // §17.2 defaulted parameters of the function being parsed ...
+    var defFn: Vec[String]  // ... and, per free function with any, its name ...
+    var defN: Vec[Int]      // ... -> how many trailing parameters have a default
 }
 
 struct BP {
@@ -1211,10 +1214,24 @@ func parseDecl(_ p: inout Ps) using Alloc -> Nd {
     let kinit = p.pendingKinit
     let retry = p.pendingRetry
     let always = p.pendingAlways
+    p.pendingDefaults = 0
     let d = parseFunc(&p, vis, mods)
+    if p.pendingDefaults > 0 { recordDefaults(&p, d) }
     if kinit { recordKinit(&p, d) }
     if retry { recordRetry(&p, d, always) }
     return d
+}
+
+func recordDefaults(_ p: inout Ps, _ d: Nd) using Alloc {
+    match d {
+        case .funcD(let vis, let mods, let name, let g, let pp, let caps, let t, let r, let b): recordDefaultsOf(&p, name)
+        default: noop()
+    }
+}
+
+func recordDefaultsOf(_ p: inout Ps, _ name: String) using Alloc {
+    p.defFn.push(own(name))
+    p.defN.push(p.pendingDefaults)
 }
 
 func recordRetry(_ p: inout Ps, _ d: Nd, _ always: Bool) using Alloc {
@@ -1516,6 +1533,11 @@ func parseParam(_ p: inout Ps) using Alloc -> Nd {
     else if isKind(p, TokKind.kwSink) { advP(&p); mode = "sink " }
     else if isKind(p, TokKind.kwRead) { advP(&p) }
     let ty = bT(parseType(&p))
+    // §17.2 a default value: counted, so a call may leave its argument out.
+    if eat(p, TokKind.assign) {
+        let dv = parseExpr(&p)
+        p.pendingDefaults = p.pendingDefaults + 1
+    }
     return Nd.param(labelOmitted, label, name, nonesc, mode, ty)
 }
 
@@ -7659,6 +7681,8 @@ struct TyEnv {
     var wcLoopSites: Int        // ... and those a retry-loop shape admitted
     var rlName: Vec[String]     // Annex §14.9.3 the `@retry_loop` functions ...
     var rlAlways: Vec[String]   // ... and those of them also `@inline(.always)`
+    var dfFn: Vec[String]       // §17.2 functions with defaulted trailing parameters ...
+    var dfN: Vec[Int]           // ... -> how many
 }
 
 
@@ -9027,6 +9051,25 @@ func tyCheckFunc(_ env: inout TyEnv, _ name: String, _ params: Vec[Nd], _ result
     tyBoxed(env, body)
     tyCheckRetry(env, name, env.wcSites - sites, env.wcLoopSites - loopSites)
     tyCheckBodyProduces(env, name, body)
+}
+
+func tyCopyDefaults(_ env: inout TyEnv, _ names: Vec[String], _ ns: Vec[Int]) using Alloc {
+    var i: Int = 0
+    while i < names.len() {
+        env.dfFn.push(own(names.get(i) ?? own("")))
+        env.dfN.push(ns.get(i) ?? 0)
+        i = i + 1
+    }
+}
+
+// §17.2 how many trailing parameters of `name` have a default.
+func tyDefaults(_ env: inout TyEnv, _ name: String) using Alloc -> Int {
+    var i: Int = 0
+    while i < env.dfFn.len() {
+        if streq(env.dfFn.get(i) ?? own(""), name) { return env.dfN.get(i) ?? 0 }
+        i = i + 1
+    }
+    return 0
 }
 
 func tyCopyRetry(_ env: inout TyEnv, _ names: Vec[String], _ always: Vec[String]) using Alloc {
@@ -11043,7 +11086,8 @@ func tyCheckCallArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) usi
     tyCheckMethodLabels(env, callee, args)
     let arity = tyArity(env, fname)
     if arity >= 0 {
-        if arity != args.len() {
+        // §17.2 trailing arguments with a default may be left out.
+        if args.len() > arity || args.len() < arity - tyDefaults(env, fname) {
             env.bad.push(tyArityMsg(arity, args.len()))
             return
         }
@@ -13723,7 +13767,7 @@ func loadImportPath(_ isC: Bool, _ dotted: String, _ dir: Str, _ errs: inout Vec
 // module path. A file with no `module` line exports nothing addressable.
 func harvestModule(_ env: inout Env, _ contents: Str) using Alloc {
     let toks = tokenize(contents)
-    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false, kinit: Vec.new(), pendingKinit: false, retry: Vec.new(), retryAlways: Vec.new(), pendingRetry: false, pendingAlways: false)
+    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false, kinit: Vec.new(), pendingKinit: false, retry: Vec.new(), retryAlways: Vec.new(), pendingRetry: false, pendingAlways: false, pendingDefaults: 0, defFn: Vec.new(), defN: Vec.new())
     let mu = parseUnit(&p)
     if !mu.hasMod { return }
     env.modPaths.push(own(mu.modPath))
@@ -14278,7 +14322,7 @@ func main() -> Int32 {
                 }
                 if let src = readFile(path) {
                     let toks = tokenize(src)
-                    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false, kinit: Vec.new(), pendingKinit: false, retry: Vec.new(), retryAlways: Vec.new(), pendingRetry: false, pendingAlways: false)
+                    var p = Ps(toks: toks, pos: 0, attrs: Vec.new(), bounds: Vec.new(), cfgBad: Vec.new(), unions: Vec.new(), pendingUnion: false, kinit: Vec.new(), pendingKinit: false, retry: Vec.new(), retryAlways: Vec.new(), pendingRetry: false, pendingAlways: false, pendingDefaults: 0, defFn: Vec.new(), defN: Vec.new())
                     let parsed = parseUnit(&p)
                     let protos = unitProtocols(p.toks)
                     let attrBad = attrCheck(parsed, p.attrs, p.cfgBad, boundCheck(protos, p.bounds), protos)
@@ -14384,10 +14428,11 @@ func main() -> Int32 {
                                      pLabel: Vec.new(), mlOwner: Vec.new(), mlName: Vec.new(), mlLabel: Vec.new(), niName: Vec.new(),
                                      neKey: Vec.new(), neLocal: Vec.new(),
                                      opName: Vec.new(), opUnder: Vec.new(), drvType: Vec.new(), drvProto: Vec.new(),
-                                     tgOwner: Vec.new(), tgName: Vec.new(), wcStmt: -1, wcDepth: 0, wcOk: false, wcAllow: false, wcSites: 0, wcLoopSites: 0, rlName: Vec.new(), rlAlways: Vec.new())
+                                     tgOwner: Vec.new(), tgName: Vec.new(), wcStmt: -1, wcDepth: 0, wcOk: false, wcAllow: false, wcSites: 0, wcLoopSites: 0, rlName: Vec.new(), rlAlways: Vec.new(), dfFn: Vec.new(), dfN: Vec.new())
                     tyRefines(&tenv, p.toks)
                     tyCopyUnions(&tenv, p.unions)
                     tyCopyRetry(&tenv, p.retry, p.retryAlways)
+                    tyCopyDefaults(&tenv, p.defFn, p.defN)
                     tyCheck(&tenv, u)
                     var ti: Int = 0
                     while ti < tenv.bad.len() {

@@ -1,0 +1,7 @@
+// §17.2 trailing arguments with a default may be left out.
+
+func f(_ a: Int32, b: Int32 = 2, c: Int32 = 3) -> Int32 { return a + b + c }
+
+func main() -> Int32 {
+    return f(1) + f(1, b: 5) + f(1, b: 5, c: 6)
+}
