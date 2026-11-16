@@ -346,6 +346,9 @@ struct SpliceType : Type {
 
 struct IntLit : Expr {
     std::string text;
+    // §6 a byte character `b'/'`: `text` is its byte value in decimal, and
+    // with no integer context it is a UInt8 rather than an Int.
+    bool byte_char = false;
     IntLit() : Expr(NodeKind::IntLit) {}
 };
 struct FloatLit : Expr {

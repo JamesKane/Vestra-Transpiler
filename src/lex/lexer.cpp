@@ -412,14 +412,29 @@ void Lexer::scan_interp_continue(std::vector<Token>& out) {
     emit(out, TokenKind::Error, frag_start);
 }
 
-void Lexer::scan_char(std::vector<Token>& out, std::size_t start) {
+void Lexer::scan_char(std::vector<Token>& out, std::size_t start, bool is_byte) {
     if (peek() == '\\') {
         advance();
-        if (!at_end()) {
+        // §17.1 `\u{HEX}`, a Unicode scalar value by number.
+        if (peek() == 'u' && peek(1) == '{') {
+            advance();
+            advance();
+            while (!at_end() && peek() != '}' && peek() != '\'' && peek() != '\n') {
+                advance();
+            }
+            if (peek() == '}') {
+                advance();
+            }
+        } else if (!at_end()) {
             advance();
         }
     } else if (!at_end() && peek() != '\'') {
-        advance();
+        // One UTF-8 encoded scalar: its lead byte says how many follow.
+        const auto lead = static_cast<unsigned char>(peek());
+        const int len = lead < 0x80 ? 1 : lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+        for (int k = 0; k < len && !at_end(); ++k) {
+            advance();
+        }
     }
     if (peek() != '\'') {
         error_at(range_from(start), "unterminated character literal");
@@ -427,7 +442,7 @@ void Lexer::scan_char(std::vector<Token>& out, std::size_t start) {
         return;
     }
     advance();
-    emit(out, TokenKind::CharLit, start);
+    emit(out, is_byte ? TokenKind::ByteCharLit : TokenKind::CharLit, start);
 }
 
 std::vector<Token> Lexer::tokenize() {
@@ -639,6 +654,9 @@ std::vector<Token> Lexer::tokenize() {
             if (c == 'b' && peek() == '"') {
                 advance();
                 scan_string(out, start, /*is_byte=*/true);
+            } else if (c == 'b' && peek() == '\'') {
+                advance();
+                scan_char(out, start, /*is_byte=*/true);
             } else if (is_digit(c)) {
                 scan_number(out, start);
             } else if (is_id_start(c)) {

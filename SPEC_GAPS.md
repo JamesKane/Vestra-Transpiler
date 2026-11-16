@@ -85,9 +85,9 @@ Each gap has one of four kinds:
 | §4, §12.1 | An interpolation folds to `StrConst` in a comptime context | weaker | In a `const` initializer, an interpolation whose every value folds (integers, floats, `Bool`, strings, other consts) is a `StrConst`: it emits as one literal, allocates nothing, and needs no `Alloc`. Values render as the runtime `{}` format would. Other comptime contexts (a `comptime func` body, `comptime { }`) still build a `String`. The self-hosted compilers don't fold strings. Two existing gaps sit next to this: a `UInt64` literal above `Int64`'s range doesn't fold, and a `const` annotated `String` emits a `constexpr std::string` the C++ compiler rejects. |
 | §4 | `StrConst` copies freely | divergent | Passing a `StrConst` to two `sink` params gives "use of 's' after it was moved". |
 | §3 | A block's tail value is its result | missing (partial) | `{ K }` with an untyped const gives "can reach the end of its body without returning". |
-| §3, §17.1 | `'\u{...}'` char escapes | missing | "unterminated character literal". |
+| §3, §17.1 | `'\u{...}'` char escapes | weaker | `\u{HEX}` works in char and string literals (lowered to C++'s `\U`), and a char literal may be any one UTF-8 character (`'é'`). Escapes are otherwise C++'s and aren't validated. Interpolating a `Char` (`"\(c)"`) doesn't compile in the generated C++. |
 | §3 | Identifiers that are C++ keywords | missing | A declaration named with a C++ keyword (`mutable`, `class`, `signed`, `double`) is rejected with a diagnostic that asks for a rename, since the C++ backend writes names as they are. Words that are only contextual in C++ (`final`, `override`) and a payload enum's cases (lowered as `<case>_t`) are accepted. The backend does not rename them yet. |
-| §6, §17.1 | Byte-char literal `b'/'` | missing | "undefined name 'b'". |
+| §6, §17.1 | Byte-char literal `b'/'` | weaker | `b'/'` is the byte's value, a `UInt8` (an integer context may widen it), and works as a pattern. It must be one ASCII character or a byte escape (`\n`, `\t`, `\r`, `\0`, `\\`, `\'`, `\"`, `\u{..}` up to FF). The self-hosted lexers don't have it. |
 | §17.1 | Unicode identifiers | missing | `café` gives "unexpected character". |
 
 ### §5: ownership and exclusivity
@@ -365,6 +365,8 @@ These are problems in the spec itself, not in the compiler:
 - §4's `Command.from(raw)` "checks the discriminant", but nothing in the
   draft gives an enum discriminants: no raw type, no `case go = 1`.
 - §15 does not say whether `internal` is module-scoped or package-scoped.
+- §17.1's `CHARLIT`, `STRING` and `BYTESTRING` use an `ESCAPE` production
+  the draft never defines. The bootstrap takes C++'s escapes plus `\u{HEX}`.
 - §12.4 names a builder API (`Decl.struct(…)`, `Expr.call(…)`, …) that
   `quote` is sugar over, but gives no signatures. The bootstrap's are its
   own, each the exact equivalent of one quote: `Expr.ident(String)`,

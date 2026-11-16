@@ -6,6 +6,7 @@
 // Split out of parser.cpp; see parser_internal.hpp for the shared
 // range-merge helper.
 
+#include "vestra/ast/escapes.hpp"
 #include "vestra/lex/token.hpp"
 #include "vestra/parse/parser.hpp"
 
@@ -302,6 +303,49 @@ ast::ExprPtr Parser::parse_primary() {
         }
         s->range = merge(start, last_range());
         return s;
+    }
+    case TokenKind::ByteCharLit: {
+        // §6 `b'/'` is the byte's value, a UInt8: one ASCII character or an
+        // escape (`\n`, `\t`, `\r`, `\0`, `\\`, `\'`, `\"`, `\u{HEX}` up to FF).
+        auto t = advance();
+        auto lit = std::make_unique<ast::IntLit>();
+        lit->byte_char = true;
+        lit->range = merge(start, last_range());
+        const std::string_view body =
+            t.lexeme.size() >= 3 ? t.lexeme.substr(2, t.lexeme.size() - 3) : std::string_view{};
+        long value = -1;
+        if (body.size() == 1 && static_cast<unsigned char>(body[0]) < 0x80 && body[0] != '\\') {
+            value = static_cast<unsigned char>(body[0]);
+        } else if (body.size() == 2 && body[0] == '\\') {
+            switch (body[1]) {
+            case 'n': value = 10; break;
+            case 't': value = 9; break;
+            case 'r': value = 13; break;
+            case '0': value = 0; break;
+            case '\\': value = 92; break;
+            case '\'': value = 39; break;
+            case '"': value = 34; break;
+            default: break;
+            }
+        } else if (body.size() > 4 && body.starts_with("\\u{") && body.back() == '}') {
+            value = 0;
+            for (char ch : body.substr(3, body.size() - 4)) {
+                if (!ast::is_hex_digit(ch) || value > 0xFF) {
+                    value = 0x100;
+                    break;
+                }
+                value = value * 16 + (ch <= '9' ? ch - '0' : (ch | 0x20) - 'a' + 10);
+            }
+        }
+        if (value < 0 || value > 0xFF) {
+            emit_error(t.range,
+                       std::format("a byte character holds one byte; '{}' isn't an ASCII "
+                                   "character or a byte escape",
+                                   body));
+            value = 0;
+        }
+        lit->text = std::to_string(value);
+        return lit;
     }
     case TokenKind::CharLit: {
         auto c = std::make_unique<ast::CharLit>();

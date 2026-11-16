@@ -1,0 +1,3 @@
+// §6 a byte character holds one byte: an ASCII character or a byte escape.
+func f() -> UInt8 { return b'é' }
+func g() -> UInt8 { return b'\u{100}' }

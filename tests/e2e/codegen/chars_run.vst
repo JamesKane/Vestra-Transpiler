@@ -1,0 +1,30 @@
+// §17.1 `\u{HEX}` escapes in char and string literals, multi-byte char
+// literals, and §6 byte characters `b'/'` (a UInt8, usable as a pattern).
+// (Byte characters are bootstrap only: the self-hosted lexers don't have
+// them.)
+
+func classify(_ b: UInt8) -> Int32 {
+    return match b {
+        case b'/': 1
+        case b'\n': 2
+        default: 0
+    }
+}
+
+func flag(_ c: Bool) -> Int32 {
+    if c { return 1 }
+    return 0
+}
+
+func main() using Log, Alloc -> Int32 {
+    let a: Char = '\u{41}'
+    let e: Char = 'é'
+    let e2: Char = '\u{E9}'
+    let smile: Char = '\u{1F600}'
+    let slash = b'/'
+    let nl = b'\n'
+    let hi = b'\u{7F}'
+    let s: Str = "x\u{42}y"
+    print("\(flag(a == 'A')) \(flag(e == e2)) \(flag(smile == '😀')) \(slash) \(nl) \(hi) \(s) \(classify(b'/')) \(classify(10)) caf\u{E9}")
+    return 0
+}

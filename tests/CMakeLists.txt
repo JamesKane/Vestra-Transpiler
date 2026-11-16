@@ -101,6 +101,12 @@ add_test(
     COMMAND sh -c "mkdir -p ${lex_dumpdir} && $<TARGET_FILE:vestra> build ${selfhost_lexer} --dump-tokens -o ${lex_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${lex_dumpdir}/self_c.txt && ${e2e_workdir}/vlex ${selfhost_lexer} > ${lex_dumpdir}/self_v.txt && diff ${lex_dumpdir}/self_c.txt ${lex_dumpdir}/self_v.txt")
 set_tests_properties(e2e_selfhost_lexer_diff_self PROPERTIES DEPENDS e2e_selfhost_lexer_compile)
 
+# §17.1 `\u{HEX}` and multi-byte char literals lex the same in both lexers.
+add_test(
+    NAME    e2e_selfhost_lexer_diff_chars
+    COMMAND sh -c "mkdir -p ${lex_dumpdir} && $<TARGET_FILE:vestra> build ${CMAKE_CURRENT_SOURCE_DIR}/e2e/lex/chars.vst --dump-tokens -o ${lex_dumpdir} --skip-check 2>/dev/null | grep -v '^wrote ' > ${lex_dumpdir}/chars_c.txt && ${e2e_workdir}/vlex ${CMAKE_CURRENT_SOURCE_DIR}/e2e/lex/chars.vst > ${lex_dumpdir}/chars_v.txt && diff ${lex_dumpdir}/chars_c.txt ${lex_dumpdir}/chars_v.txt")
+set_tests_properties(e2e_selfhost_lexer_diff_chars PROPERTIES DEPENDS e2e_selfhost_lexer_compile)
+
 # ---------------------------------------------------------------------------
 # Dog-food compiler, phase 2: the Vestra parser written in Vestra (selfhost/
 # parser.vst). It reuses the self-hosted lexer, parses the token stream into an
@@ -532,6 +538,19 @@ add_test(
     COMMAND sh -c "rm -rf ${e2e_interpconst_dir} && $<TARGET_FILE:vestra> build ${CMAKE_CURRENT_SOURCE_DIR}/e2e/codegen/interp_const.vst -o ${e2e_interpconst_dir} >/dev/null && grep -q 'constexpr std::string_view S = std::string_view' ${e2e_interpconst_dir}/interp_const.hpp && ${CMAKE_CXX_COMPILER} -std=c++26 -Wall -Wextra -O0 -I${e2e_interpconst_dir} ${e2e_interpconst_dir}/interp_const.cpp -o ${e2e_interpconst_dir}/app && ${e2e_interpconst_dir}/app")
 set_tests_properties(e2e_interp_const_fold PROPERTIES
     PASS_REGULAR_EXPRESSION "^n=4 big=4000000000 on=true half=0.5 dev=uart sum=9[|]tab\there \"q\"[|]again: n=4")
+
+# §17.1 `\u{HEX}` escapes and multi-byte chars; §6 byte characters.
+set(e2e_chars_dir ${e2e_workdir}/_chars)
+add_test(
+    NAME    e2e_char_literals
+    COMMAND sh -c "rm -rf ${e2e_chars_dir} && $<TARGET_FILE:vestra> build ${CMAKE_CURRENT_SOURCE_DIR}/e2e/codegen/chars_run.vst -o ${e2e_chars_dir} >/dev/null && ${CMAKE_CXX_COMPILER} -std=c++26 -O0 -I${e2e_chars_dir} ${e2e_chars_dir}/chars_run.cpp -o ${e2e_chars_dir}/app && ${e2e_chars_dir}/app")
+set_tests_properties(e2e_char_literals PROPERTIES
+    PASS_REGULAR_EXPRESSION "^1 1 1 47 10 127 xBy 1 2 caf")
+add_test(
+    NAME    e2e_byte_char_bad
+    COMMAND sh -c "$<TARGET_FILE:vestra> check ${CMAKE_CURRENT_SOURCE_DIR}/e2e/sema/bytechar_bad.vst 2>&1; true")
+set_tests_properties(e2e_byte_char_bad PROPERTIES
+    PASS_REGULAR_EXPRESSION "a byte character holds one byte; 'é'.*a byte character holds one byte; '.u[{]100[}]'")
 
 # §4 `E.from(raw)`: the case at declaration index `raw`, or none.
 set(e2e_enumfrom_dir ${e2e_workdir}/_enumfrom)

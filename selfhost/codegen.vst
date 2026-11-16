@@ -710,9 +710,21 @@ func scanString(_ toks: inout Vec[Token], _ l: inout Lex, _ splices: inout Vec[I
 func scanChar(_ toks: inout Vec[Token], _ l: inout Lex, _ start: Int) using Alloc {
     if curC(l) == '\\' {
         advC(&l)
-        if !atEndL(l) { advC(&l) }
-    } else if !atEndL(l) && curC(l) != '\'' {
-        advC(&l)
+        if curC(l) == 'u' {
+            // §17.1 `\u{HEX}`: through the closing brace.
+            advC(&l)
+            if curC(l) == '{' {
+                while !atEndL(l) && curC(l) != '}' && curC(l) != '\'' && curC(l) != '\n' { advC(&l) }
+                if curC(l) == '}' { advC(&l) }
+            }
+        } else if !atEndL(l) { advC(&l) }
+    } else {
+        // One character, which may be several UTF-8 bytes: up to the quote.
+        var n: Int = 0
+        while !atEndL(l) && curC(l) != '\'' && curC(l) != '\n' && n < 4 {
+            advC(&l)
+            n = n + 1
+        }
     }
     if curC(l) != '\'' {
         emitTok(&toks, &l, TokKind.error, start)

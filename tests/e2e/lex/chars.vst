@@ -1,0 +1,10 @@
+// §17.1 char literals: an escape, a `\u{HEX}` scalar, and characters that
+// take more than one UTF-8 byte.
+func f() -> Char {
+    let a: Char = '\n'
+    let b: Char = '\u{41}'
+    let c: Char = '\u{1F600}'
+    let d: Char = 'é'
+    let e: Char = '😀'
+    return a
+}

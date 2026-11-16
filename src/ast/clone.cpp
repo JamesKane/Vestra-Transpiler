@@ -142,6 +142,7 @@ ExprPtr clone(const Expr& e) {
     case NodeKind::IntLit: {
         auto n = std::make_unique<IntLit>();
         n->text = static_cast<const IntLit&>(e).text;
+        n->byte_char = static_cast<const IntLit&>(e).byte_char;
         return with_range(std::move(n), e);
     }
     case NodeKind::FloatLit: {

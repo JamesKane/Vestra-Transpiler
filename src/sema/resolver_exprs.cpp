@@ -248,8 +248,11 @@ TypePtr Resolver::check_expr(const ast::Expr& e, TypePtr expected) {
             } else if (int_hint != nullptr && int_hint->kind() == TypeKind::Atomic) {
                 int_hint = int_hint->inner();
             }
-            t = (int_hint != nullptr && int_hint->is_integer()) ? int_hint
-                                                                : types_->primitive(TypeKind::Int);
+            t = (int_hint != nullptr && int_hint->is_integer())
+                    ? int_hint
+                    : types_->primitive(static_cast<const ast::IntLit&>(e).byte_char
+                                            ? TypeKind::UInt8
+                                            : TypeKind::Int);
             check_int_literal_range(static_cast<const ast::IntLit&>(e), t);
         }
         break;

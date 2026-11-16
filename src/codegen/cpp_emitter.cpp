@@ -4,6 +4,7 @@
 #include "vestra/codegen/cpp_emitter.hpp"
 
 #include "cpp_emitter_internal.hpp"
+#include "vestra/ast/escapes.hpp"
 #include "vestra/sema/linearity.hpp"
 #include "vestra/sema/resolver.hpp"
 #include "vestra/sema/sysregs.hpp"
@@ -2775,7 +2776,8 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         os << static_cast<const ast::FloatLit&>(e).text;
         break;
     case ast::NodeKind::StringLit:
-        os << "std::string_view(\"" << static_cast<const ast::StringLit&>(e).text << "\")";
+        os << "std::string_view(\"" << ast::cpp_escapes(static_cast<const ast::StringLit&>(e).text)
+           << "\")";
         break;
     case ast::NodeKind::InterpStringExpr: {
         // §4 lowering: each literal fragment contributes a `{{...}}`-free
@@ -2790,7 +2792,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         for (const auto& seg : is_.segments) {
             if (seg.expr == nullptr) {
                 // Literal fragment: escape `{` and `}` for std::format.
-                for (char c : seg.literal) {
+                for (char c : ast::cpp_escapes(seg.literal)) {
                     if (c == '{' || c == '}') {
                         os << c << c;
                     } else {
@@ -2812,7 +2814,7 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         break;
     }
     case ast::NodeKind::CharLit:
-        os << "U'" << static_cast<const ast::CharLit&>(e).text << "'";
+        os << "U'" << ast::cpp_escapes(static_cast<const ast::CharLit&>(e).text) << "'";
         break;
     case ast::NodeKind::BoolLit:
         os << (static_cast<const ast::BoolLit&>(e).value ? "true" : "false");

@@ -28,6 +28,7 @@ enum class TokenKind : std::uint16_t {
     StringLit,      // "..." (no interpolations)
     ByteStringLit,  // b"..."
     CharLit,        // '.'
+    ByteCharLit,    // b'.' (§6: one byte, a UInt8)
     Identifier,
 
     // ---- string interpolation (§4) ----

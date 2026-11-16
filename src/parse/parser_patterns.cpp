@@ -102,7 +102,8 @@ ast::PatternPtr Parser::parse_pattern_alt() {
         return i;
     }
     if (check(TokenKind::IntLit) || check(TokenKind::FloatLit) || check(TokenKind::StringLit)
-        || check(TokenKind::CharLit) || check(TokenKind::KwTrue) || check(TokenKind::KwFalse)) {
+        || check(TokenKind::CharLit) || check(TokenKind::ByteCharLit) || check(TokenKind::KwTrue)
+        || check(TokenKind::KwFalse)) {
         auto literal = parse_primary();
         // §17.7 range pattern: `low ..< high` (exclusive) or `low .. high`
         // (inclusive). Both bounds are literals at the syntactic surface;

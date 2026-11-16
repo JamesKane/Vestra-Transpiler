@@ -65,7 +65,7 @@ private:
     // after a splice's closing `)`. Emits InterpStringPart/InterpStringEnd
     // tokens and, if it hits another `\(`, returns to splice mode.
     void scan_interp_continue(std::vector<Token>& out);
-    void scan_char(std::vector<Token>& out, std::size_t start);
+    void scan_char(std::vector<Token>& out, std::size_t start, bool is_byte = false);
 
     void error_at(diag::SourceRange r, std::string msg);
 

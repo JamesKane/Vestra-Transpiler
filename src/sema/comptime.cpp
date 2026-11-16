@@ -4,6 +4,7 @@
 #include "vestra/sema/comptime.hpp"
 
 #include "vestra/ast/clone.hpp"
+#include "vestra/ast/escapes.hpp"
 #include "vestra/ast/nodes.hpp"
 #include "vestra/ast/printer.hpp"
 #include "vestra/sema/builtins.hpp"
@@ -155,7 +156,7 @@ std::string ComptimeValue::to_cpp_literal() const {
         // Strings only flow into runtime C++ when a non-cfg comptime call
         // ever returns one — which today it can't. For §12.6 the only use
         // is folding @when predicates, which never reach codegen.
-        return "std::string_view(\"" + s + "\")";
+        return "std::string_view(\"" + ast::cpp_escapes(s) + "\")";
     case Kind::Vector: {
         // The brace-pair `{{...}}` slots into the surrounding const's
         // `std::array<T, N> = ...` shape (std::array is an aggregate

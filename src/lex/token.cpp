@@ -28,6 +28,8 @@ std::string_view spelling(TokenKind k) noexcept {
         return "byte string literal";
     case TokenKind::CharLit:
         return "character literal";
+    case TokenKind::ByteCharLit:
+        return "byte character literal";
     case TokenKind::Identifier:
         return "identifier";
     case TokenKind::InterpStringBegin:
