@@ -3123,6 +3123,7 @@ struct TyEnv {
     var armTo: String           // per-match: Vestra type SPELLING an arm body flows into ("" if none) — resolves a leading-dot case in an arm
     var curThrowsNode: Vec[Nd]  // per-function: the `throws(E)` type node (empty when the function does not throw)
     var curAsync: Bool          // per-function: enclosing function is `async` (returns lower to co_return)
+    var mathShadow: Vec[String] // per-function: builtin math constants (`pi`, `tau`, `e`) the function binds itself
     var curUnitThrows: Bool     // per-function: Unit-returning `throws(E)` (std::expected<void, E>): a bare return is `return {};` (F9b)
     var curAttrs: Vec[Nd]       // per-declaration: the top-level func / static being emitted's attributes
     var imports: Vec[String]    // global: imported module paths (a member base naming one qualifies with `::`)
@@ -5584,6 +5585,7 @@ func buildTyEnv(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc -> TyEnv
                     condUse: own(""), condTy: Vec.new(), condTyStr: own(""), armTo: own(""), valOpt: false,
                     curThrowsNode: Vec.new(),
                     curAsync: false,
+                    mathShadow: Vec.new(),
                     curUnitThrows: false,
                     imports: Vec.new(),
                     hasModule: u.hasMod,
@@ -7967,6 +7969,7 @@ func emitMethodDef(_ env: inout TyEnv, _ owner: Str, _ mods: Str, _ name: Str, _
     if containsSub(mo, "inout") || containsSub(mo, "sink") { print(") {\n") } else { print(") const {\n") }
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
+    setMathShadow(&env, params, body)
     tyAddSymSpelling(&env, own("self"), own(owner))
     tySetRetNode(&env, res)
     let noThrows: Vec[Nd] = Vec.new()
@@ -8181,7 +8184,106 @@ func emitIdentE(_ env: inout TyEnv, _ n: Str) using Alloc, Log {
         }
         i = i + 1
     }
+    // §5 a builtin math constant the unit and the function don't redeclare
+    // lowers to its shortest round-trip literal (the bootstrap's
+    // `std::format("{}", value)`).
+    if !tnContainsC(env.topNames, n) && !tnContainsC(env.mathShadow, n) {
+        if streq(n, "pi") {
+            print("3.141592653589793")
+            return
+        }
+        if streq(n, "tau") {
+            print("6.283185307179586")
+            return
+        }
+        if streq(n, "e") {
+            print("2.718281828459045")
+            return
+        }
+    }
     print(n)
+}
+
+// §5 which of `pi`, `tau`, `e` a function binds anywhere (a parameter, a
+// `let`/`var`, a loop or pattern binding, a closure parameter, an `if let`,
+// a `catch` name). A reference in such a function stays a name: C++ scoping
+// then finds the binding, at the cost of also keeping the name where the
+// binding is out of scope.
+func setMathShadow(_ env: inout TyEnv, _ params: Vec[Nd], _ body: Vec[Nd]) using Alloc {
+    while env.mathShadow.len() > 0 { let _ = env.mathShadow.pop() }
+    var names: Vec[String] = Vec.new()
+    names.push(own("pi"))
+    names.push(own("tau"))
+    names.push(own("e"))
+    var k: Int = 0
+    while k < names.len() {
+        let nm = names.get(k) ?? own("")
+        if msList(params, nm) || msList(body, nm) { env.mathShadow.push(own(nm)) }
+        k = k + 1
+    }
+}
+
+func msList(_ xs: Vec[Nd], _ nm: Str) -> Bool {
+    var i: Int = 0
+    while i < xs.len() {
+        if msNode(xs.get(i) ?? Nd.wildcard, nm) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+func msNode(_ n: Nd, _ nm: Str) -> Bool {
+    return match n {
+        case .identP(let x): streq(x, nm)
+        case .bindP(let x): streq(x, nm)
+        case .param(let lo, let label, let name, let ne, let mode, let ty, let tp, let df): streq(name, nm) || msList(tp, nm)
+        case .closureE(let ps, let body): msClosureParams(ps, nm) || msList(body, nm)
+        case .ifE(let ln, let li, let cond, let thenB, let els): streq(ln, nm) || msList(li, nm) || msList(cond, nm) || msList(thenB, nm) || msList(els, nm)
+        case .doCatchE(let b, let en, let et, let cb): streq(en, nm) || msList(b, nm) || msList(cb, nm)
+        case .withS(let caps, let bn, let bv, let ba, let body): msClosureParams(bn, nm) || msList(bv, nm) || msList(body, nm)
+        case .paren(let x): msList(x, nm)
+        case .unary(let op, let x): msList(x, nm)
+        case .binary(let op, let l, let r): msList(l, nm) || msList(r, nm)
+        case .call(let c, let args): msList(c, nm) || msList(args, nm)
+        case .arg(let l, let io, let v): msList(v, nm)
+        case .member(let b, let x, let ch): msList(b, nm)
+        case .index(let b, let ix): msList(b, nm) || msList(ix, nm)
+        case .block(let ss): msList(ss, nm)
+        case .asE(let v, let t, let o): msList(v, nm)
+        case .addrOf(let x): msList(x, nm)
+        case .matchE(let sc, let arms): msList(sc, nm) || msList(arms, nm)
+        case .matchArm(let d, let p, let g, let b): msList(p, nm) || msList(g, nm) || msList(b, nm)
+        case .vecLit(let es): msList(es, nm)
+        case .tupleLit(let es): msList(es, nm)
+        case .interpE(let ps, let es): msList(es, nm)
+        case .throwE(let x): msList(x, nm)
+        case .prefixE(let kw, let x): msList(x, nm)
+        case .letS(let p, let t, let v): msList(p, nm) || msList(v, nm)
+        case .varS(let p, let t, let v): msList(p, nm) || msList(v, nm)
+        case .exprS(let x): msList(x, nm)
+        case .retS(let x): msList(x, nm)
+        case .assignS(let op, let t, let v): msList(t, nm) || msList(v, nm)
+        case .whileS(let c, let b): msList(c, nm) || msList(b, nm)
+        case .repeatS(let c, let b): msList(c, nm) || msList(b, nm)
+        case .forS(let p, let it, let b): msList(p, nm) || msList(it, nm) || msList(b, nm)
+        case .enumP(let c, let ch): msList(ch, nm)
+        case .tupleP(let ch): msList(ch, nm)
+        case .orP(let ch): msList(ch, nm)
+        default: false
+    }
+}
+
+func msClosureParams(_ ps: Vec[Nd], _ nm: Str) -> Bool {
+    var i: Int = 0
+    while i < ps.len() {
+        let hit = match ps.get(i) ?? Nd.wildcard {
+            case .ident(let x): streq(x, nm)
+            default: msNode(ps.get(i) ?? Nd.wildcard, nm)
+        }
+        if hit { return true }
+        i = i + 1
+    }
+    return false
 }
 
 func emitTemplateFunc2(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd], _ body: Vec[Nd]) using Alloc, Log {
@@ -8319,6 +8421,7 @@ func emitFunc(_ env: inout TyEnv, _ mods: Str, _ name: Str, _ params: Vec[Nd], _
     print(" {\n")
     tyResetSyms(&env)
     tyRegisterParams(&env, params)
+    setMathShadow(&env, params, body)
     tySetRetNode(&env, res)
     tySetThrowsNode(&env, thr)
     env.curAsync = isA

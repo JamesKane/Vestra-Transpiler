@@ -436,6 +436,24 @@ Resolver::ExportMap Resolver::public_exports() {
     return out;
 }
 
+// §5 the builtin math names (`e`, `pi`, `tau`, `sin`, ...) sit in the global
+// scope with no declaration; a top-level declaration of the same name replaces
+// the builtin rather than colliding with it.
+const Symbol* Resolver::insert_top_level(Symbol s) {
+    std::string name = s.name;
+    Symbol keep = s;
+    const Symbol* prev = collect_scope().insert(std::move(s));
+    if (prev != nullptr && prev->decl == nullptr
+        && (prev->kind == SymbolKind::Const || prev->kind == SymbolKind::Func)
+        && (builtins::lookup_const(name) || builtins::lookup_func(name))) {
+        if (auto* slot = collect_scope().lookup_mutable(name)) {
+            *slot = std::move(keep);
+            return nullptr;
+        }
+    }
+    return prev;
+}
+
 void Resolver::collect_func(const ast::FuncDecl& f) {
     Symbol s;
     s.name = f.name;
@@ -445,7 +463,7 @@ void Resolver::collect_func(const ast::FuncDecl& f) {
     s.definition_range = f.range;
     s.visibility = f.visibility;
     Symbol keep = s;
-    if (auto* prev = collect_scope().insert(std::move(s))) {
+    if (auto* prev = insert_top_level(std::move(s))) {
         // Annex §15.4: a Vestra `memcpy` / `memset` / `memmove` (the body the
         // compiler's own emitted calls bind to) replaces the builtin.
         if (prev->decl == nullptr && prev->kind == SymbolKind::Func
@@ -467,7 +485,7 @@ void Resolver::collect_struct(const ast::StructDecl& s_) {
     s.type = types_->make_nominal(TypeKind::Struct, &s_);
     s.definition_range = s_.range;
     s.visibility = s_.visibility;
-    if (auto* prev = collect_scope().insert(std::move(s))) {
+    if (auto* prev = insert_top_level(std::move(s))) {
         duplicate_definition(*prev, s_.name, s_.range);
     }
     if (target_.freestanding) {
@@ -524,7 +542,7 @@ void Resolver::collect_enum(const ast::EnumDecl& e) {
     s.type = types_->make_nominal(TypeKind::Enum, &e);
     s.definition_range = e.range;
     s.visibility = e.visibility;
-    if (auto* prev = collect_scope().insert(std::move(s))) {
+    if (auto* prev = insert_top_level(std::move(s))) {
         duplicate_definition(*prev, e.name, e.range);
     }
     if (target_.freestanding) {
@@ -544,7 +562,7 @@ void Resolver::collect_protocol(const ast::ProtocolDecl& p) {
     s.type = types_->make_nominal(TypeKind::Protocol, &p);
     s.definition_range = p.range;
     s.visibility = p.visibility;
-    if (auto* prev = collect_scope().insert(std::move(s))) {
+    if (auto* prev = insert_top_level(std::move(s))) {
         duplicate_definition(*prev, p.name, p.range);
     }
 }
@@ -557,7 +575,7 @@ void Resolver::collect_opaque(const ast::OpaqueDecl& o) {
     s.type = types_->make_nominal(TypeKind::OpaqueType, &o);
     s.definition_range = o.range;
     s.visibility = o.visibility;
-    if (auto* prev = collect_scope().insert(std::move(s))) {
+    if (auto* prev = insert_top_level(std::move(s))) {
         duplicate_definition(*prev, o.name, o.range);
     }
 }
@@ -570,7 +588,7 @@ void Resolver::collect_const(const ast::ConstDecl& c) {
     s.type = c.type ? resolve_type(*c.type) : nullptr;
     s.definition_range = c.range;
     s.visibility = c.visibility;
-    if (auto* prev = collect_scope().insert(std::move(s))) {
+    if (auto* prev = insert_top_level(std::move(s))) {
         duplicate_definition(*prev, c.name, c.range);
     }
 }
@@ -583,7 +601,7 @@ void Resolver::collect_static(const ast::StaticDecl& s_) {
     s.type = s_.type ? resolve_type(*s_.type) : nullptr;
     s.definition_range = s_.range;
     s.visibility = s_.visibility;
-    if (auto* prev = collect_scope().insert(std::move(s))) {
+    if (auto* prev = insert_top_level(std::move(s))) {
         duplicate_definition(*prev, s_.name, s_.range);
     }
 }

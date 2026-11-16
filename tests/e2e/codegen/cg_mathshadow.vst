@@ -1,0 +1,20 @@
+// §5 the builtin math constants lower to literals, and a declaration of the
+// same name (top-level or local) replaces them.
+func e() -> Int32 { return 3 }
+static pi: Int32 = 4
+
+const TURN = tau
+
+func circle(_ r: Float64) -> Float64 { return tau * r }
+
+func scaled(_ tau: Int32) -> Int32 { return tau * 2 }
+
+func main() using Log, Alloc -> Int32 {
+    let c = circle(1.0)
+    let whole = c > 6.28 && c < 6.29
+    let half = TURN / 2.0 > 3.14 && TURN / 2.0 < 3.15
+    var tau = 5
+    tau = tau + 1
+    print("\(e()) \(pi) \(tau) \(scaled(7)) \(whole) \(half)")
+    return 0
+}

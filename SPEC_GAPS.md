@@ -94,7 +94,7 @@ Each gap has one of four kinds:
 
 | § | Gap | Kind | Evidence |
 |---|---|---|---|
-| §5 | A declaration named `e`, `pi` or `tau` | divergent | "duplicate definition of 'e'": the builtin math constants sit in the global scope, so a user `static e` or `func e()` can't be declared. |
+| §5 | The builtin math names `e`, `pi`, `tau`, `sin`, `cos`, `tan`, `sqrt` | weaker | They sit in the global scope with no declaration: a top-level declaration of the same name replaces the builtin, and a local shadows it. `pi`, `tau` and `e` lower to their shortest round-trip literals (they were emitted as undeclared C++ names, so any runtime use failed to compile). The self-hosted code generator keeps the name in any function that binds it anywhere, so C++ scoping still finds the right one. `sin` and friends lower to the C library's `double` functions. |
 | §5 | Small `Trivial` structs copy implicitly | divergent | `is_trivial` covers only primitive scalars (`ownership.cpp:688`). Passing `struct P { var a: Int32 }` to `sink` twice is an error. |
 | §7 | Capturing a `var` in a closure | missing | Rejected outright: function types are plain function pointers, so a capturing closure can't be one. |
 

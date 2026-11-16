@@ -6,6 +6,7 @@
 #include "cpp_emitter_internal.hpp"
 #include "vestra/ast/clone.hpp"
 #include "vestra/ast/escapes.hpp"
+#include "vestra/sema/builtins.hpp"
 #include "vestra/sema/linearity.hpp"
 #include "vestra/sema/resolver.hpp"
 #include "vestra/sema/sysregs.hpp"
@@ -3222,6 +3223,17 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
                 os << "::";
                 for (const auto& seg : module_path_) {
                     os << seg << "::";
+                }
+            }
+        }
+        // §5 a builtin math constant (`pi`, `tau`, `e`) has no C++ declaration:
+        // it lowers to its shortest round-trip literal.
+        if (resolution_ != nullptr) {
+            const auto* sym = resolution_->symbol_of(&e);
+            if (sym != nullptr && sym->decl == nullptr && sym->kind == sema::SymbolKind::Const) {
+                if (auto c = sema::builtins::lookup_const(id.name)) {
+                    os << std::format("{}", c->value);
+                    break;
                 }
             }
         }

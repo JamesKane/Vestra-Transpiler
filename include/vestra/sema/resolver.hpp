@@ -205,6 +205,7 @@ private:
     void collect_opaque(const ast::OpaqueDecl& o);
     void collect_const(const ast::ConstDecl& c);
     void collect_static(const ast::StaticDecl& s);
+    const Symbol* insert_top_level(Symbol s);
 
     // ---- pass 2: resolve bodies ------------------------------------------
     void check_decl(const ast::Decl& d);

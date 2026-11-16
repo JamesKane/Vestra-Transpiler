@@ -3123,6 +3123,7 @@ func addBuiltins(_ env: inout Env) using Alloc {
     addName(env, "sqrt")
     addName(env, "pi")
     addName(env, "tau")
+    addName(env, "e")
     addName(env, "Vec")
     addName(env, "HashMap")
     addName(env, "Ptr")       // §14.1 Ptr.unchecked / MutPtr.unchecked
