@@ -608,6 +608,15 @@ EmittedUnit CppEmitter::emit(const ast::CompilationUnit& unit, std::string_view 
             && hoists_prototype(static_cast<const ast::FuncDecl&>(d))) {
             fwd << chunk.str();
         }
+        if (d.kind == ast::NodeKind::Func
+            && hoists_template_prototype(static_cast<const ast::FuncDecl&>(d))) {
+            std::ostringstream proto;
+            std::ostringstream unused_src;
+            template_prototype_only_ = true;
+            emit_decl(proto, unused_src, d);
+            template_prototype_only_ = false;
+            fwd << proto.str();
+        }
         body << chunk.str();
     };
     for (const auto& d : unit.decls) {
@@ -982,6 +991,18 @@ bool names_const_length(const ast::Type* t) {
 }
 
 }  // namespace
+
+bool CppEmitter::hoists_template_prototype(const ast::FuncDecl& f) {
+    if (f.is_comptime || f.body == nullptr || template_head_of(f.generics).empty()) {
+        return false;
+    }
+    for (const auto& p : f.params) {
+        if (names_const_length(p.type.get())) {
+            return false;
+        }
+    }
+    return !names_const_length(f.result.get());
+}
 
 // §15 a non-generic, runtime function's prototype is repeated ahead of the
 // type definitions (see emit()).
@@ -1586,7 +1607,7 @@ void CppEmitter::emit_func(std::ostream& hdr, std::ostream& src, const ast::Func
         // nothing in v0.5; that's an acceptable v0.5 limitation
         // since the kernel-tagged symbols are almost always concrete.
         emit_signature(hdr, /*is_decl=*/false);
-        if (!f.body) {
+        if (!f.body || template_prototype_only_) {
             hdr << ";\n";
             return;
         }

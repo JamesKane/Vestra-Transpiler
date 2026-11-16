@@ -100,6 +100,10 @@ private:
     bool emit_enum_method_call(std::ostream& os, const ast::CallExpr& c);
     bool in_enum_method_ = false;  // §6 `self` is a parameter, not `*this`
     [[nodiscard]] static bool hoists_prototype(const ast::FuncDecl& f);
+    // §15 a generic function's template prototype is hoisted the same way, so
+    // a header body (a method, another template) may call a later one.
+    [[nodiscard]] static bool hoists_template_prototype(const ast::FuncDecl& f);
+    bool template_prototype_only_ = false;  // emit_func writes the declaration only
     void emit_struct(std::ostream& hdr, const ast::StructDecl& s);
     void emit_deinit_members(std::ostream& hdr, const ast::StructDecl& s);
     void emit_enum(std::ostream& hdr, const ast::EnumDecl& e);

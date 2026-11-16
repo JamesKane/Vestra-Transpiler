@@ -6569,6 +6569,10 @@ func emitHpp(_ u: NUnit, _ ext: Vec[Nd], _ noLibc: Bool) using Alloc, Log {
             emitHppDecl(&env, d)
             seen.push(dn)
             anyFwd = true
+        } else if hoistsTplProto(d) && !tnContainsC(seen, dn) {
+            emitTplProto(&env, d)
+            seen.push(dn)
+            anyFwd = true
         }
         g = g + 1
     }
@@ -7211,6 +7215,34 @@ func hoistsProto(_ d: Nd) using Alloc -> Bool {
             gens.len() == 0 && !containsSub(mods, "comptime ") && !paramsNameConstLen(params) && !namesConstLen(res)
         default: false
     }
+}
+
+// §15 a generic function's template prototype is hoisted too, so a header
+// body (a method, another template) may call a later one.
+func hoistsTplProto(_ d: Nd) using Alloc -> Bool {
+    return match d {
+        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body, let attrs):
+            gens.len() > 0 && body.len() > 0 && !containsSub(mods, "comptime ") && !paramsNameConstLen(params) && !namesConstLen(res)
+        default: false
+    }
+}
+
+func emitTplProto(_ env: inout TyEnv, _ d: Nd) using Alloc, Log {
+    env.curAttrs = declAttrs(d)
+    match d {
+        case .funcD(let vis, let mods, let name, let gens, let params, let caps, let thr, let res, let body, let attrs):
+            emitTplProtoParts(env, mods, gens, name, params, thr, res)
+        default: noop()
+    }
+}
+
+func emitTplProtoParts(_ env: inout TyEnv, _ mods: Str, _ gens: Vec[Nd], _ name: Str, _ params: Vec[Nd], _ thr: Vec[Nd], _ res: Vec[Nd]) using Alloc, Log {
+    let mark = env.cgName.len()
+    pushConstGens(&env, gens)
+    emitTemplateHead(gens)
+    emitRequiresClause(gens)
+    emitFwdDecl(env, mods, name, params, thr, res)
+    popConstGens(&env, mark)
 }
 
 func paramsNameConstLen(_ ps: Vec[Nd]) using Alloc -> Bool {

@@ -1,0 +1,22 @@
+// §15 a generic function's template prototype is hoisted ahead of the
+// definitions, so a method or another template may call one declared later.
+
+struct S {
+    var n: Int32
+    func get() -> Int32 { return pick(self.n, 4) }
+}
+
+func outer[T](_ x: T) -> T { return pick(x, x) }
+
+func pick[T](_ x: T, _ y: T) -> T { return x }
+
+func least[T: Comparable](_ a: T, _ b: T) -> T {
+    if a < b { return a }
+    return b
+}
+
+func main() using Log, Alloc -> Int32 {
+    let s = S(n: 21)
+    print("\(s.get()) \(outer(3)) \(least(8, 5))")
+    return 0
+}
