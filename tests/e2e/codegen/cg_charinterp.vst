@@ -1,0 +1,11 @@
+// §4 a `Char` spliced into an interpolation is UTF-8 encoded: std::format has
+// no formatter for char32_t.
+
+func initial(_ s: Str) -> Char { return 'A' }
+
+func main() using Log, Alloc -> Int32 {
+    let c: Char = 'x'
+    let e: Char = 'é'
+    print("c=\(c) e=\(e) \(initial("a"))\('\u{1F600}') \(7)")
+    return 0
+}

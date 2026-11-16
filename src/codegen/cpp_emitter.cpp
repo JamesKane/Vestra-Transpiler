@@ -3042,7 +3042,16 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         for (const auto& seg : is_.segments) {
             if (seg.expr != nullptr) {
                 os << ", ";
-                emit_expr(os, *seg.expr);
+                // A `Char` (char32_t) has no std::formatter: encode it.
+                sema::TypePtr st = resolution_ != nullptr ? resolution_->type_of(seg.expr.get())
+                                                          : nullptr;
+                if (st != nullptr && st->kind() == sema::TypeKind::Char) {
+                    os << "__vstr::char_utf8(";
+                    emit_expr(os, *seg.expr);
+                    os << ")";
+                } else {
+                    emit_expr(os, *seg.expr);
+                }
             }
         }
         os << ")";

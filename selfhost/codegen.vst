@@ -11416,14 +11416,22 @@ func emitInterp(_ env: inout TyEnv, _ parts: Vec[String], _ exprs: Vec[Nd]) usin
     var i: Int = 0
     while i < parts.len() {
         if i > 0 { print("{}") }
-        if let frag = parts.get(i) { print(fmtFragment(frag)) }
+        if let frag = parts.get(i) { print(fmtFragment(cppEscapes(frag))) }
         i = i + 1
     }
     print("\"")
     var j: Int = 0
     while j < exprs.len() {
         print(", ")
-        emitExpr(env, exprs.get(j) ?? Nd.wildcard)
+        let ex = exprs.get(j) ?? Nd.wildcard
+        // A `Char` (char32_t) has no std::formatter: encode it.
+        if streq(tyInfer(env, ex), "Char") {
+            print("__vstr::char_utf8(")
+            emitExpr(env, ex)
+            print(")")
+        } else {
+            emitExpr(env, ex)
+        }
         j = j + 1
     }
     print(")")
@@ -12024,15 +12032,79 @@ func emitBool(_ b: Bool) using Log { if b { print("true") } else { print("false"
 // A Char literal lowers to a char32_t literal: `'x'` -> `U'x'`.
 func emitChar(_ s: Str) using Alloc, Log {
     print("U'")
-    print(s)
+    print(cppEscapes(s))
     print("'")
 }
 
 // A string literal lowers to a string_view over its (already source-escaped) text.
 func emitStr(_ s: Str) using Alloc, Log {
     print("std::string_view(\"")
-    print(s)
+    print(cppEscapes(s))
     print("\")")
+}
+
+// §17.1 a literal's raw text with every `\u{HEX}` rewritten as C++'s `\UXXXXXXXX`;
+// every other escape is C++'s and passes through.
+func cppEscapes(_ s: Str) using Alloc -> String {
+    var out: String = ""
+    var i: Int = 0
+    while i < s.len() {
+        let c = s.byteAt(i) ?? 0
+        if c == 92 && i + 1 < s.len() {
+            if (s.byteAt(i + 1) ?? 0) == 117 && i + 2 < s.len() && (s.byteAt(i + 2) ?? 0) == 123 {
+                var k = i + 3
+                var v: Int = 0
+                while k < s.len() && (s.byteAt(k) ?? 0) != 125 {
+                    v = v * 16 + hexDigitVal(s.byteAt(k) ?? 0)
+                    k = k + 1
+                }
+                if k < s.len() {
+                    out.append("\\U")
+                    var sh: Int = 28
+                    while sh >= 0 {
+                        out.append(hexUpper((v >> sh) & 15))
+                        sh = sh - 4
+                    }
+                    i = k + 1
+                    continue
+                }
+            }
+            out.append(s.slice(i, i + 2))
+            i = i + 2
+            continue
+        }
+        out.append(s.slice(i, i + 1))
+        i = i + 1
+    }
+    return out
+}
+
+func hexDigitVal(_ c: UInt8) -> Int {
+    let n = c.to[Int]()
+    if n <= 57 { return n - 48 }
+    if n <= 70 { return n - 55 }
+    return n - 87
+}
+
+func hexUpper(_ d: Int) -> Str {
+    return match d {
+        case 0: "0"
+        case 1: "1"
+        case 2: "2"
+        case 3: "3"
+        case 4: "4"
+        case 5: "5"
+        case 6: "6"
+        case 7: "7"
+        case 8: "8"
+        case 9: "9"
+        case 10: "A"
+        case 11: "B"
+        case 12: "C"
+        case 13: "D"
+        case 14: "E"
+        default: "F"
+    }
 }
 
 // A call emits the callee then a parenthesized, comma-separated argument list —

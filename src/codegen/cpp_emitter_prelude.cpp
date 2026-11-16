@@ -761,6 +761,23 @@ void emit_hosted_prelude(std::ostream& hdr) {
     hdr << "    return out;\n";
     hdr << "}\n\n";
     emit_prelude_char_classes(hdr);
+    // §4 a `Char` spliced into an interpolation: std::format has no char32_t
+    // formatter, so the scalar is UTF-8 encoded first.
+    hdr << "inline std::string char_utf8(char32_t c) {\n";
+    hdr << "    std::string out;\n";
+    hdr << "    auto u = static_cast<std::uint32_t>(c);\n";
+    hdr << "    if (u < 0x80) { out += static_cast<char>(u); }\n";
+    hdr << "    else if (u < 0x800) { out += static_cast<char>(0xC0 | (u >> 6)); "
+           "out += static_cast<char>(0x80 | (u & 0x3F)); }\n";
+    hdr << "    else if (u < 0x10000) { out += static_cast<char>(0xE0 | (u >> 12)); "
+           "out += static_cast<char>(0x80 | ((u >> 6) & 0x3F)); "
+           "out += static_cast<char>(0x80 | (u & 0x3F)); }\n";
+    hdr << "    else { out += static_cast<char>(0xF0 | (u >> 18)); "
+           "out += static_cast<char>(0x80 | ((u >> 12) & 0x3F)); "
+           "out += static_cast<char>(0x80 | ((u >> 6) & 0x3F)); "
+           "out += static_cast<char>(0x80 | (u & 0x3F)); }\n";
+    hdr << "    return out;\n";
+    hdr << "}\n\n";
     // §18 filesystem I/O. read_file slurps the whole file into a string
     // (std::nullopt if it can't be opened); write_file truncates + writes,
     // returning whether the stream stayed good. Both back the Fs-gated
