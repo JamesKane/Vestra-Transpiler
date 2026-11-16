@@ -3005,10 +3005,19 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // literal suffix, so we strip the underscores when
         // forwarding the text to the C++ side.
         const auto& text = static_cast<const ast::IntLit&>(e).text;
+        std::string digits;
         for (char c : text) {
             if (c != '_') {
-                os << c;
+                digits += c;
             }
+        }
+        os << digits;
+        // A decimal literal past Int64's range (a `UInt64` value) takes C++'s
+        // `u` suffix: unsuffixed, C++ warns it is "too large for a signed type".
+        // A hex / octal / binary literal already picks an unsigned type.
+        if (digits.size() >= 19 && std::ranges::all_of(digits, [](char c) { return c >= '0' && c <= '9'; })
+            && (digits.size() > 19 || digits > "9223372036854775807")) {
+            os << "u";
         }
         break;
     }

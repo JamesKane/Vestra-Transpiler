@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -38,8 +39,9 @@ std::string strip_underscores(std::string_view s) {
 
 // Parse an integer literal token (matches §17.1: decimal, 0x hex, 0o oct,
 // 0b binary, with `_` separators). On overflow or malformed input return
-// std::nullopt; the caller propagates that as "not foldable."
-std::optional<std::int64_t> parse_int_literal(std::string_view raw) {
+// std::nullopt; the caller propagates that as "not foldable." The digits read
+// as an unsigned 64-bit value, so a `UInt64` literal above Int64's range folds.
+std::optional<std::uint64_t> parse_int_literal(std::string_view raw) {
     auto s = strip_underscores(raw);
     if (s.empty()) {
         return std::nullopt;
@@ -70,7 +72,7 @@ std::optional<std::int64_t> parse_int_literal(std::string_view raw) {
     if (digits.empty()) {
         return std::nullopt;
     }
-    std::int64_t v = 0;
+    std::uint64_t v = 0;
     auto res = std::from_chars(digits.data(), digits.data() + digits.size(), v, base);
     if (res.ec != std::errc{} || res.ptr != digits.data() + digits.size()) {
         return std::nullopt;
@@ -736,9 +738,12 @@ std::optional<ComptimeValue> ComptimeFolder::fold_with(
             return std::nullopt;
         }
         if (is_unsigned_kind(hint)) {
-            return make_uint(static_cast<std::uint64_t>(*v), hint);
+            return make_uint(*v, hint);
         }
-        return make_int(*v, hint);
+        if (*v > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+            return std::nullopt;  // only an unsigned destination holds it
+        }
+        return make_int(static_cast<std::int64_t>(*v), hint);
     }
     case ast::NodeKind::FloatLit: {
         const auto& lit = static_cast<const ast::FloatLit&>(e);

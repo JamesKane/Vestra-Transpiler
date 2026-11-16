@@ -7224,6 +7224,23 @@ func emitConstDef(_ env: inout TyEnv, _ name: Str, _ ty: Vec[Nd], _ value: Vec[N
         var ok: Bool = true
         let v = cfFold(env, value.get(0) ?? Nd.wildcard, ok)
         let uns = tyIsUnsignedSp(sp)
+        // §12.1 an unsigned const folds in UInt64, so a value above Int64's
+        // range folds too (the bootstrap's folder has a UInt kind).
+        if uns {
+            var uok: Bool = true
+            let u = cfFoldU(env, value.get(0) ?? Nd.wildcard, uok)
+            if uok {
+                env.cfName.push(own(name))
+                env.cfVal.push(u.toWrapping[Int]())
+                print("inline constexpr ")
+                emitTypeBoxed(ty)
+                print(" ")
+                print(name)
+                print(" = ")
+                print("\(u)u;\n")
+                return
+            }
+        }
         if ok && !(uns && v < 0) {
             env.cfName.push(own(name))
             env.cfVal.push(v)
@@ -7320,6 +7337,86 @@ func cfBinary(_ env: inout TyEnv, _ op: Str, _ a: Vec[Nd], _ b: Vec[Nd], _ ok: i
     if streq(op, "^") { return x ^ y }
     ok = false
     return 0
+}
+
+// The unsigned folder: `cfFold` over UInt64, for an unsigned const. A negation
+// doesn't fold (the const prints as written, as before).
+func cfFoldU(_ env: inout TyEnv, _ e: Nd, _ ok: inout Bool) using Alloc -> UInt64 {
+    return match e {
+        case .intLit(let t): cfParseUInt(t, ok)
+        case .paren(let x): cfFoldU(env, x.get(0) ?? Nd.wildcard, ok)
+        case .unary(let op, let x): cfUnaryU(env, op, x, ok)
+        case .binary(let op, let a, let b): cfBinaryU(env, op, a, b, ok)
+        case .ident(let n): cfLookup(env, n, ok).toWrapping[UInt64]()
+        case .call(let callee, let args): cfConvU(env, callee, args, ok)
+        default: cfFailU(ok)
+    }
+}
+
+func cfFailU(_ ok: inout Bool) -> UInt64 { ok = false; return 0 }
+
+func cfConvU(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd], _ ok: inout Bool) using Alloc -> UInt64 {
+    let f = identBaseName(callee)
+    if !tyIsIntSp(f) || args.len() != 1 { ok = false; return 0 }
+    let a = argValue(args.get(0) ?? Nd.wildcard)
+    return cfFoldU(env, a.get(0) ?? Nd.wildcard, ok)
+}
+
+func cfUnaryU(_ env: inout TyEnv, _ op: Str, _ x: Vec[Nd], _ ok: inout Bool) using Alloc -> UInt64 {
+    let v = cfFoldU(env, x.get(0) ?? Nd.wildcard, ok)
+    if streq(op, "~") { return ~v }
+    ok = false
+    return 0
+}
+
+func cfBinaryU(_ env: inout TyEnv, _ op: Str, _ a: Vec[Nd], _ b: Vec[Nd], _ ok: inout Bool) using Alloc -> UInt64 {
+    let x = cfFoldU(env, a.get(0) ?? Nd.wildcard, ok)
+    let y = cfFoldU(env, b.get(0) ?? Nd.wildcard, ok)
+    if !ok { return 0 }
+    if streq(op, "+") { return x &+ y }
+    if streq(op, "-") { return x &- y }
+    if streq(op, "*") { return x &* y }
+    if streq(op, "/") && y != 0 { return x / y }
+    if streq(op, "%") && y != 0 { return x % y }
+    if streq(op, "<<") && y < 64 { return x << y }
+    if streq(op, ">>") && y < 64 { return x >> y }
+    if streq(op, "&") { return x & y }
+    if streq(op, "|") { return x | y }
+    if streq(op, "^") { return x ^ y }
+    ok = false
+    return 0
+}
+
+// cfParseInt over UInt64: the literal may run to 2^64 - 1.
+func cfParseUInt(_ t: Str, _ ok: inout Bool) -> UInt64 {
+    var base: UInt64 = 10
+    var i: Int = 0
+    if t.len() > 2 && (t.byteAt(0) ?? 0) == 48 {
+        let p = t.byteAt(1) ?? 0
+        if p == 120 || p == 88 { base = 16; i = 2 }
+        else if p == 98 || p == 66 { base = 2; i = 2 }
+        else if p == 111 || p == 79 { base = 8; i = 2 }
+    }
+    let maxU: UInt64 = 0xFFFF_FFFF_FFFF_FFFF
+    var v: UInt64 = 0
+    var any: Bool = false
+    while i < t.len() {
+        let c = t.byteAt(i) ?? 0
+        var d: UInt64 = 99
+        if c >= 48 && c <= 57 { d = (c - 48).to[UInt64]() }
+        else if c >= 97 && c <= 102 { d = (c - 87).to[UInt64]() }
+        else if c >= 65 && c <= 70 { d = (c - 55).to[UInt64]() }
+        else if c != 95 { ok = false; return 0 }
+        if d != 99 {
+            if d >= base { ok = false; return 0 }
+            if v > (maxU - d) / base { ok = false; return 0 }
+            v = v * base + d
+            any = true
+        }
+        i = i + 1
+    }
+    if !any { ok = false }
+    return v
 }
 
 // Decimal, `0x`, `0b` or `0o`, with `_` separators.
@@ -11310,6 +11407,33 @@ func emitIntText(_ t: Str) using Alloc, Log {
         i = i + 1
     }
     print(out)
+    // A decimal literal past Int64's range (a `UInt64` value) takes C++'s `u`
+    // suffix, as the bootstrap emits.
+    if out.len() >= 19 && allDecimal(out) && (out.len() > 19 || strGt(out, "9223372036854775807")) {
+        print("u")
+    }
+}
+
+func allDecimal(_ s: Str) -> Bool {
+    var i: Int = 0
+    while i < s.len() {
+        let c = s.byteAt(i) ?? 0
+        if c < 48 || c > 57 { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// Byte-wise `a > b` for two strings of one length.
+func strGt(_ a: Str, _ b: Str) -> Bool {
+    var i: Int = 0
+    while i < a.len() && i < b.len() {
+        let x = a.byteAt(i) ?? 0
+        let y = b.byteAt(i) ?? 0
+        if x != y { return x > y }
+        i = i + 1
+    }
+    return false
 }
 
 func emitBoxed(_ env: inout TyEnv, _ v: Vec[Nd]) using Alloc, Log {

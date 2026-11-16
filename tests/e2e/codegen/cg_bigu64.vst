@@ -1,0 +1,15 @@
+// §12.1, §17.1 a `UInt64` literal above Int64's range folds in an unsigned
+// const (the folder reads literals as UInt64), and a decimal one takes C++'s
+// `u` suffix so the C++ compiler doesn't warn it is too large for a signed type.
+
+const MASK: UInt64 = 0xFFFF_FFFF_FFFF_FFFF
+const HIGH: UInt64 = 0x8000_0000_0000_0000 | 1
+const TOP: UInt64 = MASK >> 60
+const SMALL: UInt32 = 7 * 6
+
+func main() using Log, Alloc -> Int32 {
+    let x: UInt64 = 18446744073709551615
+    let y: UInt64 = 9223372036854775808
+    print("\(MASK) \(HIGH) \(TOP) \(SMALL) \(x) \(y)")
+    return 0
+}
