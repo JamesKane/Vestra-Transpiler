@@ -75,6 +75,7 @@ private:
 
     // ---- types / patterns / statements / expressions ---------------------
     ast::TypePtr parse_type();
+    std::string length_text(std::size_t first, std::size_t last) const;
     ast::PatternPtr parse_pattern();
     // §17.7 single-pattern alternative (no top-level or-chaining).
     // Recursive sub-pattern sites (tuple elements, enum-payload

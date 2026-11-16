@@ -360,6 +360,31 @@ TypePtr Resolver::resolve_type(const ast::Type& t) {
         // const-generic parameter. If N is bound to a concrete value in
         // scope (an instantiation), produce the concrete `[8]T`; otherwise
         // keep it symbolic (the decl-template / inference case).
+        // §17.3 a const-expression length folds to a fixed one when every name
+        // in it is a const (or a const generic bound by an instantiation);
+        // otherwise it stays symbolic, spelled by its canonical text.
+        if (v.length_expr) {
+            ComptimeFolder::Env env = comptime_env_;
+            bind_const_generics_in(*v.length_expr, env);
+            if (auto c = folder_.fold(*v.length_expr, env, TypeKind::Int)) {
+                if (c->kind == ComptimeValue::Kind::Int && c->i >= 0) {
+                    return types_->make_vector(c->i, elem);
+                }
+                if (c->kind == ComptimeValue::Kind::UInt) {
+                    return types_->make_vector(static_cast<std::int64_t>(c->u), elem);
+                }
+                error_at(v.length_expr->range, "an array length must be a non-negative integer");
+                return types_->error();
+            }
+            if (auto bad = non_const_length_name(*v.length_expr); !bad.empty()) {
+                error_at(v.length_expr->range,
+                         std::format("array length names '{}', which is not a compile-time "
+                                     "constant",
+                                     bad));
+                return types_->error();
+            }
+            return types_->make_vector_symbolic(v.length_ident, elem);
+        }
         if (!v.length_ident.empty()) {
             if (auto* sym = scopes_.current().lookup(v.length_ident);
                 sym != nullptr && sym->type != nullptr
@@ -946,6 +971,91 @@ bool Resolver::owns_resources(TypePtr t) {
         return true;
     default:
         return false;
+    }
+}
+
+}  // namespace vestra::sema
+
+namespace vestra::sema {
+
+// §17.3 a const generic that the current scope binds to a value (an
+// instantiation's `N = 4`) is visible to a length expression's fold.
+void Resolver::bind_const_generics_in(const ast::Expr& e, ComptimeFolder::Env& env) {
+    switch (e.kind) {
+    case ast::NodeKind::IdentExpr: {
+        const auto& id = static_cast<const ast::IdentExpr&>(e);
+        if (auto* sym = scopes_.current().lookup(id.name);
+            sym != nullptr && sym->type != nullptr && sym->type->kind() == TypeKind::ConstValue) {
+            ComptimeValue cv;
+            cv.kind = ComptimeValue::Kind::Int;
+            cv.type = TypeKind::Int;
+            cv.i = sym->type->const_value();
+            env[id.name] = cv;
+        }
+        break;
+    }
+    case ast::NodeKind::BinaryExpr: {
+        const auto& b = static_cast<const ast::BinaryExpr&>(e);
+        if (b.lhs) {
+            bind_const_generics_in(*b.lhs, env);
+        }
+        if (b.rhs) {
+            bind_const_generics_in(*b.rhs, env);
+        }
+        break;
+    }
+    case ast::NodeKind::UnaryExpr: {
+        const auto& u = static_cast<const ast::UnaryExpr&>(e);
+        if (u.operand) {
+            bind_const_generics_in(*u.operand, env);
+        }
+        break;
+    }
+    case ast::NodeKind::ParenExpr: {
+        const auto& p = static_cast<const ast::ParenExpr&>(e);
+        if (p.inner) {
+            bind_const_generics_in(*p.inner, env);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+// §17.3 the first name in a length expression that is neither a const nor a
+// const generic parameter ("" if none): such a length can't be a C++ bound.
+std::string Resolver::non_const_length_name(const ast::Expr& e) {
+    switch (e.kind) {
+    case ast::NodeKind::IdentExpr: {
+        const auto& id = static_cast<const ast::IdentExpr&>(e);
+        // A name not in scope here is left to C++: a struct field's type is
+        // resolved where its own const generics aren't bound.
+        const auto* sym = scopes_.current().lookup(id.name);
+        if (sym == nullptr) {
+            return {};
+        }
+        if (sym->kind == SymbolKind::Local || sym->kind == SymbolKind::Parameter
+            || sym->kind == SymbolKind::Static || sym->kind == SymbolKind::Func) {
+            return id.name;
+        }
+        return {};
+    }
+    case ast::NodeKind::BinaryExpr: {
+        const auto& b = static_cast<const ast::BinaryExpr&>(e);
+        auto l = b.lhs ? non_const_length_name(*b.lhs) : std::string{};
+        return !l.empty() ? l : (b.rhs ? non_const_length_name(*b.rhs) : std::string{});
+    }
+    case ast::NodeKind::UnaryExpr: {
+        const auto& u = static_cast<const ast::UnaryExpr&>(e);
+        return u.operand ? non_const_length_name(*u.operand) : std::string{};
+    }
+    case ast::NodeKind::ParenExpr: {
+        const auto& p = static_cast<const ast::ParenExpr&>(e);
+        return p.inner ? non_const_length_name(*p.inner) : std::string{};
+    }
+    default:
+        return {};
     }
 }
 

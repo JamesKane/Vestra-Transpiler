@@ -1570,9 +1570,25 @@ func parseVectorType(_ p: inout Ps) using Alloc -> Nd {
         eat(p, TokKind.rbracket)
         return Nd.vecT(own("-1"), elem)
     }
+    // The length is an integer, a name, or (§17.3) a const expression kept as
+    // its canonical text: an operator after an operand (a name, a literal or
+    // a closing paren) is binary and spaced; every other token is adjacent.
     var lenStr: String = ""
-    if isKind(p, TokKind.intLit) { lenStr = curText(p); advP(&p) }
-    else if isKind(p, TokKind.identifier) { lenStr = curText(p); advP(&p) }
+    var afterOperand = false
+    while !isKind(p, TokKind.rbracket) && !isKind(p, TokKind.eof) {
+        let operand = isKind(p, TokKind.identifier) || isKind(p, TokKind.intLit)
+        let closer = isKind(p, TokKind.rparen)
+        let bracket = isKind(p, TokKind.lparen) || closer || isKind(p, TokKind.dot)
+        if !operand && !bracket && afterOperand {
+            lenStr.append(" ")
+            lenStr.append(curRaw(p))
+            lenStr.append(" ")
+        } else {
+            lenStr.append(curRaw(p))
+        }
+        afterOperand = operand || closer
+        advP(&p)
+    }
     eat(p, TokKind.rbracket)
     return Nd.vecT(lenStr, bT(parseType(&p)))
 }

@@ -436,6 +436,7 @@ TypePtr clone(const Type& t) {
         auto n = std::make_unique<VectorType>();
         n->length = vt.length;
         n->length_ident = vt.length_ident;
+        n->length_expr = cl(vt.length_expr);
         n->element = clt(vt.element);
         return with_range(std::move(n), t);
     }

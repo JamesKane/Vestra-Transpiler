@@ -3103,3 +3103,24 @@ TEST_CASE("an unselected branch sees its own declarations over the selected ones
               .error_count
           == 0);
 }
+
+TEST_CASE("a const-expression array length folds, and must be a constant") {
+    CHECK(check_detail("const LEN = 2\n"
+                       "func f() -> [LEN * 2]UInt8 { return [1, 2, 3, 4] }\n")
+              .error_count
+          == 0);
+    auto wrong = check_detail("const LEN = 2\n"
+                              "func f() -> [LEN * 2]UInt8 { return [1, 2, 3] }\n");
+    CHECK(wrong.error_count == 1);
+    CHECK(wrong.first_message
+          == "return value of type [3]UInt8 does not match function result type [4]UInt8");
+    auto runtime = check_detail("func f(_ n: Int) -> Int32 {\n"
+                                "    let a: [n + 1]Int32 = [1]\n"
+                                "    return a[0]\n"
+                                "}\n");
+    CHECK(runtime.first_message
+          == "array length names 'n', which is not a compile-time constant");
+    auto negative = check_detail("const LEN = 2\n"
+                                 "func f() -> [LEN - 5]UInt8 { return [1] }\n");
+    CHECK(negative.first_message == "an array length must be a non-negative integer");
+}

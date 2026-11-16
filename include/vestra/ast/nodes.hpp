@@ -293,6 +293,10 @@ struct VectorType : Type {
     // `[N]T` where N is either a literal length or an IDENT (a const generic).
     std::int64_t length = 0;
     std::string length_ident;  // non-empty when length is symbolic
+    // §17.3 `[N + 1]T`: a length that is an expression. `length_ident` then
+    // holds its canonical text (binary operators spaced, all else adjacent),
+    // which is what prints and lowers as the C++ array bound.
+    ExprPtr length_expr;
     TypePtr element;
 
     VectorType() : Type(NodeKind::VectorType) {}

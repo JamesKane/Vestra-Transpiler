@@ -206,6 +206,8 @@ private:
     void collect_const(const ast::ConstDecl& c);
     void collect_static(const ast::StaticDecl& s);
     const Symbol* insert_top_level(Symbol s);
+    void bind_const_generics_in(const ast::Expr& e, ComptimeFolder::Env& env);
+    std::string non_const_length_name(const ast::Expr& e);
 
     // ---- pass 2: resolve bodies ------------------------------------------
     void check_decl(const ast::Decl& d);

@@ -1,0 +1,18 @@
+// §17.3 an array length may be a const expression: one over consts folds to
+// a fixed length, and one over a const generic stays symbolic.
+const LEN = 2
+
+struct Ring[const N: Int] {
+    var slots: [N + 1]Int32
+    func cap() -> Int { return N + 1 }
+}
+
+func header() -> [LEN * 2]UInt8 { return [1, 2, 3, 4] }
+
+func main() using Log, Alloc -> Int32 {
+    let h = header()
+    let b: [(LEN + 1) * 2]Int32 = [0, 0, 0, 0, 0, 7]
+    let r = Ring[2](slots: [5, 6, 7])
+    print("\(h[3]) \(b[5]) \(r.slots[2]) \(r.cap())")
+    return 0
+}

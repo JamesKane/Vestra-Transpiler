@@ -78,10 +78,16 @@ ast::TypePtr Parser::parse_type() {
         } else {
             // [N]T  — fixed vector
             auto v = std::make_unique<ast::VectorType>();
-            if (check(TokenKind::IntLit)) {
+            if (check(TokenKind::IntLit) && peek(1).kind == TokenKind::RBracket) {
                 v->length = std::stoll(std::string{advance().lexeme});
-            } else if (check(TokenKind::Identifier)) {
+            } else if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::RBracket) {
                 v->length_ident = std::string{advance().lexeme};
+            } else if (check(TokenKind::Identifier) || check(TokenKind::IntLit)
+                       || check(TokenKind::LParen)) {
+                // §17.3 a const-expression length `[N + 1]T`.
+                const std::size_t first = pos_;
+                v->length_expr = parse_expr();
+                v->length_ident = length_text(first, pos_);
             } else {
                 emit_error(peek().range, "expected vector length (integer or identifier)");
             }
@@ -164,6 +170,29 @@ ast::TypePtr Parser::parse_type() {
         base = std::move(o);
     }
     return base;
+}
+
+// §17.3 the canonical text of a const-expression array length, tokens
+// [first, last): an operator that follows an operand (a name, a literal or a
+// closing paren) is binary and spaced; every other token is adjacent.
+std::string Parser::length_text(std::size_t first, std::size_t last) const {
+    std::string out;
+    bool after_operand = false;
+    for (std::size_t i = first; i < last && i < tokens_.size(); ++i) {
+        const auto& t = tokens_[i];
+        const bool operand = t.kind == TokenKind::Identifier || t.kind == TokenKind::IntLit;
+        const bool bracket = t.kind == TokenKind::LParen || t.kind == TokenKind::RParen
+                             || t.kind == TokenKind::Dot;
+        if (!operand && !bracket && after_operand) {
+            out += ' ';
+            out += t.lexeme;
+            out += ' ';
+        } else {
+            out += t.lexeme;
+        }
+        after_operand = operand || t.kind == TokenKind::RParen;
+    }
+    return out;
 }
 
 }  // namespace vestra::parse

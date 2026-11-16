@@ -1617,9 +1617,25 @@ func parseVectorType(_ p: inout Ps) using Alloc -> Nd {
         eat(p, TokKind.rbracket)
         return Nd.vecT(own("-1"), elem)
     }
+    // The length is an integer, a name, or (§17.3) a const expression kept as
+    // its canonical text: an operator after an operand (a name, a literal or
+    // a closing paren) is binary and spaced; every other token is adjacent.
     var lenStr: String = ""
-    if isKind(p, TokKind.intLit) { lenStr = curText(p); advP(&p) }
-    else if isKind(p, TokKind.identifier) { lenStr = curText(p); advP(&p) }
+    var afterOperand = false
+    while !isKind(p, TokKind.rbracket) && !isKind(p, TokKind.eof) {
+        let operand = isKind(p, TokKind.identifier) || isKind(p, TokKind.intLit)
+        let closer = isKind(p, TokKind.rparen)
+        let bracket = isKind(p, TokKind.lparen) || closer || isKind(p, TokKind.dot)
+        if !operand && !bracket && afterOperand {
+            lenStr.append(" ")
+            lenStr.append(curRaw(p))
+            lenStr.append(" ")
+        } else {
+            lenStr.append(curRaw(p))
+        }
+        afterOperand = operand || closer
+        advP(&p)
+    }
     eat(p, TokKind.rbracket)
     return Nd.vecT(lenStr, bT(parseType(&p)))
 }
@@ -13568,7 +13584,11 @@ func tyLitFits(_ e: Vec[Nd], _ to: String) using Alloc -> Bool {
 // `[a, b, ...]` against `[N]T`: the count matches and every element fits T.
 func tyArrayLitFits(_ xs: Vec[Nd], _ to: String) using Alloc -> Bool {
     if !tyIsArray(to) { return false }
-    if !streq(tyArrayCount(to), intToStr(xs.len())) { return false }
+    // A length that isn't a plain count (`[LEN]T`, `[N + 1]T`) isn't folded
+    // here, so it takes any count, as in tyArrayAssignable.
+    let tc = tyArrayCount(to)
+    let symbolic = tc.len() > 0 && !isDigitC(tc.charAt(0) ?? '0')
+    if !symbolic && !streq(tc, intToStr(xs.len())) { return false }
     let et = tyArrayElem(to)
     var i: Int = 0
     while i < xs.len() {
