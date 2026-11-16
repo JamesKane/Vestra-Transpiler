@@ -6116,6 +6116,53 @@ func tyNoteEnumMethodRow(_ env: inout TyEnv, _ ename: String, _ mods: String, _ 
 
 // §6 `x.m(args)` on an enum value with a method `m`: the free function, the
 // receiver first (moved in for a `sink func`).
+// §17.5 `id[Int32](1)` on a generic function: the bracket's types are the
+// C++ template arguments.
+func tryEmitExplicitTArgs(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    return match callee.get(0) ?? Nd.wildcard {
+        case .index(let b, let idxs): emitExplicitTArgCall(env, b, idxs, args)
+        default: false
+    }
+}
+
+func emitExplicitTArgCall(_ env: inout TyEnv, _ b: Vec[Nd], _ idxs: Vec[Nd], _ args: Vec[Nd]) using Alloc, Log -> Bool {
+    let fname = dottedOf(b.get(0) ?? Nd.wildcard)
+    if streq(fname, "") || tyArity(env, fname) < 0 || !tnContainsC(env.gpOwner, fname) { return false }
+    print(fname)
+    print("<")
+    var i: Int = 0
+    while i < idxs.len() {
+        if i > 0 { print(", ") }
+        print(cppOfSpelling(dottedOf(idxs.get(i) ?? Nd.wildcard)))
+        i = i + 1
+    }
+    print(">(")
+    // An argument whose parameter is one of the generics takes the explicit
+    // type as its slot (so a literal coerces as it would to that type).
+    var gnames: Vec[String] = Vec.new()
+    var g: Int = 0
+    while g < env.gpOwner.len() {
+        if streq(env.gpOwner.get(g) ?? own(""), fname) { gnames.push(own(env.gpName.get(g) ?? own(""))) }
+        g = g + 1
+    }
+    var k: Int = 0
+    while k < args.len() {
+        if k > 0 { print(", ") }
+        let pt = tyParamType(env, own(fname), k)
+        var slot: String = ""
+        var j: Int = 0
+        while j < gnames.len() && j < idxs.len() {
+            if streq(gnames.get(j) ?? own(""), pt) { slot = dottedOf(idxs.get(j) ?? Nd.wildcard) }
+            j = j + 1
+        }
+        if streq(slot, "") { emitCallArg(env, "", fname, k, args.get(k) ?? Nd.wildcard) }
+        else { emitSlotArg(env, slot, args.get(k) ?? Nd.wildcard) }
+        k = k + 1
+    }
+    print(")")
+    return true
+}
+
 func emitSelfE(_ env: inout TyEnv) using Alloc, Log {
     if env.inEnumMethod { print("self") } else { print("(*this)") }
 }
@@ -11995,6 +12042,7 @@ func emitCall(_ env: inout TyEnv, _ callee: Vec[Nd], _ args: Vec[Nd]) using Allo
     if tryEmitScalarCast(env, callee, args) { return }
     if tryEmitConv(env, callee) { return }
     if tryEmitOpaqueCtor(env, callee, args) { return }
+    if tryEmitExplicitTArgs(env, callee, args) { return }
     if tryEmitEnumMethodCall(env, callee, args) { return }
     if tryEmitCompare(env, callee, args) { return }
     let fname = identBaseName(callee)

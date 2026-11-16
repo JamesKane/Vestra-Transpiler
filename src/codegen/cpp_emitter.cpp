@@ -4769,7 +4769,22 @@ void CppEmitter::emit_expr(std::ostream& os, const ast::Expr& e) {
         // in std::move(). If the callee resolves to a Vestra func declaration,
         // use its params; otherwise treat every param as `read` (the default).
         const ast::FuncDecl* fn = callee_decl(c);
-        emit_expr(os, *c.callee);
+        if (fn != nullptr && c.callee->kind == ast::NodeKind::IndexExpr) {
+            // §17.5 `id[Int32](1)`: explicit type arguments are the C++
+            // template arguments, in the generics' declaration order.
+            const auto& ix = static_cast<const ast::IndexExpr&>(*c.callee);
+            emit_expr(os, *ix.base);
+            os << "<";
+            for (std::size_t i = 0; i < ix.indices.size(); ++i) {
+                if (i != 0) {
+                    os << ", ";
+                }
+                emit_sema_type(os, resolution_->type_of(ix.indices[i].get()));
+            }
+            os << ">";
+        } else {
+            emit_expr(os, *c.callee);
+        }
         os << "(";
         for (std::size_t i = 0; i < c.args.size(); ++i) {
             if (i != 0) {

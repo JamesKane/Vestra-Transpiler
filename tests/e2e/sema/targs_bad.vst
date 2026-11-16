@@ -1,0 +1,9 @@
+// §17.5 explicit type arguments must match the function's generics.
+func id[T](_ x: T) -> T { return x }
+func plain(_ x: Int32) -> Int32 { return x }
+
+func main() -> Int32 {
+    let a = id[Int32, Bool](1)
+    let b = plain[Int32](1)
+    return 0
+}

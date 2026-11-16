@@ -1360,6 +1360,54 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
         }
     }
 
+    // §17.5 explicit type arguments on a generic function call, `id[Int32](1)`:
+    // the bracket names types, not a subscript. They seed the generic bindings
+    // in declaration order (codegen spells them as C++ template arguments).
+    std::unordered_map<std::string, TypePtr> explicit_bindings;
+    if (callee_type == nullptr && c.callee->kind == ast::NodeKind::IndexExpr) {
+        const auto& ix = static_cast<const ast::IndexExpr&>(*c.callee);
+        const auto* sym = ix.base != nullptr && ix.base->kind == ast::NodeKind::IdentExpr
+                              ? scopes_.current().lookup(
+                                    static_cast<const ast::IdentExpr&>(*ix.base).name)
+                              : nullptr;
+        if (sym != nullptr && sym->decl != nullptr && sym->decl->kind == ast::NodeKind::Func
+            && sym->type != nullptr && sym->type->kind() == TypeKind::Function) {
+            const auto& gfn = static_cast<const ast::FuncDecl&>(*sym->decl);
+            std::vector<const ast::GenericParam*> gps;
+            for (const auto& g : gfn.generics) {
+                if (!g.name.empty() && !g.is_const) {
+                    gps.push_back(&g);
+                }
+            }
+            if (gps.empty()) {
+                error_at(ix.range,
+                         std::format("function '{}' is not generic; it takes no type arguments",
+                                     gfn.name));
+            } else if (gps.size() != ix.indices.size()) {
+                error_at(ix.range,
+                         std::format("'{}' expects {} type argument(s), got {}",
+                                     gfn.name,
+                                     gps.size(),
+                                     ix.indices.size()));
+            } else {
+                for (std::size_t i = 0; i < gps.size(); ++i) {
+                    TypePtr t = type_from_index_expr(ix.indices[i].get());
+                    if (t == nullptr) {
+                        error_at(ix.indices[i]->range, "expected a type argument");
+                        continue;
+                    }
+                    resolution_.set_type(ix.indices[i].get(), t);
+                    explicit_bindings[gps[i]->name] = t;
+                }
+            }
+            resolution_.set_symbol(ix.base.get(), sym);
+            resolution_.set_type(ix.base.get(), sym->type);
+            resolution_.set_symbol(c.callee.get(), sym);
+            resolution_.set_type(c.callee.get(), sym->type);
+            callee_type = sym->type;
+        }
+    }
+
     // Resolve the callee first so we know each parameter's expected type
     // before we type its corresponding argument — this is what lets integer
     // literals adopt the parameter's type without an explicit conversion.
@@ -1664,7 +1712,7 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
     // is a generic placeholder (or contains one) and we know the type the
     // caller expects, bind from that. Lets `let x: Int32 = identity(7)` work
     // even though the literal `7` alone would default to Int.
-    std::unordered_map<std::string, TypePtr> bindings;
+    std::unordered_map<std::string, TypePtr> bindings = explicit_bindings;
     if (expected != nullptr && callee_type->result() != nullptr) {
         unify_generic(callee_type->result(), expected, bindings, c.range);
     }
@@ -1689,7 +1737,18 @@ TypePtr Resolver::check_call_inner(const ast::CallExpr& c, TypePtr expected) {
     for (std::size_t i = 0; i < params.size(); ++i) {
         auto pty = types_->substitute(params[i], bindings);
         auto arg_type = check_expr(*c.args[i].value, pty);
-        unify_generic(params[i], arg_type, bindings, c.args[i].value->range);
+        if (explicit_bindings.empty()) {
+            unify_generic(params[i], arg_type, bindings, c.args[i].value->range);
+        } else {
+            // Explicit type arguments win; only the rest are inferred.
+            std::unordered_map<std::string, TypePtr> inferred;
+            unify_generic(params[i], arg_type, inferred, c.args[i].value->range);
+            for (auto& [k, v] : inferred) {
+                if (!explicit_bindings.contains(k)) {
+                    bindings.emplace(k, v);
+                }
+            }
+        }
     }
 
     // Pass 2: enforce each (substituted_param, arg) pair. We re-check the

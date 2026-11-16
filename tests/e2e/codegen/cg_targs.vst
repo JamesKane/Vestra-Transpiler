@@ -1,0 +1,15 @@
+// §17.5 explicit type arguments on a generic function call: `id[Int64](7)`.
+// They bind the generics in declaration order and win over what an argument
+// would infer (`id[String]("s")` takes a String, not the literal's StrConst).
+// They lower to C++ template arguments.
+
+func id[T](_ x: T) -> T { return x }
+func pair[A, B](_ a: A, _ b: B) -> A { return a }
+
+func main() using Log, Alloc -> Int32 {
+    let a = id[Int64](7)
+    let b = pair[UInt8, Bool](200, true)
+    let c = id[String]("s")
+    print("\(a) \(b) \(c)")
+    return 0
+}
